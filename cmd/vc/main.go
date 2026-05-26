@@ -12,13 +12,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/relay"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/makscee/void-code/internal/welcome"
 	"github.com/spf13/cobra"
+)
+
+// meCache holds a cached result from FetchMe to avoid repeated auth-host calls.
+var (
+	meCacheResult *auth.MeResult
+	meCacheExpiry time.Time
 )
 
 func main() {
@@ -30,18 +38,78 @@ func main() {
 		}
 	}
 
-	// First-launch welcome screen — shown once on bare `vc` invocation (no
-	// sub-command), blocks until dismissed, writes sentinel so it never appears
-	// again.  Skipped for sub-commands (login/logout/status/update) so
-	// install-script automation works without a TTY.
+	// Persistent landing screen — shown on bare `vc` invocation (no sub-command).
+	// Checks auth state, shows banner, waits for any keypress.
+	// Any keypress → logged-in: spawn claude; logged-out: run login.
+	// Skipped for sub-commands (login/logout/status/update) so automation works.
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
-	sentinelPath := welcome.DefaultSentinelPath()
-	if !hasSubCmd && welcome.NeedsWelcome(sentinelPath) {
-		_ = welcome.Run(sentinelPath)
+	if !hasSubCmd {
+		state := resolveAuthState()
+		result, err := welcome.Run(state)
+		if err != nil {
+			// welcome.Run already handled non-TTY fallback; ignore error here.
+			_ = err
+		}
+		if result == welcome.RunLogin || !state.LoggedIn {
+			// Drop into login flow.
+			if err := runLoginInteractive(); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", err)
+				os.Exit(1)
+			}
+			// After login, proceed to spawn claude.
+		}
+		// Fall through to Execute() which calls runSpawn via rootCmd.
 	}
 
 	Execute()
+}
+
+// resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
+// Never fatal — on any error it returns a graceful degraded state.
+func resolveAuthState() welcome.AuthState {
+	token := loadTokenStub()
+	if token == "" {
+		return welcome.AuthState{LoggedIn: false}
+	}
+
+	// Check 5-minute in-memory cache first.
+	if meCacheResult != nil && time.Now().Before(meCacheExpiry) {
+		return meResultToState(*meCacheResult)
+	}
+
+	cfg := config.OSResolve()
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	me, err := auth.FetchMe(cfg.AuthHost, token, httpClient)
+	if err != nil {
+		// Auth host unreachable or token invalid — show degraded state.
+		if err == auth.ErrNotLoggedIn {
+			return welcome.AuthState{LoggedIn: false}
+		}
+		// Network error — still logged in, but sub status unknown.
+		return welcome.AuthState{
+			LoggedIn:   true,
+			Identity:   "(unknown)",
+			SubUnknown: true,
+		}
+	}
+
+	// Cache result for 5 minutes.
+	meCacheResult = &me
+	meCacheExpiry = time.Now().Add(5 * time.Minute)
+	return meResultToState(me)
+}
+
+func meResultToState(me auth.MeResult) welcome.AuthState {
+	identity := me.Email
+	if identity == "" {
+		identity = me.UserID
+	}
+	return welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    identity,
+		SubDaysLeft: me.SubDaysLeft,
+	}
 }
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch claude".
