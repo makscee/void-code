@@ -30,11 +30,14 @@ func main() {
 		}
 	}
 
-	// First-launch welcome screen — shown once, blocks until dismissed, then
-	// writes sentinel so it never appears again.  Must run before Cobra parses
-	// arguments so the TUI exits cleanly before any spawn.
+	// First-launch welcome screen — shown once on bare `vc` invocation (no
+	// sub-command), blocks until dismissed, writes sentinel so it never appears
+	// again.  Skipped for sub-commands (login/logout/status/update) so
+	// install-script automation works without a TTY.
+	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true}
+	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	sentinelPath := welcome.DefaultSentinelPath()
-	if welcome.NeedsWelcome(sentinelPath) {
+	if !hasSubCmd && welcome.NeedsWelcome(sentinelPath) {
 		_ = welcome.Run(sentinelPath)
 	}
 
