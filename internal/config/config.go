@@ -2,7 +2,10 @@
 // built-in defaults.  All env var names are the canonical VC_* namespace.
 package config
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 // Environment variable names — canonical, never change.
 const (
@@ -47,3 +50,13 @@ func Resolve(getenv func(string) string) Config {
 
 // OSResolve calls Resolve with os.Getenv.
 func OSResolve() Config { return Resolve(os.Getenv) }
+
+// CacheDir returns the absolute path to the vc cache directory (~/.void-code/).
+// The directory is NOT created here — callers that need it must os.MkdirAll.
+func CacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".void-code"), nil
+}
