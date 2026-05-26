@@ -117,6 +117,68 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+  publish-auth:
+    name: Sync binaries to void-auth
+    needs: release
+    runs-on: ubuntu-latest
+    # Requires repo secret VOID_AUTH_PUSH_TOKEN — a fine-scoped PAT with
+    # contents:write on makscee/void-auth. Skip silently if not configured.
+    if: ${{ secrets.VOID_AUTH_PUSH_TOKEN != '' }}
+    steps:
+      - name: Checkout void-auth
+        uses: actions/checkout@v4
+        with:
+          repository: makscee/void-auth
+          token: ${{ secrets.VOID_AUTH_PUSH_TOKEN }}
+          path: void-auth
+
+      - name: Download release artifacts
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: makscee/void-code
+          tag: ${{ github.ref_name }}
+          fileName: "vc-*"
+          out-file-path: void-auth/public/vc/bin
+
+      - name: Generate version.json
+        run: |
+          VERSION="${{ github.ref_name }}"
+          SEMVER="${VERSION#v}"
+          cat > void-auth/public/vc/version.json <<EOF
+          {
+            "version": "${SEMVER}",
+            "tag": "${VERSION}",
+            "artifacts": {
+              "darwin/amd64": "vc-darwin-amd64",
+              "darwin/arm64": "vc-darwin-arm64",
+              "linux/amd64": "vc-linux-amd64",
+              "linux/arm64": "vc-linux-arm64",
+              "windows/amd64": "vc-windows-amd64.exe",
+              "windows/arm64": "vc-windows-arm64.exe"
+            }
+          }
+          EOF
+
+      - name: Make Unix binaries executable
+        run: chmod +x void-auth/public/vc/bin/vc-darwin-* void-auth/public/vc/bin/vc-linux-*
+
+      - name: Commit and push to void-auth
+        run: |
+          cd void-auth
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/vc/bin/ public/vc/version.json
+          git diff --cached --quiet || git commit -m "chore: bump vc binaries to ${{ github.ref_name }}
+
+          Automated sync from makscee/void-code release ${{ github.ref_name }}.
+          Deploy to auth.makscee.ru requires a manual ansible run:
+            cd workspace/homelab/ansible
+            ansible-playbook -i inventory/homelab.yml playbooks/void-platform-mcow.yml \\
+              -e void_auth_image_tag=<sha from void-auth CI>
+
+          Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          git push
+
   test:
     name: Test
     runs-on: ubuntu-latest
