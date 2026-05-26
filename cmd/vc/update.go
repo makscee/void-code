@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 
+	"github.com/makscee/void-code/internal/update"
+	"github.com/makscee/void-code/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +23,19 @@ func init() {
 }
 
 func runUpdate(_ *cobra.Command, _ []string) error {
-	// TODO(VCD-6): implement semver probe against GH releases version.json + atomic swap.
-	fmt.Println("vc update: stub — implemented in VCD-6")
+	fmt.Printf("Current version: %s\nChecking for updates...\n", version.Version)
+
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current: version.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("update check failed: %w", err)
+	}
+
+	if updated {
+		fmt.Println("vc updated successfully. Run vc again to use the new version.")
+	} else {
+		fmt.Println("Already up to date.")
+	}
 	return nil
 }
