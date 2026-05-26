@@ -1,0 +1,15 @@
+# binaries
+vc
+vc.exe
+vc-*
+
+# build output
+dist/
+
+# macOS
+.DS_Store
+
+# editor
+.idea/
+.vscode/
+*.swp
