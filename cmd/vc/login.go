@@ -4,25 +4,33 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
+	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/spf13/cobra"
 )
 
-var loginDeviceFlag bool
+var (
+	loginDeviceFlag bool
+	loginEmailFlag  bool
+)
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate with void-code (access code or device flow)",
+	Short: "Authenticate with void-code (email OTP or pairing code)",
 	Long: `Authenticate with void-code.
 
-Default: access-code flow — reads VC_CODE from env or prompts interactively.
-  VC_CODE=ABCD-EFGH vc login
+Default: shows a picker — choose email OTP or pairing code.
+  vc login
 
-Device flow (--device): opens a browser URL + polls until approved.
+Email OTP (--email): send a 6-digit code to your email address.
+  vc login --email
+
+Pairing code (--device): opens a browser URL + polls until approved.
   vc login --device
 
 Credentials are written to ~/.void-code/token (mode 0600).`,
@@ -30,7 +38,8 @@ Credentials are written to ~/.void-code/token (mode 0600).`,
 }
 
 func init() {
-	loginCmd.Flags().BoolVar(&loginDeviceFlag, "device", false, "Use device-code flow instead of access-code")
+	loginCmd.Flags().BoolVar(&loginDeviceFlag, "device", false, "Use pairing-code flow instead of picker")
+	loginCmd.Flags().BoolVar(&loginEmailFlag, "email", false, "Use email OTP flow instead of picker")
 	rootCmd.AddCommand(loginCmd)
 }
 
@@ -40,15 +49,348 @@ func runLogin(_ *cobra.Command, _ []string) error {
 	if loginDeviceFlag {
 		return runDeviceFlow(cfg)
 	}
-
-	// Flow 1a: check $VC_CODE env.
-	code := os.Getenv(config.EnvCode)
-	if code == "" {
-		// $VC_CODE absent → fall through to device flow.
-		return runDeviceFlow(cfg)
+	if loginEmailFlag {
+		return runEmailFlow(cfg)
 	}
-	return runCodeExchange(cfg, code)
+
+	// No flag: show picker menu.
+	choice, err := runLoginPicker()
+	if err != nil {
+		return err
+	}
+	switch choice {
+	case pickerEmail:
+		return runEmailFlow(cfg)
+	case pickerDevice:
+		return runDeviceFlow(cfg)
+	default:
+		return fmt.Errorf("login cancelled")
+	}
 }
+
+// runLoginInteractive is called from main.go when the banner detects logged-out
+// state on any-key.  It runs the picker and completes login, or returns error.
+func runLoginInteractive() error {
+	return runLogin(nil, nil)
+}
+
+// ─── login picker ─────────────────────────────────────────────────────────────
+
+type pickerChoice int
+
+const (
+	pickerNone   pickerChoice = iota
+	pickerEmail               // "Email (one-time code)"
+	pickerDevice              // "Pairing code (from another device)"
+)
+
+var (
+	pickerTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#7C3AED")).
+				MarginBottom(1)
+
+	pickerItemStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#9CA3AF"))
+
+	pickerSelectedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#A78BFA"))
+
+	pickerHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6B7280")).
+			Italic(true).
+			MarginTop(1)
+)
+
+type pickerModel struct {
+	choices  []string
+	cursor   int
+	selected pickerChoice
+	quitting bool
+}
+
+func newPickerModel() pickerModel {
+	return pickerModel{
+		choices: []string{
+			"Email (one-time code)",
+			"Pairing code (from another device)",
+		},
+		cursor: 0,
+	}
+}
+
+func (m pickerModel) Init() tea.Cmd { return nil }
+
+func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q", "esc":
+			m.quitting = true
+			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.choices)-1 {
+				m.cursor++
+			}
+		case "1":
+			m.cursor = 0
+			m.selected = pickerEmail
+			return m, tea.Quit
+		case "2":
+			m.cursor = 1
+			m.selected = pickerDevice
+			return m, tea.Quit
+		case "enter", " ":
+			m.selected = pickerChoice(m.cursor + 1)
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m pickerModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(pickerTitleStyle.Render("How would you like to sign in?"))
+	sb.WriteString("\n")
+	for i, choice := range m.choices {
+		cursor := "  "
+		if i == m.cursor {
+			cursor = "> "
+		}
+		num := fmt.Sprintf("%d. ", i+1)
+		line := cursor + num + choice
+		if i == m.cursor {
+			sb.WriteString(pickerSelectedStyle.Render(line))
+		} else {
+			sb.WriteString(pickerItemStyle.Render(line))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(pickerHintStyle.Render("↑/↓ or 1/2 to select · enter to confirm · q to cancel"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func runLoginPicker() (pickerChoice, error) {
+	m := newPickerModel()
+	p := tea.NewProgram(m)
+	result, err := p.Run()
+	if err != nil {
+		// Non-TTY or error: fall back to device flow.
+		return pickerDevice, nil
+	}
+	final, ok := result.(pickerModel)
+	if !ok || final.selected == pickerNone {
+		return pickerNone, fmt.Errorf("login cancelled")
+	}
+	return final.selected, nil
+}
+
+// ─── email OTP flow ──────────────────────────────────────────────────────────
+
+func runEmailFlow(cfg config.Config) error {
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+
+	email, err := promptEmail()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\nSending a 6-digit code to %s...\n", email)
+	_, err = auth.EmailStart(cfg.AuthHost, email, httpClient)
+	if err != nil {
+		return fmt.Errorf("sending OTP: %w", err)
+	}
+	fmt.Println("Code sent. Check your email.")
+
+	// Retry loop: up to 3 attempts to enter the correct OTP.
+	for attempt := 1; attempt <= 3; attempt++ {
+		code, err := promptOTP()
+		if err != nil {
+			return err
+		}
+
+		res, err := auth.EmailVerify(cfg.AuthHost, email, code, httpClient)
+		if err != nil {
+			if errors.Is(err, auth.ErrOTPWrong) {
+				remaining := 3 - attempt
+				if remaining > 0 {
+					fmt.Printf("Wrong code — %d attempt(s) left. Try again.\n", remaining)
+					continue
+				}
+				return fmt.Errorf("wrong or expired code — run vc login again to request a new code")
+			}
+			return fmt.Errorf("OTP verify failed: %w", err)
+		}
+
+		// Success — save token.
+		if err := auth.Save(res.Token); err != nil {
+			return fmt.Errorf("saving token: %w", err)
+		}
+		fmt.Printf("Logged in successfully.\n")
+		return nil
+	}
+	return fmt.Errorf("too many failed attempts")
+}
+
+// promptEmail reads an email address from stdin using a bubbletea model.
+func promptEmail() (string, error) {
+	m := newEmailInputModel()
+	p := tea.NewProgram(m)
+	result, err := p.Run()
+	if err != nil {
+		// Non-TTY fallback: use fmt.Scan.
+		var email string
+		fmt.Print("Email: ")
+		if _, err := fmt.Scan(&email); err != nil {
+			return "", fmt.Errorf("reading email: %w", err)
+		}
+		return strings.TrimSpace(email), nil
+	}
+	final, ok := result.(emailInputModel)
+	if !ok || final.cancelled {
+		return "", fmt.Errorf("login cancelled")
+	}
+	return final.value, nil
+}
+
+// promptOTP reads a 6-digit OTP from stdin using a bubbletea model.
+func promptOTP() (string, error) {
+	m := newOTPInputModel()
+	p := tea.NewProgram(m)
+	result, err := p.Run()
+	if err != nil {
+		// Non-TTY fallback: use fmt.Scan.
+		var code string
+		fmt.Print("Code: ")
+		if _, err := fmt.Scan(&code); err != nil {
+			return "", fmt.Errorf("reading code: %w", err)
+		}
+		return strings.TrimSpace(code), nil
+	}
+	final, ok := result.(otpInputModel)
+	if !ok || final.cancelled {
+		return "", fmt.Errorf("login cancelled")
+	}
+	return final.value, nil
+}
+
+// ─── simple text input models ─────────────────────────────────────────────────
+
+var (
+	inputLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#9CA3AF"))
+	inputValueStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F9FAFB")).
+			Bold(true)
+	inputCursorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#7C3AED")).
+				Bold(true)
+)
+
+type emailInputModel struct {
+	value     string
+	cancelled bool
+}
+
+func newEmailInputModel() emailInputModel { return emailInputModel{} }
+
+func (m emailInputModel) Init() tea.Cmd { return nil }
+
+func (m emailInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.cancelled = true
+			return m, tea.Quit
+		case "enter":
+			if strings.Contains(m.value, "@") {
+				return m, tea.Quit
+			}
+		case "backspace", "ctrl+h":
+			if len(m.value) > 0 {
+				m.value = m.value[:len(m.value)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.value += string(msg.Runes)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m emailInputModel) View() string {
+	var sb strings.Builder
+	sb.WriteString(inputLabelStyle.Render("Email: "))
+	sb.WriteString(inputValueStyle.Render(m.value))
+	sb.WriteString(inputCursorStyle.Render("█"))
+	sb.WriteString("\n")
+	sb.WriteString(inputLabelStyle.Render("(press enter to confirm)"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+type otpInputModel struct {
+	value     string
+	cancelled bool
+}
+
+func newOTPInputModel() otpInputModel { return otpInputModel{} }
+
+func (m otpInputModel) Init() tea.Cmd { return nil }
+
+func (m otpInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.cancelled = true
+			return m, tea.Quit
+		case "enter":
+			if len(m.value) == 6 {
+				return m, tea.Quit
+			}
+		case "backspace", "ctrl+h":
+			if len(m.value) > 0 {
+				m.value = m.value[:len(m.value)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				for _, r := range msg.Runes {
+					if r >= '0' && r <= '9' && len(m.value) < 6 {
+						m.value += string(r)
+					}
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m otpInputModel) View() string {
+	var sb strings.Builder
+	sb.WriteString(inputLabelStyle.Render("6-digit code: "))
+	sb.WriteString(inputValueStyle.Render(m.value))
+	if len(m.value) < 6 {
+		sb.WriteString(inputCursorStyle.Render("█"))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(inputLabelStyle.Render("(enter 6 digits and press enter)"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// ─── device flow (pairing code) ──────────────────────────────────────────────
 
 // runCodeExchange performs Flow 1a: exchange an access code for a session token.
 func runCodeExchange(cfg config.Config, code string) error {
@@ -72,17 +414,17 @@ func runCodeExchange(cfg config.Config, code string) error {
 	return nil
 }
 
-// runDeviceFlow performs Flow 1b: device-authorization flow.
+// runDeviceFlow performs Flow 1b: pairing-code (device-authorization) flow.
 func runDeviceFlow(cfg config.Config) error {
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 
 	start, err := auth.DeviceStart(cfg.AuthHost, httpClient)
 	if err != nil {
-		return fmt.Errorf("starting device flow: %w", err)
+		return fmt.Errorf("starting pairing-code flow: %w", err)
 	}
 
 	fmt.Printf("\nOpen this URL in your browser to authorize:\n\n  %s\n\n", start.VerificationURIComplete)
-	fmt.Printf("Your device code: %s\n\nWaiting for authorization", start.UserCode)
+	fmt.Printf("Your pairing code: %s\n\nWaiting for authorization", start.UserCode)
 
 	interval := start.Interval
 	if interval <= 0 {
@@ -101,14 +443,14 @@ func runDeviceFlow(cfg config.Config) error {
 			}
 			if errors.Is(err, auth.ErrDeviceExpired) {
 				fmt.Println()
-				return fmt.Errorf("device code expired — run vc login --device again")
+				return fmt.Errorf("pairing code expired — run vc login again")
 			}
 			if errors.Is(err, auth.ErrDeviceDenied) {
 				fmt.Println()
 				return fmt.Errorf("authorization denied")
 			}
 			fmt.Println()
-			return fmt.Errorf("device poll failed: %w", err)
+			return fmt.Errorf("pairing poll failed: %w", err)
 		}
 
 		// Approved.
@@ -121,5 +463,8 @@ func runDeviceFlow(cfg config.Config) error {
 	}
 
 	fmt.Println()
-	return fmt.Errorf("device flow timed out — run vc login --device again")
+	return fmt.Errorf("pairing flow timed out — run vc login again")
 }
+
+// Ensure runCodeExchange is referenced (used by future access-code restoration).
+var _ = runCodeExchange
