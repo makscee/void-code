@@ -3,8 +3,11 @@
 package config
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Environment variable names — canonical, never change.
@@ -13,19 +16,22 @@ const (
 	EnvRelayCA   = "VC_RELAY_CA"   // filesystem path override for relay CA
 	EnvAuthHost  = "VC_AUTH_HOST"  // base URL override for void-auth
 	EnvCode      = "VC_CODE"       // access code for Flow 1a (login --code)
+	EnvLang      = "VC_LANG"       // UI language: "en" (default) or "ru"
 )
 
 // Defaults — DNS names, not raw IPs (grill decision A8/A10).
 const (
 	DefaultRelayHost = "relay.makscee.ru:8448"
 	DefaultAuthHost  = "https://auth.makscee.ru"
+	DefaultLang      = "en"
 )
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	RelayHost string // host:port
-	AuthHost  string // base URL, no trailing slash
+	RelayHost  string // host:port
+	AuthHost   string // base URL, no trailing slash
 	CAOverride string // empty = use cached/embedded
+	Lang       string // "en" or "ru"
 }
 
 // Resolve builds Config from env, falling back to compiled defaults.
@@ -41,10 +47,20 @@ func Resolve(getenv func(string) string) Config {
 		authHost = DefaultAuthHost
 	}
 
+	lang := getenv(EnvLang)
+	if lang == "" {
+		lang = DefaultLang
+	}
+	// Normalise: only "en" and "ru" are supported; fall back to "en".
+	if lang != "ru" {
+		lang = "en"
+	}
+
 	return Config{
 		RelayHost:  relayHost,
 		AuthHost:   authHost,
 		CAOverride: getenv(EnvRelayCA),
+		Lang:       lang,
 	}
 }
 
@@ -59,4 +75,103 @@ func CacheDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".void-code"), nil
+}
+
+// ConfigFilePath returns the path to the vc config file (~/.void-code/config).
+func ConfigFilePath() (string, error) {
+	dir, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config"), nil
+}
+
+// ReadConfigFile reads key=value pairs from the vc config file.
+// Returns an empty map if the file does not exist.
+func ReadConfigFile() (map[string]string, error) {
+	path, err := ConfigFilePath()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	result := map[string]string{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		result[line[:idx]] = line[idx+1:]
+	}
+	return result, scanner.Err()
+}
+
+// WriteConfigFile writes key=value pairs to the vc config file, preserving
+// existing keys that are not in the provided map.
+func WriteConfigFile(updates map[string]string) error {
+	path, err := ConfigFilePath()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+
+	existing, err := ReadConfigFile()
+	if err != nil {
+		return err
+	}
+	for k, v := range updates {
+		existing[k] = v
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("opening config file: %w", err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	for k, v := range existing {
+		if _, err := fmt.Fprintf(w, "%s=%s\n", k, v); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
+}
+
+// PersistLang writes the lang key to the vc config file (best-effort).
+// Errors are silently discarded — language is cosmetic, not auth-critical.
+func PersistLang(lang string) {
+	_ = WriteConfigFile(map[string]string{"lang": lang})
+}
+
+// OSResolveWithFile resolves Config from env but also reads the config file for
+// keys absent from env (e.g. lang set by install.sh).
+func OSResolveWithFile() Config {
+	cfg := OSResolve()
+	// If VC_LANG was not set in env, try the config file.
+	if os.Getenv(EnvLang) == "" {
+		if kv, err := ReadConfigFile(); err == nil {
+			if v, ok := kv["lang"]; ok && v != "" {
+				if v == "ru" {
+					cfg.Lang = "ru"
+				}
+			}
+		}
+	}
+	return cfg
 }
