@@ -14,6 +14,7 @@ import (
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/version"
+	"github.com/makscee/void-code/internal/welcome"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +26,15 @@ func main() {
 			return
 		}
 	}
+
+	// First-launch welcome screen — shown once, blocks until dismissed, then
+	// writes sentinel so it never appears again.  Must run before Cobra parses
+	// arguments so the TUI exits cleanly before any spawn.
+	sentinelPath := welcome.DefaultSentinelPath()
+	if welcome.NeedsWelcome(sentinelPath) {
+		_ = welcome.Run(sentinelPath)
+	}
+
 	Execute()
 }
 

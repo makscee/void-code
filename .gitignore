@@ -1,7 +1,7 @@
-# binaries
-vc
-vc.exe
-vc-*
+# binaries — anchored to repo root so they don't match cmd/vc/ directory
+/vc
+/vc.exe
+/vc-*
 
 # build output
 dist/
