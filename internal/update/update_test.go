@@ -48,7 +48,7 @@ func TestCompareInvalid(t *testing.T) {
 // --- version.json parse ---
 
 func TestParseVersionJSON(t *testing.T) {
-	raw := `{"version":"v0.2.0","files":{"darwin-arm64":"vc-darwin-arm64","darwin-amd64":"vc-darwin-amd64","linux-amd64":"vc-linux-amd64","windows-amd64":"vc-windows-amd64.exe"}}`
+	raw := `{"version":"v0.2.0","artifacts":{"darwin/arm64":"vc-darwin-arm64","darwin/amd64":"vc-darwin-amd64","linux/amd64":"vc-linux-amd64","windows/amd64":"vc-windows-amd64.exe"}}`
 	v, err := update.ParseVersionJSON([]byte(raw))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -56,8 +56,8 @@ func TestParseVersionJSON(t *testing.T) {
 	if v.Version != "v0.2.0" {
 		t.Errorf("version = %q; want v0.2.0", v.Version)
 	}
-	if v.Files["darwin-arm64"] != "vc-darwin-arm64" {
-		t.Errorf("darwin-arm64 file = %q; want vc-darwin-arm64", v.Files["darwin-arm64"])
+	if v.Artifacts["darwin/arm64"] != "vc-darwin-arm64" {
+		t.Errorf("darwin/arm64 artifact = %q; want vc-darwin-arm64", v.Artifacts["darwin/arm64"])
 	}
 }
 
@@ -80,7 +80,7 @@ func TestPlatformKey(t *testing.T) {
 	os_ := runtime.GOOS
 	arch := runtime.GOARCH
 	if os_ == "darwin" || os_ == "linux" || os_ == "windows" {
-		expected := os_ + "-" + arch
+		expected := os_ + "/" + arch
 		if key != expected {
 			t.Errorf("PlatformKey() = %q; want %q", key, expected)
 		}
@@ -95,8 +95,8 @@ func TestCheckNoUpdate(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "version.json") {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(update.VersionJSON{
-				Version: "v0.1.0",
-				Files:   map[string]string{"darwin-arm64": "vc-darwin-arm64"},
+				Version:   "v0.1.0",
+				Artifacts: map[string]string{"darwin/arm64": "vc-darwin-arm64"},
 			})
 		}
 	}))
@@ -131,7 +131,7 @@ func TestCheckUpdateAvailable(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(update.VersionJSON{
 				Version: "v0.2.0",
-				Files: map[string]string{
+				Artifacts: map[string]string{
 					update.PlatformKey(): "vc-" + update.PlatformKey(),
 				},
 			})
@@ -170,7 +170,7 @@ func TestCheckUpdateMissingPlatform(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "version.json") {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"version":"v0.2.0","files":{}}`)
+			fmt.Fprintf(w, `{"version":"v0.2.0","artifacts":{}}`)
 		}
 	}))
 	defer srv.Close()

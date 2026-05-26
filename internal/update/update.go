@@ -26,8 +26,8 @@ const DefaultReleaseBaseURL = "https://github.com/makscee/void-code/releases/lat
 // VersionJSON is the schema for the version.json file published alongside
 // each GH Release.
 type VersionJSON struct {
-	Version string            `json:"version"`
-	Files   map[string]string `json:"files"` // platform-key → filename
+	Version   string            `json:"version"`
+	Artifacts map[string]string `json:"artifacts"` // platform-key → filename
 }
 
 // Options controls CheckAndUpdate behaviour.
@@ -42,9 +42,9 @@ type Options struct {
 }
 
 // PlatformKey returns the platform identifier used in release artifact names,
-// e.g. "darwin-arm64", "linux-amd64", "windows-amd64".
+// e.g. "darwin/arm64", "linux/amd64", "windows/amd64".
 func PlatformKey() string {
-	return runtime.GOOS + "-" + runtime.GOARCH
+	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
 // ParseVersionJSON parses a raw version.json payload.
@@ -102,7 +102,7 @@ func CheckAndUpdate(opts Options) (updated bool, err error) {
 
 	// Find the artifact name for our platform.
 	key := PlatformKey()
-	filename, ok := v.Files[key]
+	filename, ok := v.Artifacts[key]
 	if !ok {
 		return false, fmt.Errorf("no release binary for platform %q in version %s", key, v.Version)
 	}
