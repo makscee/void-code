@@ -159,6 +159,50 @@ func PersistLang(lang string) {
 	_ = WriteConfigFile(map[string]string{"lang": lang})
 }
 
+// UpdatePrefs holds auto-update preferences read from the config file.
+type UpdatePrefs struct {
+	// AutoUpdate is true when the user pressed 'a' (always-update).
+	AutoUpdate bool
+	// LastPromptedVersion is the latest version the user was prompted for.
+	// Used to suppress repeated prompts for the same version after 'n'.
+	LastPromptedVersion string
+}
+
+// ReadUpdatePrefs reads update preferences from the config file.
+func ReadUpdatePrefs() UpdatePrefs {
+	kv, err := ReadConfigFile()
+	if err != nil {
+		return UpdatePrefs{}
+	}
+	prefs := UpdatePrefs{}
+	if kv["auto_update"] == "true" {
+		prefs.AutoUpdate = true
+	}
+	prefs.LastPromptedVersion = kv["last_prompted_version"]
+	return prefs
+}
+
+// WriteUpdatePrefs persists update preferences to the config file.
+func WriteUpdatePrefs(prefs UpdatePrefs) error {
+	autoVal := "false"
+	if prefs.AutoUpdate {
+		autoVal = "true"
+	}
+	return WriteConfigFile(map[string]string{
+		"auto_update":           autoVal,
+		"last_prompted_version": prefs.LastPromptedVersion,
+	})
+}
+
+// UpdateCacheFilePath returns the path of the update-check mtime sentinel.
+func UpdateCacheFilePath() (string, error) {
+	dir, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "last-update-check"), nil
+}
+
 // OSResolveWithFile resolves Config from env but also reads the config file for
 // keys absent from env (e.g. lang set by install.sh).
 func OSResolveWithFile() Config {

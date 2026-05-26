@@ -124,3 +124,68 @@ func TestReadConfigFileMissing(t *testing.T) {
 		t.Errorf("expected empty map, got %v", kv)
 	}
 }
+
+// --- UpdatePrefs round-trip ---
+
+func TestUpdatePrefsRoundTrip(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	// Defaults: nothing set.
+	p := config.ReadUpdatePrefs()
+	if p.AutoUpdate {
+		t.Error("AutoUpdate should be false by default")
+	}
+	if p.LastPromptedVersion != "" {
+		t.Errorf("LastPromptedVersion should be empty by default, got %q", p.LastPromptedVersion)
+	}
+
+	// Write auto_update=true + last_prompted_version.
+	if err := config.WriteUpdatePrefs(config.UpdatePrefs{
+		AutoUpdate:          true,
+		LastPromptedVersion: "v0.1.3",
+	}); err != nil {
+		t.Fatalf("WriteUpdatePrefs: %v", err)
+	}
+
+	p2 := config.ReadUpdatePrefs()
+	if !p2.AutoUpdate {
+		t.Error("AutoUpdate should be true after write")
+	}
+	if p2.LastPromptedVersion != "v0.1.3" {
+		t.Errorf("LastPromptedVersion: want v0.1.3 got %q", p2.LastPromptedVersion)
+	}
+}
+
+func TestUpdatePrefsAutoUpdateFalse(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	// Write true then false.
+	_ = config.WriteUpdatePrefs(config.UpdatePrefs{AutoUpdate: true, LastPromptedVersion: "v0.1.3"})
+	_ = config.WriteUpdatePrefs(config.UpdatePrefs{AutoUpdate: false, LastPromptedVersion: "v0.1.3"})
+
+	p := config.ReadUpdatePrefs()
+	if p.AutoUpdate {
+		t.Error("AutoUpdate should be false after writing false")
+	}
+	if p.LastPromptedVersion != "v0.1.3" {
+		t.Errorf("LastPromptedVersion survived: want v0.1.3 got %q", p.LastPromptedVersion)
+	}
+}
+
+func TestUpdateCacheFilePath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	path, err := config.UpdateCacheFilePath()
+	if err != nil {
+		t.Fatalf("UpdateCacheFilePath: %v", err)
+	}
+	if filepath.Base(path) != "last-update-check" {
+		t.Errorf("unexpected basename: %q", filepath.Base(path))
+	}
+}

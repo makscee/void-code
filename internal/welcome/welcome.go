@@ -25,6 +25,10 @@ type AuthState struct {
 	SubDaysLeft int
 	// SubUnknown is true when subscription status could not be fetched.
 	SubUnknown bool
+	// UpdateNudge is an optional one-line message shown in the banner when
+	// the user declined an update or when no auto-update is configured.
+	// Empty means no nudge.
+	UpdateNudge string
 }
 
 // RunResult is returned by Run to indicate what the keypress should trigger.
@@ -165,10 +169,18 @@ func (m model) View() string {
 			inner.WriteString(warnStyle.Render("· no active subscription ·"))
 		}
 		inner.WriteString("\n\n")
+		if m.UpdateNudge != "" {
+			inner.WriteString(hintStyle.Render(m.UpdateNudge))
+			inner.WriteString("\n")
+		}
 		inner.WriteString(hintStyle.Render("press any key to start"))
 	} else {
 		inner.WriteString(warnStyle.Render("Not logged in"))
 		inner.WriteString("\n\n")
+		if m.UpdateNudge != "" {
+			inner.WriteString(hintStyle.Render(m.UpdateNudge))
+			inner.WriteString("\n")
+		}
 		inner.WriteString(hintStyle.Render("press any key to login"))
 	}
 	inner.WriteString("\n")
@@ -195,6 +207,9 @@ func plainBanner(state AuthState) string {
 		}
 	} else {
 		sb.WriteString("  Not logged in\n")
+	}
+	if state.UpdateNudge != "" {
+		sb.WriteString("  " + state.UpdateNudge + "\n")
 	}
 	sb.WriteString("\n")
 	return sb.String()

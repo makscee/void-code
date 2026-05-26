@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // DefaultVersionURL is the canonical version.json location for vc releases.
@@ -47,6 +48,13 @@ func PlatformKey() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
+// PlatformKeyLegacy returns the legacy (pre-v0.1.2) platform key format used
+// by old binaries, e.g. "darwin-arm64".  version.json from v0.1.3+ includes
+// both forms as aliases so old clients can self-update.
+func PlatformKeyLegacy() string {
+	return runtime.GOOS + "-" + runtime.GOARCH
+}
+
 // ParseVersionJSON parses a raw version.json payload.
 func ParseVersionJSON(data []byte) (VersionJSON, error) {
 	var v VersionJSON
@@ -71,6 +79,58 @@ func CompareVersions(a, b string) int {
 		}
 	}
 	return 0
+}
+
+// ProbeResult is the result of an async version probe.
+type ProbeResult struct {
+	// HasUpdate is true when a newer version is available.
+	HasUpdate bool
+	// Latest is the latest version string (e.g. "v0.1.3") when HasUpdate is true.
+	Latest string
+	// Err is non-nil when the probe failed (network error, parse failure, etc.).
+	Err error
+}
+
+// ProbeAsync fires a version check in a background goroutine and returns a
+// channel that will receive exactly one ProbeResult.  The channel is buffered
+// so the goroutine never leaks if the caller discards the result.
+//
+// timeout controls the HTTP deadline; 0 means no deadline.
+// baseURL overrides the default release base URL (empty = use default, for tests).
+func ProbeAsync(current, baseURL string, timeout time.Duration) <-chan ProbeResult {
+	ch := make(chan ProbeResult, 1)
+	go func() {
+		ch <- probe(current, baseURL, timeout)
+	}()
+	return ch
+}
+
+// probe performs a synchronous version check.
+func probe(current, baseURL string, timeout time.Duration) ProbeResult {
+	if baseURL == "" {
+		baseURL = DefaultReleaseBaseURL
+	}
+	client := &http.Client{}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+	data, err := fetchURLWithClient(client, baseURL+"/version.json")
+	if err != nil {
+		return ProbeResult{Err: err}
+	}
+	v, err := ParseVersionJSON(data)
+	if err != nil {
+		return ProbeResult{Err: err}
+	}
+	if CompareVersions(current, v.Version) >= 0 {
+		return ProbeResult{HasUpdate: false}
+	}
+	// Normalise latest: ensure it has a "v" prefix.
+	latest := v.Version
+	if latest != "" && latest[0] != 'v' {
+		latest = "v" + latest
+	}
+	return ProbeResult{HasUpdate: true, Latest: latest}
 }
 
 // CheckAndUpdate checks for a new version and, if one is available, downloads
@@ -101,10 +161,16 @@ func CheckAndUpdate(opts Options) (updated bool, err error) {
 	}
 
 	// Find the artifact name for our platform.
+	// Try slash key first ("darwin/arm64"), then legacy hyphen key ("darwin-arm64")
+	// for backward compat with releases built before v0.1.3.
 	key := PlatformKey()
 	filename, ok := v.Artifacts[key]
 	if !ok {
-		return false, fmt.Errorf("no release binary for platform %q in version %s", key, v.Version)
+		legacyKey := PlatformKeyLegacy()
+		filename, ok = v.Artifacts[legacyKey]
+		if !ok {
+			return false, fmt.Errorf("no release binary for platform %q in version %s", key, v.Version)
+		}
 	}
 
 	binaryURL := baseURL + "/" + filename
@@ -168,7 +234,12 @@ func atomicReplace(dest string, data []byte) error {
 
 // fetchURL performs a GET request and returns the body bytes.
 func fetchURL(url string) ([]byte, error) {
-	resp, err := http.Get(url) //nolint:noctx
+	return fetchURLWithClient(http.DefaultClient, url)
+}
+
+// fetchURLWithClient performs a GET request using the provided client and returns the body bytes.
+func fetchURLWithClient(client *http.Client, url string) ([]byte, error) {
+	resp, err := client.Get(url) //nolint:noctx
 	if err != nil {
 		return nil, err
 	}

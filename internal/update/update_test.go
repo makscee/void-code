@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/makscee/void-code/internal/update"
 )
@@ -198,5 +199,234 @@ func TestCheckUpdateServerError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error on server 500")
+	}
+}
+
+// --- legacy hyphen key fallback (regression for darwin-arm64 bug) ---
+
+func TestCheckUpdateLegacyHyphenKey(t *testing.T) {
+	// version.json only has hyphen-style keys (pre-v0.1.3 releases).
+	// Client must still resolve the artifact.
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "vc")
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	newBinaryContent := []byte("new-bin")
+
+	legacyKey := update.PlatformKeyLegacy() // e.g. "darwin-arm64"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "version.json"):
+			w.Header().Set("Content-Type", "application/json")
+			// Only hyphen keys — no slash keys — simulating a pre-v0.1.3 release.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version":   "v0.2.0",
+				"artifacts": map[string]string{legacyKey: "vc-" + legacyKey},
+			})
+		default:
+			_, _ = w.Write(newBinaryContent)
+		}
+	}))
+	defer srv.Close()
+
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current:    "v0.1.0",
+		BaseURL:    srv.URL,
+		BinaryPath: binaryPath,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error with legacy hyphen key: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected update when legacy hyphen key present")
+	}
+}
+
+// TestCheckUpdateBothKeys verifies that a version.json with BOTH slash and
+// hyphen keys (v0.1.3+ format) is handled correctly — slash key takes precedence.
+func TestCheckUpdateBothKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "vc")
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	newBinaryContent := []byte("new-bin")
+
+	slashKey := update.PlatformKey()     // e.g. "darwin/arm64"
+	legacyKey := update.PlatformKeyLegacy() // e.g. "darwin-arm64"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "version.json"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version": "v0.2.0",
+				"artifacts": map[string]string{
+					slashKey:  "vc-slash",
+					legacyKey: "vc-hyphen",
+				},
+			})
+		case strings.HasSuffix(r.URL.Path, "vc-slash"):
+			_, _ = w.Write(newBinaryContent)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current:    "v0.1.0",
+		BaseURL:    srv.URL,
+		BinaryPath: binaryPath,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected update")
+	}
+}
+
+// --- ProbeAsync ---
+
+func TestProbeAsyncHasUpdate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "version.json") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version":   "0.9.0",
+				"artifacts": map[string]string{update.PlatformKey(): "vc-x"},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	ch := update.ProbeAsync("v0.1.0", srv.URL, 5*time.Second)
+	result := <-ch
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	if !result.HasUpdate {
+		t.Fatal("expected HasUpdate=true")
+	}
+	if result.Latest != "v0.9.0" {
+		t.Errorf("Latest = %q; want v0.9.0", result.Latest)
+	}
+}
+
+func TestProbeAsyncNoUpdate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "version.json") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version":   "0.1.0",
+				"artifacts": map[string]string{},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	ch := update.ProbeAsync("v0.1.0", srv.URL, 5*time.Second)
+	result := <-ch
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	if result.HasUpdate {
+		t.Fatal("expected HasUpdate=false when at latest")
+	}
+}
+
+func TestProbeAsyncOffline(t *testing.T) {
+	// Point at a non-existent server to simulate offline.
+	ch := update.ProbeAsync("v0.1.0", "http://127.0.0.1:1", 500*time.Millisecond)
+	result := <-ch
+	if result.Err == nil {
+		t.Fatal("expected error when server unreachable")
+	}
+	if result.HasUpdate {
+		t.Fatal("HasUpdate must be false on error")
+	}
+}
+
+func TestProbeAsyncTimeout(t *testing.T) {
+	// Server hangs — probe must return within timeout.
+	hung := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-hung // block forever
+	}))
+	defer srv.Close()
+	defer close(hung)
+
+	start := time.Now()
+	ch := update.ProbeAsync("v0.1.0", srv.URL, 200*time.Millisecond)
+	result := <-ch
+	elapsed := time.Since(start)
+
+	if result.Err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("timeout took too long: %v", elapsed)
+	}
+}
+
+// --- PlatformKeyLegacy ---
+
+func TestPlatformKeyLegacy(t *testing.T) {
+	key := update.PlatformKeyLegacy()
+	os_ := runtime.GOOS
+	arch := runtime.GOARCH
+	expected := os_ + "-" + arch
+	if key != expected {
+		t.Errorf("PlatformKeyLegacy() = %q; want %q", key, expected)
+	}
+}
+
+// --- regression: darwin-arm64 lookup ---
+
+// TestDarwinArm64Regression verifies that a version.json with ONLY the
+// "darwin-arm64" hyphen key (as produced by releases before v0.1.3) is
+// handled by the current client.  This is the exact failure scenario reported
+// by the operator.
+func TestDarwinArm64Regression(t *testing.T) {
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "vc")
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	newBinaryContent := []byte("fixed-binary")
+
+	allSixHyphenKeys := map[string]string{
+		"darwin-amd64":  "vc-darwin-amd64",
+		"darwin-arm64":  "vc-darwin-arm64",
+		"linux-amd64":   "vc-linux-amd64",
+		"linux-arm64":   "vc-linux-arm64",
+		"windows-amd64": "vc-windows-amd64.exe",
+		"windows-arm64": "vc-windows-arm64.exe",
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "version.json"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version":   "0.1.2",
+				"artifacts": allSixHyphenKeys,
+			})
+		default:
+			_, _ = w.Write(newBinaryContent)
+		}
+	}))
+	defer srv.Close()
+
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current:    "v0.1.1",
+		BaseURL:    srv.URL,
+		BinaryPath: binaryPath,
+	})
+	if err != nil {
+		t.Fatalf("darwin-arm64 regression: unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("darwin-arm64 regression: expected update to succeed")
 	}
 }

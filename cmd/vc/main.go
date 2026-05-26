@@ -45,7 +45,13 @@ func main() {
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd {
+		// Async update probe fires before banner render; result consumed inside.
+		nudge := launchUpdateCheck()
+
 		state := resolveAuthState()
+		if nudge != "" {
+			state.UpdateNudge = nudge
+		}
 		result, err := welcome.Run(state)
 		if err != nil {
 			// welcome.Run already handled non-TTY fallback; ignore error here.
