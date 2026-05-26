@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/makscee/void-code/internal/auth"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +19,9 @@ func init() {
 }
 
 func runLogout(_ *cobra.Command, _ []string) error {
-	// TODO(VCD-3): wipe ~/.void-code/token + ~/.void-code/relay-ca.pem
-	fmt.Println("vc logout: stub — implemented in VCD-3")
+	if err := auth.Wipe(); err != nil {
+		return fmt.Errorf("logout failed: %w", err)
+	}
+	fmt.Println("Logged out — credentials removed.")
 	return nil
 }
