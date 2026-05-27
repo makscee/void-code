@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/spf13/cobra"
@@ -40,26 +39,27 @@ type meResponse struct {
 func runStatus(_ *cobra.Command, _ []string) error {
 	cfg := config.OSResolve()
 
-	// Resolve token file path (frozen contract: ~/.void-code/token).
-	home, _ := os.UserHomeDir()
-	tokenPath := filepath.Join(home, ".void-code", "token")
-
 	// Print version and relay unconditionally.
 	fmt.Printf("%s %s\n", labelStyle.Render("version:"), valueStyle.Render(version.Version))
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
 
-	// Try to load the token.
-	tokenBytes, err := os.ReadFile(tokenPath)
-	if err != nil {
+	// Load token with legacy cv fallback and silent migration.
+	token, migrated, loadErr := auth.Load()
+	if loadErr != nil {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("not logged in"))
-		fmt.Printf("%s %s\n", labelStyle.Render("token:  "), errorStyle.Render("no token at "+tokenPath))
+		fmt.Printf("%s %s\n", labelStyle.Render("token:  "), errorStyle.Render("no token at ~/.void-code/token (or ~/.claudev/token)"))
 		return nil
 	}
 
-	token := strings.TrimSpace(string(tokenBytes))
+	token = strings.TrimSpace(token)
 	if token == "" {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token file empty"))
 		return nil
+	}
+
+	tokenLabel := "~/.void-code/token"
+	if migrated {
+		tokenLabel = "~/.claudev/token (legacy cv — will migrate on next spawn)"
 	}
 
 	// Call /v1/auth/me to get identity.
@@ -67,7 +67,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		// Token present but /me failed — show partial info without failing hard.
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token present but verify failed: "+err.Error()))
-		fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenPath))
+		fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenLabel))
 		return nil
 	}
 
@@ -82,7 +82,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 
 	fmt.Printf("%s %s\n", labelStyle.Render("auth:   "),
 		valueStyle.Render("logged in as "+displayName))
-	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenPath))
+	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenLabel))
 	return nil
 }
 
