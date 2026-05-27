@@ -85,6 +85,12 @@ func runLoginInteractive() error {
 	return runLogin(nil, nil)
 }
 
+// otpExhaustedError returns the error shown after all OTP attempts are exhausted.
+// Extracted so it can be tested independently of the full TUI login flow.
+func otpExhaustedError() error {
+	return fmt.Errorf("wrong or expired code — run vc login again to request a new code.\nIf you didn't receive a code, this email may not be registered — contact the operator.")
+}
+
 // ─── login picker ─────────────────────────────────────────────────────────────
 
 type pickerChoice int
@@ -243,7 +249,7 @@ func runEmailFlow(cfg config.Config) error {
 					fmt.Printf("Wrong code — %d attempt(s) left. Try again.\n", remaining)
 					continue
 				}
-				return fmt.Errorf("wrong or expired code — run vc login again to request a new code")
+				return otpExhaustedError()
 			}
 			return fmt.Errorf("OTP verify failed: %w", err)
 		}

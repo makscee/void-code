@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,25 @@ func TestNewPickerModelHasThreeChoices(t *testing.T) {
 	m := newPickerModel()
 	if len(m.choices) != 3 {
 		t.Errorf("picker choices = %d, want 3", len(m.choices))
+	}
+}
+
+// TestEmailOTPExhaustedMessageContainsHint verifies that after all 3 OTP attempts
+// fail, the error includes a hint about the email possibly not being registered.
+// This exercises path (b) from the server-side notes: vc-side messaging improvement.
+func TestEmailOTPExhaustedMessageContainsHint(t *testing.T) {
+	err := otpExhaustedError()
+	if err == nil {
+		t.Fatal("otpExhaustedError() returned nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "may not be registered") {
+		t.Errorf("error = %q, want it to contain 'may not be registered'", msg)
+	}
+	if !strings.Contains(msg, "contact the operator") {
+		t.Errorf("error = %q, want it to contain 'contact the operator'", msg)
+	}
+	if !strings.Contains(msg, "vc login") {
+		t.Errorf("error = %q, want it to mention 'vc login'", msg)
 	}
 }

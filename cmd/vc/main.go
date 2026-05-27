@@ -126,6 +126,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// For now read the raw file if present; VCD-3 replaces with proper store.
 	token := loadTokenStub()
 
+	// Pre-spawn auth gate: verify token before handing control to claude.
+	// A missing or rejected token must surface a friendly message here — not a
+	// raw 401 error buried inside the claude UI.
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if err := authGate(token, cfg.AuthHost, httpClient); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+
 	caPath, err := resolveCA(cfg)
 	if err != nil {
 		// Non-fatal: warn and continue; claude may still work without proxy CA.
@@ -147,6 +156,32 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 		return err
 	}
+	return nil
+}
+
+// authGate validates the session token before spawning claude.
+//
+// Rules:
+//   - token absent → ErrNotLoggedIn-style message
+//   - token present, auth server returns 401 → rejected message
+//   - token present, network/server error → pass through (don't block on transient blip)
+//
+// Returns a non-nil error containing a user-readable message when the spawn
+// must be blocked.  Returns nil when it is safe to spawn claude.
+func authGate(token, authHost string, httpClient *http.Client) error {
+	if token == "" {
+		return fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
+	}
+
+	_, err := auth.FetchMe(authHost, token, httpClient)
+	if err == nil {
+		// Token valid — proceed.
+		return nil
+	}
+	if err == auth.ErrNotLoggedIn {
+		return fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+	}
+	// Network / server error — don't block; warn but proceed.
 	return nil
 }
 
