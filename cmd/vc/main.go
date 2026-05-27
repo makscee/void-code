@@ -74,7 +74,10 @@ func main() {
 // resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
 // Never fatal — on any error it returns a graceful degraded state.
 func resolveAuthState() welcome.AuthState {
-	token := loadTokenStub()
+	token, err := auth.LoadAndMigrate()
+	if err != nil {
+		return welcome.AuthState{LoggedIn: false}
+	}
 	if token == "" {
 		return welcome.AuthState{LoggedIn: false}
 	}
@@ -122,9 +125,9 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 func runSpawn(cmd *cobra.Command, args []string) error {
 	cfg := config.OSResolve()
 
-	// TODO(VCD-3): load token from ~/.void-code/token via tokenstore.Load.
-	// For now read the raw file if present; VCD-3 replaces with proper store.
-	token := loadTokenStub()
+	// Load token with legacy cv fallback: tries ~/.void-code/token first,
+	// then falls back to ~/.claudev/token and silently migrates on success.
+	token, _ := auth.LoadAndMigrate()
 
 	// Pre-spawn auth gate: verify token before handing control to claude.
 	// A missing or rejected token must surface a friendly message here — not a
@@ -239,27 +242,6 @@ func writeFallbackCA(cacheDir string) (string, error) {
 		return "", fmt.Errorf("relay: write fallback CA: %w", err)
 	}
 	return dest, nil
-}
-
-// loadTokenStub reads ~/.void-code/token if it exists and returns the trimmed
-// content.  Returns empty string when absent.  VCD-3 replaces this with
-// tokenstore.Load.
-func loadTokenStub() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".void-code", "token"))
-	if err != nil {
-		return ""
-	}
-	// Trim trailing whitespace / newlines.
-	for i := len(data) - 1; i >= 0; i-- {
-		if data[i] != '\n' && data[i] != '\r' && data[i] != ' ' && data[i] != '\t' {
-			return string(data[:i+1])
-		}
-	}
-	return ""
 }
 
 // isNotFound reports whether err indicates the binary was not found in PATH.

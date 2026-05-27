@@ -23,5 +23,9 @@ func runLogout(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("logout failed: %w", err)
 	}
 	fmt.Println("Logged out — credentials removed.")
+	// Warn if the legacy cv token is still present so the user knows cv is still active.
+	if auth.LegacyTokenExists() {
+		fmt.Println("Note: cv login still active (~/.claudev/token). Run `claudev logout` if you want to clear that too.")
+	}
 	return nil
 }
