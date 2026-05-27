@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 var (
 	loginDeviceFlag bool
 	loginEmailFlag  bool
+	loginCodeFlag   string
 )
 
 var loginCmd = &cobra.Command{
@@ -33,6 +35,9 @@ Email OTP (--email): send a 6-digit code to your email address.
 Pairing code (--device): opens a browser URL + polls until approved.
   vc login --device
 
+Operator code (--code AAAA-BBBB): redeem a one-shot code minted by operator.
+  vc login --code AAAA-BBBB
+
 Credentials are written to ~/.void-code/token (mode 0600).`,
 	RunE: runLogin,
 }
@@ -40,12 +45,16 @@ Credentials are written to ~/.void-code/token (mode 0600).`,
 func init() {
 	loginCmd.Flags().BoolVar(&loginDeviceFlag, "device", false, "Use pairing-code flow instead of picker")
 	loginCmd.Flags().BoolVar(&loginEmailFlag, "email", false, "Use email OTP flow instead of picker")
+	loginCmd.Flags().StringVar(&loginCodeFlag, "code", "", "Redeem an operator-issued access code (format AAAA-BBBB)")
 	rootCmd.AddCommand(loginCmd)
 }
 
 func runLogin(_ *cobra.Command, _ []string) error {
 	cfg := config.OSResolve()
 
+	if loginCodeFlag != "" {
+		return runCodeExchange(cfg, loginCodeFlag)
+	}
 	if loginDeviceFlag {
 		return runDeviceFlow(cfg)
 	}
@@ -63,6 +72,8 @@ func runLogin(_ *cobra.Command, _ []string) error {
 		return runEmailFlow(cfg)
 	case pickerDevice:
 		return runDeviceFlow(cfg)
+	case pickerCodeExch:
+		return runCodeExchangePrompt(cfg)
 	default:
 		return fmt.Errorf("login cancelled")
 	}
@@ -79,9 +90,10 @@ func runLoginInteractive() error {
 type pickerChoice int
 
 const (
-	pickerNone   pickerChoice = iota
-	pickerEmail               // "Email (one-time code)"
-	pickerDevice              // "Pairing code (from another device)"
+	pickerNone     pickerChoice = iota
+	pickerEmail                 // "Email (one-time code)"
+	pickerDevice                // "Pairing code (from another device)"
+	pickerCodeExch              // "Operator code (paste AAAA-BBBB)"
 )
 
 var (
@@ -115,6 +127,7 @@ func newPickerModel() pickerModel {
 		choices: []string{
 			"Email (one-time code)",
 			"Pairing code (from another device)",
+			"Operator code (paste AAAA-BBBB)",
 		},
 		cursor: 0,
 	}
@@ -145,6 +158,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 1
 			m.selected = pickerDevice
 			return m, tea.Quit
+		case "3":
+			m.cursor = 2
+			m.selected = pickerCodeExch
+			return m, tea.Quit
 		case "enter", " ":
 			m.selected = pickerChoice(m.cursor + 1)
 			return m, tea.Quit
@@ -174,14 +191,14 @@ func (m pickerModel) View() string {
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(pickerHintStyle.Render("↑/↓ or 1/2 to select · enter to confirm · q to cancel"))
+	sb.WriteString(pickerHintStyle.Render("↑/↓ or 1/2/3 to select · enter to confirm · q to cancel"))
 	sb.WriteString("\n")
 	return sb.String()
 }
 
 func runLoginPicker() (pickerChoice, error) {
 	m := newPickerModel()
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {
 		// Non-TTY or error: fall back to device flow.
@@ -204,12 +221,12 @@ func runEmailFlow(cfg config.Config) error {
 		return err
 	}
 
-	fmt.Printf("\nSending a 6-digit code to %s...\n", email)
+	fmt.Fprintf(os.Stderr, "\nSending a 6-digit code to %s...\n", email)
 	_, err = auth.EmailStart(cfg.AuthHost, email, httpClient)
 	if err != nil {
 		return fmt.Errorf("sending OTP: %w", err)
 	}
-	fmt.Println("Code sent. Check your email.")
+	fmt.Fprintln(os.Stderr, "Code sent. Check your email.")
 
 	// Retry loop: up to 3 attempts to enter the correct OTP.
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -244,12 +261,12 @@ func runEmailFlow(cfg config.Config) error {
 // promptEmail reads an email address from stdin using a bubbletea model.
 func promptEmail() (string, error) {
 	m := newEmailInputModel()
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {
 		// Non-TTY fallback: use fmt.Scan.
 		var email string
-		fmt.Print("Email: ")
+		fmt.Fprint(os.Stderr, "Email: ")
 		if _, err := fmt.Scan(&email); err != nil {
 			return "", fmt.Errorf("reading email: %w", err)
 		}
@@ -265,12 +282,12 @@ func promptEmail() (string, error) {
 // promptOTP reads a 6-digit OTP from stdin using a bubbletea model.
 func promptOTP() (string, error) {
 	m := newOTPInputModel()
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {
 		// Non-TTY fallback: use fmt.Scan.
 		var code string
-		fmt.Print("Code: ")
+		fmt.Fprint(os.Stderr, "Code: ")
 		if _, err := fmt.Scan(&code); err != nil {
 			return "", fmt.Errorf("reading code: %w", err)
 		}
@@ -466,5 +483,96 @@ func runDeviceFlow(cfg config.Config) error {
 	return fmt.Errorf("pairing flow timed out — run vc login again")
 }
 
-// Ensure runCodeExchange is referenced (used by future access-code restoration).
-var _ = runCodeExchange
+// runCodeExchangePrompt is the interactive picker path for the operator-code
+// option: it prompts the user to paste a code, then delegates to runCodeExchange.
+func runCodeExchangePrompt(cfg config.Config) error {
+	code, err := promptCode()
+	if err != nil {
+		return err
+	}
+	return runCodeExchange(cfg, code)
+}
+
+// ─── operator-code input model ───────────────────────────────────────────────
+
+type codeInputModel struct {
+	value     string
+	cancelled bool
+}
+
+func newCodeInputModel() codeInputModel { return codeInputModel{} }
+
+func (m codeInputModel) Init() tea.Cmd { return nil }
+
+func (m codeInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.cancelled = true
+			return m, tea.Quit
+		case "enter":
+			if len(m.value) == 9 { // AAAA-BBBB
+				return m, tea.Quit
+			}
+		case "backspace", "ctrl+h":
+			if len(m.value) > 0 {
+				m.value = m.value[:len(m.value)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				for _, r := range msg.Runes {
+					ch := string(r)
+					// Accept A-Z, 2-9, and hyphen (auto-inserted position 4).
+					isAlphaNum := (r >= 'A' && r <= 'Z') || (r >= '2' && r <= '9') ||
+						(r >= 'a' && r <= 'z')
+					if isAlphaNum && len(m.value) < 9 {
+						upper := strings.ToUpper(ch)
+						// Auto-insert hyphen after 4th char.
+						if len(m.value) == 4 && upper != "-" {
+							m.value += "-"
+						}
+						m.value += upper
+					} else if ch == "-" && len(m.value) == 4 {
+						m.value += "-"
+					}
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m codeInputModel) View() string {
+	var sb strings.Builder
+	sb.WriteString(inputLabelStyle.Render("Access code (AAAA-BBBB): "))
+	sb.WriteString(inputValueStyle.Render(m.value))
+	if len(m.value) < 9 {
+		sb.WriteString(inputCursorStyle.Render("█"))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(inputLabelStyle.Render("(type the 8-character code and press enter)"))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// promptCode reads an operator access code from stdin using a bubbletea model.
+func promptCode() (string, error) {
+	m := newCodeInputModel()
+	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
+	result, err := p.Run()
+	if err != nil {
+		// Non-TTY fallback: use fmt.Scan.
+		var code string
+		fmt.Fprint(os.Stderr, "Access code (AAAA-BBBB): ")
+		if _, err := fmt.Scan(&code); err != nil {
+			return "", fmt.Errorf("reading code: %w", err)
+		}
+		return strings.TrimSpace(code), nil
+	}
+	final, ok := result.(codeInputModel)
+	if !ok || final.cancelled {
+		return "", fmt.Errorf("login cancelled")
+	}
+	return final.value, nil
+}
