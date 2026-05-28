@@ -36,6 +36,16 @@ Sub-commands:
 
 Run "vc <command> --help" for sub-command details.`,
 		brandStyle.Render("void-code")),
+	Example: `  # Launch claude normally
+  vc
+
+  # Pass flags directly to claude using -- (double-dash terminator)
+  vc -- --dangerously-skip-permissions
+  vc -- --debug --verbose
+
+  # vc flags before --, claude flags after
+  vc --version
+  vc -- --help`,
 	// SilenceUsage hides the usage block on runtime errors — less noise for users.
 	SilenceUsage: true,
 	// When no sub-command is matched, RunE (in main.go) handles the spawn.
