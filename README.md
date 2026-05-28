@@ -25,6 +25,17 @@ vc update             # self-update to latest release
 vc --version          # print version
 ```
 
+## Passing flags to claude
+
+Use `--` (double-dash) to forward any flag directly to `claude`:
+
+```bash
+vc -- --dangerously-skip-permissions
+vc -- --debug --verbose
+```
+
+Any flag that `claude` accepts can be passed this way. Flags before `--` are handled by `vc`; everything after `--` is forwarded verbatim.
+
 ## Environment overrides
 
 | Variable | Default | Purpose |
