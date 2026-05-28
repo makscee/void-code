@@ -53,6 +53,11 @@ func CheckAndUpdate() string {
 		// npm not found or list failed — can't update, silent skip.
 		return ""
 	}
+	if installed == "" {
+		// Not installed via npm global (may be installed via standalone/other method).
+		// Don't force-install — only update if already managed by npm.
+		return ""
+	}
 
 	latest, err := latestVersion()
 	if err != nil {

@@ -136,3 +136,15 @@ func TestIsHardError(t *testing.T) {
 type stubError struct{ msg string }
 
 func (e *stubError) Error() string { return e.msg }
+
+// --- compareVersions edge cases ---
+
+func TestCompareVersionsEmpty(t *testing.T) {
+	// Empty string should be treated as 0.0.0
+	if compareVersions("", "1.0.0") >= 0 {
+		t.Error("empty version should be less than 1.0.0")
+	}
+	if compareVersions("1.0.0", "") <= 0 {
+		t.Error("1.0.0 should be greater than empty")
+	}
+}
