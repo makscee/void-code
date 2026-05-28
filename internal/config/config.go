@@ -203,6 +203,16 @@ func UpdateCacheFilePath() (string, error) {
 	return filepath.Join(dir, "last-update-check"), nil
 }
 
+// CCUpdateCacheFilePath returns the sentinel path for the claude-code
+// auto-update TTL check (~/.void-code/last-cc-update-check).
+func CCUpdateCacheFilePath() (string, error) {
+	dir, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "last-cc-update-check"), nil
+}
+
 // OSResolveWithFile resolves Config from env but also reads the config file for
 // keys absent from env (e.g. lang set by install.sh).
 func OSResolveWithFile() Config {

@@ -151,31 +151,33 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           SEMVER="${VERSION#v}"
+          # Artifact paths include bin/ prefix because binaries live at /vc/bin/<name>
+          # and DefaultReleaseBaseURL = https://auth.makscee.ru/vc (VCD-33).
           cat > void-auth/public/vc/version.json <<EOF
           {
             "version": "${SEMVER}",
             "tag": "${VERSION}",
             "artifacts": {
-              "darwin/amd64": "vc-darwin-amd64",
-              "darwin/arm64": "vc-darwin-arm64",
-              "linux/amd64": "vc-linux-amd64",
-              "linux/arm64": "vc-linux-arm64",
-              "windows/amd64": "vc-windows-amd64.exe",
-              "windows/arm64": "vc-windows-arm64.exe",
-              "darwin-amd64": "vc-darwin-amd64",
-              "darwin-arm64": "vc-darwin-arm64",
-              "linux-amd64": "vc-linux-amd64",
-              "linux-arm64": "vc-linux-arm64",
-              "windows-amd64": "vc-windows-amd64.exe",
-              "windows-arm64": "vc-windows-arm64.exe"
+              "darwin/amd64": "bin/vc-darwin-amd64",
+              "darwin/arm64": "bin/vc-darwin-arm64",
+              "linux/amd64": "bin/vc-linux-amd64",
+              "linux/arm64": "bin/vc-linux-arm64",
+              "windows/amd64": "bin/vc-windows-amd64.exe",
+              "windows/arm64": "bin/vc-windows-arm64.exe",
+              "darwin-amd64": "bin/vc-darwin-amd64",
+              "darwin-arm64": "bin/vc-darwin-arm64",
+              "linux-amd64": "bin/vc-linux-amd64",
+              "linux-arm64": "bin/vc-linux-arm64",
+              "windows-amd64": "bin/vc-windows-amd64.exe",
+              "windows-arm64": "bin/vc-windows-arm64.exe"
             },
             "files": {
-              "darwin-amd64": "vc-darwin-amd64",
-              "darwin-arm64": "vc-darwin-arm64",
-              "linux-amd64": "vc-linux-amd64",
-              "linux-arm64": "vc-linux-arm64",
-              "windows-amd64": "vc-windows-amd64.exe",
-              "windows-arm64": "vc-windows-arm64.exe"
+              "darwin-amd64": "bin/vc-darwin-amd64",
+              "darwin-arm64": "bin/vc-darwin-arm64",
+              "linux-amd64": "bin/vc-linux-amd64",
+              "linux-arm64": "bin/vc-linux-arm64",
+              "windows-amd64": "bin/vc-windows-amd64.exe",
+              "windows-arm64": "bin/vc-windows-arm64.exe"
             }
           }
           EOF

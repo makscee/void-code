@@ -4,14 +4,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/makscee/void-code/internal/ccupdate"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
 )
 
-const updateCheckTTL = time.Hour
+const (
+	defaultUpdateCheckTTL = time.Hour
+	envUpdateCheckTTL     = "VC_UPDATE_CHECK_TTL_S"
+)
+
+// updateCheckTTL returns the configured TTL for update-check caches.
+// VC_UPDATE_CHECK_TTL_S overrides the default 1h for both vc and cc checks.
+func updateCheckTTL() time.Duration {
+	if s := os.Getenv(envUpdateCheckTTL); s != "" {
+		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return defaultUpdateCheckTTL
+}
 
 // checkCacheFresh returns true if the update-check cache sentinel was touched
 // within the TTL window, meaning we should skip this probe.
@@ -24,7 +40,7 @@ func checkCacheFresh() bool {
 	if err != nil {
 		return false
 	}
-	return time.Since(info.ModTime()) < updateCheckTTL
+	return time.Since(info.ModTime()) < updateCheckTTL()
 }
 
 // touchUpdateCache updates the mtime of the update-check sentinel file.
@@ -136,4 +152,25 @@ func runInstallAndRestart(latest string) string {
 	}
 	// Unreachable on unix (syscall.Exec replaces process).
 	return ""
+}
+
+// launchCCUpdateCheck checks the installed @anthropic-ai/claude-code version
+// against npm registry and installs the latest if stale.  It prints the result
+// directly to stdout (e.g. "claude-code: v1.x → v1.y") so the user sees it
+// before claude starts.  Called from runSpawn after vc self-update completes.
+//
+// The check is skipped when the TTL sentinel is fresh.
+// Network failures are silent; only hard npm errors surface a one-liner.
+func launchCCUpdateCheck() {
+	// Wire the cache path so ccupdate uses the same cache dir.
+	if ccupdate.CachePath == "" {
+		if p, err := config.CCUpdateCacheFilePath(); err == nil {
+			ccupdate.CachePath = p
+		}
+	}
+
+	msg := ccupdate.CheckAndUpdate()
+	if msg != "" {
+		fmt.Println(msg)
+	}
 }
