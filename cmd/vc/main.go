@@ -138,6 +138,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
+	// Check and update @anthropic-ai/claude-code before spawning.
+	// This prevents claude-code's own auto-update from failing inside the proxy.
+	// Silent on network failures; only prints on actual update or hard error.
+	launchCCUpdateCheck()
+
 	caPath, err := resolveCA(cfg)
 	if err != nil {
 		// Non-fatal: warn and continue; claude may still work without proxy CA.

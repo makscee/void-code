@@ -430,3 +430,65 @@ func TestDarwinArm64Regression(t *testing.T) {
 		t.Fatal("darwin-arm64 regression: expected update to succeed")
 	}
 }
+
+// TestCheckUpdateBinPrefixArtifacts verifies that artifact paths with a "bin/"
+// prefix (as served from auth.makscee.ru/vc) resolve correctly.
+// With baseURL="https://host/vc", artifact="bin/vc-darwin-arm64",
+// the binary URL becomes "https://host/vc/bin/vc-darwin-arm64" which is
+// where void-auth serves the file.
+func TestCheckUpdateBinPrefixArtifacts(t *testing.T) {
+	tmpDir := t.TempDir()
+	binaryPath := filepath.Join(tmpDir, "vc")
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	newBinaryContent := []byte("new-bin-via-bin-prefix")
+
+	slashKey := update.PlatformKey() // e.g. "darwin/arm64"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "version.json"):
+			w.Header().Set("Content-Type", "application/json")
+			// Artifact paths with bin/ prefix — mirrors void-auth layout.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version": "v0.2.0",
+				"artifacts": map[string]string{
+					slashKey: "bin/vc-" + runtime.GOOS + "-" + runtime.GOARCH,
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/bin/"):
+			_, _ = w.Write(newBinaryContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current:    "v0.1.0",
+		BaseURL:    srv.URL,
+		BinaryPath: binaryPath,
+	})
+	if err != nil {
+		t.Fatalf("bin-prefix artifact: unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("bin-prefix artifact: expected update to succeed")
+	}
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(newBinaryContent) {
+		t.Errorf("binary content = %q; want %q", string(got), string(newBinaryContent))
+	}
+}
+
+// TestDefaultReleaseBaseURL verifies the default URL points to auth.makscee.ru/vc.
+func TestDefaultReleaseBaseURL(t *testing.T) {
+	const want = "https://auth.makscee.ru/vc"
+	if update.DefaultReleaseBaseURL != want {
+		t.Errorf("DefaultReleaseBaseURL = %q; want %q", update.DefaultReleaseBaseURL, want)
+	}
+}

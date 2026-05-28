@@ -19,10 +19,12 @@ import (
 )
 
 // DefaultVersionURL is the canonical version.json location for vc releases.
-const DefaultVersionURL = "https://github.com/makscee/void-code/releases/latest/download/version.json"
+// Served from void-auth alongside the binary downloads.
+const DefaultVersionURL = "https://auth.makscee.ru/vc/version.json"
 
-// DefaultReleaseBaseURL is the base URL for downloading release binaries.
-const DefaultReleaseBaseURL = "https://github.com/makscee/void-code/releases/latest/download"
+// DefaultReleaseBaseURL is the base URL for vc release artifacts.
+// version.json is at <base>/version.json; binaries at <base>/<artifact-path>.
+const DefaultReleaseBaseURL = "https://auth.makscee.ru/vc"
 
 // VersionJSON is the schema for the version.json file published alongside
 // each GH Release.
