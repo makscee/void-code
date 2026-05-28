@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/ccjson"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/relay"
@@ -151,6 +152,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	env := relay.BuildEnv(os.Environ(), cfg.RelayHost, token, caPath)
+
+	// Pre-seed ~/.claude.json if absent so Claude Code skips first-run onboarding.
+	if home, err := os.UserHomeDir(); err == nil {
+		if err := ccjson.EnsureDefaults(filepath.Join(home, ".claude.json")); err != nil {
+			fmt.Fprintf(os.Stderr, "vc: warning: cannot pre-seed ~/.claude.json: %v\n", err)
+		}
+	}
 
 	if err := harness.Spawn(context.Background(), "claude", args, env); err != nil {
 		// If claude is not installed, print a friendly message.
