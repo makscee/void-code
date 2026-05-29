@@ -197,11 +197,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// VCD-49 budget gate: only when reached + budget fields present (degrade-safe).
+	// VCD-49 budget gate: only when reached + pct present (degrade-safe).
 	// Hard-block at ≥100%; soft warn (print, still spawn) at 80–99%.
 	// pct==nil = no budget / server absent → proceed without warning.
 	if reached && me.Pct != nil {
-		if d := budgetGate(me.Pct, me.BudgetUsd); d.Block {
+		if d := budgetGate(me.Pct, nil); d.Block {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 			os.Exit(1)
 		} else if d.Warn {
@@ -315,11 +315,9 @@ func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
 	p := *pct
 	switch {
 	case p >= 100:
-		msg := "Monthly budget reached — message @makscee on Telegram to top up."
-		if budgetUsd != nil {
-			msg = fmt.Sprintf("Monthly budget reached ($%.2f). Message @makscee on Telegram to top up.", *budgetUsd)
-		}
-		return subscriptionDecision{Block: true, Message: msg}
+		// Operator constraint (2026-05-30): user-facing copy — percentages only, no dollar values.
+		_ = budgetUsd // dollar amount intentionally not shown to user
+		return subscriptionDecision{Block: true, Message: "Monthly budget reached — message @makscee on Telegram to top up."}
 	case p >= 80:
 		return subscriptionDecision{
 			Warn:    true,

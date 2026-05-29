@@ -4,22 +4,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestBudgetGate_Integration_100Pct(t *testing.T) {
-	// Simulate what authGate + budgetGate do when pct=100.
+	// VCD-49 contract (2026-05-30): server returns only { pct, reset_at } — no dollar fields.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"userId":       "user-1",
-			"email":        "u@x.com",
-			"subDaysLeft":  14,
-			"usedUsd":      45.0,
-			"budgetUsd":    45.0,
-			"remainingUsd": 0.0,
-			"pct":          100.0,
-			"resetAt":      "2026-06-01T00:00:00.000Z",
+			"userId":      "user-1",
+			"email":       "u@x.com",
+			"subDaysLeft": 14,
+			"pct":         100.0,
+			"resetAt":     "2026-06-01T00:00:00.000Z",
 		})
 	}))
 	defer srv.Close()
@@ -38,9 +36,13 @@ func TestBudgetGate_Integration_100Pct(t *testing.T) {
 		t.Fatalf("Pct = %f, want 100.0", *me.Pct)
 	}
 
-	d := budgetGate(me.Pct, me.BudgetUsd)
+	d := budgetGate(me.Pct, nil)
 	if !d.Block {
 		t.Error("budgetGate must block at pct=100")
+	}
+	// Operator constraint 2026-05-30: block message must NOT contain dollar sign.
+	if strings.Contains(d.Message, "$") {
+		t.Errorf("block message %q must NOT contain '$' (percentages only)", d.Message)
 	}
 }
 
@@ -48,14 +50,11 @@ func TestBudgetGate_Integration_83Pct(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"userId":       "user-1",
-			"email":        "u@x.com",
-			"subDaysLeft":  14,
-			"usedUsd":      37.5,
-			"budgetUsd":    45.0,
-			"remainingUsd": 7.5,
-			"pct":          83.3,
-			"resetAt":      "2026-06-01T00:00:00.000Z",
+			"userId":      "user-1",
+			"email":       "u@x.com",
+			"subDaysLeft": 14,
+			"pct":         83.3,
+			"resetAt":     "2026-06-01T00:00:00.000Z",
 		})
 	}))
 	defer srv.Close()
@@ -65,17 +64,21 @@ func TestBudgetGate_Integration_83Pct(t *testing.T) {
 		t.Fatalf("authGate: err=%v reached=%v pct=%v", err, reached, me.Pct)
 	}
 
-	d := budgetGate(me.Pct, me.BudgetUsd)
+	d := budgetGate(me.Pct, nil)
 	if d.Block {
 		t.Error("budgetGate must NOT block at pct=83")
 	}
 	if !d.Warn {
 		t.Error("budgetGate must warn at pct=83")
 	}
+	// Operator constraint 2026-05-30: warn message must NOT contain dollar sign.
+	if strings.Contains(d.Message, "$") {
+		t.Errorf("warn message %q must NOT contain '$' (percentages only)", d.Message)
+	}
 }
 
 func TestBudgetGate_Integration_NoBudget(t *testing.T) {
-	// Server returns no budget fields (older void-auth) → degrade gracefully.
+	// Server returns no budget fields (older void-auth or no budget configured) → degrade gracefully.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -95,7 +98,7 @@ func TestBudgetGate_Integration_NoBudget(t *testing.T) {
 	if me.Pct != nil {
 		t.Fatalf("Pct must be nil when absent, got %v", *me.Pct)
 	}
-	d := budgetGate(me.Pct, me.BudgetUsd)
+	d := budgetGate(me.Pct, nil)
 	if d.Block || d.Warn {
 		t.Error("budgetGate must be clean when pct nil (no budget)")
 	}

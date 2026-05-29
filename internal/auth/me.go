@@ -15,11 +15,10 @@ type MeResult struct {
 
 	// VCD-49 budget fields — nil when the server does not return budget data
 	// (older void-auth or budget not configured). Never block on nil values.
-	UsedUsd      *float64 // month-to-date spend in USD
-	BudgetUsd    *float64 // per-user monthly budget (0 = no cap)
-	RemainingUsd *float64 // max(0, budget-used); nil when budget=0 (no cap)
-	Pct          *float64 // used/budget*100; nil when budget=0 (no cap)
-	ResetAt      string   // ISO-8601 first day of next calendar month, UTC
+	// Contract (2026-05-30): server returns only { pct, reset_at } — dollar fields
+	// (UsedUsd, BudgetUsd, RemainingUsd) are NOT exposed to vc for privacy.
+	Pct     *float64 // used/budget*100; nil when budget=0 (no cap) or no budget set
+	ResetAt string   // ISO-8601 first day of next calendar month, UTC
 }
 
 // FetchMe calls GET <authHost>/v1/vc/me with the supplied bearer token.
@@ -52,9 +51,6 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		UserID      string   `json:"userId"`
 		Email       string   `json:"email"`
 		SubDaysLeft int      `json:"subDaysLeft"`
-		UsedUsd     *float64 `json:"usedUsd"`
-		BudgetUsd   *float64 `json:"budgetUsd"`
-		Remaining   *float64 `json:"remainingUsd"`
 		Pct         *float64 `json:"pct"`
 		ResetAt     string   `json:"resetAt"`
 	}
@@ -62,13 +58,10 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
 	}
 	return MeResult{
-		UserID:       r.UserID,
-		Email:        r.Email,
-		SubDaysLeft:  r.SubDaysLeft,
-		UsedUsd:      r.UsedUsd,
-		BudgetUsd:    r.BudgetUsd,
-		RemainingUsd: r.Remaining,
-		Pct:          r.Pct,
-		ResetAt:      r.ResetAt,
+		UserID:      r.UserID,
+		Email:       r.Email,
+		SubDaysLeft: r.SubDaysLeft,
+		Pct:         r.Pct,
+		ResetAt:     r.ResetAt,
 	}, nil
 }

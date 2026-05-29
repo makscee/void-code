@@ -58,21 +58,31 @@ func TestBudgetGate_BlockAt100(t *testing.T) {
 	}
 }
 
-func TestBudgetGate_BlockMessageIncludesBudgetUsd(t *testing.T) {
+func TestBudgetGate_BlockMessageNoDollarSign(t *testing.T) {
+	// Operator constraint 2026-05-30: user-facing budget copy must NEVER show dollar values.
 	budget := 45.0
 	d := budgetGate(ptr(100.0), &budget)
-	if !strings.Contains(d.Message, "45") {
-		t.Errorf("block message %q must include budget amount", d.Message)
+	if strings.Contains(d.Message, "$") {
+		t.Errorf("block message %q must NOT contain dollar sign (percentages only)", d.Message)
+	}
+	if !strings.Contains(d.Message, "@makscee") {
+		t.Errorf("block message %q must name @makscee", d.Message)
+	}
+	if !strings.Contains(d.Message, "reached") {
+		t.Errorf("block message %q must say 'reached'", d.Message)
 	}
 }
 
 func TestBudgetGate_BlockWithNilBudgetUsd(t *testing.T) {
-	// budgetUsd nil → generic copy, no panic.
+	// budgetUsd nil → generic copy, no panic, no dollar sign.
 	d := budgetGate(ptr(100.0), nil)
 	if !d.Block {
 		t.Error("must block even when budgetUsd nil")
 	}
 	if !strings.Contains(d.Message, "@makscee") {
 		t.Errorf("block message %q must name @makscee", d.Message)
+	}
+	if strings.Contains(d.Message, "$") {
+		t.Errorf("block message %q must NOT contain dollar sign", d.Message)
 	}
 }

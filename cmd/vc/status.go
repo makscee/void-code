@@ -84,15 +84,11 @@ func runStatus(_ *cobra.Command, _ []string) error {
 		valueStyle.Render("logged in as "+displayName))
 	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenLabel))
 
-	// VCD-49: fetch budget info from /v1/vc/me (budget fields added by void-auth Task 5 Step 1a).
-	// Degrade-safe: if FetchMe fails or budget fields absent, skip the budget line silently.
+	// VCD-49: fetch budget info from /v1/vc/me (pct + reset_at only — no dollar values).
+	// Degrade-safe: if FetchMe fails or pct absent/nil, skip the budget line silently.
 	vcMeClient := &http.Client{Timeout: 5 * time.Second}
-	if me, err := auth.FetchMe(cfg.AuthHost, token, vcMeClient); err == nil && me.UsedUsd != nil && me.BudgetUsd != nil {
-		remaining := 0.0
-		if me.RemainingUsd != nil {
-			remaining = *me.RemainingUsd
-		}
-		line := formatBudgetLine(*me.UsedUsd, *me.BudgetUsd, remaining, me.ResetAt)
+	if me, err := auth.FetchMe(cfg.AuthHost, token, vcMeClient); err == nil && me.Pct != nil {
+		line := formatBudgetLine(*me.Pct, me.ResetAt)
 		fmt.Printf("%s %s\n", labelStyle.Render("budget: "), valueStyle.Render(line))
 	}
 
@@ -100,17 +96,40 @@ func runStatus(_ *cobra.Command, _ []string) error {
 }
 
 // formatBudgetLine formats the budget status line shown in `vc status`.
-// remaining=-1 signals "no cap" (budget_usd=0).
-func formatBudgetLine(usedUsd, budgetUsd, remainingUsd float64, resetAt string) string {
-	if budgetUsd == 0 {
-		return fmt.Sprintf("$%.2f used — no budget cap", usedUsd)
+// Operator constraint (2026-05-30): percentages only — NO dollar values.
+// Format: "N% used — resets Jun 1" (or just "N% used" when resetAt absent).
+func formatBudgetLine(pct float64, resetAt string) string {
+	base := fmt.Sprintf("%.0f%% used", pct)
+	if resetAt == "" {
+		return base
 	}
-	// Parse reset date to display only the date part (YYYY-MM-DD).
-	resetStr := resetAt
-	if len(resetAt) >= 10 {
-		resetStr = resetAt[:10]
+	// Parse reset date to produce "Mon D" (e.g. "Jun 1").
+	resetStr := fmtResetDate(resetAt)
+	return fmt.Sprintf("%s — resets %s", base, resetStr)
+}
+
+// fmtResetDate parses an ISO-8601 date string and returns "Mon D" (e.g. "Jun 1").
+// Falls back to the first 10 chars (YYYY-MM-DD) on parse error.
+func fmtResetDate(resetAt string) string {
+	t, err := time.Parse(time.RFC3339, resetAt)
+	if err != nil {
+		// Try date-only fallback.
+		t, err = time.Parse("2006-01-02", resetAt[:min(10, len(resetAt))])
+		if err != nil {
+			if len(resetAt) >= 10 {
+				return resetAt[:10]
+			}
+			return resetAt
+		}
 	}
-	return fmt.Sprintf("$%.2f / $%.2f (remaining $%.2f) — resets %s", usedUsd, budgetUsd, remainingUsd, resetStr)
+	return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // fetchMe calls GET /v1/auth/me and returns the user's slug + email.

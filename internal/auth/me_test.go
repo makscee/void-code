@@ -90,21 +90,17 @@ func TestFetchMe_ServerError(t *testing.T) {
 // VCD-49: budget fields decoded from /v1/vc/me response.
 
 func TestFetchMe_BudgetFields(t *testing.T) {
-	used := 12.34
-	budget := 45.0
-	remaining := 32.66
+	// VCD-49 contract (2026-05-30): server returns only { pct, reset_at, status }.
+	// Dollar fields (usedUsd, budgetUsd, remainingUsd) are NOT returned for privacy.
 	pct := 27.4
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"userId":       "user-1",
-			"email":        "u@example.com",
-			"subDaysLeft":  10,
-			"usedUsd":      used,
-			"budgetUsd":    budget,
-			"remainingUsd": remaining,
-			"pct":          pct,
-			"resetAt":      "2026-06-01T00:00:00.000Z",
+			"userId":      "user-1",
+			"email":       "u@example.com",
+			"subDaysLeft": 10,
+			"pct":         pct,
+			"resetAt":     "2026-06-01T00:00:00.000Z",
 		})
 	}))
 	defer srv.Close()
@@ -118,15 +114,6 @@ func TestFetchMe_BudgetFields(t *testing.T) {
 	}
 	if *res.Pct != pct {
 		t.Errorf("Pct = %f, want %f", *res.Pct, pct)
-	}
-	if res.UsedUsd == nil || *res.UsedUsd != used {
-		t.Errorf("UsedUsd = %v, want %f", res.UsedUsd, used)
-	}
-	if res.BudgetUsd == nil || *res.BudgetUsd != budget {
-		t.Errorf("BudgetUsd = %v, want %f", res.BudgetUsd, budget)
-	}
-	if res.RemainingUsd == nil || *res.RemainingUsd != remaining {
-		t.Errorf("RemainingUsd = %v, want %f", res.RemainingUsd, remaining)
 	}
 	if res.ResetAt != "2026-06-01T00:00:00.000Z" {
 		t.Errorf("ResetAt = %q", res.ResetAt)
@@ -152,17 +139,16 @@ func TestFetchMe_BudgetFieldsAbsent(t *testing.T) {
 	if res.Pct != nil {
 		t.Errorf("Pct must be nil when absent from response, got %v", *res.Pct)
 	}
-	if res.UsedUsd != nil {
-		t.Errorf("UsedUsd must be nil when absent, got %v", *res.UsedUsd)
-	}
+	// Dollar fields are not part of MeResult contract (2026-05-30 privacy change).
 }
 
 func TestFetchMe_BudgetPctNull(t *testing.T) {
 	// Server returns pct:null (no budget set / unlimited) — Pct field must be nil.
+	// VCD-49 contract (2026-05-30): only { pct, reset_at } in budget portion.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// Write raw JSON with explicit null for pct and remainingUsd.
-		w.Write([]byte(`{"userId":"u3","email":"u3@x.com","subDaysLeft":10,"usedUsd":5.0,"budgetUsd":0,"remainingUsd":null,"pct":null,"resetAt":"2026-06-01T00:00:00.000Z"}`))
+		// Write raw JSON with explicit null for pct (no budget configured).
+		w.Write([]byte(`{"userId":"u3","email":"u3@x.com","subDaysLeft":10,"pct":null,"resetAt":"2026-06-01T00:00:00.000Z"}`))
 	}))
 	defer srv.Close()
 
@@ -171,9 +157,6 @@ func TestFetchMe_BudgetPctNull(t *testing.T) {
 		t.Fatalf("FetchMe: %v", err)
 	}
 	if res.Pct != nil {
-		t.Errorf("Pct must be nil when budget=0 (no cap), got %v", *res.Pct)
-	}
-	if res.RemainingUsd != nil {
-		t.Errorf("RemainingUsd must be nil when no cap, got %v", *res.RemainingUsd)
+		t.Errorf("Pct must be nil when no budget configured, got %v", *res.Pct)
 	}
 }

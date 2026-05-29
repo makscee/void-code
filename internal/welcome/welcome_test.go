@@ -157,6 +157,10 @@ func TestBudgetWarning_WarnBand(t *testing.T) {
 		if strings.Contains(w, "reached") {
 			t.Errorf("BudgetWarning(%v) = %q, warn should not say 'reached'", p, w)
 		}
+		// Operator constraint 2026-05-30: no dollar values in user-facing copy.
+		if strings.Contains(w, "$") {
+			t.Errorf("BudgetWarning(%v) = %q, must NOT contain '$' (percentages only)", p, w)
+		}
 	}
 }
 
@@ -169,6 +173,10 @@ func TestBudgetWarning_BlockAt100(t *testing.T) {
 		}
 		if !strings.Contains(w, "@makscee") {
 			t.Errorf("BudgetWarning(%v) = %q, must name @makscee", p, w)
+		}
+		// Operator constraint 2026-05-30: no dollar values in block copy.
+		if strings.Contains(w, "$") {
+			t.Errorf("BudgetWarning(%v) = %q, must NOT contain '$' (percentages only)", p, w)
 		}
 	}
 }
