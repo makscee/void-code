@@ -1,6 +1,7 @@
 package welcome_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/makscee/void-code/internal/welcome"
@@ -82,5 +83,42 @@ func TestAuthState_Unlimited(t *testing.T) {
 	}
 	if state.SubDaysLeft != -1 {
 		t.Errorf("SubDaysLeft = %d, want -1 (unlimited)", state.SubDaysLeft)
+	}
+}
+
+// --- VCD-44: subscription warning tests ---
+
+func TestSubscriptionWarning_Band(t *testing.T) {
+	if welcome.SubscriptionWarning(0) != "" {
+		t.Error("days=0 should not produce a banner warning (handled by hard block)")
+	}
+	if welcome.SubscriptionWarning(4) != "" {
+		t.Error("days=4 should not warn")
+	}
+	if welcome.SubscriptionWarning(-1) != "" {
+		t.Error("unlimited should not warn")
+	}
+	for _, d := range []int{1, 2, 3} {
+		w := welcome.SubscriptionWarning(d)
+		if w == "" {
+			t.Errorf("days=%d should warn", d)
+		}
+		if !strings.Contains(w, "@makscee") {
+			t.Errorf("days=%d warning %q must name @makscee", d, w)
+		}
+	}
+}
+
+func TestPlainBanner_ShowsWarningInBand(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: "x@vk.com", SubDaysLeft: 2})
+	if !strings.Contains(out, "@makscee") {
+		t.Errorf("plain banner for 2 days must include warning: %q", out)
+	}
+}
+
+func TestPlainBanner_NoWarningAboveBand(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: "x@vk.com", SubDaysLeft: 10})
+	if strings.Contains(out, "@makscee") {
+		t.Errorf("plain banner for 10 days must NOT warn: %q", out)
 	}
 }

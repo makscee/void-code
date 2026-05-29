@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"time"
 
+	term "github.com/charmbracelet/x/term"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/ccjson"
 	"github.com/makscee/void-code/internal/config"
@@ -23,6 +25,11 @@ import (
 	"github.com/makscee/void-code/internal/welcome"
 	"github.com/spf13/cobra"
 )
+
+// warnStyle is used for the subscription expiry hard-block message.
+var warnStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("#F59E0B")).
+	Bold(true)
 
 // meCache holds a cached result from FetchMe to avoid repeated auth-host calls.
 var (
@@ -59,7 +66,14 @@ func main() {
 			_ = err
 		}
 		if result == welcome.RunLogin || !state.LoggedIn {
-			// Drop into login flow.
+			// Non-interactive (non-TTY) context: fail fast instead of hanging in
+			// the login picker or device-flow polling loop.  Automation callers
+			// (subagents, scripts) must fix credentials manually with `vc login`.
+			if !isStdinTTY() {
+				fmt.Fprintln(os.Stderr, "vc: auth failed: session token missing or expired — re-authenticate with `vc login`")
+				os.Exit(1)
+			}
+			// Interactive TTY: drop into login flow normally.
 			if err := runLoginInteractive(); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", err)
 				os.Exit(1)
@@ -134,9 +148,18 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// A missing or rejected token must surface a friendly message here — not a
 	// raw 401 error buried inside the claude UI.
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	if err := authGate(token, cfg.AuthHost, httpClient); err != nil {
+	me, reached, err := authGate(token, cfg.AuthHost, httpClient)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
+	}
+	// Expiry hard-block: only when we actually reached the server.
+	// Transient FetchMe failures yield reached=false and must NOT block.
+	if reached {
+		if d := subscriptionGate(me.SubDaysLeft); d.Block {
+			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
+			os.Exit(1)
+		}
 	}
 
 	// Check and update @anthropic-ai/claude-code before spawning.
@@ -175,30 +198,69 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// subscriptionDecision is the pure outcome of inspecting days-left.
+type subscriptionDecision struct {
+	Block   bool   // true → do NOT spawn; print Message; exit non-zero
+	Warn    bool   // true → spawn, but show Message as a soft banner warning
+	Message string // user-facing copy (lipgloss styling applied by caller)
+}
+
+// subscriptionGate maps days-left (auth.MeResult.SubDaysLeft) to a spawn decision.
+//
+//	-1       → unlimited            → clean
+//	 0       → expired/no active   → hard block
+//	 1..3    → ending soon         → warn (still spawn)
+//	>=4      → healthy             → clean
+func subscriptionGate(daysLeft int) subscriptionDecision {
+	switch {
+	case daysLeft == 0:
+		return subscriptionDecision{
+			Block: true,
+			Message: "Your void-code subscription has expired.\n" +
+				"To keep using it, message @makscee on Telegram to top up.\n" +
+				"(Automatic top-up is coming soon.)",
+		}
+	case daysLeft >= 1 && daysLeft <= 3:
+		unit := "days"
+		if daysLeft == 1 {
+			unit = "day"
+		}
+		return subscriptionDecision{
+			Warn: true,
+			Message: fmt.Sprintf(
+				"Subscription ending in %d %s — top up via @makscee on Telegram to avoid interruption.",
+				daysLeft, unit),
+		}
+	default:
+		return subscriptionDecision{} // -1 unlimited or >=4 healthy → clean
+	}
+}
+
 // authGate validates the session token before spawning claude.
 //
 // Rules:
-//   - token absent → ErrNotLoggedIn-style message
-//   - token present, auth server returns 401 → rejected message
-//   - token present, network/server error → pass through (don't block on transient blip)
+//   - token absent → error (not logged in)
+//   - token present, auth server returns 401 → error (token rejected)
+//   - token present, server reachable → returns (me, true, nil)
+//   - token present, network/server error → returns (zero, false, nil) — transient blip, do not block
 //
-// Returns a non-nil error containing a user-readable message when the spawn
-// must be blocked.  Returns nil when it is safe to spawn claude.
-func authGate(token, authHost string, httpClient *http.Client) error {
+// Returns reached=true only when the server responded successfully, so callers
+// can distinguish a genuine SubDaysLeft==0 (expired) from the transient-blip
+// zero-value MeResult (which must NOT block).
+func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, bool, error) {
 	if token == "" {
-		return fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
+		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
 	}
 
-	_, err := auth.FetchMe(authHost, token, httpClient)
+	me, err := auth.FetchMe(authHost, token, httpClient)
 	if err == nil {
-		// Token valid — proceed.
-		return nil
+		return me, true, nil
 	}
 	if err == auth.ErrNotLoggedIn {
-		return fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
 	}
-	// Network / server error — don't block; warn but proceed.
-	return nil
+	// Network / server error — don't block; transient blip.
+	return auth.MeResult{}, false, nil
 }
 
 // resolveCA determines the relay CA path in priority order:
@@ -255,6 +317,18 @@ func writeFallbackCA(cacheDir string) (string, error) {
 		return "", fmt.Errorf("relay: write fallback CA: %w", err)
 	}
 	return dest, nil
+}
+
+// isFdTTY reports whether the given file descriptor refers to a terminal.
+// Uses charmbracelet/x/term which handles platform differences (Unix + Windows).
+func isFdTTY(fd int) bool {
+	return term.IsTerminal(uintptr(fd))
+}
+
+// isStdinTTY reports whether os.Stdin is an interactive terminal.
+// Returns false when stdin is a pipe, file, or /dev/null (automation/subagent context).
+func isStdinTTY() bool {
+	return isFdTTY(int(os.Stdin.Fd()))
 }
 
 // isNotFound reports whether err indicates the binary was not found in PATH.

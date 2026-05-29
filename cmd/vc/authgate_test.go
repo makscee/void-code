@@ -9,7 +9,7 @@ import (
 
 // TestAuthGate_NoToken verifies that an empty token returns a "Not logged in" error.
 func TestAuthGate_NoToken(t *testing.T) {
-	err := authGate("", "http://unused-host", &http.Client{})
+	_, _, err := authGate("", "http://unused-host", &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for empty token, got nil")
 	}
@@ -21,7 +21,7 @@ func TestAuthGate_NoToken(t *testing.T) {
 	}
 }
 
-// TestAuthGate_ValidToken verifies that a valid token returns nil (safe to spawn).
+// TestAuthGate_ValidToken verifies that a valid token returns nil error and reached=true.
 func TestAuthGate_ValidToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -29,9 +29,12 @@ func TestAuthGate_ValidToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := authGate("valid-token", srv.URL, srv.Client())
+	_, reached, err := authGate("valid-token", srv.URL, srv.Client())
 	if err != nil {
 		t.Fatalf("expected nil for valid token, got %v", err)
+	}
+	if !reached {
+		t.Error("expected reached=true for reachable server")
 	}
 }
 
@@ -43,7 +46,7 @@ func TestAuthGate_RejectedToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := authGate("garbage-token", srv.URL, srv.Client())
+	_, _, err := authGate("garbage-token", srv.URL, srv.Client())
 	if err == nil {
 		t.Fatal("expected error for rejected token, got nil")
 	}
@@ -59,9 +62,12 @@ func TestAuthGate_RejectedToken(t *testing.T) {
 // transient auth-server blips must not lock the user out.
 func TestAuthGate_NetworkError(t *testing.T) {
 	// Point at a port that refuses connections.
-	err := authGate("any-token", "http://127.0.0.1:1", &http.Client{})
+	_, reached, err := authGate("any-token", "http://127.0.0.1:1", &http.Client{})
 	if err != nil {
 		t.Fatalf("expected nil for network error (non-blocking), got %v", err)
+	}
+	if reached {
+		t.Error("expected reached=false for network error")
 	}
 }
 
@@ -73,8 +79,31 @@ func TestAuthGate_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := authGate("any-token", srv.URL, srv.Client())
+	_, reached, err := authGate("any-token", srv.URL, srv.Client())
 	if err != nil {
 		t.Fatalf("expected nil for server error (non-blocking), got %v", err)
+	}
+	if reached {
+		t.Error("expected reached=false for server error")
+	}
+}
+
+// TestAuthGate_ReturnsDaysLeft verifies authGate surfaces SubDaysLeft from /v1/vc/me.
+func TestAuthGate_ReturnsDaysLeft(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"userId":"u1","email":"u@example.com","subDaysLeft":0}`))
+	}))
+	defer srv.Close()
+
+	me, reached, err := authGate("valid-token", srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("expected nil err for reachable server, got %v", err)
+	}
+	if !reached {
+		t.Error("expected reached=true for reachable server")
+	}
+	if me.SubDaysLeft != 0 {
+		t.Errorf("SubDaysLeft = %d, want 0", me.SubDaysLeft)
 	}
 }
