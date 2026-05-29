@@ -1,0 +1,172 @@
+// Package ccsettings idempotently merges void-code's PreToolUse permission
+// hook into ~/.claude/settings.json without clobbering existing user keys.
+// Mirrors the ccjson.EnsureDefaults pattern: absent→write, present→merge,
+// unparseable→error (never clobber), atomic temp+rename, mode 0600.
+package ccsettings
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// EnsureHook ensures a single PreToolUse hook entry whose command == hookCmd
+// (e.g. "/abs/path/vc hook") exists in the settings file at path.
+//
+//   - Absent      → write fresh file with only the hook entry.
+//   - Present + valid JSON → merge only our entry; all other keys are preserved.
+//   - Present + invalid JSON → return error, do NOT clobber.
+//
+// Idempotency key: a hook whose inner command string ends with " hook" is ours.
+// On re-run with the same command → no-op. On re-run with a changed path (binary
+// moved) → update in-place rather than append a duplicate.
+func EnsureHook(path, hookCmd string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeAtomic(path, freshDoc(hookCmd))
+	}
+	if err != nil {
+		return err
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+
+	if mergeHook(obj, hookCmd) {
+		out, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			return fmt.Errorf("ccsettings: marshal: %w", err)
+		}
+		return writeAtomic(path, append(out, '\n'))
+	}
+	return nil // already present and correct — no write needed
+}
+
+// SettingsPath returns the canonical path to ~/.claude/settings.json.
+// Uses os.UserHomeDir for cross-platform correctness (handles %USERPROFILE% on Windows).
+func SettingsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("ccsettings: resolve home dir: %w", err)
+	}
+	return filepath.Join(home, ".claude", "settings.json"), nil
+}
+
+// QuoteIfSpace wraps path in double-quotes if it contains a space character.
+// Needed on Windows where Program Files paths have spaces.
+func QuoteIfSpace(path string) string {
+	if strings.Contains(path, " ") {
+		return `"` + path + `"`
+	}
+	return path
+}
+
+// HookCmd builds the hookCmd string from the running binary's absolute path.
+// Returns (<abs-path-or-quoted> + " hook").
+func HookCmd(execPath string) string {
+	return QuoteIfSpace(execPath) + " hook"
+}
+
+// entry builds a single PreToolUse hook entry map.
+func entry(hookCmd string) map[string]any {
+	return map[string]any{
+		"matcher": "*",
+		"hooks": []any{map[string]any{
+			"type":    "command",
+			"command": hookCmd,
+			"timeout": 15,
+		}},
+	}
+}
+
+// freshDoc builds a minimal settings.json document with only our hook.
+func freshDoc(hookCmd string) []byte {
+	doc := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{entry(hookCmd)},
+		},
+	}
+	out, _ := json.MarshalIndent(doc, "", "  ")
+	return append(out, '\n')
+}
+
+// mergeHook modifies obj in-place to contain exactly one copy of our hook entry.
+// Returns true if obj was changed (write needed), false if already correct.
+func mergeHook(obj map[string]any, hookCmd string) bool {
+	hooks, _ := obj["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+		obj["hooks"] = hooks
+	}
+
+	pre, _ := hooks["PreToolUse"].([]any)
+
+	// Look for an existing entry that is ours (inner command ends with " hook").
+	for i, raw := range pre {
+		e, _ := raw.(map[string]any)
+		if e == nil {
+			continue
+		}
+		inner, _ := e["hooks"].([]any)
+		for _, hraw := range inner {
+			h, _ := hraw.(map[string]any)
+			if h == nil {
+				continue
+			}
+			c, _ := h["command"].(string)
+			if strings.HasSuffix(c, " hook") {
+				if c == hookCmd {
+					return false // already correct, no write needed
+				}
+				// Path changed (binary moved) — update in-place.
+				pre[i] = entry(hookCmd)
+				hooks["PreToolUse"] = pre
+				return true
+			}
+		}
+	}
+
+	// Not found — append new entry.
+	hooks["PreToolUse"] = append(pre, entry(hookCmd))
+	return true
+}
+
+// writeAtomic writes data to path using temp-file + rename (crash-safe).
+// Mode is always 0600 — settings.json can hold tokens.
+func writeAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("ccsettings: mkdir %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".settings.json.tmp")
+	if err != nil {
+		return fmt.Errorf("ccsettings: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("ccsettings: chmod temp: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("ccsettings: write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("ccsettings: close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("ccsettings: rename temp: %w", err)
+	}
+	ok = true
+	return nil
+}
