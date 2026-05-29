@@ -42,17 +42,55 @@ type segData struct {
 
 func newSegDataUnknown() segData { return segData{budgetPct: -1, subDaysLeft: -2} }
 
-// contextPct returns (pct, ok). ok=false → context_window absent → render —.
-func contextPct(in statusInput) (int, bool) {
+// contextFace returns the brainrot emoji face for total_input_tokens.
+// Mirrors cv-statusline.sh thresholds exactly.
+//
+//	< 60k  → 🤓
+//	60-120k → 😐
+//	120-150k → 😵‍💫
+//	150-180k → 🥴
+//	>= 180k → 💀
+func contextFace(tokens int) string {
+	switch {
+	case tokens < 60000:
+		return "🤓"
+	case tokens < 120000:
+		return "😐"
+	case tokens < 150000:
+		return "😵‍💫" // 😵‍💫 (zwj sequence)
+	case tokens < 180000:
+		return "🥴"
+	default:
+		return "💀"
+	}
+}
+
+// contextTokensFmt formats a token count compactly: 1200 → "1k", 143210 → "143k", 1200000 → "1.2M".
+func contextTokensFmt(tokens int) string {
+	if tokens >= 1_000_000 {
+		v := float64(tokens) / 1_000_000
+		// One decimal, strip trailing zero: 1.50M → "1.5M", 2.00M → "2M"
+		s := fmt.Sprintf("%.1f", v)
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+		return s + "M"
+	}
+	if tokens >= 1000 {
+		return fmt.Sprintf("%dk", tokens/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
+}
+
+// contextSegment returns the brainrot context segment string.
+// Uses total_input_tokens from context_window. Returns "—" if absent (no API response yet).
+func contextSegment(in statusInput) string {
 	cw := in.ContextWindow
-	if cw.UsedPercentage > 0 {
-		return cw.UsedPercentage, true
+	tokens := cw.TotalInputTokens
+	// Absent = no API response yet: all fields zero.
+	if tokens == 0 && cw.ContextWindowSize == 0 {
+		return "—"
 	}
-	if cw.ContextWindowSize > 0 && (cw.TotalInputTokens+cw.TotalOutputTokens) > 0 {
-		used := cw.TotalInputTokens + cw.TotalOutputTokens
-		return used * 100 / cw.ContextWindowSize, true
-	}
-	return 0, false
+	return contextFace(tokens) + " " + contextTokensFmt(tokens)
 }
 
 // renderSegments builds the one-line status bar. Pure — no I/O.
@@ -60,12 +98,8 @@ func contextPct(in statusInput) (int, bool) {
 func renderSegments(in statusInput, d segData) string {
 	parts := []string{}
 
-	// Segment 1: context window usage.
-	if pct, ok := contextPct(in); ok {
-		parts = append(parts, fmt.Sprintf("ctx %d%%", pct))
-	} else {
-		parts = append(parts, "ctx —")
-	}
+	// Segment 1: brainrot context window — emoji face + compact token count.
+	parts = append(parts, contextSegment(in))
 
 	// Segment 2: budget spent %. -1 unknown (VCD-49 absent) → hide.
 	if d.budgetPct >= 0 {
