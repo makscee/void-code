@@ -65,6 +65,29 @@ func Run(state AuthState) (RunResult, error) {
 	return SpawnClaude, nil
 }
 
+// ─── subscription warning ────────────────────────────────────────────────────
+
+// SubscriptionWarning returns the soft ≤3-day expiry warning copy, or "" when
+// days-left is outside the 1–3 band.  Days=0 is handled upstream as a hard block.
+func SubscriptionWarning(daysLeft int) string {
+	if daysLeft < 1 || daysLeft > 3 {
+		return ""
+	}
+	unit := "days"
+	if daysLeft == 1 {
+		unit = "day"
+	}
+	return fmt.Sprintf(
+		"Subscription ending in %d %s — top up via @makscee on Telegram to avoid interruption.",
+		daysLeft, unit)
+}
+
+// PlainBannerForTest exposes plainBanner for white-box testing from the
+// welcome_test package without making it part of the public API.
+func PlainBannerForTest(state AuthState) string {
+	return plainBanner(state)
+}
+
 // ─── legacy compat shim (tests + callers that used the old sentinel API) ──────
 
 // DefaultSentinelPath is kept for callers that reference it; it no longer
@@ -168,6 +191,11 @@ func (m model) View() string {
 		} else {
 			inner.WriteString(warnStyle.Render("· no active subscription ·"))
 		}
+		// Soft ≤3-day expiry warning (1–3 days): shown below the subscription line.
+		if w := SubscriptionWarning(m.SubDaysLeft); w != "" {
+			inner.WriteString("\n")
+			inner.WriteString(warnStyle.Render(w))
+		}
 		inner.WriteString("\n\n")
 		if m.UpdateNudge != "" {
 			inner.WriteString(hintStyle.Render(m.UpdateNudge))
@@ -207,6 +235,10 @@ func plainBanner(state AuthState) string {
 		}
 	} else {
 		sb.WriteString("  Not logged in\n")
+	}
+	// Soft ≤3-day expiry warning.
+	if w := SubscriptionWarning(state.SubDaysLeft); w != "" {
+		sb.WriteString("  " + w + "\n")
 	}
 	if state.UpdateNudge != "" {
 		sb.WriteString("  " + state.UpdateNudge + "\n")
