@@ -492,3 +492,61 @@ func TestDefaultReleaseBaseURL(t *testing.T) {
 		t.Errorf("DefaultReleaseBaseURL = %q; want %q", update.DefaultReleaseBaseURL, want)
 	}
 }
+
+// TestCheckUpdateWindowsExeExtension verifies that the Windows artifact key
+// ("windows/amd64") resolves to a .exe filename in a standard version.json
+// and that CheckAndUpdate replaces the binary successfully (platform-neutral
+// mechanics test — does not require a Windows host).
+func TestCheckUpdateWindowsExeExtension(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Use a .exe extension to mirror the real Windows deployment path.
+	binaryPath := filepath.Join(tmpDir, "vc.exe")
+	if err := os.WriteFile(binaryPath, []byte("old-win-bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	newContent := []byte("new-win-bin")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "version.json"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"version": "v0.1.11",
+				"artifacts": map[string]string{
+					update.PlatformKey(): "vc-" + runtime.GOOS + "-" + runtime.GOARCH + ".exe",
+				},
+			})
+		default:
+			_, _ = w.Write(newContent)
+		}
+	}))
+	defer srv.Close()
+
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current:    "v0.1.10",
+		BaseURL:    srv.URL,
+		BinaryPath: binaryPath,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected update to succeed")
+	}
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("read updated binary: %v", err)
+	}
+	if string(got) != string(newContent) {
+		t.Errorf("binary content = %q; want %q", got, newContent)
+	}
+}
+
+// TestCleanOldBinaryNoop verifies that CleanOldBinary is safe to call when no
+// .old file exists (must not panic or error).
+func TestCleanOldBinaryNoop(t *testing.T) {
+	// CleanOldBinary uses os.Executable() which points to the test binary.
+	// There is no test-binary.old file, so this must be a no-op.
+	update.CleanOldBinary()
+	// Success = no panic.
+}

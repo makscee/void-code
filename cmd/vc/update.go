@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/spf13/cobra"
@@ -25,8 +26,13 @@ func init() {
 func runUpdate(_ *cobra.Command, _ []string) error {
 	fmt.Printf("Current version: %s\nChecking for updates...\n", version.Version)
 
+	// Derive the release base URL from config (respects VC_AUTH_HOST env override).
+	cfg := config.OSResolve()
+	baseURL := cfg.AuthHost + "/vc"
+
 	updated, err := update.CheckAndUpdate(update.Options{
 		Current: version.Version,
+		BaseURL: baseURL,
 	})
 	if err != nil {
 		return fmt.Errorf("update check failed: %w", err)

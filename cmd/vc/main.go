@@ -22,6 +22,7 @@ import (
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/relay"
+	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/makscee/void-code/internal/welcome"
 	"github.com/spf13/cobra"
@@ -39,6 +40,9 @@ var (
 )
 
 func main() {
+	// Clean up any leftover .old binary from a previous Windows self-update.
+	update.CleanOldBinary()
+
 	// --version short-circuit before Cobra parses anything.
 	for _, a := range os.Args[1:] {
 		if a == "--version" || a == "-v" {
