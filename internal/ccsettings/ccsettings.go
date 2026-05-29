@@ -135,6 +135,78 @@ func mergeHook(obj map[string]any, hookCmd string) bool {
 	return true
 }
 
+// StatusLineCmd builds the statusLine command string from the running binary's
+// absolute path: "<abs-or-quoted-path> statusline".
+// On Windows, callers MUST pass a forward-slash path (CC's Git-Bash/PowerShell runner
+// strips backslashes) — see ForwardSlash below.
+func StatusLineCmd(execPath string) string {
+	return QuoteIfSpace(execPath) + " statusline"
+}
+
+// ForwardSlash converts backslashes to forward slashes for the statusLine
+// command string on Windows (CC's Git-Bash runner strips backslashes).
+// No-op on paths that already use '/'.
+func ForwardSlash(p string) string { return strings.ReplaceAll(p, `\`, `/`) }
+
+// EnsureStatusLine ensures the top-level "statusLine" entry points at slCmd
+// (e.g. "/abs/vc statusline"), without clobbering a user's foreign statusLine.
+//
+//   - Absent statusLine            → write our entry.
+//   - Present + ours (cmd ends " statusline"): same → no-op; moved → update.
+//   - Present + FOREIGN (any other command) → leave untouched, no error.
+//   - File present + invalid JSON  → return error, do NOT clobber.
+func EnsureStatusLine(path, slCmd string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeAtomic(path, freshStatusLineDoc(slCmd))
+	}
+	if err != nil {
+		return err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+	if mergeStatusLine(obj, slCmd) {
+		out, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			return fmt.Errorf("ccsettings: marshal: %w", err)
+		}
+		return writeAtomic(path, append(out, '\n'))
+	}
+	return nil
+}
+
+func statusLineEntry(slCmd string) map[string]any {
+	return map[string]any{"type": "command", "command": slCmd}
+}
+
+func freshStatusLineDoc(slCmd string) []byte {
+	doc := map[string]any{"statusLine": statusLineEntry(slCmd)}
+	out, _ := json.MarshalIndent(doc, "", "  ")
+	return append(out, '\n')
+}
+
+// mergeStatusLine returns true if obj changed (write needed).
+// Idempotency / ownership key: command ends with " statusline".
+func mergeStatusLine(obj map[string]any, slCmd string) bool {
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl == nil {
+		// absent (or wrong type) → install ours
+		obj["statusLine"] = statusLineEntry(slCmd)
+		return true
+	}
+	cur, _ := sl["command"].(string)
+	if !strings.HasSuffix(cur, " statusline") {
+		return false // FOREIGN statusLine — never clobber, no write
+	}
+	if cur == slCmd {
+		return false // ours, unchanged
+	}
+	obj["statusLine"] = statusLineEntry(slCmd) // ours, moved → update
+	return true
+}
+
 // writeAtomic writes data to path using temp-file + rename (crash-safe).
 // Mode is always 0600 — settings.json can hold tokens.
 func writeAtomic(path string, data []byte) error {

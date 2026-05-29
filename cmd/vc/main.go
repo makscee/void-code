@@ -226,6 +226,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot install PreToolUse hook: %v\n", err)
 			}
+			// Install the statusLine command (non-clobbering — leaves user's foreign statusLine untouched).
+			slCmd := ccsettings.StatusLineCmd(ccsettings.ForwardSlash(execPath))
+			if err := ccsettings.EnsureStatusLine(settingsPath, slCmd); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot install statusLine: %v\n", err)
+			}
 		}
 	}
 
