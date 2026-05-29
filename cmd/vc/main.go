@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/ccjson"
+	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/relay"
@@ -50,7 +51,7 @@ func main() {
 	// Checks auth state, shows banner, waits for any keypress.
 	// Any keypress → logged-in: spawn claude; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
-	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true}
+	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd {
 		// Async update probe fires before banner render; result consumed inside.
@@ -180,6 +181,18 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if home, err := os.UserHomeDir(); err == nil {
 		if err := ccjson.EnsureDefaults(filepath.Join(home, ".claude.json")); err != nil {
 			fmt.Fprintf(os.Stderr, "vc: warning: cannot pre-seed ~/.claude.json: %v\n", err)
+		}
+	}
+
+	// Ensure the local PreToolUse permission hook so claude auto mode works
+	// on the deepseek relay without the Anthropic server-side classifier.
+	if execPath, err := os.Executable(); err == nil {
+		hookCmd := ccsettings.HookCmd(execPath)
+		settingsPath, pathErr := ccsettings.SettingsPath()
+		if pathErr == nil {
+			if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot install PreToolUse hook: %v\n", err)
+			}
 		}
 	}
 
