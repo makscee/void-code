@@ -122,3 +122,79 @@ func TestPlainBanner_NoWarningAboveBand(t *testing.T) {
 		t.Errorf("plain banner for 10 days must NOT warn: %q", out)
 	}
 }
+
+// --- VCD-49: budget warning tests ---
+
+func TestBudgetWarning_NilPct(t *testing.T) {
+	// nil pct = no budget set → must not warn.
+	if w := welcome.BudgetWarning(nil); w != "" {
+		t.Errorf("BudgetWarning(nil) = %q, want empty (no budget)", w)
+	}
+}
+
+func TestBudgetWarning_BelowThreshold(t *testing.T) {
+	pct := 50.0
+	if w := welcome.BudgetWarning(&pct); w != "" {
+		t.Errorf("BudgetWarning(50) = %q, want empty", w)
+	}
+	pct2 := 79.9
+	if w := welcome.BudgetWarning(&pct2); w != "" {
+		t.Errorf("BudgetWarning(79.9) = %q, want empty", w)
+	}
+}
+
+func TestBudgetWarning_WarnBand(t *testing.T) {
+	for _, p := range []float64{80.0, 85.0, 95.0, 99.9} {
+		pct := p
+		w := welcome.BudgetWarning(&pct)
+		if w == "" {
+			t.Errorf("BudgetWarning(%v) = empty, want warn string", p)
+		}
+		if !strings.Contains(w, "@makscee") {
+			t.Errorf("BudgetWarning(%v) = %q, must name @makscee", p, w)
+		}
+		// Warn band must NOT say "reached" — that's the block copy.
+		if strings.Contains(w, "reached") {
+			t.Errorf("BudgetWarning(%v) = %q, warn should not say 'reached'", p, w)
+		}
+	}
+}
+
+func TestBudgetWarning_BlockAt100(t *testing.T) {
+	for _, p := range []float64{100.0, 110.0, 150.0} {
+		pct := p
+		w := welcome.BudgetWarning(&pct)
+		if !strings.Contains(w, "reached") {
+			t.Errorf("BudgetWarning(%v) = %q, must say 'reached' for block copy", p, w)
+		}
+		if !strings.Contains(w, "@makscee") {
+			t.Errorf("BudgetWarning(%v) = %q, must name @makscee", p, w)
+		}
+	}
+}
+
+func TestPlainBanner_BudgetWarn(t *testing.T) {
+	pct := 85.0
+	out := welcome.PlainBannerForTest(welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    "u@x.com",
+		SubDaysLeft: -1,
+		BudgetPct:   &pct,
+	})
+	if !strings.Contains(out, "@makscee") {
+		t.Errorf("plain banner must show budget warning at 85%%: %q", out)
+	}
+}
+
+func TestPlainBanner_NoBudgetWhenNilPct(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    "u@x.com",
+		SubDaysLeft: -1,
+		BudgetPct:   nil,
+	})
+	// Should NOT mention "budget" at all when nil pct.
+	if strings.Contains(out, "budget") {
+		t.Errorf("plain banner must NOT show budget line when pct nil: %q", out)
+	}
+}

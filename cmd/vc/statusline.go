@@ -160,11 +160,9 @@ func fetchSegData() segData {
 		d.subDaysLeft = n
 	}
 
-	// Segment 2 (budget %): VCD-49 endpoint not yet deployed → graceful-degrade.
-	// TODO(VCD-49): wire fetchBudgetPct once /v1/usage/me is deployed.
-	// fetchBudgetPct returns false unconditionally until VCD-49 lands.
-	_ = cfg // cfg retained for future use by fetchBudgetPct
-	if pct, ok := fetchBudgetPct(token); ok {
+	// Segment 2 (budget %): call /v1/vc/me via auth.FetchMe to get budget pct.
+	// Degrade-safe: hidden when endpoint absent / budget_usd=0 (pct null) / error.
+	if pct, ok := fetchBudgetPct(cfg.AuthHost, token); ok {
 		d.budgetPct = pct
 	}
 
@@ -181,12 +179,16 @@ func fetchSubDaysLeft(authHost, token string) (int, bool) {
 	return me.SubDaysLeft, true
 }
 
-// fetchBudgetPct calls VCD-49's GET /v1/usage/me and returns (pct, ok).
-// Returns ok=false on ANY error / non-200 / missing endpoint → segment hidden.
-// Ships dormant (always returns false) until VCD-49 deploys and provides a
-// KeysHost config field + base URL to call against.
-// TODO(VCD-49): add keysHost param, resolve base URL, uncomment the HTTP call.
-func fetchBudgetPct(_ string) (int, bool) {
-	// VCD-49 endpoint not yet deployed — graceful-degrade: segment stays hidden.
-	return 0, false
+// fetchBudgetPct calls GET <authHost>/v1/vc/me (via auth.FetchMe) and returns
+// (pct as int, ok). Returns ok=false on ANY error, non-200, missing budget
+// fields, or pct==null (budget_usd=0, no cap) → segment hidden.
+// 2-second timeout keeps the statusline snappy.
+func fetchBudgetPct(authHost, token string) (int, bool) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	me, err := auth.FetchMe(authHost, token, client)
+	if err != nil || me.Pct == nil {
+		// err → server error / network / 401; Pct nil → no budget set (no cap)
+		return 0, false
+	}
+	return int(*me.Pct), true
 }

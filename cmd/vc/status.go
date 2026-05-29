@@ -83,7 +83,34 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s %s\n", labelStyle.Render("auth:   "),
 		valueStyle.Render("logged in as "+displayName))
 	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenLabel))
+
+	// VCD-49: fetch budget info from /v1/vc/me (budget fields added by void-auth Task 5 Step 1a).
+	// Degrade-safe: if FetchMe fails or budget fields absent, skip the budget line silently.
+	vcMeClient := &http.Client{Timeout: 5 * time.Second}
+	if me, err := auth.FetchMe(cfg.AuthHost, token, vcMeClient); err == nil && me.UsedUsd != nil && me.BudgetUsd != nil {
+		remaining := 0.0
+		if me.RemainingUsd != nil {
+			remaining = *me.RemainingUsd
+		}
+		line := formatBudgetLine(*me.UsedUsd, *me.BudgetUsd, remaining, me.ResetAt)
+		fmt.Printf("%s %s\n", labelStyle.Render("budget: "), valueStyle.Render(line))
+	}
+
 	return nil
+}
+
+// formatBudgetLine formats the budget status line shown in `vc status`.
+// remaining=-1 signals "no cap" (budget_usd=0).
+func formatBudgetLine(usedUsd, budgetUsd, remainingUsd float64, resetAt string) string {
+	if budgetUsd == 0 {
+		return fmt.Sprintf("$%.2f used — no budget cap", usedUsd)
+	}
+	// Parse reset date to display only the date part (YYYY-MM-DD).
+	resetStr := resetAt
+	if len(resetAt) >= 10 {
+		resetStr = resetAt[:10]
+	}
+	return fmt.Sprintf("$%.2f / $%.2f (remaining $%.2f) — resets %s", usedUsd, budgetUsd, remainingUsd, resetStr)
 }
 
 // fetchMe calls GET /v1/auth/me and returns the user's slug + email.

@@ -167,6 +167,7 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 		LoggedIn:    true,
 		Identity:    identity,
 		SubDaysLeft: me.SubDaysLeft,
+		BudgetPct:   me.Pct, // nil when no budget set or server absent → degrade safely
 	}
 }
 
@@ -193,6 +194,18 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		if d := subscriptionGate(me.SubDaysLeft); d.Block {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 			os.Exit(1)
+		}
+	}
+
+	// VCD-49 budget gate: only when reached + budget fields present (degrade-safe).
+	// Hard-block at ≥100%; soft warn (print, still spawn) at 80–99%.
+	// pct==nil = no budget / server absent → proceed without warning.
+	if reached && me.Pct != nil {
+		if d := budgetGate(me.Pct, me.BudgetUsd); d.Block {
+			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
+			os.Exit(1)
+		} else if d.Warn {
+			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 		}
 	}
 
@@ -284,6 +297,36 @@ func subscriptionGate(daysLeft int) subscriptionDecision {
 		}
 	default:
 		return subscriptionDecision{} // -1 unlimited or >=4 healthy → clean
+	}
+}
+
+// budgetGate maps budget pct + budget_usd to a spawn decision (VCD-49).
+//
+//	pct == nil   → no budget / server absent → clean (degrade-safe)
+//	pct < 80     → clean
+//	80 <= pct < 100 → warn (spawn, show message)
+//	pct >= 100   → hard block
+//
+// budgetUsd is used to format the block message; may be nil (falls back to generic copy).
+func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
+	if pct == nil {
+		return subscriptionDecision{}
+	}
+	p := *pct
+	switch {
+	case p >= 100:
+		msg := "Monthly budget reached — message @makscee on Telegram to top up."
+		if budgetUsd != nil {
+			msg = fmt.Sprintf("Monthly budget reached ($%.2f). Message @makscee on Telegram to top up.", *budgetUsd)
+		}
+		return subscriptionDecision{Block: true, Message: msg}
+	case p >= 80:
+		return subscriptionDecision{
+			Warn:    true,
+			Message: fmt.Sprintf("Budget at %.0f%% — top up via @makscee on Telegram before you hit the cap.", p),
+		}
+	default:
+		return subscriptionDecision{}
 	}
 }
 

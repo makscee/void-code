@@ -29,6 +29,10 @@ type AuthState struct {
 	// the user declined an update or when no auto-update is configured.
 	// Empty means no nudge.
 	UpdateNudge string
+	// BudgetPct is the month-to-date spend as a percentage of budget.
+	// nil = no budget set (server absent / budget_usd=0 → no cap) → do not display.
+	// ≥80 = warn; ≥100 = block copy.
+	BudgetPct *float64
 }
 
 // RunResult is returned by Run to indicate what the keypress should trigger.
@@ -63,6 +67,33 @@ func Run(state AuthState) (RunResult, error) {
 		return RunLogin, nil
 	}
 	return SpawnClaude, nil
+}
+
+// ─── budget warning (VCD-49) ─────────────────────────────────────────────────
+
+// BudgetWarning returns a user-facing copy string for the budget state, or ""
+// when no warning is needed.
+//
+//	pct == nil       → no budget configured (or server absent) → ""
+//	pct < 80         → healthy → ""
+//	80 <= pct < 100  → warn: approaching cap
+//	pct >= 100       → block copy: budget reached
+//
+// The caller decides whether to block or just warn; this function only returns
+// the copy. The relay enforces the actual hard block — client copy is additive.
+func BudgetWarning(pct *float64) string {
+	if pct == nil {
+		return ""
+	}
+	p := *pct
+	switch {
+	case p >= 100:
+		return "Monthly budget reached — message @makscee on Telegram to top up."
+	case p >= 80:
+		return fmt.Sprintf("Budget at %.0f%% — top up via @makscee on Telegram before you hit the cap.", p)
+	default:
+		return ""
+	}
 }
 
 // ─── subscription warning ────────────────────────────────────────────────────
@@ -196,6 +227,11 @@ func (m model) View() string {
 			inner.WriteString("\n")
 			inner.WriteString(warnStyle.Render(w))
 		}
+		// VCD-49 budget warning: shown when pct ≥80 (warn) or ≥100 (block copy).
+		if w := BudgetWarning(m.BudgetPct); w != "" {
+			inner.WriteString("\n")
+			inner.WriteString(warnStyle.Render(w))
+		}
 		inner.WriteString("\n\n")
 		if m.UpdateNudge != "" {
 			inner.WriteString(hintStyle.Render(m.UpdateNudge))
@@ -238,6 +274,10 @@ func plainBanner(state AuthState) string {
 	}
 	// Soft ≤3-day expiry warning.
 	if w := SubscriptionWarning(state.SubDaysLeft); w != "" {
+		sb.WriteString("  " + w + "\n")
+	}
+	// VCD-49 budget warning.
+	if w := BudgetWarning(state.BudgetPct); w != "" {
 		sb.WriteString("  " + w + "\n")
 	}
 	if state.UpdateNudge != "" {
