@@ -58,37 +58,66 @@ func main() {
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd {
-		// Async update probe fires before banner render; result consumed inside.
-		nudge := launchUpdateCheck()
-
 		state := resolveAuthState()
-		if nudge != "" {
-			state.UpdateNudge = nudge
-		}
-		result, err := welcome.Run(state)
-		if err != nil {
-			// welcome.Run already handled non-TTY fallback; ignore error here.
-			_ = err
-		}
-		if result == welcome.RunLogin || !state.LoggedIn {
-			// Non-interactive (non-TTY) context: fail fast instead of hanging in
-			// the login picker or device-flow polling loop.  Automation callers
-			// (subagents, scripts) must fix credentials manually with `vc login`.
-			if !isStdinTTY() {
-				fmt.Fprintln(os.Stderr, "vc: auth failed: session token missing or expired — re-authenticate with `vc login`")
-				os.Exit(1)
+		switch decideGate(isStdinTTY(), state.LoggedIn) {
+		case gateFailAuth:
+			// Non-interactive (non-TTY) context with no usable token: fail fast
+			// instead of hanging in the login picker or device-flow poll loop.
+			// Automation callers (void-os, subagents, scripts) re-auth manually.
+			fmt.Fprintln(os.Stderr, "vc: auth failed: session token missing or expired — re-authenticate with `vc login`")
+			os.Exit(1)
+		case gateSpawn:
+			// Non-interactive + logged in: skip the welcome TUI entirely. It
+			// blocks on a keypress that a non-TTY stdin can never deliver, which
+			// hangs automation callers forever. Fall straight through to spawn.
+		case gateShowWelcome:
+			// Interactive terminal: async update probe, then the landing screen.
+			nudge := launchUpdateCheck()
+			if nudge != "" {
+				state.UpdateNudge = nudge
 			}
-			// Interactive TTY: drop into login flow normally.
-			if err := runLoginInteractive(); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", err)
-				os.Exit(1)
+			result, err := welcome.Run(state)
+			if err != nil {
+				// welcome.Run already handled non-TTY fallback; ignore error here.
+				_ = err
 			}
-			// After login, proceed to spawn claude.
+			if result == welcome.RunLogin || !state.LoggedIn {
+				if err := runLoginInteractive(); err != nil {
+					fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", err)
+					os.Exit(1)
+				}
+				// After login, proceed to spawn claude.
+			}
 		}
 		// Fall through to Execute() which calls runSpawn via rootCmd.
 	}
 
 	Execute()
+}
+
+// gateDecision is the outcome of the bare-launch interactivity/auth gate.
+type gateDecision int
+
+const (
+	// gateShowWelcome: interactive terminal — render the landing screen.
+	gateShowWelcome gateDecision = iota
+	// gateSpawn: non-TTY but logged in — skip welcome, spawn claude directly.
+	gateSpawn
+	// gateFailAuth: non-TTY and not logged in — cannot run login UI, fail fast.
+	gateFailAuth
+)
+
+// decideGate picks the bare-launch path from interactivity + auth state.
+// The welcome TUI requires a TTY stdin (it waits for a keypress); when stdin is
+// not a terminal it must never be entered, or automation callers hang forever.
+func decideGate(stdinTTY, loggedIn bool) gateDecision {
+	if !stdinTTY {
+		if loggedIn {
+			return gateSpawn
+		}
+		return gateFailAuth
+	}
+	return gateShowWelcome
 }
 
 // resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
