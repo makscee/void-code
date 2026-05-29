@@ -145,6 +145,80 @@ func TestEnsureHook_WindowsSpacedPath(t *testing.T) {
 	}
 }
 
+// EnsureStatusLine tests
+func TestEnsureStatusLine_AbsentWritesFresh(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	if err := EnsureStatusLine(p, "/abs/vc statusline"); err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl["command"] != "/abs/vc statusline" || sl["type"] != "command" {
+		t.Fatalf("statusLine not written correctly: %v", obj["statusLine"])
+	}
+}
+
+func TestEnsureStatusLine_PreservesExistingForeignStatusLine(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	os.WriteFile(p, []byte(`{"statusLine":{"type":"command","command":"~/.claude/statusline.sh"}}`), 0600)
+	if err := EnsureStatusLine(p, "/abs/vc statusline"); err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl["command"] != "~/.claude/statusline.sh" {
+		t.Fatalf("clobbered user's custom statusLine: %v", sl)
+	}
+}
+
+func TestEnsureStatusLine_IdempotentNoWriteWhenOurs(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	EnsureStatusLine(p, "/abs/vc statusline")
+	fi1, _ := os.Stat(p)
+	EnsureStatusLine(p, "/abs/vc statusline") // second call
+	fi2, _ := os.Stat(p)
+	if fi1.ModTime() != fi2.ModTime() {
+		t.Fatal("second EnsureStatusLine rewrote file — not idempotent")
+	}
+}
+
+func TestEnsureStatusLine_UpdatesOursOnPathChange(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	os.WriteFile(p, []byte(`{"statusLine":{"type":"command","command":"/old/vc statusline"}}`), 0600)
+	EnsureStatusLine(p, "/new/vc statusline")
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl["command"] != "/new/vc statusline" {
+		t.Fatalf("did not update our own moved-binary statusLine: %v", sl)
+	}
+}
+
+func TestEnsureStatusLine_PreservesOtherKeys(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	os.WriteFile(p, []byte(`{"hooks":{"PreToolUse":[]},"env":{"X":"1"}}`), 0600)
+	EnsureStatusLine(p, "/abs/vc statusline")
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	if _, ok := obj["hooks"]; !ok {
+		t.Fatal("dropped hooks key")
+	}
+	if _, ok := obj["env"]; !ok {
+		t.Fatal("dropped env key")
+	}
+}
+
 func TestQuoteIfSpace(t *testing.T) {
 	if QuoteIfSpace("/no/space") != "/no/space" {
 		t.Fatal("no-space path should not be quoted")
