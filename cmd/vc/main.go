@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	term "github.com/charmbracelet/x/term"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/ccjson"
@@ -65,7 +66,14 @@ func main() {
 			_ = err
 		}
 		if result == welcome.RunLogin || !state.LoggedIn {
-			// Drop into login flow.
+			// Non-interactive (non-TTY) context: fail fast instead of hanging in
+			// the login picker or device-flow polling loop.  Automation callers
+			// (subagents, scripts) must fix credentials manually with `vc login`.
+			if !isStdinTTY() {
+				fmt.Fprintln(os.Stderr, "vc: auth failed: session token missing or expired — re-authenticate with `vc login`")
+				os.Exit(1)
+			}
+			// Interactive TTY: drop into login flow normally.
 			if err := runLoginInteractive(); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", err)
 				os.Exit(1)
@@ -309,6 +317,18 @@ func writeFallbackCA(cacheDir string) (string, error) {
 		return "", fmt.Errorf("relay: write fallback CA: %w", err)
 	}
 	return dest, nil
+}
+
+// isFdTTY reports whether the given file descriptor refers to a terminal.
+// Uses charmbracelet/x/term which handles platform differences (Unix + Windows).
+func isFdTTY(fd int) bool {
+	return term.IsTerminal(uintptr(fd))
+}
+
+// isStdinTTY reports whether os.Stdin is an interactive terminal.
+// Returns false when stdin is a pipe, file, or /dev/null (automation/subagent context).
+func isStdinTTY() bool {
+	return isFdTTY(int(os.Stdin.Fd()))
 }
 
 // isNotFound reports whether err indicates the binary was not found in PATH.
