@@ -206,3 +206,68 @@ func TestPlainBanner_NoBudgetWhenNilPct(t *testing.T) {
 		t.Errorf("plain banner must NOT show budget line when pct nil: %q", out)
 	}
 }
+
+// --- VCD-54: version + budget-left display tests ---
+
+func TestPlainBanner_ShowsVersion(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    "u@x.com",
+		SubDaysLeft: -1,
+		BudgetPct:   nil,
+	})
+	// Banner must contain "void-code" and some version indicator.
+	if !strings.Contains(out, "void-code") {
+		t.Errorf("plain banner must contain 'void-code': %q", out)
+	}
+}
+
+func TestPlainBanner_BudgetLeftLine_Healthy(t *testing.T) {
+	pct := 30.0 // 30% used → 70% left
+	out := welcome.PlainBannerForTest(welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    "u@x.com",
+		SubDaysLeft: -1,
+		BudgetPct:   &pct,
+	})
+	// Must show "70% budget left" (period-agnostic, not "monthly").
+	if !strings.Contains(out, "budget left") {
+		t.Errorf("plain banner must show 'budget left' at pct=30: %q", out)
+	}
+	if !strings.Contains(out, "70%") {
+		t.Errorf("plain banner must show '70%%' at pct=30: %q", out)
+	}
+	// Must NOT say "monthly".
+	if strings.Contains(out, "monthly") || strings.Contains(out, "Monthly") {
+		t.Errorf("budget-left line must not say 'monthly': %q", out)
+	}
+}
+
+func TestPlainBanner_BudgetLeftLine_NilHidden(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    "u@x.com",
+		SubDaysLeft: -1,
+		BudgetPct:   nil,
+	})
+	if strings.Contains(out, "budget left") {
+		t.Errorf("plain banner must NOT show 'budget left' when pct is nil: %q", out)
+	}
+}
+
+func TestPlainBanner_BudgetLeftLine_Warn(t *testing.T) {
+	pct := 85.0 // 85% used → 15% left — still in warn territory
+	out := welcome.PlainBannerForTest(welcome.AuthState{
+		LoggedIn:    true,
+		Identity:    "u@x.com",
+		SubDaysLeft: -1,
+		BudgetPct:   &pct,
+	})
+	// At ≥80% a warning is shown (existing behavior kept); budget-left line also shown.
+	if !strings.Contains(out, "budget left") {
+		t.Errorf("plain banner must show 'budget left' even at warn-band pct=85: %q", out)
+	}
+	if !strings.Contains(out, "15%") {
+		t.Errorf("plain banner must show '15%%' at pct=85: %q", out)
+	}
+}

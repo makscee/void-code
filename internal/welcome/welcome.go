@@ -8,10 +8,12 @@ package welcome
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/makscee/void-code/internal/version"
 )
 
 // AuthState carries the information to display on the landing screen.
@@ -94,6 +96,19 @@ func BudgetWarning(pct *float64) string {
 	default:
 		return ""
 	}
+}
+
+// budgetLeftPct returns (N% left, show) where N = round(100 - pct), clamped to [0,100].
+// Returns (0, false) when pct is nil (no budget cap) — hide the line entirely.
+func budgetLeftPct(pct *float64) (int, bool) {
+	if pct == nil {
+		return 0, false
+	}
+	left := 100.0 - *pct
+	if left < 0 {
+		left = 0
+	}
+	return int(math.Round(left)), true
 }
 
 // ─── subscription warning ────────────────────────────────────────────────────
@@ -204,7 +219,7 @@ func (m model) View() string {
 	var sb strings.Builder
 
 	inner := strings.Builder{}
-	inner.WriteString(titleStyle.Render("void-code"))
+	inner.WriteString(titleStyle.Render("void-code " + version.Version))
 	inner.WriteString("\n")
 	inner.WriteString(subStyle.Render("relay harness for Claude Code — by makscee.ru"))
 	inner.WriteString("\n\n")
@@ -232,6 +247,11 @@ func (m model) View() string {
 			inner.WriteString("\n")
 			inner.WriteString(warnStyle.Render(w))
 		}
+		// VCD-54: budget-left line — shown always when a budget cap exists (pct != nil).
+		if n, show := budgetLeftPct(m.BudgetPct); show {
+			inner.WriteString("\n")
+			inner.WriteString(subStyle.Render(fmt.Sprintf("%d%% budget left", n)))
+		}
 		inner.WriteString("\n\n")
 		if m.UpdateNudge != "" {
 			inner.WriteString(hintStyle.Render(m.UpdateNudge))
@@ -257,7 +277,7 @@ func (m model) View() string {
 // plainBanner returns a plain-text version of the landing screen (no ANSI).
 func plainBanner(state AuthState) string {
 	var sb strings.Builder
-	sb.WriteString("\nvoid-code — relay harness for Claude Code — by makscee.ru\n\n")
+	sb.WriteString("\nvoid-code " + version.Version + " — relay harness for Claude Code — by makscee.ru\n\n")
 	if state.LoggedIn {
 		sb.WriteString("  Logged in as " + state.Identity + "\n")
 		if state.SubUnknown {
@@ -279,6 +299,10 @@ func plainBanner(state AuthState) string {
 	// VCD-49 budget warning.
 	if w := BudgetWarning(state.BudgetPct); w != "" {
 		sb.WriteString("  " + w + "\n")
+	}
+	// VCD-54: budget-left line — shown always when a budget cap exists (pct != nil).
+	if n, show := budgetLeftPct(state.BudgetPct); show {
+		sb.WriteString(fmt.Sprintf("  %d%% budget left\n", n))
 	}
 	if state.UpdateNudge != "" {
 		sb.WriteString("  " + state.UpdateNudge + "\n")
