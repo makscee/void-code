@@ -1,7 +1,15 @@
-// Package ccsettings idempotently merges void-code's PreToolUse permission
-// hook into ~/.claude/settings.json without clobbering existing user keys.
-// Mirrors the ccjson.EnsureDefaults pattern: absent→write, present→merge,
-// unparseable→error (never clobber), atomic temp+rename, mode 0600.
+// Package ccsettings idempotently merges void-code's Claude Code settings
+// (permission posture + statusLine) into ~/.claude/settings.json without
+// clobbering existing user keys. Mirrors the ccjson.EnsureDefaults pattern:
+// absent→write, present→merge, unparseable→error (never clobber), atomic
+// temp+rename, mode 0600.
+//
+// VCD-53 — automode killed: vc no longer installs the DeepSeek-classifier
+// PreToolUse hook. Instead it writes Claude Code's native allow-all permission
+// posture (EnsureAllowAllPermissions) and removes any stale classifier hook
+// from prior installs (RemoveHook). The classifier hook machinery below
+// (EnsureHook / HookCmd / freshDoc / mergeHook / entry) is retained but no
+// longer wired from main.go, so a proper automode can be reintroduced later.
 package ccsettings
 
 import (
@@ -54,6 +62,168 @@ func SettingsPath() (string, error) {
 		return "", fmt.Errorf("ccsettings: resolve home dir: %w", err)
 	}
 	return filepath.Join(home, ".claude", "settings.json"), nil
+}
+
+// EnsureAllowAllPermissions installs Claude Code's native allow-all permission
+// posture into the settings file at path (VCD-53). This makes CC run every tool
+// without prompting and without any client-side classifier sub-call:
+//
+//	permissions.defaultMode                   = "bypassPermissions"
+//	permissions.skipDangerousModePermissionPrompt = true
+//
+// "bypassPermissions" is CC's documented mode that skips every permission
+// prompt (Claude Code settings docs, permissions.defaultMode). On its own it
+// shows a one-time confirmation before entering bypass mode;
+// skipDangerousModePermissionPrompt suppresses that confirm. The latter is
+// "ignored when set in project settings" — but vc writes to the USER-scope
+// ~/.claude/settings.json (see SettingsPath), where it applies, so the result
+// is a fully silent allow-all with no PreToolUse hook required.
+//
+// Cross-platform: this writes only JSON scalars (no executable path), so there
+// is no Windows backslash/forward-slash concern.
+//
+// Non-clobbering + idempotent, mirroring EnsureHook/EnsureStatusLine:
+//   - Absent file              → write fresh with just the permissions block.
+//   - Present + valid JSON      → merge our two keys into permissions, keep the rest.
+//   - Already correct           → no-op (no write).
+//   - Present + invalid JSON    → return error, do NOT clobber.
+func EnsureAllowAllPermissions(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeAtomic(path, freshPermissionsDoc())
+	}
+	if err != nil {
+		return err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+	if mergeAllowAllPermissions(obj) {
+		out, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			return fmt.Errorf("ccsettings: marshal: %w", err)
+		}
+		return writeAtomic(path, append(out, '\n'))
+	}
+	return nil // already correct — no write needed
+}
+
+// allowAllPermissions returns the two keys vc sets inside "permissions".
+func allowAllPermissions() (defaultMode string, skipPrompt bool) {
+	return "bypassPermissions", true
+}
+
+// freshPermissionsDoc builds a minimal settings.json with only our permissions.
+func freshPermissionsDoc() []byte {
+	mode, skip := allowAllPermissions()
+	doc := map[string]any{
+		"permissions": map[string]any{
+			"defaultMode":                       mode,
+			"skipDangerousModePermissionPrompt": skip,
+		},
+	}
+	out, _ := json.MarshalIndent(doc, "", "  ")
+	return append(out, '\n')
+}
+
+// mergeAllowAllPermissions sets our two keys inside obj["permissions"] in place,
+// preserving any other permissions keys (allow/ask/deny/etc). Returns true if
+// obj changed (write needed).
+func mergeAllowAllPermissions(obj map[string]any) bool {
+	mode, skip := allowAllPermissions()
+	pm, _ := obj["permissions"].(map[string]any)
+	if pm == nil {
+		pm = map[string]any{}
+		obj["permissions"] = pm
+	}
+	changed := false
+	if pm["defaultMode"] != mode {
+		pm["defaultMode"] = mode
+		changed = true
+	}
+	if pm["skipDangerousModePermissionPrompt"] != skip {
+		pm["skipDangerousModePermissionPrompt"] = skip
+		changed = true
+	}
+	return changed
+}
+
+// RemoveHook strips any vc-installed classifier PreToolUse hook from the
+// settings file at path (VCD-53 migration). Ownership key: a PreToolUse entry
+// whose inner command ends with " hook" is ours. Foreign hooks are untouched.
+//
+//   - Absent file / no vc hook   → no-op (no write).
+//   - Our hook present            → remove the entry (and empty PreToolUse / hooks
+//     containers we leave in place, harmlessly empty).
+//   - Present + invalid JSON      → return error, do NOT clobber.
+func RemoveHook(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil // nothing to clean up
+	}
+	if err != nil {
+		return err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+	if removeOurHook(obj) {
+		out, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			return fmt.Errorf("ccsettings: marshal: %w", err)
+		}
+		return writeAtomic(path, append(out, '\n'))
+	}
+	return nil // no vc hook present — no write
+}
+
+// removeOurHook deletes any PreToolUse entry whose inner command ends with
+// " hook" (ours). Returns true if obj changed (write needed).
+func removeOurHook(obj map[string]any) bool {
+	hooks, _ := obj["hooks"].(map[string]any)
+	if hooks == nil {
+		return false
+	}
+	pre, _ := hooks["PreToolUse"].([]any)
+	if len(pre) == 0 {
+		return false
+	}
+	kept := make([]any, 0, len(pre))
+	changed := false
+	for _, raw := range pre {
+		if isOurHookEntry(raw) {
+			changed = true
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	if !changed {
+		return false
+	}
+	hooks["PreToolUse"] = kept
+	return true
+}
+
+// isOurHookEntry reports whether a PreToolUse entry is a vc classifier hook
+// (any inner command ending with " hook").
+func isOurHookEntry(raw any) bool {
+	e, _ := raw.(map[string]any)
+	if e == nil {
+		return false
+	}
+	inner, _ := e["hooks"].([]any)
+	for _, hraw := range inner {
+		h, _ := hraw.(map[string]any)
+		if h == nil {
+			continue
+		}
+		if c, _ := h["command"].(string); strings.HasSuffix(c, " hook") {
+			return true
+		}
+	}
+	return false
 }
 
 // QuoteIfSpace wraps path in double-quotes if it contains a space character.

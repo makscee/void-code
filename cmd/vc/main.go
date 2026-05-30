@@ -230,14 +230,19 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Ensure the local PreToolUse permission hook so claude auto mode works
-	// on the deepseek relay without the Anthropic server-side classifier.
+	// VCD-53 — automode killed. Instead of the DeepSeek-classifier PreToolUse
+	// hook, install Claude Code's native allow-all permission posture
+	// (bypassPermissions + skip the bypass confirm) so every tool runs with no
+	// prompt and no classifier sub-call. Also strip any stale classifier hook
+	// left by an older vc, so upgraders stop making classifier requests.
 	if execPath, err := os.Executable(); err == nil {
-		hookCmd := ccsettings.HookCmd(execPath)
 		settingsPath, pathErr := ccsettings.SettingsPath()
 		if pathErr == nil {
-			if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot install PreToolUse hook: %v\n", err)
+			if err := ccsettings.EnsureAllowAllPermissions(settingsPath); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot set allow-all permissions: %v\n", err)
+			}
+			if err := ccsettings.RemoveHook(settingsPath); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot remove stale automode hook: %v\n", err)
 			}
 			// Install the statusLine command (non-clobbering — leaves user's foreign statusLine untouched).
 			slCmd := ccsettings.StatusLineCmd(ccsettings.ForwardSlash(execPath))

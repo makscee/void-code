@@ -238,3 +238,171 @@ func TestHookCmd(t *testing.T) {
 		t.Fatalf("HookCmd spaced => %q", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// VCD-53: KILL automode — allow-all permission posture, no classifier hook.
+//
+// vc no longer installs the DeepSeek-classifier PreToolUse hook. Instead it
+// writes Claude Code's native allow-all permission posture into
+// ~/.claude/settings.json:
+//
+//	permissions.defaultMode == "bypassPermissions"   (allow every tool, no prompt)
+//	permissions.skipDangerousModePermissionPrompt == true  (suppress the bypass confirm)
+//
+// EnsureAllowAllPermissions installs that posture (non-clobbering, idempotent,
+// atomic). RemoveHook strips any previously-installed vc classifier hook so
+// upgraders stop making classifier sub-calls.
+// ---------------------------------------------------------------------------
+
+// perms reads the "permissions" object from settings.json at p.
+func perms(t *testing.T, p string) map[string]any {
+	t.Helper()
+	m := read(t, p)
+	pm, ok := m["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("permissions key missing or wrong type: %v", m["permissions"])
+	}
+	return pm
+}
+
+func TestEnsureAllowAllPermissions_AbsentWritesFresh(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := EnsureAllowAllPermissions(p); err != nil {
+		t.Fatalf("EnsureAllowAllPermissions: %v", err)
+	}
+	pm := perms(t, p)
+	if pm["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("defaultMode = %v, want bypassPermissions", pm["defaultMode"])
+	}
+	if pm["skipDangerousModePermissionPrompt"] != true {
+		t.Fatalf("skipDangerousModePermissionPrompt = %v, want true", pm["skipDangerousModePermissionPrompt"])
+	}
+}
+
+func TestEnsureAllowAllPermissions_Idempotent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := EnsureAllowAllPermissions(p); err != nil {
+		t.Fatal(err)
+	}
+	fi1, _ := os.Stat(p)
+	if err := EnsureAllowAllPermissions(p); err != nil { // second call must be no-op
+		t.Fatal(err)
+	}
+	fi2, _ := os.Stat(p)
+	if fi1.ModTime() != fi2.ModTime() {
+		t.Fatal("second EnsureAllowAllPermissions rewrote file — not idempotent")
+	}
+}
+
+func TestEnsureAllowAllPermissions_PreservesForeignKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(p, []byte(`{"theme":"light","env":{"FOO":"bar"}}`), 0600)
+	if err := EnsureAllowAllPermissions(p); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	if m["theme"] != "light" {
+		t.Fatalf("clobbered foreign key theme: %v", m["theme"])
+	}
+	env, _ := m["env"].(map[string]any)
+	if env["FOO"] != "bar" {
+		t.Fatalf("clobbered foreign key env.FOO: %v", env["FOO"])
+	}
+	pm, _ := m["permissions"].(map[string]any)
+	if pm["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("did not install defaultMode: %v", pm)
+	}
+}
+
+func TestEnsureAllowAllPermissions_MergesIntoExistingPermissions(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	// User already has a permissions object with their own deny list — must be kept.
+	os.WriteFile(p, []byte(`{"permissions":{"deny":["Read(./.env)"]}}`), 0600)
+	if err := EnsureAllowAllPermissions(p); err != nil {
+		t.Fatal(err)
+	}
+	pm := perms(t, p)
+	if pm["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("defaultMode not set: %v", pm)
+	}
+	deny, _ := pm["deny"].([]any)
+	if len(deny) != 1 || deny[0] != "Read(./.env)" {
+		t.Fatalf("clobbered user's deny list: %v", pm["deny"])
+	}
+}
+
+func TestEnsureAllowAllPermissions_UnparseableNotClobbered(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(p, []byte(`{not json`), 0600)
+	if err := EnsureAllowAllPermissions(p); err == nil {
+		t.Fatal("expected error on unparseable settings.json")
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != `{not json` {
+		t.Fatalf("unparseable file was clobbered: %q", string(b))
+	}
+}
+
+// RemoveHook tests — strip a previously-installed vc classifier PreToolUse hook.
+
+func TestRemoveHook_RemovesOurHook(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	// Simulate an old-vc install: our classifier hook present.
+	_ = EnsureHook(p, "/usr/local/bin/vc hook")
+	if err := RemoveHook(p); err != nil {
+		t.Fatalf("RemoveHook: %v", err)
+	}
+	m := read(t, p)
+	hooks, _ := m["hooks"].(map[string]any)
+	if hooks != nil {
+		if pre, ok := hooks["PreToolUse"].([]any); ok && len(pre) != 0 {
+			t.Fatalf("our classifier hook was not removed: %v", pre)
+		}
+	}
+}
+
+func TestRemoveHook_PreservesForeignHooks(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	// User has their own PreToolUse hook (not ours — command does not end " hook").
+	os.WriteFile(p, []byte(`{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"/usr/bin/my-linter"}]}]}}`), 0600)
+	if err := RemoveHook(p); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	pre := preToolUseEntries(t, m)
+	if len(pre) != 1 {
+		t.Fatalf("foreign hook removed: %v", pre)
+	}
+}
+
+func TestRemoveHook_IdempotentWhenAbsent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(p, []byte(`{"env":{"X":"1"}}`), 0600)
+	fi1, _ := os.Stat(p)
+	if err := RemoveHook(p); err != nil { // no vc hook present → no write
+		t.Fatal(err)
+	}
+	fi2, _ := os.Stat(p)
+	if fi1.ModTime() != fi2.ModTime() {
+		t.Fatal("RemoveHook rewrote file when no vc hook was present")
+	}
+}
+
+func TestRemoveHook_NoFileIsNoError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := RemoveHook(p); err != nil {
+		t.Fatalf("RemoveHook on missing file should be a no-op, got: %v", err)
+	}
+}
+
+func TestRemoveHook_UnparseableNotClobbered(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(p, []byte(`{not json`), 0600)
+	if err := RemoveHook(p); err == nil {
+		t.Fatal("expected error on unparseable settings.json")
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != `{not json` {
+		t.Fatalf("unparseable file was clobbered: %q", string(b))
+	}
+}
