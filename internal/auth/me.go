@@ -19,6 +19,11 @@ type MeResult struct {
 	// (UsedUsd, BudgetUsd, RemainingUsd) are NOT exposed to vc for privacy.
 	Pct     *float64 // used/budget*100; nil when budget=0 (no cap) or no budget set
 	ResetAt string   // ISO-8601 first day of next calendar month, UTC
+
+	// VCD-55: prepaid wallet balance (USD remaining, 2-decimal). nil when the
+	// server does not return it (older void-auth / VCD-55 not yet deployed) →
+	// callers degrade gracefully (no balance shown).
+	BalanceUsd *float64
 }
 
 // FetchMe calls GET <authHost>/v1/vc/me with the supplied bearer token.
@@ -53,6 +58,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		SubDaysLeft int      `json:"subDaysLeft"`
 		Pct         *float64 `json:"pct"`
 		ResetAt     string   `json:"resetAt"`
+		BalanceUsd  *float64 `json:"balanceUsd"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
@@ -63,5 +69,6 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		SubDaysLeft: r.SubDaysLeft,
 		Pct:         r.Pct,
 		ResetAt:     r.ResetAt,
+		BalanceUsd:  r.BalanceUsd,
 	}, nil
 }

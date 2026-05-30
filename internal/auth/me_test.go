@@ -160,3 +160,41 @@ func TestFetchMe_BudgetPctNull(t *testing.T) {
 		t.Errorf("Pct must be nil when no budget configured, got %v", *res.Pct)
 	}
 }
+
+// VCD-56: prepaid wallet balance fields.
+
+func TestFetchMe_BalanceUsd(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"userId":"u9","email":"u9@x.com","subDaysLeft":-1,"pct":null,"balanceUsd":12.4,"resetAt":""}`))
+	}))
+	defer srv.Close()
+
+	res, err := FetchMe(srv.URL, "tok", srv.Client())
+	if err != nil {
+		t.Fatalf("FetchMe error: %v", err)
+	}
+	if res.BalanceUsd == nil {
+		t.Fatalf("BalanceUsd = nil, want 12.4")
+	}
+	if *res.BalanceUsd != 12.4 {
+		t.Errorf("BalanceUsd = %v, want 12.4", *res.BalanceUsd)
+	}
+}
+
+func TestFetchMe_BalanceUsdAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// No balanceUsd field — older server / VCD-55 not yet shipped.
+		w.Write([]byte(`{"userId":"u9","email":"u9@x.com","subDaysLeft":10,"pct":null,"resetAt":""}`))
+	}))
+	defer srv.Close()
+
+	res, err := FetchMe(srv.URL, "tok", srv.Client())
+	if err != nil {
+		t.Fatalf("FetchMe error: %v", err)
+	}
+	if res.BalanceUsd != nil {
+		t.Errorf("BalanceUsd = %v, want nil (field absent)", *res.BalanceUsd)
+	}
+}
