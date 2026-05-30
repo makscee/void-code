@@ -1,6 +1,10 @@
 package welcome
 
-import "testing"
+import (
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 func TestProvidersModel_RowsFromKeys(t *testing.T) {
 	keys := []string{"work", "personal"}
@@ -76,6 +80,38 @@ func TestDeleteConfirmModel_NorEscCancels(t *testing.T) {
 	}
 }
 
+// TestAddKeyInput_PasteHandled verifies that pasting a multi-char string into
+// the addKeyModel lands in the buffer. This is the repro for the bug reported
+// 2026-05-31: "can't paste the key, pasting just doesn't do anything".
+//
+// Root cause: handleKey only accepted len(s)==1, dropping multi-rune paste text.
+// Fix: add handlePaste(text string) that appends the full string unconditionally.
+func TestAddKeyInput_PasteHandled(t *testing.T) {
+	// repro-before-fix: paste of an oauth token must NOT be silently dropped.
+	in := newAddKeyModel()
+	in = in.typeForTest("mykey")
+	in = in.submitForTest() // advance to token stage
+	if in.Stage() != addKeyStageToken {
+		t.Fatalf("expected token stage, got %v", in.Stage())
+	}
+
+	// Simulate bubbletea bracketed-paste: multi-rune string arrives via handlePaste.
+	const pastedToken = "sk-ant-oat01-ABC123XYZ-LONGTOKEN"
+	in = in.handlePaste(pastedToken)
+	if in.buf != pastedToken {
+		t.Fatalf("buf after paste = %q, want %q — paste was dropped (repro confirmed)", in.buf, pastedToken)
+	}
+
+	// And submitting captures the token.
+	in = in.submitForTest()
+	if !in.Done() {
+		t.Fatal("should be done after submit")
+	}
+	if in.Token() != pastedToken {
+		t.Fatalf("Token() = %q, want %q", in.Token(), pastedToken)
+	}
+}
+
 func TestAddKeyInput_TwoStageCapture(t *testing.T) {
 	in := newAddKeyModel()
 	// Stage 1: type a name.
@@ -91,5 +127,46 @@ func TestAddKeyInput_TwoStageCapture(t *testing.T) {
 	}
 	if in.Name() != "work" || in.Token() != "sk-ant-oat01-XYZ" {
 		t.Fatalf("captured name=%q token=%q", in.Name(), in.Token())
+	}
+}
+
+// TestUpdateAddKey_PasteRouted verifies that model.Update, when in addKeyView,
+// properly routes a bracketed-paste KeyMsg (Paste=true, multiple Runes) into
+// the addKey buffer. This is the integration-level repro for VCD-57 paste bug.
+//
+// bubbletea v1.3.10: bracketed paste is ON by default. A paste arrives as
+// tea.KeyMsg{Type: tea.KeyRunes, Runes: [...], Paste: true}.
+// The bug: Update only handled tea.KeyMsg (ok — paste IS a KeyMsg), but
+// handleKey had `len(s)==1` guard that drops multi-rune paste strings.
+// Additionally, the bracketed-paste KeyMsg.String() returns "[token]" (with
+// surrounding brackets added by bubbletea), which also has len > 1 and starts
+// with '[', so it can never match a single printable character.
+func TestUpdateAddKey_PasteRouted(t *testing.T) {
+	m := NewMenuModelForTest(AuthState{LoggedIn: true})
+	m = m.SetAddKeyView()
+
+	// Advance to token stage by typing a name and pressing enter.
+	for _, ch := range "mykey" {
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = m2.(model)
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m2.(model)
+	if m.addKey.Stage() != addKeyStageToken {
+		t.Fatalf("expected token stage, got %v — name-entry broke", m.addKey.Stage())
+	}
+
+	// Now paste a multi-rune token via a bracketed-paste KeyMsg (Paste: true).
+	const pastedToken = "sk-ant-oat01-PASTETEST"
+	pasteMsg := tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(pastedToken),
+		Paste: true,
+	}
+	m2, _ = m.Update(pasteMsg)
+	m = m2.(model)
+
+	if m.AddKeyBuf() != pastedToken {
+		t.Fatalf("addKey.buf after paste = %q, want %q — paste was lost (bug reproduced)", m.AddKeyBuf(), pastedToken)
 	}
 }

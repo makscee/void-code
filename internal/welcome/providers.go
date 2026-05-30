@@ -130,7 +130,17 @@ func (m addKeyModel) submit() addKeyModel {
 	return m
 }
 
+// handlePaste appends a full pasted string to the buffer unconditionally.
+// Call this when the originating tea.KeyMsg has Paste==true, to avoid the
+// len==1 guard in handleKey from silently dropping multi-rune clipboard content.
+func (m addKeyModel) handlePaste(text string) addKeyModel {
+	m.buf += text
+	return m
+}
+
 // handleKey processes a bubbletea key string against the buffer (real TUI path).
+// For normal (non-paste) key events. Uses rune-count (not byte-length) to accept
+// multi-rune typed chars from IME inputs.
 func (m addKeyModel) handleKey(s string) addKeyModel {
 	switch s {
 	case "enter":
@@ -142,7 +152,7 @@ func (m addKeyModel) handleKey(s string) addKeyModel {
 			m.buf = string(runes[:len(runes)-1])
 		}
 	default:
-		if len(s) == 1 { // printable rune
+		if len([]rune(s)) == 1 { // single printable rune (rune-aware, handles multi-byte UTF-8)
 			m.buf += s
 		}
 	}

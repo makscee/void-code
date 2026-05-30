@@ -287,6 +287,12 @@ func (m model) Cursor() int            { return m.cursor }
 func (m model) ItemCount() int         { return len(m.items) }
 func (m model) ItemLabel(i int) string { return m.items[i].label }
 func (m model) SetCursor(i int) model  { m.cursor = i; return m }
+
+// SetAddKeyView puts the model into addKeyView with a fresh addKeyModel (test accessor).
+func (m model) SetAddKeyView() model { m.view = addKeyView; m.addKey = newAddKeyModel(); return m }
+
+// AddKeyBuf returns the current text buffer of the addKey sub-model (test accessor).
+func (m model) AddKeyBuf() string { return m.addKey.buf }
 func (m model) MoveCursor(d int) model {
 	n := len(m.items)
 	m.cursor = ((m.cursor+d)%n + n) % n
@@ -305,6 +311,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+
+	// Bracketed-paste (bubbletea v1.3.x): bracketed paste is ON by default.
+	// A paste arrives as tea.KeyMsg{Type: KeyRunes, Paste: true, Runes: [...]}.
+	// key.String() wraps it in "[...]" which breaks all key-name comparisons, so
+	// we intercept paste events here and route them directly to the active text
+	// input before falling through to normal key dispatch.
+	if key.Paste && m.view == addKeyView {
+		m.addKey = m.addKey.handlePaste(string(key.Runes))
+		return m, nil
+	}
+
 	s := key.String()
 
 	if m.view == topUpView {
