@@ -109,17 +109,17 @@ func TestSubscriptionWarning_Band(t *testing.T) {
 	}
 }
 
-func TestPlainBanner_ShowsWarningInBand(t *testing.T) {
-	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: "x@vk.com", SubDaysLeft: 2})
-	if !strings.Contains(out, "@makscee") {
-		t.Errorf("plain banner for 2 days must include warning: %q", out)
+func TestPlainBanner_ShowsIdentity(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: "x@vk.com"})
+	if !strings.Contains(out, "x@vk.com") {
+		t.Errorf("plain banner must include identity: %q", out)
 	}
 }
 
-func TestPlainBanner_NoWarningAboveBand(t *testing.T) {
-	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: "x@vk.com", SubDaysLeft: 10})
-	if strings.Contains(out, "@makscee") {
-		t.Errorf("plain banner for 10 days must NOT warn: %q", out)
+func TestPlainBanner_NotLoggedIn(t *testing.T) {
+	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: false})
+	if !strings.Contains(out, "Not logged in") {
+		t.Errorf("plain banner for logged-out must say 'Not logged in': %q", out)
 	}
 }
 
@@ -181,16 +181,15 @@ func TestBudgetWarning_BlockAt100(t *testing.T) {
 	}
 }
 
-func TestPlainBanner_BudgetWarn(t *testing.T) {
-	pct := 85.0
+func TestPlainBanner_ShowsBalance(t *testing.T) {
+	bal := 9.5
 	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "u@x.com",
-		SubDaysLeft: -1,
-		BudgetPct:   &pct,
+		LoggedIn:   true,
+		Identity:   "u@x.com",
+		BalanceUsd: &bal,
 	})
-	if !strings.Contains(out, "@makscee") {
-		t.Errorf("plain banner must show budget warning at 85%%: %q", out)
+	if !strings.Contains(out, "$9.50 left") {
+		t.Errorf("plain banner must show balance at $9.50 left: %q", out)
 	}
 }
 
@@ -222,53 +221,156 @@ func TestPlainBanner_ShowsVersion(t *testing.T) {
 	}
 }
 
-func TestPlainBanner_BudgetLeftLine_Healthy(t *testing.T) {
-	pct := 30.0 // 30% used → 70% left
+func TestPlainBanner_NilBalanceShowsDash(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "u@x.com",
-		SubDaysLeft: -1,
-		BudgetPct:   &pct,
+		LoggedIn: true,
+		Identity: "u@x.com",
+		// BalanceUsd nil → should show dash, no $ figure
 	})
-	// Must show "70% budget left" (period-agnostic, not "monthly").
-	if !strings.Contains(out, "budget left") {
-		t.Errorf("plain banner must show 'budget left' at pct=30: %q", out)
+	if strings.Contains(out, "$") {
+		t.Errorf("plain banner must NOT show $ when BalanceUsd is nil: %q", out)
 	}
-	if !strings.Contains(out, "70%") {
-		t.Errorf("plain banner must show '70%%' at pct=30: %q", out)
-	}
-	// Must NOT say "monthly".
-	if strings.Contains(out, "monthly") || strings.Contains(out, "Monthly") {
-		t.Errorf("budget-left line must not say 'monthly': %q", out)
+	if !strings.Contains(out, "—") {
+		t.Errorf("plain banner must show '—' when BalanceUsd is nil: %q", out)
 	}
 }
 
-func TestPlainBanner_BudgetLeftLine_NilHidden(t *testing.T) {
+func TestPlainBanner_NoSubDaysNoBudgetPct(t *testing.T) {
+	pct := 30.0
 	out := welcome.PlainBannerForTest(welcome.AuthState{
 		LoggedIn:    true,
 		Identity:    "u@x.com",
-		SubDaysLeft: -1,
-		BudgetPct:   nil,
+		SubDaysLeft: 5,
+		BudgetPct:   &pct,
 	})
+	// VCD-56: sub-days and budget-pct lines dropped from plain banner.
+	if strings.Contains(out, "days left on subscription") {
+		t.Errorf("plain banner must NOT show sub-days line: %q", out)
+	}
 	if strings.Contains(out, "budget left") {
-		t.Errorf("plain banner must NOT show 'budget left' when pct is nil: %q", out)
+		t.Errorf("plain banner must NOT show budget-left line: %q", out)
 	}
 }
 
-func TestPlainBanner_BudgetLeftLine_Warn(t *testing.T) {
-	pct := 85.0 // 85% used → 15% left — still in warn territory
-	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "u@x.com",
-		SubDaysLeft: -1,
-		BudgetPct:   &pct,
-	})
-	// At ≥80% a warning is shown (existing behavior kept); budget-left line also shown.
-	if !strings.Contains(out, "budget left") {
-		t.Errorf("plain banner must show 'budget left' even at warn-band pct=85: %q", out)
+// VCD-56: menu model tests.
+
+func TestMenu_StartItemDefault(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "a@b.com"})
+	if m.Cursor() != 0 {
+		t.Errorf("initial cursor = %d, want 0 (Start)", m.Cursor())
 	}
-	if !strings.Contains(out, "15%") {
-		t.Errorf("plain banner must show '15%%' at pct=85: %q", out)
+	if got := m.ItemLabel(0); got != "Start" {
+		t.Errorf("item 0 = %q, want Start", got)
+	}
+}
+
+func TestMenu_NavigationWraps(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	n := m.ItemCount() // 3 when logged in: Start, Top up, Run doctor
+	if n != 3 {
+		t.Fatalf("item count = %d, want 3", n)
+	}
+	m = m.MoveCursor(-1) // up from 0 wraps to last
+	if m.Cursor() != n-1 {
+		t.Errorf("cursor after up-from-0 = %d, want %d", m.Cursor(), n-1)
+	}
+	m = m.MoveCursor(1) // down wraps back to 0
+	if m.Cursor() != 0 {
+		t.Errorf("cursor after wrap-down = %d, want 0", m.Cursor())
+	}
+}
+
+func TestMenu_EnterStartReturnsSpawn(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	m = m.SetCursor(0)
+	if got := m.Activate(); got != welcome.SpawnClaude {
+		t.Errorf("activate Start = %v, want SpawnClaude", got)
+	}
+}
+
+func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	m = m.SetCursor(2)
+	if got := m.Activate(); got != welcome.RunDoctor {
+		t.Errorf("activate Run doctor = %v, want RunDoctor", got)
+	}
+}
+
+func TestMenu_TopUpIsInfoNotResult(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	m = m.SetCursor(1)
+	// Top up does not exit the program — Activate returns the in-TUI sentinel.
+	if got := m.Activate(); got != welcome.ShowTopUp {
+		t.Errorf("activate Top up = %v, want ShowTopUp", got)
+	}
+}
+
+func TestMenu_LoggedOutSingleLoginItem(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: false})
+	if m.ItemCount() != 1 {
+		t.Fatalf("logged-out item count = %d, want 1 (Login)", m.ItemCount())
+	}
+	m = m.SetCursor(0)
+	if got := m.Activate(); got != welcome.RunLogin {
+		t.Errorf("activate logged-out item = %v, want RunLogin", got)
+	}
+}
+
+// VCD-56: View rendering tests.
+
+func ptrF(v float64) *float64 { return &v }
+
+func TestView_HeaderShowsBalanceAndIdentity(t *testing.T) {
+	bal := 7.5
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal})
+	out := m.View()
+	if !strings.Contains(out, "x@y.com") {
+		t.Errorf("view missing identity:\n%s", out)
+	}
+	if !strings.Contains(out, "$7.50 left") {
+		t.Errorf("view missing balance:\n%s", out)
+	}
+}
+
+func TestView_NoSubDaysNoBudgetPct(t *testing.T) {
+	bal := 7.5
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal, SubDaysLeft: 5, BudgetPct: ptrF(80)})
+	out := m.View()
+	if strings.Contains(out, "days left on subscription") {
+		t.Errorf("view still shows sub-days:\n%s", out)
+	}
+	if strings.Contains(out, "budget left") {
+		t.Errorf("view still shows %% budget left:\n%s", out)
+	}
+}
+
+func TestView_NilBalanceShowsDash(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com"}) // BalanceUsd nil
+	out := m.View()
+	if strings.Contains(out, "$") {
+		t.Errorf("nil balance must not render a $ figure:\n%s", out)
+	}
+	if !strings.Contains(out, "—") {
+		t.Errorf("nil balance should render dash:\n%s", out)
+	}
+}
+
+func TestView_MenuListsItemsWithCursor(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com"})
+	out := m.View()
+	for _, it := range []string{"Start", "Top up", "Run doctor"} {
+		if !strings.Contains(out, it) {
+			t.Errorf("menu missing %q:\n%s", it, out)
+		}
+	}
+}
+
+func TestView_TopUpSubViewShowsTelegram(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	m = m.SetTopUpView()
+	out := m.View()
+	if !strings.Contains(out, "@makscee") {
+		t.Errorf("top-up view missing @makscee instruction:\n%s", out)
 	}
 }
 

@@ -44,34 +44,44 @@ type AuthState struct {
 type RunResult int
 
 const (
-	// SpawnClaude means the user is logged in and pressed a key — spawn claude.
+	// SpawnClaude means the user chose Start (logged in) — spawn claude.
 	SpawnClaude RunResult = iota
-	// RunLogin means the user is logged out and pressed a key — run vc login.
+	// RunLogin means the user is logged out and chose Login — run vc login.
 	RunLogin
+	// RunDoctor means the user chose Run doctor — caller runs doctor, then re-shows menu.
+	RunDoctor
+	// Quit means the user pressed q/ctrl-c/esc at the top level — exit without spawning.
+	Quit
+	// ShowTopUp is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
+	ShowTopUp
 )
 
-// Run shows the persistent landing screen and blocks until the user presses
-// any key.  Returns SpawnClaude or RunLogin based on auth state.
+// Run shows the interactive selectable menu and blocks until the user makes a
+// choice (or quits). Returns one of SpawnClaude / RunLogin / RunDoctor / Quit.
 //
 // In non-TTY environments (CI, pipe) it falls back to a plain-text banner
-// and returns SpawnClaude.
+// and returns SpawnClaude (logged-in) or RunLogin (logged-out).
 func Run(state AuthState) (RunResult, error) {
 	m := newModel(state)
 	p := tea.NewProgram(m)
-	result, err := p.Run()
+	out, err := p.Run()
 	if err != nil {
-		// Non-TTY fallback: print a plain banner and treat as logged-in.
+		// Non-TTY fallback: print a plain banner, pick safe default.
 		fmt.Print(plainBanner(state))
 		if !state.LoggedIn {
 			return RunLogin, nil
 		}
 		return SpawnClaude, nil
 	}
-	final, ok := result.(model)
-	if !ok || !final.LoggedIn {
-		return RunLogin, nil
+	fm, ok := out.(model)
+	if !ok || !fm.chosen {
+		// Closed without an explicit choice (e.g. terminal closed) → safe default.
+		if !state.LoggedIn {
+			return RunLogin, nil
+		}
+		return Quit, nil
 	}
-	return SpawnClaude, nil
+	return fm.result, nil
 }
 
 // FormatBalance renders the prepaid balance for the header.
@@ -204,22 +214,103 @@ var (
 			MarginBottom(1)
 )
 
+// viewState distinguishes the top-level menu from the Top-up info sub-view.
+type viewState int
+
+const (
+	menuView  viewState = iota
+	topUpView           // in-TUI info screen; any key returns to menu
+)
+
+// menuItem pairs a display label with the RunResult it produces on activation.
+type menuItem struct {
+	label  string
+	result RunResult
+}
+
 type model struct {
 	AuthState
+	items    []menuItem
+	cursor   int
+	view     viewState
+	result   RunResult
+	chosen   bool // true once a process-exiting result was selected
 	quitting bool
 }
 
-func newModel(state AuthState) model {
-	return model{AuthState: state}
+func menuItemsFor(state AuthState) []menuItem {
+	if !state.LoggedIn {
+		return []menuItem{{label: "Login", result: RunLogin}}
+	}
+	// DEFERRED: "Disable relay" item intentionally omitted (operator deferred 2026-05-30).
+	return []menuItem{
+		{label: "Start", result: SpawnClaude},
+		{label: "Top up", result: ShowTopUp},
+		{label: "Run doctor", result: RunDoctor},
+	}
 }
 
-func (m model) Init() tea.Cmd {
-	return nil
+func newModel(state AuthState) model {
+	return model{AuthState: state, items: menuItemsFor(state), view: menuView}
 }
+
+func (m model) Init() tea.Cmd { return nil }
+
+// ─── white-box test accessors ────────────────────────────────────────────────
+
+// NewMenuModelForTest exposes newModel for package-external tests.
+func NewMenuModelForTest(state AuthState) model { return newModel(state) }
+
+func (m model) Cursor() int            { return m.cursor }
+func (m model) ItemCount() int         { return len(m.items) }
+func (m model) ItemLabel(i int) string { return m.items[i].label }
+func (m model) SetCursor(i int) model  { m.cursor = i; return m }
+func (m model) MoveCursor(d int) model {
+	n := len(m.items)
+	m.cursor = ((m.cursor+d)%n + n) % n
+	return m
+}
+
+// Activate returns the RunResult for the item under the cursor. Callers check
+// whether the result is ShowTopUp (in-TUI navigation) or a process-exiting value.
+func (m model) Activate() RunResult { return m.items[m.cursor].result }
+
+// SetTopUpView sets the model into the top-up sub-view (for tests).
+func (m model) SetTopUpView() model { m.view = topUpView; return m }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
-	case tea.KeyMsg:
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	s := key.String()
+
+	if m.view == topUpView {
+		// Any key returns to the menu.
+		m.view = menuView
+		return m, nil
+	}
+
+	switch s {
+	case "ctrl+c", "q", "esc":
+		m.result = Quit
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "k":
+		m = m.MoveCursor(-1)
+		return m, nil
+	case "down", "j":
+		m = m.MoveCursor(1)
+		return m, nil
+	case "enter", " ":
+		r := m.Activate()
+		if r == ShowTopUp {
+			m.view = topUpView
+			return m, nil
+		}
+		m.result = r
+		m.chosen = true
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -230,8 +321,6 @@ func (m model) View() string {
 	if m.quitting {
 		return ""
 	}
-	var sb strings.Builder
-
 	inner := strings.Builder{}
 	inner.WriteString(titleStyle.Render("void-code " + version.Version))
 	inner.WriteString("\n")
@@ -239,84 +328,60 @@ func (m model) View() string {
 	inner.WriteString("\n\n")
 
 	if m.LoggedIn {
-		// Subscription line.
 		inner.WriteString(accentStyle.Render("Logged in as " + m.Identity))
 		inner.WriteString("\n")
-		if m.SubUnknown {
-			inner.WriteString(subStyle.Render("· subscription status unknown ·"))
-		} else if m.SubDaysLeft == -1 {
-			inner.WriteString(accentStyle.Render("· unlimited subscription ·"))
-		} else if m.SubDaysLeft > 0 {
-			inner.WriteString(accentStyle.Render(fmt.Sprintf("· %d days left on subscription ·", m.SubDaysLeft)))
-		} else {
-			inner.WriteString(warnStyle.Render("· no active subscription ·"))
-		}
-		// Soft ≤3-day expiry warning (1–3 days): shown below the subscription line.
-		if w := SubscriptionWarning(m.SubDaysLeft); w != "" {
-			inner.WriteString("\n")
-			inner.WriteString(warnStyle.Render(w))
-		}
-		// VCD-49 budget warning: shown when pct ≥80 (warn) or ≥100 (block copy).
-		if w := BudgetWarning(m.BudgetPct); w != "" {
-			inner.WriteString("\n")
-			inner.WriteString(warnStyle.Render(w))
-		}
-		// VCD-54: budget-left line — shown always when a budget cap exists (pct != nil).
-		if n, show := budgetLeftPct(m.BudgetPct); show {
-			inner.WriteString("\n")
-			inner.WriteString(subStyle.Render(fmt.Sprintf("%d%% budget left", n)))
-		}
-		inner.WriteString("\n\n")
-		if m.UpdateNudge != "" {
-			inner.WriteString(hintStyle.Render(m.UpdateNudge))
-			inner.WriteString("\n")
-		}
-		inner.WriteString(hintStyle.Render("press any key to start"))
+		inner.WriteString(subStyle.Render(FormatBalance(m.BalanceUsd)))
+		inner.WriteString("\n")
 	} else {
 		inner.WriteString(warnStyle.Render("Not logged in"))
-		inner.WriteString("\n\n")
-		if m.UpdateNudge != "" {
-			inner.WriteString(hintStyle.Render(m.UpdateNudge))
-			inner.WriteString("\n")
-		}
-		inner.WriteString(hintStyle.Render("press any key to login"))
+		inner.WriteString("\n")
+	}
+	if m.UpdateNudge != "" {
+		inner.WriteString("\n")
+		inner.WriteString(hintStyle.Render(m.UpdateNudge))
+		inner.WriteString("\n")
 	}
 	inner.WriteString("\n")
 
+	if m.view == topUpView {
+		inner.WriteString(accentStyle.Render("Top up your balance"))
+		inner.WriteString("\n\n")
+		inner.WriteString(subStyle.Render("Text @makscee on Telegram to top up your balance."))
+		inner.WriteString("\n\n")
+		inner.WriteString(hintStyle.Render("press any key to go back"))
+	} else {
+		for i, it := range m.items {
+			var cursor, line string
+			if i == m.cursor {
+				cursor = accentStyle.Render("▸ ")
+				line = accentStyle.Render(it.label)
+			} else {
+				cursor = "  "
+				line = subStyle.Render(it.label)
+			}
+			inner.WriteString(cursor + line + "\n")
+		}
+		inner.WriteString("\n")
+		inner.WriteString(hintStyle.Render("↑/↓ navigate · enter select · q quit"))
+	}
+	inner.WriteString("\n")
+
+	var sb strings.Builder
 	sb.WriteString(boxStyle.Render(inner.String()))
 	sb.WriteString("\n")
 	return sb.String()
 }
 
 // plainBanner returns a plain-text version of the landing screen (no ANSI).
+// Used as a non-TTY fallback when the bubbletea program cannot run.
 func plainBanner(state AuthState) string {
 	var sb strings.Builder
 	sb.WriteString("\nvoid-code " + version.Version + " — relay harness for Claude Code — by makscee.ru\n\n")
 	if state.LoggedIn {
 		sb.WriteString("  Logged in as " + state.Identity + "\n")
-		if state.SubUnknown {
-			sb.WriteString("  · subscription status unknown ·\n")
-		} else if state.SubDaysLeft == -1 {
-			sb.WriteString("  · unlimited subscription ·\n")
-		} else if state.SubDaysLeft > 0 {
-			sb.WriteString(fmt.Sprintf("  · %d days left on subscription ·\n", state.SubDaysLeft))
-		} else {
-			sb.WriteString("  · no active subscription ·\n")
-		}
+		sb.WriteString("  " + FormatBalance(state.BalanceUsd) + "\n")
 	} else {
 		sb.WriteString("  Not logged in\n")
-	}
-	// Soft ≤3-day expiry warning.
-	if w := SubscriptionWarning(state.SubDaysLeft); w != "" {
-		sb.WriteString("  " + w + "\n")
-	}
-	// VCD-49 budget warning.
-	if w := BudgetWarning(state.BudgetPct); w != "" {
-		sb.WriteString("  " + w + "\n")
-	}
-	// VCD-54: budget-left line — shown always when a budget cap exists (pct != nil).
-	if n, show := budgetLeftPct(state.BudgetPct); show {
-		sb.WriteString(fmt.Sprintf("  %d%% budget left\n", n))
 	}
 	if state.UpdateNudge != "" {
 		sb.WriteString("  " + state.UpdateNudge + "\n")
