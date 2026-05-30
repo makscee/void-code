@@ -1,6 +1,19 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/makscee/void-code/internal/auth"
+)
+
+// TestMeResultToState_CarriesBalance verifies that BalanceUsd flows through.
+func TestMeResultToState_CarriesBalance(t *testing.T) {
+	bal := 9.99
+	st := meResultToState(auth.MeResult{Email: "a@b.com", BalanceUsd: &bal})
+	if st.BalanceUsd == nil || *st.BalanceUsd != 9.99 {
+		t.Errorf("meResultToState dropped BalanceUsd: %+v", st.BalanceUsd)
+	}
+}
 
 // TestDecideGate locks the bare-launch gating logic. The regression it guards
 // against: a non-TTY caller (e.g. void-os spawns `vc -- --session-id … -p …`

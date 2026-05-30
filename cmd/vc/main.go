@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -76,17 +77,33 @@ func main() {
 			if nudge != "" {
 				state.UpdateNudge = nudge
 			}
-			result, err := welcome.Run(state)
-			if err != nil {
-				// welcome.Run already handled non-TTY fallback; ignore error here.
-				_ = err
-			}
-			if result == welcome.RunLogin || !state.LoggedIn {
-				if err := runLoginInteractive(); err != nil {
-					fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", err)
-					os.Exit(1)
+		menuLoop:
+			for {
+				result, err := welcome.Run(state)
+				if err != nil {
+					// welcome.Run already handled non-TTY fallback; ignore error here.
+					_ = err
 				}
-				// After login, proceed to spawn claude.
+				switch result {
+				case welcome.RunDoctor:
+					fmt.Println()
+					if derr := runDoctor(); derr != nil {
+						fmt.Fprintf(os.Stderr, "vc: doctor: %v\n", derr)
+					}
+					fmt.Println("\n  press enter to return to the menu…")
+					bufio.NewScanner(os.Stdin).Scan()
+					continue menuLoop // re-show menu
+				case welcome.RunLogin:
+					if lerr := runLoginInteractive(); lerr != nil {
+						fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)
+						os.Exit(1)
+					}
+					break menuLoop // after login → fall through to spawn
+				case welcome.Quit:
+					os.Exit(0)
+				default: // SpawnClaude
+					break menuLoop
+				}
 			}
 		}
 		// Fall through to Execute() which calls runSpawn via rootCmd.
@@ -167,7 +184,8 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 		LoggedIn:    true,
 		Identity:    identity,
 		SubDaysLeft: me.SubDaysLeft,
-		BudgetPct:   me.Pct, // nil when no budget set or server absent → degrade safely
+		BudgetPct:   me.Pct,        // nil when no budget set or server absent → degrade safely
+		BalanceUsd:  me.BalanceUsd, // nil when VCD-55 not yet deployed → degrade safely
 	}
 }
 
