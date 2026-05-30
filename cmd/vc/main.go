@@ -22,7 +22,10 @@ import (
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
+	"github.com/makscee/void-code/internal/harness/direct"
 	"github.com/makscee/void-code/internal/harness/relay"
+	"github.com/makscee/void-code/internal/keystore"
+	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/makscee/void-code/internal/welcome"
@@ -239,7 +242,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		caPath = ""
 	}
 
-	env := relay.BuildEnv(os.Environ(), cfg.RelayHost, token, caPath)
+	active := provider.Load()
+	env, err := buildSpawnEnv(active, os.Environ(), cfg.RelayHost, token, caPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vc: %v\n  falling back to relay. Fix the provider in the Providers menu.\n", err)
+		env = relay.BuildEnv(os.Environ(), cfg.RelayHost, token, caPath)
+	}
 
 	// Pre-seed ~/.claude.json if absent so Claude Code skips first-run onboarding.
 	if home, err := os.UserHomeDir(); err == nil {
@@ -283,6 +291,25 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// buildSpawnEnv selects the claude env for the active provider.
+//   - Relay    → relay.BuildEnv (proxy + pool token) — UNCHANGED path.
+//   - NamedKey → direct.NamedKeyEnv with the saved OAuth token (relay bypassed).
+//   - Plain    → direct.PlainEnv (native CC auth, no injection).
+func buildSpawnEnv(p provider.Provider, parent []string, relayHost, token, caPath string) ([]string, error) {
+	switch p.Kind {
+	case provider.Plain:
+		return direct.PlainEnv(parent), nil
+	case provider.NamedKey:
+		key, err := keystore.GetKey(p.Name)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", p.Name, err)
+		}
+		return direct.NamedKeyEnv(parent, key), nil
+	default: // Relay
+		return relay.BuildEnv(parent, relayHost, token, caPath), nil
+	}
 }
 
 // subscriptionDecision is the pure outcome of inspecting days-left.
