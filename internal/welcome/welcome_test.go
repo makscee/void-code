@@ -271,3 +271,30 @@ func TestPlainBanner_BudgetLeftLine_Warn(t *testing.T) {
 		t.Errorf("plain banner must show '15%%' at pct=85: %q", out)
 	}
 }
+
+// VCD-56: FormatBalance helper tests.
+
+func TestFormatBalance(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		in   *float64
+		want string
+	}{
+		{"nil", nil, "—"},
+		{"zero", f(0), "$0.00 left"},
+		{"whole", f(12), "$12.00 left"},
+		{"cents", f(12.4), "$12.40 left"},
+		// 3.005 is stored as 3.00499… in float64 → prints $3.00 (not $3.01)
+		{"rounding", f(3.005), "$3.00 left"},
+		{"large", f(1234.5), "$1234.50 left"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := welcome.FormatBalance(c.in)
+			if got != c.want {
+				t.Errorf("FormatBalance(%v) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

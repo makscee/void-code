@@ -35,6 +35,9 @@ type AuthState struct {
 	// nil = no budget set (server absent / budget_usd=0 → no cap) → do not display.
 	// ≥80 = warn; ≥100 = block copy.
 	BudgetPct *float64
+	// BalanceUsd is the prepaid wallet balance in USD (VCD-55). nil = unknown /
+	// server did not return it → render a neutral dash, never a $ figure.
+	BalanceUsd *float64
 }
 
 // RunResult is returned by Run to indicate what the keypress should trigger.
@@ -69,6 +72,17 @@ func Run(state AuthState) (RunResult, error) {
 		return RunLogin, nil
 	}
 	return SpawnClaude, nil
+}
+
+// FormatBalance renders the prepaid balance for the header.
+//
+//	nil → "—"           (unknown / server absent)
+//	v   → "$X.XX left"  (2-decimal)
+func FormatBalance(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("$%.2f left", *v)
 }
 
 // ─── budget warning (VCD-49) ─────────────────────────────────────────────────
