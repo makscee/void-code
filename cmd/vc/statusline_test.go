@@ -55,7 +55,7 @@ func TestStatusLineContextSegment_ShowsFaceAndTokens(t *testing.T) {
 	in := statusInput{}
 	in.ContextWindow.TotalInputTokens = 5000
 	in.ContextWindow.ContextWindowSize = 200000
-	got := renderSegments(in, segData{budgetPct: -1, subDaysLeft: -2})
+	got := renderSegments(in, segData{balanceKnown: false})
 	// Expect brainrot face + compact tokens, not "ctx N%"
 	if !strings.Contains(got, "🤓") {
 		t.Fatalf("want emoji face 🤓, got %q", got)
@@ -69,7 +69,7 @@ func TestStatusLineContextSegment_EscalatesAtThreshold(t *testing.T) {
 	in := statusInput{}
 	in.ContextWindow.TotalInputTokens = 143000
 	in.ContextWindow.ContextWindowSize = 200000
-	got := renderSegments(in, segData{budgetPct: -1, subDaysLeft: -2})
+	got := renderSegments(in, segData{balanceKnown: false})
 	if !strings.Contains(got, "143k") {
 		t.Fatalf("want '143k', got %q", got)
 	}
@@ -81,48 +81,45 @@ func TestStatusLineContextSegment_EscalatesAtThreshold(t *testing.T) {
 
 func TestStatusLineContextSegment_AbsentRendersDash(t *testing.T) {
 	in := statusInput{} // no context_window at all (fresh session, no API response)
-	got := renderSegments(in, segData{budgetPct: -1, subDaysLeft: -2})
+	got := renderSegments(in, segData{balanceKnown: false})
 	if !strings.Contains(got, "—") {
 		t.Fatalf("want '—' when context absent, got %q", got)
 	}
 }
 
-// Task 4 tests: subscription days left segment
-func TestStatusLineSubDays_Positive(t *testing.T) {
+// VCD-56: $ balance segment tests (Option A — plain $X.XX, no sub-days).
+
+func ptrF(v float64) *float64 { return &v }
+
+func TestStatusLineBalance_Known(t *testing.T) {
+	d := segData{balanceUsd: ptrF(12.4), balanceKnown: true}
 	in := statusInput{}
-	in.ContextWindow.TotalInputTokens = 10000
+	in.ContextWindow.TotalInputTokens = 1000
 	in.ContextWindow.ContextWindowSize = 200000
-	got := renderSegments(in, segData{budgetPct: -1, subDaysLeft: 12})
-	if !strings.Contains(got, "sub 12d") {
-		t.Fatalf("want 'sub 12d', got %q", got)
+	got := renderSegments(in, d)
+	if !strings.Contains(got, "$12.40") {
+		t.Errorf("renderSegments = %q, want it to contain $12.40", got)
 	}
 }
 
-func TestStatusLineSubDays_Unlimited(t *testing.T) {
-	got := renderSegments(statusInput{}, segData{budgetPct: -1, subDaysLeft: -1})
-	if !strings.Contains(got, "sub ∞") {
-		t.Fatalf("want 'sub ∞', got %q", got)
+func TestStatusLineBalance_Unknown(t *testing.T) {
+	d := segData{balanceKnown: false}
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 1000
+	in.ContextWindow.ContextWindowSize = 200000
+	got := renderSegments(in, d)
+	if strings.Contains(got, "$") {
+		t.Errorf("renderSegments = %q, must hide $ when balance unknown", got)
 	}
 }
 
-func TestStatusLineSubDays_Unknown(t *testing.T) {
-	got := renderSegments(statusInput{}, segData{budgetPct: -1, subDaysLeft: -2})
-	if strings.Contains(got, "sub") {
-		t.Fatalf("sub segment must be HIDDEN when unknown, got %q", got)
-	}
-}
-
-// Task 5 tests: budget spent % segment
-func TestStatusLineBudget_Known(t *testing.T) {
-	got := renderSegments(statusInput{}, segData{budgetPct: 85, subDaysLeft: -2})
-	if !strings.Contains(got, "budget 85%") {
-		t.Fatalf("want 'budget 85%%', got %q", got)
-	}
-}
-
-func TestStatusLineBudget_Unknown(t *testing.T) {
-	got := renderSegments(statusInput{}, segData{budgetPct: -1, subDaysLeft: -2})
-	if strings.Contains(got, "budget") {
-		t.Fatalf("budget segment must be HIDDEN when unknown (VCD-49 not landed), got %q", got)
+func TestStatusLineNoSubDays(t *testing.T) {
+	d := segData{balanceUsd: ptrF(5), balanceKnown: true}
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 1000
+	in.ContextWindow.ContextWindowSize = 200000
+	got := renderSegments(in, d)
+	if strings.Contains(got, "sub ") {
+		t.Errorf("renderSegments = %q, sub-days segment must be gone", got)
 	}
 }

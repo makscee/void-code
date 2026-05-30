@@ -29,18 +29,14 @@ type statusInput struct {
 	} `json:"context_window"`
 }
 
-// segData carries the network-derived segments (budget %, sub days) so the
-// pure renderer stays testable. Sentinel values signal "unknown → render hidden":
-//   budgetPct  -1  → VCD-49 endpoint absent or error → hide segment
-//   subDaysLeft -2  → auth error/not logged in → hide segment
-//   subDaysLeft -1  → unlimited (real value from server)
-//   subDaysLeft >=0 → days remaining
+// segData carries network-derived segments so the pure renderer stays testable.
+// balanceKnown=false → hide the $ segment (auth error / field absent / not logged in).
 type segData struct {
-	budgetPct   int // -1 unknown
-	subDaysLeft int // -2 unknown; -1 unlimited; >=0 days
+	balanceUsd   *float64
+	balanceKnown bool
 }
 
-func newSegDataUnknown() segData { return segData{budgetPct: -1, subDaysLeft: -2} }
+func newSegDataUnknown() segData { return segData{balanceKnown: false} }
 
 // contextFace returns the brainrot emoji face for total_input_tokens.
 // Mirrors cv-statusline.sh thresholds exactly.
@@ -94,26 +90,13 @@ func contextSegment(in statusInput) string {
 }
 
 // renderSegments builds the one-line status bar. Pure — no I/O.
-// Order: ctx | budget | sub
+// Order: ctx | $balance (optional)
 func renderSegments(in statusInput, d segData) string {
-	parts := []string{}
+	parts := []string{contextSegment(in)} // brainrot context emoji — unchanged
 
-	// Segment 1: brainrot context window — emoji face + compact token count.
-	parts = append(parts, contextSegment(in))
-
-	// Segment 2: budget spent %. -1 unknown (VCD-49 absent) → hide.
-	if d.budgetPct >= 0 {
-		parts = append(parts, fmt.Sprintf("budget %d%%", d.budgetPct))
-	}
-
-	// Segment 3: subscription days left. -2 unknown → hide; -1 unlimited; >=0 days.
-	switch {
-	case d.subDaysLeft == -2:
-		// hidden
-	case d.subDaysLeft == -1:
-		parts = append(parts, "sub ∞")
-	default:
-		parts = append(parts, fmt.Sprintf("sub %dd", d.subDaysLeft))
+	// Segment 2: $ balance. Hidden when balanceKnown=false (not logged in / field absent).
+	if d.balanceKnown && d.balanceUsd != nil {
+		parts = append(parts, fmt.Sprintf("$%.2f", *d.balanceUsd))
 	}
 
 	return strings.Join(parts, " | ")
@@ -122,7 +105,7 @@ func renderSegments(in statusInput, d segData) string {
 var statuslineCmd = &cobra.Command{
 	Use:    "statusline",
 	Hidden: true,
-	Short:  "Internal: Claude Code statusLine renderer (context % · budget % · sub days)",
+	Short:  "Internal: Claude Code statusLine renderer (context · $ balance)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runStatusline(os.Stdin, os.Stdout)
 	},
@@ -148,47 +131,18 @@ func runStatusline(r io.Reader, w io.Writer) error {
 // Returns unknown sentinels on any failure — never blocks the CC UI.
 func fetchSegData() segData {
 	d := newSegDataUnknown()
-
 	cfg := config.OSResolve()
 	token, _, err := auth.Load()
 	if err != nil || strings.TrimSpace(token) == "" {
-		return d // not logged in → sub hidden, budget hidden
+		return d // not logged in → $ hidden
 	}
 	token = strings.TrimSpace(token)
-
-	if n, ok := fetchSubDaysLeft(cfg.AuthHost, token); ok {
-		d.subDaysLeft = n
+	client := &http.Client{Timeout: 2 * time.Second}
+	me, err := auth.FetchMe(cfg.AuthHost, token, client)
+	if err != nil || me.BalanceUsd == nil {
+		return d // error / field absent → hide $ segment
 	}
-
-	// Segment 2 (budget %): call /v1/vc/me via auth.FetchMe to get budget pct.
-	// Degrade-safe: hidden when endpoint absent / budget_usd=0 (pct null) / error.
-	if pct, ok := fetchBudgetPct(cfg.AuthHost, token); ok {
-		d.budgetPct = pct
-	}
-
+	d.balanceUsd = me.BalanceUsd
+	d.balanceKnown = true
 	return d
-}
-
-// fetchSubDaysLeft calls GET /v1/vc/me (reuses auth.FetchMe pattern) and returns (subDaysLeft, ok).
-func fetchSubDaysLeft(authHost, token string) (int, bool) {
-	client := &http.Client{Timeout: 2 * time.Second}
-	me, err := auth.FetchMe(authHost, token, client)
-	if err != nil {
-		return 0, false
-	}
-	return me.SubDaysLeft, true
-}
-
-// fetchBudgetPct calls GET <authHost>/v1/vc/me (via auth.FetchMe) and returns
-// (pct as int, ok). Returns ok=false on ANY error, non-200, missing budget
-// fields, or pct==null (budget_usd=0, no cap) → segment hidden.
-// 2-second timeout keeps the statusline snappy.
-func fetchBudgetPct(authHost, token string) (int, bool) {
-	client := &http.Client{Timeout: 2 * time.Second}
-	me, err := auth.FetchMe(authHost, token, client)
-	if err != nil || me.Pct == nil {
-		// err → server error / network / 401; Pct nil → no budget set (no cap)
-		return 0, false
-	}
-	return int(*me.Pct), true
 }
