@@ -374,6 +374,83 @@ func TestView_TopUpSubViewShowsTelegram(t *testing.T) {
 	}
 }
 
+// VCD-56: clack rail layout tests.
+
+func TestView_ClackRailStructure(t *testing.T) {
+	bal := 12.4
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "test@void-code.dev", BalanceUsd: &bal})
+	out := m.View()
+
+	// Top cap with title
+	if !strings.Contains(out, "┌") {
+		t.Errorf("view missing top rail cap ┌:\n%s", out)
+	}
+	// Bottom cap with hint
+	if !strings.Contains(out, "└") {
+		t.Errorf("view missing bottom rail cap └:\n%s", out)
+	}
+	// Continuous rail
+	if !strings.Contains(out, "│") {
+		t.Errorf("view missing rail │:\n%s", out)
+	}
+	// Info marker ◇ (identity line)
+	if !strings.Contains(out, "◇") {
+		t.Errorf("view missing info marker ◇:\n%s", out)
+	}
+	// Prompt marker ◆ (What now?)
+	if !strings.Contains(out, "◆") {
+		t.Errorf("view missing prompt marker ◆:\n%s", out)
+	}
+	// Selected item marker ●
+	if !strings.Contains(out, "●") {
+		t.Errorf("view missing selected item marker ●:\n%s", out)
+	}
+	// Unselected item marker ○
+	if !strings.Contains(out, "○") {
+		t.Errorf("view missing unselected item marker ○:\n%s", out)
+	}
+	// void-code title
+	if !strings.Contains(out, "void-code") {
+		t.Errorf("view missing void-code title:\n%s", out)
+	}
+	// identity + balance on same ◇ line
+	if !strings.Contains(out, "test@void-code.dev") {
+		t.Errorf("view missing identity:\n%s", out)
+	}
+	if !strings.Contains(out, "$12.40 left") {
+		t.Errorf("view missing balance:\n%s", out)
+	}
+	// What now? prompt text
+	if !strings.Contains(out, "What now?") {
+		t.Errorf("view missing 'What now?' prompt:\n%s", out)
+	}
+	// Bottom hint
+	if !strings.Contains(out, "↑/↓") {
+		t.Errorf("view missing navigation hint ↑/↓:\n%s", out)
+	}
+}
+
+func TestView_TopUpRailStructure(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	m = m.SetTopUpView()
+	out := m.View()
+
+	// Must have rail chars
+	if !strings.Contains(out, "┌") {
+		t.Errorf("top-up view missing ┌:\n%s", out)
+	}
+	if !strings.Contains(out, "◇") {
+		t.Errorf("top-up view missing ◇:\n%s", out)
+	}
+	if !strings.Contains(out, "└") {
+		t.Errorf("top-up view missing └:\n%s", out)
+	}
+	// Instruction text
+	if !strings.Contains(out, "@makscee") {
+		t.Errorf("top-up view missing @makscee:\n%s", out)
+	}
+}
+
 // VCD-56: FormatBalance helper tests.
 
 func TestFormatBalance(t *testing.T) {

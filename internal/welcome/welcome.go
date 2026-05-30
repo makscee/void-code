@@ -183,35 +183,40 @@ func SentinelExists(_ string) bool {
 
 // ─── bubbletea model ───────────────────────────────────────────────────────
 
+// clack rail styles — replicate @clack/prompts left-rail aesthetic in lipgloss.
 var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#7C3AED")).
-			PaddingLeft(2)
+	// railStyle renders the continuous left rail │ and caps ┌ └.
+	railStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED"))
 
-	subStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#9CA3AF")).
-			PaddingLeft(2)
+	// titleStyle: bold white title text next to ┌ cap.
+	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
 
-	accentStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#A78BFA")).
-			PaddingLeft(2)
+	// infoTextStyle: text on the ◇ info line (identity · balance).
+	infoTextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
 
-	hintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6B7280")).
-			Italic(true).
-			PaddingLeft(2)
+	// selectedItemStyle: ● selected menu item label.
+	selectedItemStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
 
-	warnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F59E0B")).
-			PaddingLeft(2)
+	// unselectedItemStyle: ○ unselected menu item label.
+	unselectedItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
 
+	// hintStyle: bottom cap hint text.
+	hintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+
+	// warnStyle: warning text (logged-out state).
+	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
+
+	// topUpStyle: top-up instruction text.
+	topUpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+
+	// Legacy styles kept for plainBanner / BudgetWarning callers.
+	subStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+	accentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+	// boxStyle retained for backward compat (unused in clack View).
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7C3AED")).
-			Padding(1, 3).
-			MarginTop(1).
-			MarginBottom(1)
+			Padding(1, 3)
 )
 
 // viewState distinguishes the top-level menu from the Top-up info sub-view.
@@ -317,58 +322,92 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// railLine returns a line with the left rail prefix.
+// prefix is the rail/cap glyph(s) rendered in railStyle,
+// content is the rest of the line (already styled by caller).
+func railLine(prefix, content string) string {
+	return railStyle.Render(prefix) + content
+}
+
 func (m model) View() string {
 	if m.quitting {
 		return ""
 	}
-	inner := strings.Builder{}
-	inner.WriteString(titleStyle.Render("void-code " + version.Version))
-	inner.WriteString("\n")
-	inner.WriteString(subStyle.Render("relay harness for Claude Code — by makscee.ru"))
-	inner.WriteString("\n\n")
-
-	if m.LoggedIn {
-		inner.WriteString(accentStyle.Render("Logged in as " + m.Identity))
-		inner.WriteString("\n")
-		inner.WriteString(subStyle.Render(FormatBalance(m.BalanceUsd)))
-		inner.WriteString("\n")
-	} else {
-		inner.WriteString(warnStyle.Render("Not logged in"))
-		inner.WriteString("\n")
-	}
-	if m.UpdateNudge != "" {
-		inner.WriteString("\n")
-		inner.WriteString(hintStyle.Render(m.UpdateNudge))
-		inner.WriteString("\n")
-	}
-	inner.WriteString("\n")
-
-	if m.view == topUpView {
-		inner.WriteString(accentStyle.Render("Top up your balance"))
-		inner.WriteString("\n\n")
-		inner.WriteString(subStyle.Render("Text @makscee on Telegram to top up your balance."))
-		inner.WriteString("\n\n")
-		inner.WriteString(hintStyle.Render("press any key to go back"))
-	} else {
-		for i, it := range m.items {
-			var cursor, line string
-			if i == m.cursor {
-				cursor = accentStyle.Render("▸ ")
-				line = accentStyle.Render(it.label)
-			} else {
-				cursor = "  "
-				line = subStyle.Render(it.label)
-			}
-			inner.WriteString(cursor + line + "\n")
-		}
-		inner.WriteString("\n")
-		inner.WriteString(hintStyle.Render("↑/↓ navigate · enter select · q quit"))
-	}
-	inner.WriteString("\n")
 
 	var sb strings.Builder
-	sb.WriteString(boxStyle.Render(inner.String()))
+
+	// ┌  void-code  <version>
+	sb.WriteString(railLine("┌", "  "+titleStyle.Render("void-code")+"  "+titleStyle.Render(version.Version)))
 	sb.WriteString("\n")
+
+	// │  (blank separator)
+	sb.WriteString(railLine("│", ""))
+	sb.WriteString("\n")
+
+	if m.view == topUpView {
+		// Top-up sub-view — clack style with ◇ info marker.
+		// ◇  Top up your balance
+		sb.WriteString(railLine("◇", "  "+topUpStyle.Render("Top up your balance")))
+		sb.WriteString("\n")
+		// │
+		sb.WriteString(railLine("│", ""))
+		sb.WriteString("\n")
+		// │  Text @makscee on Telegram to top up your balance.
+		sb.WriteString(railLine("│", "  "+topUpStyle.Render("Text @makscee on Telegram to top up your balance.")))
+		sb.WriteString("\n")
+		// │
+		sb.WriteString(railLine("│", ""))
+		sb.WriteString("\n")
+		// └  press any key to go back
+		sb.WriteString(railLine("└", "  "+hintStyle.Render("press any key to go back")))
+		sb.WriteString("\n")
+		return sb.String()
+	}
+
+	// ◇  identity · $X.XX left  (or "Not logged in")
+	if m.LoggedIn {
+		infoText := m.Identity + " · " + FormatBalance(m.BalanceUsd)
+		sb.WriteString(railLine("◇", "  "+infoTextStyle.Render(infoText)))
+	} else {
+		sb.WriteString(railLine("◇", "  "+warnStyle.Render("Not logged in")))
+	}
+	sb.WriteString("\n")
+
+	// Update nudge (if present) — shown as an extra ◇ line.
+	if m.UpdateNudge != "" {
+		sb.WriteString(railLine("│", ""))
+		sb.WriteString("\n")
+		sb.WriteString(railLine("◇", "  "+hintStyle.Render(m.UpdateNudge)))
+		sb.WriteString("\n")
+	}
+
+	// │  (blank separator)
+	sb.WriteString(railLine("│", ""))
+	sb.WriteString("\n")
+
+	// ◆  What now?
+	sb.WriteString(railLine("◆", "  "+infoTextStyle.Render("What now?")))
+	sb.WriteString("\n")
+
+	// │  ●  Start   (selected, purple)
+	// │  ○  Top up  (unselected, dim)
+	for i, it := range m.items {
+		if i == m.cursor {
+			sb.WriteString(railLine("│", "  "+selectedItemStyle.Render("●  "+it.label)))
+		} else {
+			sb.WriteString(railLine("│", "  "+unselectedItemStyle.Render("○  "+it.label)))
+		}
+		sb.WriteString("\n")
+	}
+
+	// │  (blank separator)
+	sb.WriteString(railLine("│", ""))
+	sb.WriteString("\n")
+
+	// └  ↑/↓ · enter · q quit
+	sb.WriteString(railLine("└", "  "+hintStyle.Render("↑/↓ · enter · q quit")))
+	sb.WriteString("\n")
+
 	return sb.String()
 }
 
