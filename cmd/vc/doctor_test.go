@@ -256,14 +256,14 @@ func TestRenderCheckLine_WarnStatus(t *testing.T) {
 }
 
 func TestConfirmModel_DefaultIsNo(t *testing.T) {
-	m := newConfirmModel("Install now?")
+	m := newConfirmModel("Install now?", "")
 	if m.cursor != 1 {
 		t.Errorf("default cursor = %d, want 1 (No)", m.cursor)
 	}
 }
 
 func TestConfirmModel_ViewContainsYesNo(t *testing.T) {
-	m := newConfirmModel("Install the void-code statusline now?")
+	m := newConfirmModel("Install the void-code statusline now?", "")
 	out := m.View()
 	if !strings.Contains(out, "Yes") {
 		t.Errorf("confirm view missing 'Yes':\n%s", out)
@@ -282,5 +282,40 @@ func TestConfirmModel_ViewContainsYesNo(t *testing.T) {
 	// unselected item marker ○
 	if !strings.Contains(out, "○") {
 		t.Errorf("confirm view missing ○ unselected marker:\n%s", out)
+	}
+}
+
+// TestConfirmModel_ViewContainsHeader verifies the regression fix: the confirm
+// model's View() includes the pre-rendered header (┌  doctor + checks) so the
+// bubbletea program renders the complete layout in one pass — no ^0 garble.
+func TestConfirmModel_ViewContainsHeader(t *testing.T) {
+	checks := []checkResult{
+		{name: "statusline", status: "✗", message: "statusline: not installed"},
+	}
+	header := buildConfirmHeader(checks)
+	m := newConfirmModel("Install void-code statusline now?", header)
+	out := m.View()
+
+	// Header must contain the ┌  doctor top cap.
+	if !strings.Contains(out, "┌") {
+		t.Errorf("confirm view missing ┌ top cap (header not embedded):\n%s", out)
+	}
+	if !strings.Contains(out, "doctor") {
+		t.Errorf("confirm view missing 'doctor' title:\n%s", out)
+	}
+	// Check line must be present above the ◆ prompt.
+	if !strings.Contains(out, "not installed") {
+		t.Errorf("confirm view missing check detail 'not installed':\n%s", out)
+	}
+	// The ◆ question line must be present (defect 2 fix).
+	if !strings.Contains(out, "◆") {
+		t.Errorf("confirm view missing ◆ prompt marker:\n%s", out)
+	}
+	if !strings.Contains(out, "Install void-code statusline now?") {
+		t.Errorf("confirm view missing question text:\n%s", out)
+	}
+	// Bottom cap must be └, not │.
+	if !strings.Contains(out, "└") {
+		t.Errorf("confirm view missing └ bottom cap:\n%s", out)
 	}
 }

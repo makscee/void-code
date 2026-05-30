@@ -122,15 +122,21 @@ func RenderDoctorChecksForTest(checks []checkResult) string {
 
 // confirmModel is a minimal bubbletea model for a clack-style Yes/No selector.
 // Default selection = No (index 1), matching the old [y/N] default.
+//
+// header holds the pre-rendered lines that precede the ◆ prompt (e.g. the
+// ┌  doctor cap + check lines). Including them in View() keeps the whole
+// transcript visible in a single inline bubbletea render pass — no alt-screen,
+// no garbled ^0 escape artifacts from mixing fmt.Println with TUI redraws.
 type confirmModel struct {
 	question string
-	cursor   int  // 0 = Yes, 1 = No
+	header   string // pre-rendered lines above the ◆ prompt (e.g. ┌ doctor + checks)
+	cursor   int    // 0 = Yes, 1 = No
 	chosen   bool
 	quitting bool
 }
 
-func newConfirmModel(question string) confirmModel {
-	return confirmModel{question: question, cursor: 1} // default = No
+func newConfirmModel(question, header string) confirmModel {
+	return confirmModel{question: question, header: header, cursor: 1} // default = No
 }
 
 func (m confirmModel) Init() tea.Cmd { return nil }
@@ -165,10 +171,16 @@ func (m confirmModel) View() string {
 		return ""
 	}
 	var sb strings.Builder
+	// Pre-rendered header: ┌  doctor + blank rail + check lines + blank rail.
+	// Embedding it here keeps the full layout in one bubbletea render, avoiding
+	// ^0 escape artifacts that occur when fmt.Println and TUI redraws interleave.
+	if m.header != "" {
+		sb.WriteString(m.header)
+	}
 	// ◆  <question>
 	sb.WriteString(clackui.RailLine("◆", "  "+clackui.InfoTextStyle.Render(m.question)))
 	sb.WriteString("\n")
-	// │  ●  Yes  /  │  ○  No
+	// │  ○  Yes  /  │  ●  No  (cursor-driven)
 	opts := []string{"Yes", "No"}
 	for i, opt := range opts {
 		if i == m.cursor {
@@ -178,17 +190,44 @@ func (m confirmModel) View() string {
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(clackui.RailLine("│", "  "+clackui.HintStyle.Render("↑/↓ · enter")))
+	sb.WriteString(clackui.RailLine("│", ""))
+	sb.WriteString("\n")
+	// └  ↑/↓ · enter  (bottom cap)
+	sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("↑/↓ · enter")))
 	sb.WriteString("\n")
 	return sb.String()
 }
 
-// promptConfirm shows a clack-style ◆ Yes/No selector and returns true if the
-// user chose Yes. Returns false on any quit/cancel. Non-TTY (bubbletea error)
-// falls back to returning false (the safe default-no).
-func promptConfirm(question string) bool {
-	m := newConfirmModel(question)
-	p := tea.NewProgram(m)
+// buildConfirmHeader builds the pre-rendered header string for the confirmModel:
+// ┌  doctor
+// │
+// │  <check lines>
+// │
+// This is passed into confirmModel so its View() renders the complete layout
+// without any fmt.Println calls preceding the bubbletea program (which would
+// produce garbled ^0 escape artifacts).
+func buildConfirmHeader(checks []checkResult) string {
+	var sb strings.Builder
+	sb.WriteString(clackui.RailLine("┌", "  "+clackui.TitleStyle.Render("doctor")))
+	sb.WriteString("\n")
+	sb.WriteString(clackui.RailLine("│", ""))
+	sb.WriteString("\n")
+	for _, c := range checks {
+		sb.WriteString(clackui.RailLine("│", renderCheckLine(c)))
+		sb.WriteString("\n")
+	}
+	sb.WriteString(clackui.RailLine("│", ""))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// promptConfirm shows a clack-style ◆ Yes/No selector with the given header
+// rendered above the prompt. Returns true if the user chose Yes.
+// Returns false on any quit/cancel or non-TTY (safe default-no).
+func promptConfirm(question, header string) bool {
+	m := newConfirmModel(question, header)
+	// Run inline (no alt-screen) so the full transcript is visible as one block.
+	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
 	out, err := p.Run()
 	if err != nil {
 		return false // non-TTY fallback = No
@@ -232,19 +271,31 @@ func runDoctor() error {
 
 	checks := buildChecks(settingsPath, slCmd)
 
-	// ┌  doctor
-	doctorRailLine("┌", "  "+clackui.TitleStyle.Render("doctor"))
-	// │
-	doctorRailLine("│", "")
-
+	// Determine whether any check needs an interactive fix prompt.
+	// If yes: render the entire layout (header + checks + blank + prompt) inside
+	// a single bubbletea program so no fmt.Println/TUI interleaving produces
+	// garbled ^0 escape artifacts (defect 1 fix).
+	// If no fix needed: just print everything to stdout directly.
+	needsFix := false
 	for _, c := range checks {
-		// │  ✓/✗/!  <name>   <detail>
-		doctorRailLine("│", renderCheckLine(c))
-
 		if c.fix != nil {
-			// Blank rail line before the prompt.
-			doctorRailLine("│", "")
-			if promptConfirm("Install the void-code statusline now?") {
+			needsFix = true
+			break
+		}
+	}
+
+	if needsFix {
+		// Build the pre-rendered header (┌  doctor + blank + check lines + blank).
+		// This is passed into confirmModel.View() so the full layout is one block.
+		header := buildConfirmHeader(checks)
+
+		for _, c := range checks {
+			if c.fix == nil {
+				continue
+			}
+			// The bubbletea confirm renders the complete view including header,
+			// the ◆ question line, and the ○/● options (defect 2 fix: question present).
+			if promptConfirm("Install void-code statusline now?", header) {
 				if err := c.fix(); err != nil {
 					fmt.Fprintf(os.Stderr, "  error: %v\n", err)
 					continue
@@ -259,12 +310,23 @@ func runDoctor() error {
 				}
 			}
 		}
+		// Bottom cap after the confirm + any post-fix lines.
+		doctorRailLine("│", "")
+		doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
+	} else {
+		// No interactive fix needed — print directly to stdout.
+		// ┌  doctor
+		doctorRailLine("┌", "  "+clackui.TitleStyle.Render("doctor"))
+		// │
+		doctorRailLine("│", "")
+		for _, c := range checks {
+			doctorRailLine("│", renderCheckLine(c))
+		}
+		// │
+		doctorRailLine("│", "")
+		// └  done
+		doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
 	}
-
-	// │
-	doctorRailLine("│", "")
-	// └  done
-	doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
 
 	return nil
 }
