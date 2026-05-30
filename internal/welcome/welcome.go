@@ -72,6 +72,8 @@ type Callbacks struct {
 	OnSelect func(provider.Provider) error
 	// OnAddKey is called when the Add-key flow completes. May be nil.
 	OnAddKey func(name, token string) error
+	// OnDeleteKey is called when the user confirms deletion of a named key. May be nil.
+	OnDeleteKey func(name string) error
 }
 
 // Run shows the interactive selectable menu and blocks until the user makes a
@@ -230,6 +232,7 @@ const (
 	topUpView               // in-TUI info screen; any key returns to menu
 	providersView           // Providers radio list
 	addKeyView              // Add-key two-stage text input
+	deleteView              // Delete-key confirm dialog
 )
 
 // menuItem pairs a display label with the RunResult it produces on activation.
@@ -246,9 +249,10 @@ type model struct {
 	result    RunResult
 	chosen    bool // true once a process-exiting result was selected
 	quitting  bool
-	providers providersModel
-	addKey    addKeyModel
-	cb        Callbacks // I/O callbacks (provider select, add key)
+	providers     providersModel
+	addKey        addKeyModel
+	deleteConfirm deleteConfirmModel
+	cb            Callbacks // I/O callbacks (provider select, add key, delete key)
 }
 
 func menuItemsFor(state AuthState) []menuItem {
@@ -317,6 +321,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateAddKey(s)
 	}
 
+	if m.view == deleteView {
+		return m.updateDeleteConfirm(s)
+	}
+
 	switch s {
 	case "ctrl+c", "q", "esc":
 		m.result = Quit
@@ -366,6 +374,15 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.providers.cursor = (m.providers.cursor + 1) % n
 		return m, nil
+	case "d", "D":
+		// Delete: only for named-key rows.
+		if m.providers.RowIsDeletable(m.providers.cursor) {
+			row := m.providers.rows[m.providers.cursor]
+			m.deleteConfirm = newDeleteConfirmModel(row.prov.Name)
+			m.view = deleteView
+			return m, nil
+		}
+		return m, nil
 	case "enter", " ":
 		row := m.providers.rows[m.providers.cursor]
 		if row.addKey {
@@ -381,6 +398,49 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 		m.providers.active = row.prov.String()
 		m.view = menuView
 		return m, nil
+	}
+	return m, nil
+}
+
+// updateDeleteConfirm handles keystrokes in the delete-key confirm dialog.
+func (m model) updateDeleteConfirm(s string) (tea.Model, tea.Cmd) {
+	switch s {
+	case "ctrl+c":
+		m.result = Quit
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	default:
+		m.deleteConfirm = m.deleteConfirm.handleKey(s)
+		if m.deleteConfirm.Confirmed() {
+			keyName := m.deleteConfirm.KeyName()
+			// Invoke the delete callback.
+			if m.cb.OnDeleteKey != nil {
+				_ = m.cb.OnDeleteKey(keyName)
+			}
+			// Remove from in-memory key list.
+			newNames := make([]string, 0, len(m.cb.KeyNames))
+			for _, n := range m.cb.KeyNames {
+				if n != keyName {
+					newNames = append(newNames, n)
+				}
+			}
+			m.cb.KeyNames = newNames
+			// If the deleted key was the active provider, reset to relay.
+			if m.cb.ActiveProvider == "key:"+keyName {
+				m.cb.ActiveProvider = "relay"
+				if m.cb.OnSelect != nil {
+					_ = m.cb.OnSelect(provider.Provider{Kind: provider.Relay})
+				}
+			}
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.view = providersView
+			return m, nil
+		}
+		if m.deleteConfirm.Cancelled() {
+			m.view = providersView
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -453,6 +513,11 @@ func (m model) View() string {
 
 	if m.view == addKeyView {
 		sb.WriteString(m.addKey.render())
+		return sb.String()
+	}
+
+	if m.view == deleteView {
+		sb.WriteString(m.deleteConfirm.render())
 		return sb.String()
 	}
 

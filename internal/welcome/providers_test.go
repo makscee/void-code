@@ -31,6 +31,51 @@ func TestProvidersModel_SelectMarksActive(t *testing.T) {
 	}
 }
 
+func TestProvidersModel_RowIsDeleteable(t *testing.T) {
+	// Relay (index 0), Plain (index 2), and + Add key… (index 3) must NOT be deleteable.
+	// A named key (index 1) MUST be deleteable.
+	m := NewProvidersModelForTest([]string{"work"}, "relay")
+	// Rows: Relay(0), key:work(1), Plain(2), +Add key…(3)
+	if m.RowIsDeletable(0) {
+		t.Error("Relay row should not be deletable")
+	}
+	if !m.RowIsDeletable(1) {
+		t.Error("named key row should be deletable")
+	}
+	if m.RowIsDeletable(2) {
+		t.Error("Plain row should not be deletable")
+	}
+	if m.RowIsDeletable(3) {
+		t.Error("+ Add key… row should not be deletable")
+	}
+}
+
+func TestDeleteConfirmModel_YConfirms(t *testing.T) {
+	dc := newDeleteConfirmModel("work")
+	if dc.Confirmed() || dc.Cancelled() {
+		t.Fatal("freshly created model should not be confirmed or cancelled")
+	}
+	dc = dc.handleKey("y")
+	if !dc.Confirmed() {
+		t.Fatal("pressing y should confirm")
+	}
+	if dc.KeyName() != "work" {
+		t.Fatalf("KeyName = %q, want work", dc.KeyName())
+	}
+}
+
+func TestDeleteConfirmModel_NorEscCancels(t *testing.T) {
+	dc := newDeleteConfirmModel("mykey")
+	dc2 := dc.handleKey("n")
+	if !dc2.Cancelled() {
+		t.Fatal("pressing n should cancel")
+	}
+	dc3 := dc.handleKey("esc")
+	if !dc3.Cancelled() {
+		t.Fatal("pressing esc should cancel")
+	}
+}
+
 func TestAddKeyInput_TwoStageCapture(t *testing.T) {
 	in := newAddKeyModel()
 	// Stage 1: type a name.

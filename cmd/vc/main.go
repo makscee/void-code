@@ -93,6 +93,9 @@ func main() {
 					OnAddKey: func(name, token string) error {
 						return keystore.AddKey(name, token)
 					},
+					OnDeleteKey: func(name string) error {
+						return keystore.DeleteKey(name)
+					},
 				}
 				result, err := welcome.Run(state, cb)
 				if err != nil {

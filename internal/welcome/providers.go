@@ -53,6 +53,12 @@ func (m providersModel) RowIsActive(i int) bool {
 	return !r.addKey && r.prov.String() == m.active
 }
 
+// RowIsDeletable returns true only for named-key rows (not Relay, Plain, or + Add key…).
+func (m providersModel) RowIsDeletable(i int) bool {
+	r := m.rows[i]
+	return !r.addKey && r.prov.Kind == provider.NamedKey
+}
+
 // renderProviders renders the Providers radio list on the clack rail.
 func (m providersModel) render() string {
 	var out string
@@ -71,7 +77,11 @@ func (m providersModel) render() string {
 		}
 		out += clackui.RailLine("│", "  "+style.Render(marker+"  "+r.label)) + "\n"
 	}
-	out += clackui.RailLine("└", "  "+clackui.HintStyle.Render("↑/↓ · enter select · esc back")) + "\n"
+	hint := "↑/↓ · enter select · esc back"
+	if m.RowIsDeletable(m.cursor) {
+		hint = "↑/↓ · enter select · d delete · esc back"
+	}
+	out += clackui.RailLine("└", "  "+clackui.HintStyle.Render(hint)) + "\n"
 	return out
 }
 
@@ -151,5 +161,49 @@ func (m addKeyModel) render() string {
 		out += clackui.RailLine("│", "  "+clackui.SelectedItemStyle.Render(strings.Repeat("•", len(m.buf))+"▌")) + "\n"
 	}
 	out += clackui.RailLine("└", "  "+clackui.HintStyle.Render("enter · esc cancel")) + "\n"
+	return out
+}
+
+// ─── Delete-key confirm model ────────────────────────────────────────────────
+
+type deleteConfirmState int
+
+const (
+	deleteConfirmPending   deleteConfirmState = iota
+	deleteConfirmConfirmed                    // user pressed y
+	deleteConfirmCancelled                    // user pressed n / esc
+)
+
+// deleteConfirmModel is the one-shot confirm dialog for key deletion.
+type deleteConfirmModel struct {
+	keyName string
+	state   deleteConfirmState
+}
+
+func newDeleteConfirmModel(keyName string) deleteConfirmModel {
+	return deleteConfirmModel{keyName: keyName, state: deleteConfirmPending}
+}
+
+func (m deleteConfirmModel) KeyName() string   { return m.keyName }
+func (m deleteConfirmModel) Confirmed() bool   { return m.state == deleteConfirmConfirmed }
+func (m deleteConfirmModel) Cancelled() bool   { return m.state == deleteConfirmCancelled }
+
+// handleKey processes the y/n/esc input.
+func (m deleteConfirmModel) handleKey(s string) deleteConfirmModel {
+	switch s {
+	case "y", "Y":
+		m.state = deleteConfirmConfirmed
+	case "n", "N", "esc", "q":
+		m.state = deleteConfirmCancelled
+	}
+	return m
+}
+
+// render shows the confirm prompt on the clack rail.
+func (m deleteConfirmModel) render() string {
+	var out string
+	out += clackui.RailLine("◆", "  "+clackui.WarnStyle.Render("Delete key: "+m.keyName+"?")) + "\n"
+	out += clackui.RailLine("│", "  "+clackui.HintStyle.Render("This cannot be undone.")) + "\n"
+	out += clackui.RailLine("└", "  "+clackui.HintStyle.Render("y confirm · n/esc cancel")) + "\n"
 	return out
 }
