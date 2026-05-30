@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/makscee/void-code/internal/clackui"
 	"github.com/makscee/void-code/internal/version"
 )
 
@@ -183,31 +184,16 @@ func SentinelExists(_ string) bool {
 
 // ─── bubbletea model ───────────────────────────────────────────────────────
 
-// clack rail styles — replicate @clack/prompts left-rail aesthetic in lipgloss.
+// clack rail styles — aliases to clackui shared package.
 var (
-	// railStyle renders the continuous left rail │ and caps ┌ └.
-	railStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED"))
-
-	// titleStyle: bold white title text next to ┌ cap.
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF"))
-
-	// infoTextStyle: text on the ◇ info line (identity · balance).
-	infoTextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
-
-	// selectedItemStyle: ● selected menu item label.
-	selectedItemStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
-
-	// unselectedItemStyle: ○ unselected menu item label.
-	unselectedItemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-
-	// hintStyle: bottom cap hint text.
-	hintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-
-	// warnStyle: warning text (logged-out state).
-	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
-
-	// topUpStyle: top-up instruction text.
-	topUpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+	railStyle           = clackui.RailStyle
+	titleStyle          = clackui.TitleStyle
+	infoTextStyle       = clackui.InfoTextStyle
+	selectedItemStyle   = clackui.SelectedItemStyle
+	unselectedItemStyle = clackui.UnselectedItemStyle
+	hintStyle           = clackui.HintStyle
+	warnStyle           = clackui.WarnStyle
+	topUpStyle          = clackui.InfoTextStyle
 
 	// Legacy styles kept for plainBanner / BudgetWarning callers.
 	subStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
@@ -326,7 +312,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // prefix is the rail/cap glyph(s) rendered in railStyle,
 // content is the rest of the line (already styled by caller).
 func railLine(prefix, content string) string {
-	return railStyle.Render(prefix) + content
+	return clackui.RailLine(prefix, content)
 }
 
 func (m model) View() string {

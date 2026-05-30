@@ -1,14 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/ccsettings"
+	"github.com/makscee/void-code/internal/clackui"
 	"github.com/spf13/cobra"
 )
 
@@ -73,6 +74,132 @@ type checkResult struct {
 	fix     func() error // nil if no fix available
 }
 
+// ─── clack rail rendering for doctor ─────────────────────────────────────────
+
+// doctorRailLine emits a rail line to stdout.
+func doctorRailLine(prefix, content string) {
+	fmt.Println(clackui.RailLine(prefix, content))
+}
+
+// renderCheckLine renders a single check on the rail with appropriate icon styling.
+func renderCheckLine(c checkResult) string {
+	var icon string
+	switch c.status {
+	case "✓":
+		icon = clackui.OkStyle.Render("✓")
+	case "✗":
+		icon = clackui.FailStyle.Render("✗")
+	default: // "!"
+		icon = clackui.WarnStyle.Render("!")
+	}
+	// Extract just the name part for compact rail display, fallback to full message.
+	label := c.name
+	detail := c.message
+	// Strip "<name>: " prefix from message to avoid duplication when name != message.
+	if after, found := strings.CutPrefix(detail, label+": "); found {
+		detail = after
+	}
+	return "  " + icon + "  " + clackui.InfoTextStyle.Render(label) +
+		"   " + clackui.HintStyle.Render(detail)
+}
+
+// RenderDoctorChecksForTest is an exported test helper that renders check lines
+// without running the interactive prompt — used from doctor_test.go.
+func RenderDoctorChecksForTest(checks []checkResult) string {
+	var sb strings.Builder
+	sb.WriteString(clackui.RailLine("┌", "  "+clackui.TitleStyle.Render("doctor")))
+	sb.WriteString("\n")
+	sb.WriteString(clackui.RailLine("│", ""))
+	sb.WriteString("\n")
+	for _, c := range checks {
+		sb.WriteString(clackui.RailLine("│", renderCheckLine(c)))
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// ─── bubbletea confirm model (Yes/No prompt) ─────────────────────────────────
+
+// confirmModel is a minimal bubbletea model for a clack-style Yes/No selector.
+// Default selection = No (index 1), matching the old [y/N] default.
+type confirmModel struct {
+	question string
+	cursor   int  // 0 = Yes, 1 = No
+	chosen   bool
+	quitting bool
+}
+
+func newConfirmModel(question string) confirmModel {
+	return confirmModel{question: question, cursor: 1} // default = No
+}
+
+func (m confirmModel) Init() tea.Cmd { return nil }
+
+func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "ctrl+c", "q", "esc":
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "k", "left", "h":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j", "right", "l":
+		if m.cursor < 1 {
+			m.cursor++
+		}
+	case "enter", " ":
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m confirmModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	var sb strings.Builder
+	// ◆  <question>
+	sb.WriteString(clackui.RailLine("◆", "  "+clackui.InfoTextStyle.Render(m.question)))
+	sb.WriteString("\n")
+	// │  ●  Yes  /  │  ○  No
+	opts := []string{"Yes", "No"}
+	for i, opt := range opts {
+		if i == m.cursor {
+			sb.WriteString(clackui.RailLine("│", "  "+clackui.SelectedItemStyle.Render("●  "+opt)))
+		} else {
+			sb.WriteString(clackui.RailLine("│", "  "+clackui.UnselectedItemStyle.Render("○  "+opt)))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(clackui.RailLine("│", "  "+clackui.HintStyle.Render("↑/↓ · enter")))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// promptConfirm shows a clack-style ◆ Yes/No selector and returns true if the
+// user chose Yes. Returns false on any quit/cancel. Non-TTY (bubbletea error)
+// falls back to returning false (the safe default-no).
+func promptConfirm(question string) bool {
+	m := newConfirmModel(question)
+	p := tea.NewProgram(m)
+	out, err := p.Run()
+	if err != nil {
+		return false // non-TTY fallback = No
+	}
+	fm, ok := out.(confirmModel)
+	if !ok || !fm.chosen || fm.cursor != 0 {
+		return false
+	}
+	return true
+}
+
 // ─── doctor command ───────────────────────────────────────────────────────────
 
 var doctorCmd = &cobra.Command{
@@ -105,24 +232,39 @@ func runDoctor() error {
 
 	checks := buildChecks(settingsPath, slCmd)
 
+	// ┌  doctor
+	doctorRailLine("┌", "  "+clackui.TitleStyle.Render("doctor"))
+	// │
+	doctorRailLine("│", "")
+
 	for _, c := range checks {
-		printCheck(c)
+		// │  ✓/✗/!  <name>   <detail>
+		doctorRailLine("│", renderCheckLine(c))
+
 		if c.fix != nil {
-			if promptYN(fmt.Sprintf("Install the void-code statusline now?")) {
+			// Blank rail line before the prompt.
+			doctorRailLine("│", "")
+			if promptConfirm("Install the void-code statusline now?") {
 				if err := c.fix(); err != nil {
 					fmt.Fprintf(os.Stderr, "  error: %v\n", err)
 					continue
 				}
 				// Re-verify after fix.
 				after := classifyStatusLine(settingsPath, slCmd)
+				doctorRailLine("│", "")
 				if after == slInstalled {
-					fmt.Printf("  %s statusline: installed\n", green("✓"))
+					doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("installed"))
 				} else {
-					fmt.Printf("  %s statusline: install may have failed — run `vc doctor` again\n", yellow("!"))
+					doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("install may have failed — run `vc doctor` again"))
 				}
 			}
 		}
 	}
+
+	// │
+	doctorRailLine("│", "")
+	// └  done
+	doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
 
 	return nil
 }
@@ -159,33 +301,3 @@ func checkStatusLine(settingsPath, slCmd string) checkResult {
 		}
 	}
 }
-
-func printCheck(c checkResult) {
-	var icon string
-	switch c.status {
-	case "✓":
-		icon = green(c.status)
-	case "✗":
-		icon = red(c.status)
-	default:
-		icon = yellow(c.status)
-	}
-	fmt.Printf("  %s %s\n", icon, c.message)
-}
-
-// promptYN asks a [y/N] question and returns true only if the user types 'y' or 'Y'.
-func promptYN(question string) bool {
-	fmt.Printf("  %s [y/N] ", question)
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		ans := strings.TrimSpace(scanner.Text())
-		return strings.EqualFold(ans, "y")
-	}
-	return false
-}
-
-// ─── minimal ANSI colour helpers ─────────────────────────────────────────────
-
-func green(s string) string  { return "\033[32m" + s + "\033[0m" }
-func yellow(s string) string { return "\033[33m" + s + "\033[0m" }
-func red(s string) string    { return "\033[31m" + s + "\033[0m" }

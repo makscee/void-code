@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +158,129 @@ func TestBudgetLeft_Over100(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("pct=110: want 0%% left (clamp), got %d", n)
+	}
+}
+
+// ─── clack rail rendering tests for doctor ───────────────────────────────────
+
+func TestDoctorRailStructure_AllGreen(t *testing.T) {
+	checks := []checkResult{
+		{name: "statusline", status: "✓", message: "statusline: installed"},
+	}
+	out := RenderDoctorChecksForTest(checks)
+
+	// Top cap
+	if !strings.Contains(out, "┌") {
+		t.Errorf("doctor rail missing top cap ┌:\n%s", out)
+	}
+	// Rail
+	if !strings.Contains(out, "│") {
+		t.Errorf("doctor rail missing │:\n%s", out)
+	}
+	// Title
+	if !strings.Contains(out, "doctor") {
+		t.Errorf("doctor rail missing 'doctor' title:\n%s", out)
+	}
+	// Check name
+	if !strings.Contains(out, "statusline") {
+		t.Errorf("doctor rail missing check name 'statusline':\n%s", out)
+	}
+	// Ok icon
+	if !strings.Contains(out, "✓") {
+		t.Errorf("doctor rail missing ok icon ✓:\n%s", out)
+	}
+}
+
+func TestDoctorRailStructure_Absent(t *testing.T) {
+	checks := []checkResult{
+		{name: "statusline", status: "✗", message: "statusline: not installed"},
+	}
+	out := RenderDoctorChecksForTest(checks)
+
+	if !strings.Contains(out, "✗") {
+		t.Errorf("doctor rail missing fail icon ✗:\n%s", out)
+	}
+	if !strings.Contains(out, "not installed") {
+		t.Errorf("doctor rail missing 'not installed' detail:\n%s", out)
+	}
+}
+
+func TestDoctorRailStructure_Foreign(t *testing.T) {
+	checks := []checkResult{
+		{name: "statusline", status: "!", message: "statusline: a different statusLine is configured — leaving untouched"},
+	}
+	out := RenderDoctorChecksForTest(checks)
+
+	if !strings.Contains(out, "!") {
+		t.Errorf("doctor rail missing warn icon !:\n%s", out)
+	}
+	if !strings.Contains(out, "leaving untouched") {
+		t.Errorf("doctor rail missing 'leaving untouched' detail:\n%s", out)
+	}
+}
+
+func TestRenderCheckLine_OkStatus(t *testing.T) {
+	c := checkResult{name: "statusline", status: "✓", message: "statusline: installed"}
+	out := renderCheckLine(c)
+	if !strings.Contains(out, "✓") {
+		t.Errorf("renderCheckLine ok: missing ✓ in %q", out)
+	}
+	if !strings.Contains(out, "statusline") {
+		t.Errorf("renderCheckLine ok: missing name in %q", out)
+	}
+	if !strings.Contains(out, "installed") {
+		t.Errorf("renderCheckLine ok: missing detail 'installed' in %q", out)
+	}
+}
+
+func TestRenderCheckLine_FailStatus(t *testing.T) {
+	c := checkResult{name: "statusline", status: "✗", message: "statusline: not installed"}
+	out := renderCheckLine(c)
+	if !strings.Contains(out, "✗") {
+		t.Errorf("renderCheckLine fail: missing ✗ in %q", out)
+	}
+	if !strings.Contains(out, "not installed") {
+		t.Errorf("renderCheckLine fail: missing 'not installed' detail in %q", out)
+	}
+}
+
+func TestRenderCheckLine_WarnStatus(t *testing.T) {
+	c := checkResult{name: "statusline", status: "!", message: "statusline: a different statusLine is configured — leaving untouched"}
+	out := renderCheckLine(c)
+	if !strings.Contains(out, "!") {
+		t.Errorf("renderCheckLine warn: missing ! in %q", out)
+	}
+	if !strings.Contains(out, "leaving untouched") {
+		t.Errorf("renderCheckLine warn: missing 'leaving untouched' detail in %q", out)
+	}
+}
+
+func TestConfirmModel_DefaultIsNo(t *testing.T) {
+	m := newConfirmModel("Install now?")
+	if m.cursor != 1 {
+		t.Errorf("default cursor = %d, want 1 (No)", m.cursor)
+	}
+}
+
+func TestConfirmModel_ViewContainsYesNo(t *testing.T) {
+	m := newConfirmModel("Install the void-code statusline now?")
+	out := m.View()
+	if !strings.Contains(out, "Yes") {
+		t.Errorf("confirm view missing 'Yes':\n%s", out)
+	}
+	if !strings.Contains(out, "No") {
+		t.Errorf("confirm view missing 'No':\n%s", out)
+	}
+	// ◆ prompt marker
+	if !strings.Contains(out, "◆") {
+		t.Errorf("confirm view missing ◆ prompt marker:\n%s", out)
+	}
+	// selected item marker ●
+	if !strings.Contains(out, "●") {
+		t.Errorf("confirm view missing ● selected marker:\n%s", out)
+	}
+	// unselected item marker ○
+	if !strings.Contains(out, "○") {
+		t.Errorf("confirm view missing ○ unselected marker:\n%s", out)
 	}
 }
