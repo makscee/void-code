@@ -319,3 +319,21 @@ func TestConfirmModel_ViewContainsHeader(t *testing.T) {
 		t.Errorf("confirm view missing └ bottom cap:\n%s", out)
 	}
 }
+
+func TestBuildChecks_IncludesProvider(t *testing.T) {
+	// Redirect HOME so provider.Load reads from a clean temp dir.
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // Windows
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	var found bool
+	for _, c := range checks {
+		if c.name == "provider" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("doctor checks should include a 'provider' line")
+	}
+}
