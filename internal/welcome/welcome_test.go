@@ -266,9 +266,9 @@ func TestMenu_StartItemDefault(t *testing.T) {
 
 func TestMenu_NavigationWraps(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	n := m.ItemCount() // 3 when logged in: Start, Top up, Run doctor
-	if n != 3 {
-		t.Fatalf("item count = %d, want 3", n)
+	n := m.ItemCount() // 4 when logged in: Start, Providers, Top up, Run doctor
+	if n != 4 {
+		t.Fatalf("item count = %d, want 4", n)
 	}
 	m = m.MoveCursor(-1) // up from 0 wraps to last
 	if m.Cursor() != n-1 {
@@ -290,7 +290,7 @@ func TestMenu_EnterStartReturnsSpawn(t *testing.T) {
 
 func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	m = m.SetCursor(2)
+	m = m.SetCursor(3) // Start(0), Providers(1), Top up(2), Run doctor(3)
 	if got := m.Activate(); got != welcome.RunDoctor {
 		t.Errorf("activate Run doctor = %v, want RunDoctor", got)
 	}
@@ -298,7 +298,7 @@ func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
 
 func TestMenu_TopUpIsInfoNotResult(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	m = m.SetCursor(1)
+	m = m.SetCursor(2) // Start(0), Providers(1), Top up(2), Run doctor(3)
 	// Top up does not exit the program — Activate returns the in-TUI sentinel.
 	if got := m.Activate(); got != welcome.ShowTopUp {
 		t.Errorf("activate Top up = %v, want ShowTopUp", got)

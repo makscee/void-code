@@ -82,7 +82,19 @@ func main() {
 			}
 		menuLoop:
 			for {
-				result, err := welcome.Run(state)
+				keyNames, _ := keystore.ListKeys()
+				activeProv := provider.Load()
+				cb := welcome.Callbacks{
+					KeyNames:       keyNames,
+					ActiveProvider: activeProv.String(),
+					OnSelect: func(p provider.Provider) error {
+						return provider.Save(p)
+					},
+					OnAddKey: func(name, token string) error {
+						return keystore.AddKey(name, token)
+					},
+				}
+				result, err := welcome.Run(state, cb)
 				if err != nil {
 					// welcome.Run already handled non-TTY fallback; ignore error here.
 					_ = err
