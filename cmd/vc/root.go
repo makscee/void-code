@@ -48,6 +48,11 @@ Run "vc <command> --help" for sub-command details.`,
   vc -- --help`,
 	// SilenceUsage hides the usage block on runtime errors — less noise for users.
 	SilenceUsage: true,
+	// ArbitraryArgs ensures any positional args are passed through to runSpawn
+	// (and on to claude) rather than cobra treating them as unknown subcommands.
+	// Without this, strings like "dev-VCD57-paste" cause cobra to say
+	// "unknown command" instead of forwarding the arg to claude.
+	Args: cobra.ArbitraryArgs,
 	// When no sub-command is matched, RunE (in main.go) handles the spawn.
 	RunE: runSpawn,
 }

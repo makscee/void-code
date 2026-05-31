@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/clackui"
+	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -335,6 +336,17 @@ func runDoctor() error {
 func buildChecks(settingsPath, slCmd string) []checkResult {
 	return []checkResult{
 		checkStatusLine(settingsPath, slCmd),
+		checkActiveProvider(),
+	}
+}
+
+// checkActiveProvider reports which auth source claude will launch with.
+func checkActiveProvider() checkResult {
+	p := provider.Load()
+	return checkResult{
+		name:    "provider",
+		status:  "✓",
+		message: "provider: " + p.Label(),
 	}
 }
 

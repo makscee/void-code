@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/clackui"
+	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/version"
 )
 
@@ -55,15 +56,33 @@ const (
 	Quit
 	// ShowTopUp is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
 	ShowTopUp
+	// ShowProviders is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
+	ShowProviders
 )
+
+// Callbacks holds I/O functions for the Providers sub-view. Passed into Run
+// so the welcome package stays decoupled from keystore/provider I/O.
+// Default (zero) values are no-ops — safe for non-TTY / test paths.
+type Callbacks struct {
+	// KeyNames is the list of saved key names shown in the Providers menu.
+	KeyNames []string
+	// ActiveProvider is the persisted-string form of the currently active provider.
+	ActiveProvider string
+	// OnSelect is called when the user selects a provider row. May be nil.
+	OnSelect func(provider.Provider) error
+	// OnAddKey is called when the Add-key flow completes. May be nil.
+	OnAddKey func(name, token string) error
+	// OnDeleteKey is called when the user confirms deletion of a named key. May be nil.
+	OnDeleteKey func(name string) error
+}
 
 // Run shows the interactive selectable menu and blocks until the user makes a
 // choice (or quits). Returns one of SpawnClaude / RunLogin / RunDoctor / Quit.
 //
 // In non-TTY environments (CI, pipe) it falls back to a plain-text banner
 // and returns SpawnClaude (logged-in) or RunLogin (logged-out).
-func Run(state AuthState) (RunResult, error) {
-	m := newModel(state)
+func Run(state AuthState, cb Callbacks) (RunResult, error) {
+	m := newModel(state, cb)
 	p := tea.NewProgram(m)
 	out, err := p.Run()
 	if err != nil {
@@ -205,12 +224,15 @@ var (
 			Padding(1, 3)
 )
 
-// viewState distinguishes the top-level menu from the Top-up info sub-view.
+// viewState distinguishes the top-level menu from sub-views.
 type viewState int
 
 const (
-	menuView  viewState = iota
-	topUpView           // in-TUI info screen; any key returns to menu
+	menuView      viewState = iota
+	topUpView               // in-TUI info screen; any key returns to menu
+	providersView           // Providers radio list
+	addKeyView              // Add-key two-stage text input
+	deleteView              // Delete-key confirm dialog
 )
 
 // menuItem pairs a display label with the RunResult it produces on activation.
@@ -221,28 +243,37 @@ type menuItem struct {
 
 type model struct {
 	AuthState
-	items    []menuItem
-	cursor   int
-	view     viewState
-	result   RunResult
-	chosen   bool // true once a process-exiting result was selected
-	quitting bool
+	items     []menuItem
+	cursor    int
+	view      viewState
+	result    RunResult
+	chosen    bool // true once a process-exiting result was selected
+	quitting  bool
+	providers     providersModel
+	addKey        addKeyModel
+	deleteConfirm deleteConfirmModel
+	cb            Callbacks // I/O callbacks (provider select, add key, delete key)
 }
 
 func menuItemsFor(state AuthState) []menuItem {
 	if !state.LoggedIn {
 		return []menuItem{{label: "Login", result: RunLogin}}
 	}
-	// DEFERRED: "Disable relay" item intentionally omitted (operator deferred 2026-05-30).
 	return []menuItem{
 		{label: "Start", result: SpawnClaude},
+		{label: "Providers", result: ShowProviders},
 		{label: "Top up", result: ShowTopUp},
 		{label: "Run doctor", result: RunDoctor},
 	}
 }
 
-func newModel(state AuthState) model {
-	return model{AuthState: state, items: menuItemsFor(state), view: menuView}
+func newModel(state AuthState, cb Callbacks) model {
+	return model{
+		AuthState: state,
+		items:     menuItemsFor(state),
+		view:      menuView,
+		cb:        cb,
+	}
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -250,12 +281,18 @@ func (m model) Init() tea.Cmd { return nil }
 // ─── white-box test accessors ────────────────────────────────────────────────
 
 // NewMenuModelForTest exposes newModel for package-external tests.
-func NewMenuModelForTest(state AuthState) model { return newModel(state) }
+func NewMenuModelForTest(state AuthState) model { return newModel(state, Callbacks{}) }
 
 func (m model) Cursor() int            { return m.cursor }
 func (m model) ItemCount() int         { return len(m.items) }
 func (m model) ItemLabel(i int) string { return m.items[i].label }
 func (m model) SetCursor(i int) model  { m.cursor = i; return m }
+
+// SetAddKeyView puts the model into addKeyView with a fresh addKeyModel (test accessor).
+func (m model) SetAddKeyView() model { m.view = addKeyView; m.addKey = newAddKeyModel(); return m }
+
+// AddKeyBuf returns the current text buffer of the addKey sub-model (test accessor).
+func (m model) AddKeyBuf() string { return m.addKey.buf }
 func (m model) MoveCursor(d int) model {
 	n := len(m.items)
 	m.cursor = ((m.cursor+d)%n + n) % n
@@ -274,12 +311,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+
+	// Bracketed-paste (bubbletea v1.3.x): bracketed paste is ON by default.
+	// A paste arrives as tea.KeyMsg{Type: KeyRunes, Paste: true, Runes: [...]}.
+	// key.String() wraps it in "[...]" which breaks all key-name comparisons, so
+	// we intercept paste events here and route them directly to the active text
+	// input before falling through to normal key dispatch.
+	if key.Paste && m.view == addKeyView {
+		m.addKey = m.addKey.handlePaste(string(key.Runes))
+		return m, nil
+	}
+
 	s := key.String()
 
 	if m.view == topUpView {
 		// Any key returns to the menu.
 		m.view = menuView
 		return m, nil
+	}
+
+	if m.view == providersView {
+		return m.updateProviders(s)
+	}
+
+	if m.view == addKeyView {
+		return m.updateAddKey(s)
+	}
+
+	if m.view == deleteView {
+		return m.updateDeleteConfirm(s)
 	}
 
 	switch s {
@@ -300,12 +360,145 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = topUpView
 			return m, nil
 		}
+		if r == ShowProviders {
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.view = providersView
+			return m, nil
+		}
 		m.result = r
 		m.chosen = true
 		m.quitting = true
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// updateProviders handles keystrokes in the Providers sub-view.
+func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
+	n := len(m.providers.rows)
+	switch s {
+	case "ctrl+c":
+		m.result = Quit
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	case "esc", "q":
+		m.view = menuView
+		return m, nil
+	case "up", "k":
+		m.providers.cursor = ((m.providers.cursor-1)%n + n) % n
+		return m, nil
+	case "down", "j":
+		m.providers.cursor = (m.providers.cursor + 1) % n
+		return m, nil
+	case "d", "D":
+		// Delete: only for named-key rows.
+		if m.providers.RowIsDeletable(m.providers.cursor) {
+			row := m.providers.rows[m.providers.cursor]
+			m.deleteConfirm = newDeleteConfirmModel(row.prov.Name)
+			m.view = deleteView
+			return m, nil
+		}
+		return m, nil
+	case "enter", " ":
+		row := m.providers.rows[m.providers.cursor]
+		if row.addKey {
+			m.addKey = newAddKeyModel()
+			m.view = addKeyView
+			return m, nil
+		}
+		// Select this provider.
+		if m.cb.OnSelect != nil {
+			_ = m.cb.OnSelect(row.prov)
+		}
+		m.cb.ActiveProvider = row.prov.String()
+		m.providers.active = row.prov.String()
+		m.view = menuView
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateDeleteConfirm handles keystrokes in the delete-key confirm dialog.
+func (m model) updateDeleteConfirm(s string) (tea.Model, tea.Cmd) {
+	switch s {
+	case "ctrl+c":
+		m.result = Quit
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	default:
+		m.deleteConfirm = m.deleteConfirm.handleKey(s)
+		if m.deleteConfirm.Confirmed() {
+			keyName := m.deleteConfirm.KeyName()
+			// Invoke the delete callback.
+			if m.cb.OnDeleteKey != nil {
+				_ = m.cb.OnDeleteKey(keyName)
+			}
+			// Remove from in-memory key list.
+			newNames := make([]string, 0, len(m.cb.KeyNames))
+			for _, n := range m.cb.KeyNames {
+				if n != keyName {
+					newNames = append(newNames, n)
+				}
+			}
+			m.cb.KeyNames = newNames
+			// If the deleted key was the active provider, reset to relay.
+			if m.cb.ActiveProvider == "key:"+keyName {
+				m.cb.ActiveProvider = "relay"
+				if m.cb.OnSelect != nil {
+					_ = m.cb.OnSelect(provider.Provider{Kind: provider.Relay})
+				}
+			}
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.view = providersView
+			return m, nil
+		}
+		if m.deleteConfirm.Cancelled() {
+			m.view = providersView
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+// updateAddKey handles keystrokes in the Add-key text-input sub-view.
+func (m model) updateAddKey(s string) (tea.Model, tea.Cmd) {
+	switch s {
+	case "ctrl+c":
+		m.result = Quit
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.view = providersView
+		return m, nil
+	default:
+		m.addKey = m.addKey.handleKey(s)
+		if m.addKey.Done() {
+			// Persist the new key.
+			if m.cb.OnAddKey != nil {
+				_ = m.cb.OnAddKey(m.addKey.Name(), m.addKey.Token())
+			}
+			// Rebuild providers list to include the new key.
+			if m.cb.OnAddKey != nil {
+				// Append the new key name if not already present.
+				found := false
+				for _, n := range m.cb.KeyNames {
+					if n == m.addKey.Name() {
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.cb.KeyNames = append(m.cb.KeyNames, m.addKey.Name())
+				}
+			}
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.view = providersView
+		}
+		return m, nil
+	}
 }
 
 // railLine returns a line with the left rail prefix.
@@ -329,6 +522,21 @@ func (m model) View() string {
 	// │  (blank separator)
 	sb.WriteString(railLine("│", ""))
 	sb.WriteString("\n")
+
+	if m.view == providersView {
+		sb.WriteString(m.providers.render())
+		return sb.String()
+	}
+
+	if m.view == addKeyView {
+		sb.WriteString(m.addKey.render())
+		return sb.String()
+	}
+
+	if m.view == deleteView {
+		sb.WriteString(m.deleteConfirm.render())
+		return sb.String()
+	}
 
 	if m.view == topUpView {
 		// Top-up sub-view — clack style with ◇ info marker.
@@ -357,6 +565,11 @@ func (m model) View() string {
 	} else {
 		sb.WriteString(railLine("◇", "  "+warnStyle.Render("Not logged in")))
 	}
+	sb.WriteString("\n")
+
+	// ◇  Provider: <active provider label>  — visible without entering Providers sub-menu.
+	activeProv := provider.Parse(m.cb.ActiveProvider)
+	sb.WriteString(railLine("◇", "  "+hintStyle.Render("Provider: "+activeProv.Label())))
 	sb.WriteString("\n")
 
 	// Update nudge (if present) — shown as an extra ◇ line.
