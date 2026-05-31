@@ -1,7 +1,8 @@
 #!/bin/sh
 # vc/install.sh — installs the void-code relay launcher `vc`, provisions
-# the production relay CA, and guides node + @anthropic-ai/claude-code setup
-# (needed for `claude` which vc delegates to).
+# the production relay CA, and bootstraps node + @anthropic-ai/claude-code
+# (needed for `claude` which vc delegates to). Bootstraps everything —
+# node runtime auto-installed on bare machines via official installer.
 #
 # Usage (recommended):
 #   curl -fsSL https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
@@ -40,6 +41,9 @@ AUTH_HOST="${VC_AUTH_HOST:-https://auth.makscee.ru}"
 VC_DIR="$HOME/.void-code"
 BIN_DIR="$VC_DIR/bin"
 CA_DIR="$VC_DIR"
+
+# Minimum node major version required by @anthropic-ai/claude-code (engines.node >=18.0.0)
+MIN_NODE_MAJOR=18
 
 VERSION_JSON_URL="$AUTH_HOST/vc/version.json"
 RELAY_CA_URL="$AUTH_HOST/vc/relay-ca.pem"
@@ -104,6 +108,7 @@ VC_BIN_URL="$AUTH_HOST/vc/$VC_ARTIFACT_PATH"
 
 # ── shell rc file detection + idempotent PATH append ─────────────────────────
 # Detect login shell, pick the right rc file. CREATE it if absent.
+# Returns "fish" for fish shell (handled separately by append_path_fish).
 detect_rc_file() {
   # $SHELL is set by the login shell on macOS and most Linux.
   _shell_bin="${SHELL:-}"
@@ -116,6 +121,7 @@ detect_rc_file() {
       ;;
     */bash)
       # bash on macOS uses ~/.bash_profile for login shells; prefer it.
+      # BUT also write to ~/.bashrc so non-login (interactive) tabs pick up PATH.
       if [ "$(uname -s)" = "Darwin" ]; then
         printf '%s/.bash_profile' "$HOME"
       else
@@ -123,8 +129,8 @@ detect_rc_file() {
       fi
       ;;
     */fish)
-      # fish uses a different path syntax; guide instead of appending.
-      printf ''
+      # Handled by append_path_fish; return sentinel so caller knows.
+      printf 'fish'
       ;;
     *)
       # Unknown shell — fall back to ~/.profile (POSIX).
@@ -140,13 +146,19 @@ append_path_to_rc() {
   _bin="$2"
   _marker="# added by vc installer"
 
+  # fish is handled separately by append_path_fish.
+  if [ "$_rc_file" = "fish" ]; then
+    append_path_fish "$_bin"
+    return $?
+  fi
+
   # Already in the current PATH? Skip rc mutation but still print hint.
   case ":${PATH}:" in
     *":${_bin}:"*) return 0 ;;
   esac
 
   if [ -z "$_rc_file" ]; then
-    # fish or unknown — print guidance only.
+    # unknown shell — print guidance only.
     printf '\nvc: PATH note: add %s to your shell PATH manually.\n' "$_bin" >&2
     return 0
   fi
@@ -165,33 +177,138 @@ append_path_to_rc() {
 
   printf '\n%s\nexport PATH="%s:$PATH"\n' "$_marker" "$_bin" >> "$_rc_file"
   printf 'vc: added %s to PATH in %s\n' "$_bin" "$_rc_file" >&2
+
+  # On Darwin bash: also ensure ~/.bashrc sources ~/.bash_profile so non-login
+  # (interactive) tabs pick up PATH — idempotent marker-guarded append.
+  if [ "$(uname -s)" = "Darwin" ] && [ "$_rc_file" = "$HOME/.bash_profile" ]; then
+    _bashrc="$HOME/.bashrc"
+    _bashrc_marker="# vc: source bash_profile for PATH (added by vc installer)"
+    if ! [ -f "$_bashrc" ] || ! grep -qF "$_bashrc_marker" "$_bashrc" 2>/dev/null; then
+      [ -f "$_bashrc" ] || touch "$_bashrc"
+      printf '\n%s\n[ -f ~/.bash_profile ] && . ~/.bash_profile\n' "$_bashrc_marker" >> "$_bashrc"
+      printf 'vc: added bash_profile source to %s\n' "$_bashrc" >&2
+    fi
+  fi
 }
 
-# ── node/npm prerequisite check + guidance ────────────────────────────────────
-# Returns 0 if node is present, 1 if absent (but with guidance printed).
-check_node() {
-  if command -v node >/dev/null 2>&1; then
-    _nv="$(node --version 2>/dev/null | head -1 || printf 'unknown')"
-    printf 'vc: node already installed (%s)\n' "$_nv" >&2
+# Append BIN_DIR to fish PATH in ~/.config/fish/config.fish, idempotently.
+append_path_fish() {
+  _bin="$1"
+  _fish_marker="# added by vc installer"
+  _fish_cfg_dir="$HOME/.config/fish"
+  _fish_cfg="$_fish_cfg_dir/config.fish"
+
+  # Already in current PATH? Nothing to do.
+  case ":${PATH}:" in
+    *":${_bin}:"*) return 0 ;;
+  esac
+
+  # Already written (idempotent check).
+  if [ -f "$_fish_cfg" ] && grep -qF "$_fish_marker" "$_fish_cfg" 2>/dev/null; then
     return 0
   fi
 
-  printf '\nvc: node / npm not found.\n' >&2
+  mkdir -p "$_fish_cfg_dir"
+  [ -f "$_fish_cfg" ] || touch "$_fish_cfg"
+  printf '\n%s\nset -gx PATH %s $PATH\n' "$_fish_marker" "$_bin" >> "$_fish_cfg"
+  printf 'vc: added %s to PATH in %s\n' "$_bin" "$_fish_cfg" >&2
+}
+
+# ── node version helper ───────────────────────────────────────────────────────
+# Prints the node major version integer, or empty string if node is absent/unparseable.
+node_major() {
+  if ! command -v node >/dev/null 2>&1; then
+    printf ''
+    return
+  fi
+  _ver="$(node --version 2>/dev/null | head -1 | tr -d 'v' | cut -d. -f1)" || true
+  printf '%s' "${_ver:-}"
+}
+
+# ── node bootstrap ────────────────────────────────────────────────────────────
+# ensure_node: guarantees node >= MIN_NODE_MAJOR is present, installing if needed.
+# Returns 0 on success, 1 on unrecoverable failure (caller must abort).
+ensure_node() {
+  _cur_major="$(node_major)"
+
+  if [ -n "$_cur_major" ] && [ "$_cur_major" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
+    printf 'vc: node OK (v%s)\n' "$(node --version 2>/dev/null | tr -d 'v')" >&2
+    return 0
+  fi
+
+  if [ -n "$_cur_major" ]; then
+    printf 'vc: node v%s found but requires >=%s — will install updated version\n' \
+      "$(node --version 2>/dev/null | tr -d 'v')" "$MIN_NODE_MAJOR" >&2
+  else
+    printf 'vc: node / npm not found — bootstrapping node runtime\n' >&2
+  fi
 
   if command -v brew >/dev/null 2>&1; then
-    if [ "$YES" = 1 ]; then
-      printf 'vc: installing node via Homebrew (--yes flag set)...\n' >&2
-      brew install node >&2
-      return $?
+    printf 'vc: installing node via Homebrew...\n' >&2
+    if [ "$DRY_RUN" = 1 ]; then
+      printf 'WOULD: brew install node\n'
+      return 0
     fi
-    printf '    Homebrew is installed. Run to install Node.js:\n' >&2
-    printf '        brew install node\n' >&2
-    printf '    Then re-run this installer.\n' >&2
+    brew install node >&2 || {
+      printf 'vc: brew install node failed. Visit https://nodejs.org to install manually.\n' >&2
+      return 1
+    }
   else
-    printf '    Install Node.js from https://nodejs.org (LTS version),\n' >&2
-    printf '    then re-run this installer.\n' >&2
+    # No Homebrew — download official Apple-notarized Node LTS .pkg from nodejs.org.
+    _node_arch="$(uname -m)"
+    case "$_node_arch" in
+      arm64|aarch64) _node_pkg_arch="arm64" ;;
+      *)             _node_pkg_arch="x64" ;;
+    esac
+    _node_lts_url="https://nodejs.org/dist/latest-v22.x/node-v22.14.0-darwin-${_node_pkg_arch}.pkg"
+    _node_tmp="$(mktemp /tmp/node-installer-XXXXXX.pkg)"
+
+    if [ "$DRY_RUN" = 1 ]; then
+      printf 'WOULD: download %s\n' "$_node_lts_url"
+      printf 'WOULD: sudo installer -pkg <node.pkg> -target /\n'
+      rm -f "$_node_tmp"
+      return 0
+    fi
+
+    printf 'vc: downloading Node.js LTS installer from nodejs.org...\n' >&2
+    fetch_to_file "$_node_lts_url" "$_node_tmp" || {
+      printf 'vc: failed to download Node.js installer from %s\n' "$_node_lts_url" >&2
+      printf '    Visit https://nodejs.org to install Node.js manually, then re-run.\n' >&2
+      rm -f "$_node_tmp"
+      return 1
+    }
+
+    _pkg_size=0
+    command -v wc >/dev/null 2>&1 && _pkg_size="$(wc -c < "$_node_tmp" 2>/dev/null | tr -d ' ')" || true
+    if [ -n "$_pkg_size" ] && [ "$_pkg_size" -lt 1024 ] 2>/dev/null; then
+      printf 'vc: downloaded installer looks too small (%s bytes) — aborting node install\n' "$_pkg_size" >&2
+      rm -f "$_node_tmp"
+      return 1
+    fi
+
+    printf 'vc: running Node.js installer (one admin/sudo prompt)...\n' >&2
+    sudo installer -pkg "$_node_tmp" -target / >&2 || {
+      printf 'vc: Node.js installer failed or was cancelled.\n' >&2
+      printf '    Visit https://nodejs.org to install Node.js manually, then re-run.\n' >&2
+      rm -f "$_node_tmp"
+      return 1
+    }
+    rm -f "$_node_tmp"
+
+    # Refresh PATH so newly installed node is found.
+    export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
   fi
-  return 1
+
+  # Re-verify after install.
+  _new_major="$(node_major)"
+  if [ -n "$_new_major" ] && [ "$_new_major" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
+    printf 'vc: node installed successfully (v%s)\n' "$(node --version 2>/dev/null | tr -d 'v')" >&2
+    return 0
+  else
+    printf 'vc: node install appeared to succeed but node >= %s not found in PATH.\n' "$MIN_NODE_MAJOR" >&2
+    printf '    Open a new terminal and re-run, or visit https://nodejs.org.\n' >&2
+    return 1
+  fi
 }
 
 # Check claude binary; offer/prompt npm install if absent.
@@ -252,18 +369,21 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '%s\n' "$VERSION_BANNER"
   printf 'GET %s  (-> %s/vc)\n' "$VC_BIN_URL" "$BIN_DIR"
   printf 'GET %s  (-> %s/relay-ca.pem)\n' "$RELAY_CA_URL" "$CA_DIR"
-  if ! command -v node >/dev/null 2>&1; then
+  _dry_major="$(node_major)"
+  if [ -z "$_dry_major" ] || ! [ "$_dry_major" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
     if command -v brew >/dev/null 2>&1; then
-      printf 'WOULD: brew install node (prompt; or auto with -y)\n'
+      printf 'WOULD: brew install node\n'
     else
-      printf 'WOULD: guide → https://nodejs.org\n'
+      _dry_arch="$(uname -m)"; case "$_dry_arch" in arm64|aarch64) _dry_pkg_arch="arm64";; *) _dry_pkg_arch="x64";; esac
+      printf 'WOULD: download https://nodejs.org/dist/latest-v22.x/node-v22.14.0-darwin-%s.pkg\n' "$_dry_pkg_arch"
+      printf 'WOULD: sudo installer -pkg <node.pkg> -target /\n'
     fi
   fi
   if ! command -v claude >/dev/null 2>&1 && ! [ -x "$HOME/.void-code/bin/claude" ]; then
-    printf 'WOULD: npm install -g @anthropic-ai/claude-code (prompt; or auto with -y)\n'
+    printf 'WOULD: npm install -g @anthropic-ai/claude-code\n'
   fi
   _dry_rc="$(detect_rc_file)"
-  printf 'RC file: %s\n' "${_dry_rc:-<fish/unknown — manual PATH>}"
+  printf 'RC file: %s\n' "${_dry_rc}"
   if [ -n "${VC_CODE:-}" ]; then
     printf 'WOULD: vc login  (VC_CODE set)\n'
   fi
@@ -303,9 +423,12 @@ printf '==> provisioning relay CA\n' >&2
 fetch_to_file "$RELAY_CA_URL" "$CA_DIR/relay-ca.pem" \
   || { printf 'vc: failed to download relay CA\n' >&2; exit 1; }
 
-# 3. node/npm + claude prerequisite checks
-printf '==> checking node / claude prerequisites\n' >&2
-check_node || true
+# 3. node/npm + claude bootstrap
+printf '==> bootstrapping node / claude\n' >&2
+ensure_node || {
+  printf 'vc: node bootstrap failed — see guidance above. Aborting (no partial install).\n' >&2
+  exit 1
+}
 check_claude || true
 
 # 4. PATH — detect rc file, create if absent, append idempotently
