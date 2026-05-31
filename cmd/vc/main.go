@@ -60,7 +60,7 @@ func main() {
 	// Checks auth state, shows banner, waits for any keypress.
 	// Any keypress → logged-in: spawn claude; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
-	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true}
+	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd {
 		state := resolveAuthState()

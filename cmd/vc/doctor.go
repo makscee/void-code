@@ -15,6 +15,7 @@ import (
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/clackui"
 	"github.com/makscee/void-code/internal/claudebin"
+	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
@@ -34,8 +35,8 @@ const (
 )
 
 // classifyStatusLine reads settingsPath and returns the statusLine classification.
-// slCmd is the expected command string (e.g. "/abs/vc statusline") — used to match
-// against the " statusline" suffix ownership key, same as EnsureStatusLine.
+// slCmd is the expected command string — ownership check uses IsOurStatusLineCmd
+// (recognizes both plain " statusline" and merge-wrapper " statusline --merge").
 func classifyStatusLine(settingsPath, slCmd string) slStatus {
 	_ = slCmd // ownership key is suffix-based, not value-based
 	data, err := os.ReadFile(settingsPath)
@@ -54,7 +55,7 @@ func classifyStatusLine(settingsPath, slCmd string) slStatus {
 		return slAbsent
 	}
 	cmd, _ := sl["command"].(string)
-	if strings.HasSuffix(cmd, " statusline") {
+	if ccsettings.IsOurStatusLineCmd(cmd) {
 		return slInstalled
 	}
 	return slForeign
@@ -78,11 +79,13 @@ func budgetLeft(pct *float64) (int, bool) {
 // ─── doctor check type ────────────────────────────────────────────────────────
 
 type checkResult struct {
-	name     string
-	status   string   // "✓", "✗", "!"
-	message  string
-	fix      func() error // nil if no fix available (interactive yes/no prompt)
-	guidance []string     // non-interactive extra lines printed after the check (no prompt)
+	name          string
+	status        string   // "✓", "✗", "!"
+	message       string
+	fix           func() error        // nil if no fix available (interactive yes/no prompt)
+	fixSelect     func(choice int) error // nil unless this check uses a 3-way selector
+	selectOptions []string             // non-nil → use selectModel instead of confirmModel
+	guidance      []string             // non-interactive extra lines printed after the check (no prompt)
 }
 
 // ─── clack rail rendering for doctor ─────────────────────────────────────────
@@ -250,6 +253,92 @@ func promptConfirm(question, header string) bool {
 	return true
 }
 
+// ─── bubbletea select model (N-option prompt) ────────────────────────────────
+
+// selectModel is a clack-style ◆ N-option selector (generalises confirmModel).
+// Default selection = 0 (first option).
+type selectModel struct {
+	question string
+	header   string
+	options  []string
+	cursor   int
+	chosen   bool
+	quitting bool
+}
+
+func newSelectModel(question, header string, options []string) selectModel {
+	return selectModel{question: question, header: header, options: options, cursor: 0}
+}
+
+func (m selectModel) Init() tea.Cmd { return nil }
+
+func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	n := len(m.options)
+	switch key.String() {
+	case "ctrl+c", "q", "esc":
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "k", "left", "h":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j", "right", "l":
+		if m.cursor < n-1 {
+			m.cursor++
+		}
+	case "enter", " ":
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m selectModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	var sb strings.Builder
+	if m.header != "" {
+		sb.WriteString(m.header)
+	}
+	sb.WriteString(clackui.RailLine("◆", "  "+clackui.InfoTextStyle.Render(m.question)))
+	sb.WriteString("\n")
+	for i, opt := range m.options {
+		if i == m.cursor {
+			sb.WriteString(clackui.RailLine("│", "  "+clackui.SelectedItemStyle.Render("●  "+opt)))
+		} else {
+			sb.WriteString(clackui.RailLine("│", "  "+clackui.UnselectedItemStyle.Render("○  "+opt)))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(clackui.RailLine("│", ""))
+	sb.WriteString("\n")
+	sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("↑/↓ · enter")))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// promptSelect shows a clack-style ◆ N-option selector.
+// Returns (selectedIndex, true) on confirm; (-1, false) on cancel/quit.
+func promptSelect(question, header string, options []string) (int, bool) {
+	m := newSelectModel(question, header, options)
+	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
+	out, err := p.Run()
+	if err != nil {
+		return -1, false
+	}
+	sm, ok := out.(selectModel)
+	if !ok || !sm.chosen {
+		return -1, false
+	}
+	return sm.cursor, true
+}
+
 // ─── doctor command ───────────────────────────────────────────────────────────
 
 var doctorCmd = &cobra.Command{
@@ -289,7 +378,7 @@ func runDoctor() error {
 	// If no fix needed: just print everything to stdout directly.
 	needsFix := false
 	for _, c := range checks {
-		if c.fix != nil {
+		if c.fix != nil || c.fixSelect != nil {
 			needsFix = true
 			break
 		}
@@ -297,17 +386,18 @@ func runDoctor() error {
 
 	if needsFix {
 		// Build the pre-rendered header (┌  doctor + blank + check lines + blank).
-		// This is passed into confirmModel.View() so the full layout is one block.
+		// This is passed into confirmModel/selectModel.View() so the full layout is one block.
 		header := buildConfirmHeader(checks)
 
 		for _, c := range checks {
-			if c.fix == nil {
-				continue
-			}
-			// The bubbletea confirm renders the complete view including header,
-			// the ◆ question line, and the ○/● options (defect 2 fix: question present).
-			if promptConfirm("Install void-code statusline now?", header) {
-				if err := c.fix(); err != nil {
+			switch {
+			case c.fixSelect != nil && len(c.selectOptions) > 0:
+				// 3-way selector (e.g. merge / override / skip for foreign statusLine).
+				choice, ok := promptSelect(c.message, header, c.selectOptions)
+				if !ok {
+					continue // cancelled
+				}
+				if err := c.fixSelect(choice); err != nil {
 					fmt.Fprintf(os.Stderr, "  error: %v\n", err)
 					continue
 				}
@@ -317,7 +407,25 @@ func runDoctor() error {
 				if after == slInstalled {
 					doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("installed"))
 				} else {
-					doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("install may have failed — run `vc doctor` again"))
+					doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("statusline not installed — run `vc doctor` to enable"))
+				}
+			case c.fix != nil:
+				// Yes/No confirm (e.g. absent statusLine install).
+				// The bubbletea confirm renders the complete view including header,
+				// the ◆ question line, and the ○/● options (defect 2 fix: question present).
+				if promptConfirm("Install void-code statusline now?", header) {
+					if err := c.fix(); err != nil {
+						fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+						continue
+					}
+					// Re-verify after fix.
+					after := classifyStatusLine(settingsPath, slCmd)
+					doctorRailLine("│", "")
+					if after == slInstalled {
+						doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("installed"))
+					} else {
+						doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("install may have failed — run `vc doctor` again"))
+					}
 				}
 			}
 		}
@@ -630,6 +738,9 @@ func checkActiveProvider() checkResult {
 }
 
 func checkStatusLine(settingsPath, slCmd string) checkResult {
+	execPath := strings.TrimSuffix(slCmd, " statusline")
+	mergeCmd := ccsettings.MergeStatusLineCmd(execPath)
+
 	switch classifyStatusLine(settingsPath, slCmd) {
 	case slInstalled:
 		return checkResult{
@@ -638,10 +749,47 @@ func checkStatusLine(settingsPath, slCmd string) checkResult {
 			message: "statusline: installed",
 		}
 	case slForeign:
+		// Build the 3-way prompt options.
+		opts := []string{"merge (keep existing + add vc)", "override (replace with vc)", "skip"}
+		msg := "statusline: a different statusLine is configured"
+		if config.IsStatusLineSkipped() {
+			msg = "statusline: skipped — vc statusline inactive (run `vc doctor` to enable)"
+		}
 		return checkResult{
-			name:    "statusline",
-			status:  "!",
-			message: "statusline: a different statusLine is configured — leaving untouched",
+			name:          "statusline",
+			status:        "!",
+			message:       msg,
+			selectOptions: opts,
+			fixSelect: func(choice int) error {
+				switch choice {
+				case 0: // merge
+					priorPath, err := config.StatusLinePriorPath()
+					if err != nil {
+						return fmt.Errorf("statusline merge: cannot resolve prior path: %w", err)
+					}
+					if err := backupPriorStatusLine(settingsPath, priorPath); err != nil {
+						return fmt.Errorf("statusline merge: backup: %w", err)
+					}
+					if err := ccsettings.SetStatusLine(settingsPath, mergeCmd); err != nil {
+						return fmt.Errorf("statusline merge: set: %w", err)
+					}
+					return config.ClearStatusLineSkipped()
+				case 1: // override
+					priorPath, err := config.StatusLinePriorPath()
+					if err != nil {
+						return fmt.Errorf("statusline override: cannot resolve prior path: %w", err)
+					}
+					if err := backupPriorStatusLine(settingsPath, priorPath); err != nil {
+						return fmt.Errorf("statusline override: backup: %w", err)
+					}
+					if err := ccsettings.SetStatusLine(settingsPath, slCmd); err != nil {
+						return fmt.Errorf("statusline override: set: %w", err)
+					}
+					return config.ClearStatusLineSkipped()
+				default: // skip
+					return config.MarkStatusLineSkipped()
+				}
+			},
 		}
 	default: // slAbsent
 		return checkResult{
@@ -653,4 +801,20 @@ func checkStatusLine(settingsPath, slCmd string) checkResult {
 			},
 		}
 	}
+}
+
+// backupPriorStatusLine reads the current statusLine.command from settings and
+// writes it to priorPath as {"type":"command","command":"<cmd>"}.
+// No-op if settings has no statusLine (nothing to back up).
+func backupPriorStatusLine(settingsPath, priorPath string) error {
+	cmd, err := ccsettings.GetStatusLineCommand(settingsPath)
+	if err != nil || cmd == "" {
+		return nil // nothing to back up
+	}
+	data := fmt.Sprintf(`{"type":"command","command":%q}`+"\n", cmd)
+	dir := filepath.Dir(priorPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("backupPrior: mkdir: %w", err)
+	}
+	return os.WriteFile(priorPath, []byte(data), 0600)
 }

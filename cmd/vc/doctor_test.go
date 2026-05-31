@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/makscee/void-code/internal/config"
 )
 
 // ─── classifyStatusLine tests ─────────────────────────────────────────────────
@@ -535,5 +537,194 @@ func TestBuildChecks_IncludesBinOnPath(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("doctor checks should include a 'bin on PATH' check")
+	}
+}
+
+// ─── VCD-62: selectModel + checkStatusLine foreign/skip tests ────────────────
+
+func TestSelectModel_ViewContainsOptions(t *testing.T) {
+	opts := []string{"merge (keep existing + add vc)", "override (replace with vc)", "skip"}
+	m := newSelectModel("How should vc handle your existing statusLine?", "", opts)
+	out := m.View()
+
+	// ◆ prompt marker
+	if !strings.Contains(out, "◆") {
+		t.Errorf("select view missing ◆ prompt marker:\n%s", out)
+	}
+	for _, opt := range opts {
+		if !strings.Contains(out, opt) {
+			t.Errorf("select view missing option %q:\n%s", opt, out)
+		}
+	}
+	// Selected item marker ● (cursor=0 by default)
+	if !strings.Contains(out, "●") {
+		t.Errorf("select view missing ● selected marker:\n%s", out)
+	}
+	// Unselected item marker ○
+	if !strings.Contains(out, "○") {
+		t.Errorf("select view missing ○ unselected marker:\n%s", out)
+	}
+}
+
+func TestSelectModel_ViewContainsHeader(t *testing.T) {
+	checks := []checkResult{
+		{name: "statusline", status: "!", message: "statusline: a different statusLine is configured"},
+	}
+	header := buildConfirmHeader(checks)
+	opts := []string{"merge (keep existing + add vc)", "override (replace with vc)", "skip"}
+	m := newSelectModel("How should vc handle your existing statusLine?", header, opts)
+	out := m.View()
+
+	// Header must embed ┌  doctor top cap
+	if !strings.Contains(out, "┌") {
+		t.Errorf("select view missing ┌ top cap (header not embedded):\n%s", out)
+	}
+	if !strings.Contains(out, "doctor") {
+		t.Errorf("select view missing 'doctor' title:\n%s", out)
+	}
+	if !strings.Contains(out, "different statusLine") {
+		t.Errorf("select view missing check detail in header:\n%s", out)
+	}
+}
+
+func TestCheckStatusLine_Foreign_HasSelectOptions(t *testing.T) {
+	dir := t.TempDir()
+	p := writeSettings(t, dir, map[string]any{
+		"statusLine": map[string]any{
+			"type":    "command",
+			"command": "echo CUSTOM",
+		},
+	})
+
+	c := checkStatusLine(p, "/abs/vc statusline")
+	if c.status != "!" {
+		t.Errorf("foreign: want status=!, got %q", c.status)
+	}
+	if len(c.selectOptions) != 3 {
+		t.Fatalf("foreign: want 3 selectOptions, got %d: %v", len(c.selectOptions), c.selectOptions)
+	}
+	if c.fixSelect == nil {
+		t.Fatal("foreign: want fixSelect != nil")
+	}
+	// Verify option labels contain the expected keywords.
+	if !strings.Contains(c.selectOptions[0], "merge") {
+		t.Errorf("option 0 should be merge, got %q", c.selectOptions[0])
+	}
+	if !strings.Contains(c.selectOptions[1], "override") {
+		t.Errorf("option 1 should be override, got %q", c.selectOptions[1])
+	}
+	if !strings.Contains(c.selectOptions[2], "skip") {
+		t.Errorf("option 2 should be skip, got %q", c.selectOptions[2])
+	}
+}
+
+func TestCheckStatusLine_Foreign_Skipped_Informational(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	dir := t.TempDir()
+	p := writeSettings(t, dir, map[string]any{
+		"statusLine": map[string]any{
+			"type":    "command",
+			"command": "echo CUSTOM",
+		},
+	})
+
+	// Mark skipped.
+	if err := config.MarkStatusLineSkipped(); err != nil {
+		t.Fatalf("MarkStatusLineSkipped: %v", err)
+	}
+
+	c := checkStatusLine(p, "/abs/vc statusline")
+	// Status should be "!" (informational), NOT "✗".
+	if c.status != "!" {
+		t.Errorf("skipped foreign: want status=!, got %q", c.status)
+	}
+	if !strings.Contains(c.message, "skipped") {
+		t.Errorf("skipped foreign: message should contain 'skipped', got %q", c.message)
+	}
+	// fixSelect must still be present (re-offer requirement).
+	if c.fixSelect == nil {
+		t.Fatal("skipped foreign: fixSelect must still be non-nil (re-offer)")
+	}
+}
+
+func TestCheckStatusLine_Installed_Ours(t *testing.T) {
+	dir := t.TempDir()
+	p := writeSettings(t, dir, map[string]any{
+		"statusLine": map[string]any{
+			"type":    "command",
+			"command": "/abs/vc statusline",
+		},
+	})
+
+	c := checkStatusLine(p, "/abs/vc statusline")
+	if c.status != "✓" {
+		t.Errorf("installed: want status=✓, got %q", c.status)
+	}
+	if c.fix != nil || c.fixSelect != nil {
+		t.Error("installed: no fix needed when already ours")
+	}
+}
+
+func TestCheckStatusLine_InstalledMergeWrapper_Ours(t *testing.T) {
+	// Merge wrapper form ("vc statusline --merge") must also be recognised as installed.
+	dir := t.TempDir()
+	p := writeSettings(t, dir, map[string]any{
+		"statusLine": map[string]any{
+			"type":    "command",
+			"command": "/abs/vc statusline --merge",
+		},
+	})
+
+	c := checkStatusLine(p, "/abs/vc statusline")
+	if c.status != "✓" {
+		t.Errorf("merge wrapper: want status=✓, got %q", c.status)
+	}
+}
+
+func TestCheckStatusLine_Absent_HasFix(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+
+	c := checkStatusLine(p, "/abs/vc statusline")
+	if c.status != "✗" {
+		t.Errorf("absent: want status=✗, got %q", c.status)
+	}
+	if c.fix == nil {
+		t.Fatal("absent: want fix != nil for absent statusLine")
+	}
+	if c.fixSelect != nil {
+		t.Error("absent: fixSelect must be nil (uses Yes/No, not 3-way)")
+	}
+}
+
+func TestCheckStatusLine_Merge_PostFixIsInstalled(t *testing.T) {
+	// Simulate choosing merge: backup prior, SetStatusLine with merge cmd → classify installed.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	dir := t.TempDir()
+	p := writeSettings(t, dir, map[string]any{
+		"statusLine": map[string]any{
+			"type":    "command",
+			"command": "echo CUSTOM",
+		},
+	})
+
+	c := checkStatusLine(p, "/abs/vc statusline")
+	if c.fixSelect == nil {
+		t.Fatal("foreign: fixSelect must be non-nil")
+	}
+	// Apply merge choice (0).
+	if err := c.fixSelect(0); err != nil {
+		t.Fatalf("fixSelect merge: %v", err)
+	}
+	// Re-classify — should be installed (merge wrapper is ours).
+	after := classifyStatusLine(p, "/abs/vc statusline")
+	if after != slInstalled {
+		t.Errorf("after merge: classify = %v, want slInstalled", after)
 	}
 }

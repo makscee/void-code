@@ -313,6 +313,19 @@ func StatusLineCmd(execPath string) string {
 	return QuoteIfSpace(execPath) + " statusline"
 }
 
+// MergeStatusLineCmd builds the merge-wrapper statusLine command:
+// "<abs-or-quoted-path> statusline --merge".
+func MergeStatusLineCmd(execPath string) string {
+	return QuoteIfSpace(execPath) + " statusline --merge"
+}
+
+// IsOurStatusLineCmd reports whether cmd is a vc-owned statusLine command.
+// Recognizes both the plain form ("<vc> statusline") and the merge-wrapper
+// form ("<vc> statusline --merge") so idempotency + classify both work.
+func IsOurStatusLineCmd(cmd string) bool {
+	return strings.HasSuffix(cmd, " statusline") || strings.HasSuffix(cmd, " statusline --merge")
+}
+
 // ForwardSlash converts backslashes to forward slashes for the statusLine
 // command string on Windows (CC's Git-Bash runner strips backslashes).
 // No-op on paths that already use '/'.
@@ -358,7 +371,11 @@ func freshStatusLineDoc(slCmd string) []byte {
 }
 
 // mergeStatusLine returns true if obj changed (write needed).
-// Idempotency / ownership key: command ends with " statusline".
+// Idempotency / ownership key: IsOurStatusLineCmd (covers plain + --merge suffixes).
+// Special rule: if the current command is already the merge-wrapper (ends
+// " statusline --merge"), it is left as-is regardless of slCmd — the merge
+// wrapper was installed after explicit user consent and must not be silently
+// downgraded by the spawn-path EnsureStatusLine.
 func mergeStatusLine(obj map[string]any, slCmd string) bool {
 	sl, _ := obj["statusLine"].(map[string]any)
 	if sl == nil {
@@ -367,14 +384,63 @@ func mergeStatusLine(obj map[string]any, slCmd string) bool {
 		return true
 	}
 	cur, _ := sl["command"].(string)
-	if !strings.HasSuffix(cur, " statusline") {
+	if !IsOurStatusLineCmd(cur) {
 		return false // FOREIGN statusLine — never clobber, no write
 	}
 	if cur == slCmd {
 		return false // ours, unchanged
 	}
-	obj["statusLine"] = statusLineEntry(slCmd) // ours, moved → update
+	// If current is the merge wrapper, leave it alone — user consent was given.
+	if strings.HasSuffix(cur, " statusline --merge") {
+		return false
+	}
+	obj["statusLine"] = statusLineEntry(slCmd) // ours (plain), moved → update
 	return true
+}
+
+// SetStatusLine unconditionally overwrites the "statusLine" entry in settings.json
+// at path with slCmd. Used for override and merge-install (after explicit consent).
+// If the file does not exist it is created fresh. Invalid JSON → return error.
+func SetStatusLine(path, slCmd string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeAtomic(path, freshStatusLineDoc(slCmd))
+	}
+	if err != nil {
+		return err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+	obj["statusLine"] = statusLineEntry(slCmd)
+	out, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("ccsettings: marshal: %w", err)
+	}
+	return writeAtomic(path, append(out, '\n'))
+}
+
+// GetStatusLineCommand reads the current statusLine.command from settings at path.
+// Returns "", nil when the file is absent or has no statusLine entry.
+func GetStatusLineCommand(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return "", fmt.Errorf("ccsettings: %s invalid JSON: %w", path, err)
+	}
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl == nil {
+		return "", nil
+	}
+	cmd, _ := sl["command"].(string)
+	return cmd, nil
 }
 
 // writeAtomic writes data to path using temp-file + rename (crash-safe).

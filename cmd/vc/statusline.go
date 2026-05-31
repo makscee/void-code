@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -102,16 +105,95 @@ func renderSegments(in statusInput, d segData) string {
 	return strings.Join(parts, " | ")
 }
 
+var statuslineMerge bool
+
 var statuslineCmd = &cobra.Command{
 	Use:    "statusline",
 	Hidden: true,
 	Short:  "Internal: Claude Code statusLine renderer (context · $ balance)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if statuslineMerge {
+			return runStatuslineMerge(os.Stdin, os.Stdout)
+		}
 		return runStatusline(os.Stdin, os.Stdout)
 	},
 }
 
-func init() { rootCmd.AddCommand(statuslineCmd) }
+func init() {
+	statuslineCmd.Flags().BoolVar(&statuslineMerge, "merge", false, "run prior statusLine command and prepend its output")
+	rootCmd.AddCommand(statuslineCmd)
+}
+
+// runPriorCommand runs priorCmd via the OS shell, feeding stdin bytes to it,
+// and returns the trimmed first line of stdout.
+// On any error it returns ("", err) — callers must treat errors as empty output
+// (never fail CC UI).
+func runPriorCommand(priorCmd string, stdin []byte) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", priorCmd)
+	} else {
+		cmd = exec.Command("sh", "-c", priorCmd)
+	}
+	cmd.Stdin = bytes.NewReader(stdin)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	// Trim trailing newline/whitespace; return first line only.
+	line := strings.SplitN(strings.TrimRight(string(out), "\r\n"), "\n", 2)[0]
+	return strings.TrimRight(line, "\r"), nil
+}
+
+// runStatuslineMerge implements "vc statusline --merge":
+// reads stdin, runs the prior command (from statusline-prior.json) feeding the
+// same stdin bytes, then composes prior output + vc segment on one line.
+// NEVER errors out of band — mirrors runStatusline's fail-safe contract.
+func runStatuslineMerge(r io.Reader, w io.Writer) error {
+	// Buffer ALL of stdin so we can feed both the JSON decoder and the prior command.
+	stdinBytes, err := io.ReadAll(r)
+	if err != nil {
+		fmt.Fprintln(w, "vc")
+		return nil
+	}
+
+	// Decode vc's own segment.
+	var in statusInput
+	vcLine := "vc"
+	if err := json.Unmarshal(stdinBytes, &in); err == nil {
+		d := fetchSegData()
+		vcLine = renderSegments(in, d)
+	}
+
+	// Run the prior command (if any).
+	priorLine := ""
+	if priorPath, err := config.StatusLinePriorPath(); err == nil {
+		if data, err := os.ReadFile(priorPath); err == nil {
+			var prior struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(data, &prior) == nil && prior.Command != "" {
+				if out, err := runPriorCommand(prior.Command, stdinBytes); err == nil {
+					priorLine = out
+				}
+				// On error: prior segment stays empty (fail-safe)
+			}
+		}
+		// File absent or read error: priorLine stays empty
+	}
+
+	// Compose: "prior | vc" or just one side if the other is empty.
+	switch {
+	case priorLine == "":
+		fmt.Fprintln(w, vcLine)
+	case vcLine == "vc" && priorLine != "":
+		// vc segment degenerate — just show prior
+		fmt.Fprintln(w, priorLine+" | vc")
+	default:
+		fmt.Fprintln(w, priorLine+" | "+vcLine)
+	}
+	return nil
+}
 
 // runStatusline reads one statusLine event from r, prints one line to w.
 // NEVER errors out of band — a broken statusline must never break the CC UI.

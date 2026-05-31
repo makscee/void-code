@@ -406,3 +406,118 @@ func TestRemoveHook_UnparseableNotClobbered(t *testing.T) {
 		t.Fatalf("unparseable file was clobbered: %q", string(b))
 	}
 }
+
+// ─── VCD-62: IsOurStatusLineCmd / MergeStatusLineCmd / SetStatusLine / GetStatusLineCommand ───
+
+func TestIsOurStatusLineCmd(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		{"/abs/vc statusline", true},
+		{"/abs/vc statusline --merge", true},
+		{`"/Program Files/vc.exe" statusline`, true},
+		{`"/Program Files/vc.exe" statusline --merge`, true},
+		{"~/.claude/statusline.sh", false},
+		{"echo CUSTOM", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := IsOurStatusLineCmd(tc.cmd); got != tc.want {
+			t.Errorf("IsOurStatusLineCmd(%q) = %v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func TestMergeStatusLineCmd(t *testing.T) {
+	got := MergeStatusLineCmd("/abs/vc")
+	if got != "/abs/vc statusline --merge" {
+		t.Fatalf("MergeStatusLineCmd => %q, want /abs/vc statusline --merge", got)
+	}
+	got = MergeStatusLineCmd("/path with spaces/vc")
+	if got != `"/path with spaces/vc" statusline --merge` {
+		t.Fatalf("MergeStatusLineCmd spaced => %q", got)
+	}
+}
+
+func TestMergeStatusLine_IdempotentMergeWrapper(t *testing.T) {
+	// The merge-wrapper command ("vc statusline --merge") should be recognised as ours
+	// and treated idempotently — EnsureStatusLine must NOT re-write it as plain.
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	mergeCmd := "/abs/vc statusline --merge"
+	os.WriteFile(p, []byte(`{"statusLine":{"type":"command","command":"`+mergeCmd+`"}}`), 0600)
+	// EnsureStatusLine with the plain slCmd must leave the merge wrapper alone.
+	if err := EnsureStatusLine(p, "/abs/vc statusline"); err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl["command"] != mergeCmd {
+		t.Fatalf("EnsureStatusLine overwrote merge wrapper: %v", sl["command"])
+	}
+}
+
+func TestSetStatusLine_OverwritesForeign(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	os.WriteFile(p, []byte(`{"theme":"dark","statusLine":{"type":"command","command":"echo CUSTOM"}}`), 0600)
+	if err := SetStatusLine(p, "/abs/vc statusline"); err != nil {
+		t.Fatalf("SetStatusLine: %v", err)
+	}
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl["command"] != "/abs/vc statusline" {
+		t.Fatalf("SetStatusLine did not overwrite: %v", sl["command"])
+	}
+	if obj["theme"] != "dark" {
+		t.Fatal("SetStatusLine clobbered sibling keys")
+	}
+}
+
+func TestSetStatusLine_FreshFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	if err := SetStatusLine(p, "/abs/vc statusline"); err != nil {
+		t.Fatalf("SetStatusLine fresh: %v", err)
+	}
+	var obj map[string]any
+	b, _ := os.ReadFile(p)
+	json.Unmarshal(b, &obj)
+	sl, _ := obj["statusLine"].(map[string]any)
+	if sl["command"] != "/abs/vc statusline" {
+		t.Fatalf("SetStatusLine fresh: %v", sl)
+	}
+}
+
+func TestSetStatusLine_UnparseableError(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	os.WriteFile(p, []byte(`{not json`), 0600)
+	if err := SetStatusLine(p, "/abs/vc statusline"); err == nil {
+		t.Fatal("expected error on unparseable settings.json")
+	}
+}
+
+func TestGetStatusLineCommand_Absent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	cmd, err := GetStatusLineCommand(p)
+	if err != nil || cmd != "" {
+		t.Fatalf("absent file: cmd=%q err=%v", cmd, err)
+	}
+}
+
+func TestGetStatusLineCommand_Present(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	os.WriteFile(p, []byte(`{"statusLine":{"type":"command","command":"echo CUSTOM"}}`), 0600)
+	cmd, err := GetStatusLineCommand(p)
+	if err != nil || cmd != "echo CUSTOM" {
+		t.Fatalf("present: cmd=%q err=%v", cmd, err)
+	}
+}

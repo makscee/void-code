@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -121,5 +125,112 @@ func TestStatusLineNoSubDays(t *testing.T) {
 	got := renderSegments(in, d)
 	if strings.Contains(got, "sub ") {
 		t.Errorf("renderSegments = %q, sub-days segment must be gone", got)
+	}
+}
+
+// ─── VCD-62: Phase 3 — merge renderer ────────────────────────────────────────
+
+// sampleStatusJSON returns a minimal CC statusLine stdin JSON for testing.
+func sampleStatusJSON() []byte {
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 5000
+	in.ContextWindow.ContextWindowSize = 200000
+	b, _ := json.Marshal(in)
+	return b
+}
+
+// writePriorFile writes a statusline-prior.json under the given dir.
+func writePriorFile(t *testing.T, dir, cmd string) {
+	t.Helper()
+	prior := struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+	}{"command", cmd}
+	b, _ := json.Marshal(prior)
+	if err := os.WriteFile(filepath.Join(dir, "statusline-prior.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunPriorCommand_EchoOutput(t *testing.T) {
+	out, err := runPriorCommand("echo PRIOR", []byte("{}"))
+	if err != nil {
+		t.Fatalf("runPriorCommand: %v", err)
+	}
+	if strings.TrimSpace(out) != "PRIOR" {
+		t.Fatalf("expected PRIOR, got %q", out)
+	}
+}
+
+func TestRunPriorCommand_ErrorReturnsErr(t *testing.T) {
+	_, err := runPriorCommand("exit 1", []byte("{}"))
+	if err == nil {
+		t.Fatal("expected error from failing command")
+	}
+}
+
+func TestRunStatuslineMerge_ComposesOutput(t *testing.T) {
+	// Point HOME to a temp dir so ~/.void-code/statusline-prior.json is under our control.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	// Create ~/.void-code/ dir and write a prior file.
+	vcDir := filepath.Join(tmpHome, ".void-code")
+	if err := os.MkdirAll(vcDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writePriorFile(t, vcDir, "echo CUSTOM-BAR")
+
+	var out bytes.Buffer
+	if err := runStatuslineMerge(bytes.NewReader(sampleStatusJSON()), &out); err != nil {
+		t.Fatalf("runStatuslineMerge: %v", err)
+	}
+	result := out.String()
+	if !strings.Contains(result, "CUSTOM-BAR") {
+		t.Errorf("expected CUSTOM-BAR in output, got %q", result)
+	}
+	// vc segment should also be present (emoji from 5k tokens)
+	if !strings.Contains(result, "🤓") {
+		t.Errorf("expected vc emoji segment in output, got %q", result)
+	}
+}
+
+func TestRunStatuslineMerge_PriorFailFallsBackToVcOnly(t *testing.T) {
+	// Point HOME to a temp dir with a failing prior command.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	vcDir := filepath.Join(tmpHome, ".void-code")
+	if err := os.MkdirAll(vcDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writePriorFile(t, vcDir, "exit 99")
+
+	var out bytes.Buffer
+	if err := runStatuslineMerge(bytes.NewReader(sampleStatusJSON()), &out); err != nil {
+		t.Fatalf("runStatuslineMerge: %v", err)
+	}
+	result := out.String()
+	// Must still produce a vc line — never blank, never error.
+	if strings.TrimSpace(result) == "" {
+		t.Fatal("runStatuslineMerge produced empty output on prior failure")
+	}
+}
+
+func TestRunStatuslineMerge_NoPriorFile_FallsBackToPlain(t *testing.T) {
+	// No prior file at all → plain vc output.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	var out bytes.Buffer
+	if err := runStatuslineMerge(bytes.NewReader(sampleStatusJSON()), &out); err != nil {
+		t.Fatalf("runStatuslineMerge: %v", err)
+	}
+	result := out.String()
+	if strings.TrimSpace(result) == "" {
+		t.Fatal("runStatuslineMerge produced empty output without prior file")
 	}
 }

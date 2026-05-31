@@ -189,3 +189,51 @@ func TestUpdateCacheFilePath(t *testing.T) {
 		t.Errorf("unexpected basename: %q", filepath.Base(path))
 	}
 }
+
+// ─── VCD-62: statusline prior-command store + skip sentinel ──────────────────
+
+func TestStatusLinePriorPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	p, err := config.StatusLinePriorPath()
+	if err != nil {
+		t.Fatalf("StatusLinePriorPath: %v", err)
+	}
+	if filepath.Base(p) != "statusline-prior.json" {
+		t.Errorf("unexpected basename: %q", filepath.Base(p))
+	}
+	// Must be under ~/.void-code/
+	dir := filepath.Dir(p)
+	if filepath.Base(dir) != ".void-code" {
+		t.Errorf("not under .void-code: %q", dir)
+	}
+}
+
+func TestStatusLineSkipSentinel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	// Initially not skipped.
+	if config.IsStatusLineSkipped() {
+		t.Fatal("should not be skipped initially")
+	}
+
+	// Mark skipped.
+	if err := config.MarkStatusLineSkipped(); err != nil {
+		t.Fatalf("MarkStatusLineSkipped: %v", err)
+	}
+	if !config.IsStatusLineSkipped() {
+		t.Fatal("should be skipped after Mark")
+	}
+
+	// Clear.
+	if err := config.ClearStatusLineSkipped(); err != nil {
+		t.Fatalf("ClearStatusLineSkipped: %v", err)
+	}
+	if config.IsStatusLineSkipped() {
+		t.Fatal("should not be skipped after Clear")
+	}
+}

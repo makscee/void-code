@@ -213,6 +213,40 @@ func CCUpdateCacheFilePath() (string, error) {
 	return filepath.Join(dir, "last-cc-update-check"), nil
 }
 
+// ─── VCD-62: statusline prior-command store + skip sentinel ──────────────────
+
+// StatusLinePriorPath returns the path to the statusline prior-command file
+// (~/.void-code/statusline-prior.json). The file is NOT created here.
+func StatusLinePriorPath() (string, error) {
+	dir, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "statusline-prior.json"), nil
+}
+
+const statuslineSkippedKey = "statusline_skipped"
+
+// MarkStatusLineSkipped records that the user chose to skip vc statusline install.
+// Doctor will show this as informational (not a failure) and re-offer.
+func MarkStatusLineSkipped() error {
+	return WriteConfigFile(map[string]string{statuslineSkippedKey: "true"})
+}
+
+// IsStatusLineSkipped reports whether the user has previously skipped statusline install.
+func IsStatusLineSkipped() bool {
+	kv, err := ReadConfigFile()
+	if err != nil {
+		return false
+	}
+	return kv[statuslineSkippedKey] == "true"
+}
+
+// ClearStatusLineSkipped removes the skip sentinel (called after successful install).
+func ClearStatusLineSkipped() error {
+	return WriteConfigFile(map[string]string{statuslineSkippedKey: ""})
+}
+
 // OSResolveWithFile resolves Config from env but also reads the config file for
 // keys absent from env (e.g. lang set by install.sh).
 func OSResolveWithFile() Config {
