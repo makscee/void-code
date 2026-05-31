@@ -306,6 +306,55 @@ func (m model) Activate() RunResult { return m.items[m.cursor].result }
 // SetTopUpView sets the model into the top-up sub-view (for tests).
 func (m model) SetTopUpView() model { m.view = topUpView; return m }
 
+// ActiveProviderString returns the in-memory ActiveProvider string (test accessor).
+func (m model) ActiveProviderString() string { return m.cb.ActiveProvider }
+
+// KeyNames returns the in-memory key names slice (test accessor).
+func (m model) KeyNames() []string { return m.cb.KeyNames }
+
+// NewMenuModelForDeleteTest creates a menu model wired with the given Callbacks
+// for driving delete-key integration tests.
+func NewMenuModelForDeleteTest(cb Callbacks) model {
+	return newModel(AuthState{LoggedIn: true}, cb)
+}
+
+// SimulateDeleteKey drives the model as if the user opened the Providers menu,
+// navigated to the named key, pressed d, and then confirmed (confirm=true) or
+// cancelled (confirm=false) the deletion.
+func (m model) SimulateDeleteKey(keyName string, confirm bool) model {
+	// Enter providers view.
+	m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+	m.view = providersView
+
+	// Find the row index for keyName.
+	targetIdx := -1
+	for i, r := range m.providers.rows {
+		if r.prov.Kind == provider.NamedKey && r.prov.Name == keyName {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx < 0 {
+		return m // key not found — return unchanged
+	}
+	m.providers.cursor = targetIdx
+
+	// Press d → enter deleteView.
+	next, _ := m.updateProviders("d")
+	m = next.(model)
+	if m.view != deleteView {
+		return m // delete not triggered
+	}
+
+	// Press y or n.
+	key := "n"
+	if confirm {
+		key = "y"
+	}
+	next2, _ := m.updateDeleteConfirm(key)
+	return next2.(model)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
