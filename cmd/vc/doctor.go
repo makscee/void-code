@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +18,10 @@ import (
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
+
+// minNodeMajor is the minimum node major version required by @anthropic-ai/claude-code.
+// Sourced from claude-code engines.node >=18.0.0 (verified 2026-05-31, version 2.1.158).
+const minNodeMajor = 18
 
 // ─── statusLine classification ────────────────────────────────────────────────
 
@@ -338,13 +346,252 @@ func runDoctor() error {
 	return nil
 }
 
+// checkNode verifies that node is present and >= minNodeMajor.
+func checkNode() checkResult {
+	path, err := exec.LookPath("node")
+	if err != nil {
+		var guidance []string
+		if runtime.GOOS == "darwin" {
+			guidance = append(guidance, "re-run the vc install script: curl -fsSL https://auth.makscee.ru/vc/install.sh | sh")
+			guidance = append(guidance, "or install via Homebrew: brew install node")
+		} else if runtime.GOOS == "windows" {
+			guidance = append(guidance, "re-run the vc install script to auto-install node")
+			guidance = append(guidance, "or download from https://nodejs.org")
+		} else {
+			guidance = append(guidance, "install node >= "+strconv.Itoa(minNodeMajor)+" from https://nodejs.org")
+		}
+		return checkResult{
+			name:     "node",
+			status:   "✗",
+			message:  fmt.Sprintf("node: not found (requires v%d+)", minNodeMajor),
+			guidance: guidance,
+		}
+	}
+	// Parse major version.
+	out, err := exec.Command(path, "--version").Output()
+	if err != nil {
+		return checkResult{
+			name:    "node",
+			status:  "✗",
+			message: "node: found but --version failed",
+		}
+	}
+	verStr := strings.TrimSpace(string(out))
+	verStr = strings.TrimPrefix(verStr, "v")
+	parts := strings.SplitN(verStr, ".", 2)
+	major, convErr := strconv.Atoi(parts[0])
+	if convErr != nil || major < minNodeMajor {
+		var guidance []string
+		guidance = append(guidance, fmt.Sprintf("node v%s found but requires v%d+ — re-run vc install script to upgrade", verStr, minNodeMajor))
+		return checkResult{
+			name:     "node",
+			status:   "✗",
+			message:  fmt.Sprintf("node: v%s (requires v%d+)", verStr, minNodeMajor),
+			guidance: guidance,
+		}
+	}
+	return checkResult{
+		name:    "node",
+		status:  "✓",
+		message: "node: v" + verStr,
+	}
+}
+
+// checkNpm verifies that npm is present on PATH.
+func checkNpm() checkResult {
+	npmBin := "npm"
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("npm.cmd"); err == nil {
+			npmBin = "npm.cmd"
+		}
+	}
+	path, err := exec.LookPath(npmBin)
+	if err != nil && runtime.GOOS == "windows" {
+		// fallback check for npm
+		path, err = exec.LookPath("npm")
+	}
+	if err != nil {
+		var guidance []string
+		guidance = append(guidance, "npm is bundled with node — re-run vc install script to install node")
+		guidance = append(guidance, "or download from https://nodejs.org")
+		return checkResult{
+			name:     "npm",
+			status:   "✗",
+			message:  "npm: not found",
+			guidance: guidance,
+		}
+	}
+	return checkResult{
+		name:    "npm",
+		status:  "✓",
+		message: "npm: found at " + path,
+	}
+}
+
+// checkBinOnPath verifies that ~/.void-code/bin is in the current $PATH.
+func checkBinOnPath() checkResult {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return checkResult{
+			name:    "bin on PATH",
+			status:  "✗",
+			message: "bin on PATH: cannot resolve home dir",
+		}
+	}
+	binDir := filepath.Join(home, ".void-code", "bin")
+	pathEnv := os.Getenv("PATH")
+	// Split on OS path separator and check each entry.
+	found := false
+	for _, entry := range filepath.SplitList(pathEnv) {
+		if entry == binDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return checkResult{
+			name:    "bin on PATH",
+			status:  "✗",
+			message: "bin on PATH: " + binDir + " not in $PATH",
+			guidance: []string{
+				"open a new terminal (PATH is set for new shells)",
+				"or run: source ~/.zshrc (zsh) / source ~/.bash_profile (bash)",
+			},
+		}
+	}
+	return checkResult{
+		name:    "bin on PATH",
+		status:  "✓",
+		message: "bin on PATH: " + binDir,
+	}
+}
+
+// checkNpmGlobalOnPath verifies that the npm global bin dir is in PATH on Windows.
+// Only run on windows (claude shim lives at %APPDATA%\npm).
+func checkNpmGlobalOnPath() checkResult {
+	npmGlobal := filepath.Join(os.Getenv("APPDATA"), "npm")
+	pathEnv := os.Getenv("PATH")
+	found := false
+	for _, entry := range filepath.SplitList(pathEnv) {
+		if strings.EqualFold(entry, npmGlobal) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return checkResult{
+			name:    "npm global on PATH",
+			status:  "✗",
+			message: "npm global on PATH: " + npmGlobal + " not in PATH",
+			guidance: []string{
+				"open a new terminal to pick up the updated PATH",
+				"or re-run the vc install script to repair",
+			},
+		}
+	}
+	return checkResult{
+		name:    "npm global on PATH",
+		status:  "✓",
+		message: "npm global on PATH: " + npmGlobal,
+	}
+}
+
+// checkShellRcGap verifies on Darwin that the current shell's rc file contains
+// the vc installer PATH marker so new terminals pick up ~/.void-code/bin.
+func checkShellRcGap() checkResult {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return checkResult{name: "shell rc", status: "✗", message: "shell rc: cannot resolve home dir"}
+	}
+	shellBin := os.Getenv("SHELL")
+	if shellBin == "" {
+		return checkResult{name: "shell rc", status: "!", message: "shell rc: $SHELL not set — cannot check"}
+	}
+
+	marker := "# added by vc installer"
+	var rcFile string
+	switch {
+	case strings.HasSuffix(shellBin, "zsh"):
+		rcFile = filepath.Join(home, ".zshrc")
+	case strings.HasSuffix(shellBin, "bash"):
+		if runtime.GOOS == "darwin" {
+			rcFile = filepath.Join(home, ".bash_profile")
+		} else {
+			rcFile = filepath.Join(home, ".bashrc")
+		}
+	case strings.HasSuffix(shellBin, "fish"):
+		rcFile = filepath.Join(home, ".config", "fish", "config.fish")
+	default:
+		rcFile = filepath.Join(home, ".profile")
+	}
+
+	data, err := os.ReadFile(rcFile)
+	if err != nil {
+		binDir := filepath.Join(home, ".void-code", "bin")
+		return checkResult{
+			name:    "shell rc",
+			status:  "✗",
+			message: "shell rc: " + rcFile + " not found — PATH marker missing",
+			fix: func() error {
+				var line string
+				if strings.HasSuffix(shellBin, "fish") {
+					line = "\n" + marker + "\nset -gx PATH " + binDir + " $PATH\n"
+				} else {
+					line = "\n" + marker + "\nexport PATH=\"" + binDir + ":$PATH\"\n"
+				}
+				f, err := os.OpenFile(rcFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				_, err = f.WriteString(line)
+				return err
+			},
+		}
+	}
+	if strings.Contains(string(data), marker) {
+		return checkResult{name: "shell rc", status: "✓", message: "shell rc: PATH marker present in " + rcFile}
+	}
+	binDir := filepath.Join(home, ".void-code", "bin")
+	return checkResult{
+		name:    "shell rc",
+		status:  "✗",
+		message: "shell rc: PATH marker missing from " + rcFile,
+		fix: func() error {
+			var line string
+			if strings.HasSuffix(shellBin, "fish") {
+				line = "\n" + marker + "\nset -gx PATH " + binDir + " $PATH\n"
+			} else {
+				line = "\n" + marker + "\nexport PATH=\"" + binDir + ":$PATH\"\n"
+			}
+			f, err := os.OpenFile(rcFile, os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = f.WriteString(line)
+			return err
+		},
+	}
+}
+
 // buildChecks assembles the slice of checks. Extensible — add more check funcs here.
 func buildChecks(settingsPath, slCmd string) []checkResult {
-	return []checkResult{
+	checks := []checkResult{
+		checkNode(),
+		checkNpm(),
+		checkBinOnPath(),
 		checkClaudeCLI(),
 		checkStatusLine(settingsPath, slCmd),
 		checkActiveProvider(),
 	}
+	if runtime.GOOS == "windows" {
+		checks = append(checks, checkNpmGlobalOnPath())
+	}
+	if runtime.GOOS == "darwin" {
+		checks = append(checks, checkShellRcGap())
+	}
+	return checks
 }
 
 // checkClaudeCLI verifies that the claude binary is reachable on PATH.

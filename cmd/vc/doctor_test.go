@@ -394,3 +394,146 @@ func TestBuildChecks_IncludesClaude(t *testing.T) {
 		t.Fatal("doctor checks should include a 'claude CLI' line")
 	}
 }
+
+// ─── checkNode tests ──────────────────────────────────────────────────────────
+
+func TestCheckNode_Absent(t *testing.T) {
+	t.Setenv("PATH", "")
+	c := checkNode()
+	if c.status != "✗" {
+		t.Errorf("checkNode absent: want status=✗, got %q", c.status)
+	}
+	if c.name != "node" {
+		t.Errorf("checkNode absent: want name='node', got %q", c.name)
+	}
+	if len(c.guidance) == 0 && c.fix == nil {
+		t.Error("checkNode absent: must provide guidance or fix")
+	}
+}
+
+func TestCheckNode_Present(t *testing.T) {
+	// Use the real PATH — if node is installed and >= 18, expect ✓.
+	// If node is missing on this machine, skip.
+	c := checkNode()
+	if c.status == "✗" {
+		t.Skip("node not installed or below min version on this machine — skipping found test")
+	}
+	if c.status != "✓" {
+		t.Errorf("checkNode present: want status=✓, got %q", c.status)
+	}
+	if !strings.Contains(c.message, "v") {
+		t.Errorf("checkNode present: message should include version, got: %s", c.message)
+	}
+}
+
+// ─── checkNpm tests ───────────────────────────────────────────────────────────
+
+func TestCheckNpm_Absent(t *testing.T) {
+	t.Setenv("PATH", "")
+	c := checkNpm()
+	if c.status != "✗" {
+		t.Errorf("checkNpm absent: want status=✗, got %q", c.status)
+	}
+	if c.name != "npm" {
+		t.Errorf("checkNpm absent: want name='npm', got %q", c.name)
+	}
+	if len(c.guidance) == 0 && c.fix == nil {
+		t.Error("checkNpm absent: must provide guidance or fix")
+	}
+}
+
+func TestCheckNpm_Present(t *testing.T) {
+	c := checkNpm()
+	if c.status == "✗" {
+		t.Skip("npm not installed on this machine — skipping found test")
+	}
+	if c.status != "✓" {
+		t.Errorf("checkNpm present: want status=✓, got %q", c.status)
+	}
+}
+
+// ─── checkBinOnPath tests ─────────────────────────────────────────────────────
+
+func TestCheckBinOnPath_Absent(t *testing.T) {
+	// Use a PATH that definitely does not include ~/.void-code/bin.
+	t.Setenv("PATH", "/usr/bin:/bin")
+	c := checkBinOnPath()
+	if c.status != "✗" {
+		t.Errorf("checkBinOnPath absent: want status=✗, got %q (PATH=%s)", c.status, "/usr/bin:/bin")
+	}
+	if c.name != "bin on PATH" {
+		t.Errorf("checkBinOnPath absent: want name='bin on PATH', got %q", c.name)
+	}
+	if len(c.guidance) == 0 && c.fix == nil {
+		t.Error("checkBinOnPath absent: must provide guidance or fix")
+	}
+}
+
+func TestCheckBinOnPath_Present(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot resolve home dir")
+	}
+	binDir := filepath.Join(home, ".void-code", "bin")
+	t.Setenv("PATH", "/usr/bin:"+binDir+":/bin")
+	c := checkBinOnPath()
+	if c.status != "✓" {
+		t.Errorf("checkBinOnPath present: want status=✓, got %q", c.status)
+	}
+}
+
+// ─── buildChecks includes new checks ─────────────────────────────────────────
+
+func TestBuildChecks_IncludesNode(t *testing.T) {
+	t.Setenv("PATH", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	var found bool
+	for _, c := range checks {
+		if c.name == "node" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("doctor checks should include a 'node' check")
+	}
+}
+
+func TestBuildChecks_IncludesNpm(t *testing.T) {
+	t.Setenv("PATH", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	var found bool
+	for _, c := range checks {
+		if c.name == "npm" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("doctor checks should include an 'npm' check")
+	}
+}
+
+func TestBuildChecks_IncludesBinOnPath(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	var found bool
+	for _, c := range checks {
+		if c.name == "bin on PATH" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("doctor checks should include a 'bin on PATH' check")
+	}
+}
