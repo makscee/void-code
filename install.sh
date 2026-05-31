@@ -83,22 +83,20 @@ ARCH=$(detect_arch)
 VC_ARTIFACT_PATH="bin/vc-${OS}-${ARCH}"
 VERSION_BANNER="==> void-code installer"
 
-if [ "$DRY_RUN" != 1 ]; then
-  _vj_raw=""
-  _vj_raw="$(fetch_to_stdout "$VERSION_JSON_URL" 2>/dev/null)" || true
-  if [ -n "$_vj_raw" ]; then
-    _ver="$(printf '%s' "$_vj_raw" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
-    if [ -n "$_ver" ]; then
-      VERSION_BANNER="==> void-code installer (v${_ver})"
-    fi
-    # Try to resolve artifact path from "darwin/amd64" or "darwin-amd64" key
-    _artifact="$(printf '%s' "$_vj_raw" | grep -o "\"${OS}/${ARCH}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
-    if [ -z "$_artifact" ]; then
-      _artifact="$(printf '%s' "$_vj_raw" | grep -o "\"${OS}-${ARCH}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
-    fi
-    if [ -n "$_artifact" ]; then
-      VC_ARTIFACT_PATH="$_artifact"
-    fi
+_vj_raw=""
+_vj_raw="$(fetch_to_stdout "$VERSION_JSON_URL" 2>/dev/null)" || true
+if [ -n "$_vj_raw" ]; then
+  _ver="$(printf '%s' "$_vj_raw" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
+  if [ -n "$_ver" ]; then
+    VERSION_BANNER="==> void-code installer (v${_ver})"
+  fi
+  # Try to resolve artifact path from "darwin/amd64" or "darwin-amd64" key
+  _artifact="$(printf '%s' "$_vj_raw" | grep -o "\"${OS}/${ARCH}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
+  if [ -z "$_artifact" ]; then
+    _artifact="$(printf '%s' "$_vj_raw" | grep -o "\"${OS}-${ARCH}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
+  fi
+  if [ -n "$_artifact" ]; then
+    VC_ARTIFACT_PATH="$_artifact"
   fi
 fi
 
