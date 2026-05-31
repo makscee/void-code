@@ -567,6 +567,11 @@ func (m model) View() string {
 	}
 	sb.WriteString("\n")
 
+	// ◇  Provider: <active provider label>  — visible without entering Providers sub-menu.
+	activeProv := provider.Parse(m.cb.ActiveProvider)
+	sb.WriteString(railLine("◇", "  "+hintStyle.Render("Provider: "+activeProv.Label())))
+	sb.WriteString("\n")
+
 	// Update nudge (if present) — shown as an extra ◇ line.
 	if m.UpdateNudge != "" {
 		sb.WriteString(railLine("│", ""))
