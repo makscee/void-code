@@ -146,7 +146,13 @@ func saveMap(m map[string]string, id *age.X25519Identity) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(p, buf.Bytes(), 0o600)
+	// Atomic write: temp file in the same dir + rename, so a crash mid-write
+	// can never leave keys.age truncated/corrupt.
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
 }
 
 // AddKey saves (or overwrites) the named OAuth token.

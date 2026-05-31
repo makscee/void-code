@@ -91,7 +91,7 @@ type addKeyStage int
 
 const (
 	addKeyStageName  addKeyStage = iota
-	addKeyStageToken             // nolint:deadcode
+	addKeyStageToken
 	addKeyStageDone
 )
 
