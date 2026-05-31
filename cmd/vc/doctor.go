@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/clackui"
+	"github.com/makscee/void-code/internal/claudebin"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
@@ -69,10 +70,11 @@ func budgetLeft(pct *float64) (int, bool) {
 // ─── doctor check type ────────────────────────────────────────────────────────
 
 type checkResult struct {
-	name    string
-	status  string // "✓", "✗", "!"
-	message string
-	fix     func() error // nil if no fix available
+	name     string
+	status   string   // "✓", "✗", "!"
+	message  string
+	fix      func() error // nil if no fix available (interactive yes/no prompt)
+	guidance []string     // non-interactive extra lines printed after the check (no prompt)
 }
 
 // ─── clack rail rendering for doctor ─────────────────────────────────────────
@@ -322,6 +324,10 @@ func runDoctor() error {
 		doctorRailLine("│", "")
 		for _, c := range checks {
 			doctorRailLine("│", renderCheckLine(c))
+			// Print any non-interactive guidance lines (e.g. install instructions).
+			for _, g := range c.guidance {
+				doctorRailLine("│", "    "+clackui.HintStyle.Render(g))
+			}
 		}
 		// │
 		doctorRailLine("│", "")
@@ -335,8 +341,34 @@ func runDoctor() error {
 // buildChecks assembles the slice of checks. Extensible — add more check funcs here.
 func buildChecks(settingsPath, slCmd string) []checkResult {
 	return []checkResult{
+		checkClaudeCLI(),
 		checkStatusLine(settingsPath, slCmd),
 		checkActiveProvider(),
+	}
+}
+
+// checkClaudeCLI verifies that the claude binary is reachable on PATH.
+// vc is a wrapper over claude; if claude is missing vc cannot function at all.
+func checkClaudeCLI() checkResult {
+	path, err := claudebin.Resolve()
+	if err == nil {
+		return checkResult{
+			name:    "claude CLI",
+			status:  "✓",
+			message: "claude CLI: found at " + path,
+		}
+	}
+	// Build per-OS install guidance lines for display after the failed check.
+	var guidance []string
+	guidance = append(guidance, "")
+	for _, line := range strings.Split(claudebin.InstallInstructions(), "\n") {
+		guidance = append(guidance, line)
+	}
+	return checkResult{
+		name:     "claude CLI",
+		status:   "✗",
+		message:  "claude CLI: not found in PATH",
+		guidance: guidance,
 	}
 }
 

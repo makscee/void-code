@@ -20,6 +20,7 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/ccjson"
 	"github.com/makscee/void-code/internal/ccsettings"
+	"github.com/makscee/void-code/internal/claudebin"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/direct"
@@ -209,6 +210,14 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch claude".
 func runSpawn(cmd *cobra.Command, args []string) error {
+	// Pre-flight: verify claude CLI is reachable BEFORE doing any auth work.
+	// vc is a wrapper over claude; if claude is absent nothing can work, and
+	// we must surface a clear message rather than a raw cobra/exec error.
+	if !claudebin.IsInstalled() {
+		fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
+		os.Exit(127)
+	}
+
 	cfg := config.OSResolve()
 
 	// Load token with legacy cv fallback: tries ~/.void-code/token first,
@@ -294,9 +303,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := harness.Spawn(context.Background(), "claude", args, env); err != nil {
-		// If claude is not installed, print a friendly message.
-		if isNotFound(err) {
-			fmt.Fprintln(os.Stderr, "vc: claude not found in PATH — install with: npm install -g @anthropic-ai/claude-code")
+		// Post-spawn not-found fallback (should be caught by pre-flight above,
+		// but defend against race conditions such as claude being removed between
+		// the pre-flight check and the actual spawn).
+		if claudebin.IsNotFoundErr(err) {
+			fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
 			os.Exit(127)
 		}
 		// Propagate claude's exit code.
@@ -488,13 +499,3 @@ func isStdinTTY() bool {
 	return isFdTTY(int(os.Stdin.Fd()))
 }
 
-// isNotFound reports whether err indicates the binary was not found in PATH.
-func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if _, ok := err.(*exec.ExitError); ok {
-		return false
-	}
-	return true
-}

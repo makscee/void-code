@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/welcome"
 )
 
@@ -448,6 +449,76 @@ func TestView_TopUpRailStructure(t *testing.T) {
 	// Instruction text
 	if !strings.Contains(out, "@makscee") {
 		t.Errorf("top-up view missing @makscee:\n%s", out)
+	}
+}
+
+// ─── VCD-58: delete-key integration tests ────────────────────────────────────
+
+// TestDeleteKey_TUIRelayFallback verifies that when the TUI updateDeleteConfirm
+// handler deletes the currently-active key, it calls OnSelect with Relay and
+// resets the in-memory ActiveProvider to "relay".
+func TestDeleteKey_TUIRelayFallback(t *testing.T) {
+	var selectedProviderStr string
+	var selectCalled bool
+
+	cb := welcome.Callbacks{
+		KeyNames:       []string{"alpha", "beta"},
+		ActiveProvider: "key:beta", // beta is the active key
+		OnDeleteKey:    func(name string) error { return nil },
+		OnSelect: func(p provider.Provider) error {
+			selectCalled = true
+			selectedProviderStr = p.String()
+			return nil
+		},
+	}
+
+	// Simulate the TUI delete flow manually via the model.
+	m := welcome.NewMenuModelForDeleteTest(cb)
+	m = m.SimulateDeleteKey("beta", true)
+
+	// After y confirm: ActiveProvider must be reset to relay.
+	if m.ActiveProviderString() != "relay" {
+		t.Errorf("after deleting active key, ActiveProvider = %q, want relay", m.ActiveProviderString())
+	}
+	// OnSelect must have been called with relay.
+	if !selectCalled {
+		t.Error("OnSelect was not called — relay fallback not triggered")
+	}
+	if selectedProviderStr != "relay" {
+		t.Errorf("OnSelect called with provider %q, want relay", selectedProviderStr)
+	}
+	// beta must be removed from in-memory key list.
+	keys := m.KeyNames()
+	for _, k := range keys {
+		if k == "beta" {
+			t.Error("beta still in key list after delete")
+		}
+	}
+}
+
+// TestDeleteKey_NonActiveNoRelayFallback verifies that deleting a non-active key
+// does NOT change the active provider.
+func TestDeleteKey_NonActiveNoRelayFallback(t *testing.T) {
+	var selectCalled bool
+	cb := welcome.Callbacks{
+		KeyNames:       []string{"alpha", "beta"},
+		ActiveProvider: "key:alpha", // alpha is active, we delete beta
+		OnDeleteKey:    func(name string) error { return nil },
+		OnSelect: func(p provider.Provider) error {
+			selectCalled = true
+			return nil
+		},
+	}
+
+	m := welcome.NewMenuModelForDeleteTest(cb)
+	m = m.SimulateDeleteKey("beta", true)
+
+	// Active provider unchanged — alpha still active.
+	if m.ActiveProviderString() != "key:alpha" {
+		t.Errorf("after deleting non-active key, ActiveProvider = %q, want key:alpha", m.ActiveProviderString())
+	}
+	if selectCalled {
+		t.Error("OnSelect must NOT be called when deleting a non-active key")
 	}
 }
 

@@ -337,3 +337,60 @@ func TestBuildChecks_IncludesProvider(t *testing.T) {
 		t.Fatal("doctor checks should include a 'provider' line")
 	}
 }
+
+// ─── claude CLI check tests ───────────────────────────────────────────────────
+
+func TestCheckClaudeCLI_NotFound(t *testing.T) {
+	// Strip PATH so claude cannot be found.
+	t.Setenv("PATH", "")
+
+	c := checkClaudeCLI()
+	if c.status != "✗" {
+		t.Errorf("checkClaudeCLI absent: want status=✗, got %q", c.status)
+	}
+	if c.name != "claude CLI" {
+		t.Errorf("checkClaudeCLI: want name='claude CLI', got %q", c.name)
+	}
+	if !strings.Contains(c.message, "not found") {
+		t.Errorf("checkClaudeCLI absent: message should mention 'not found', got: %s", c.message)
+	}
+	// Install instructions appear in guidance lines (not the short message line).
+	guidanceText := strings.Join(c.guidance, "\n")
+	if !strings.Contains(guidanceText, "npm") {
+		t.Errorf("checkClaudeCLI absent: guidance should include npm install instructions, got: %s", guidanceText)
+	}
+}
+
+func TestCheckClaudeCLI_Found(t *testing.T) {
+	// Use the real PATH — this test machine has claude installed.
+	// If not installed, skip rather than fail (CI may not have it).
+	c := checkClaudeCLI()
+	if c.status == "✗" {
+		t.Skip("claude not installed on this machine — skipping found-path test")
+	}
+	if c.status != "✓" {
+		t.Errorf("checkClaudeCLI found: want status=✓, got %q", c.status)
+	}
+	if !strings.Contains(c.message, "found at") {
+		t.Errorf("checkClaudeCLI found: message should say 'found at', got: %s", c.message)
+	}
+}
+
+func TestBuildChecks_IncludesClaude(t *testing.T) {
+	// Strip PATH so the claude check is deterministic (absent).
+	t.Setenv("PATH", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // Windows
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	var found bool
+	for _, c := range checks {
+		if c.name == "claude CLI" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("doctor checks should include a 'claude CLI' line")
+	}
+}
