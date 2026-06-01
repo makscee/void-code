@@ -38,30 +38,15 @@ func TestFetchMe_HappyPath(t *testing.T) {
 	if res.Email != "user@example.com" {
 		t.Errorf("Email = %q", res.Email)
 	}
-	if res.SubDaysLeft != 14 {
-		t.Errorf("SubDaysLeft = %d, want 14", res.SubDaysLeft)
+	// VCD-65: subDaysLeft is a sentinel returned by server but ignored by client.
+	// Verify other fields are correctly parsed.
+	if res.UserID != "user-42" {
+		t.Errorf("UserID = %q, want user-42", res.UserID)
 	}
 }
 
-func TestFetchMe_Unlimited(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"userId":      "admin-1",
-			"email":       "admin@example.com",
-			"subDaysLeft": -1,
-		})
-	}))
-	defer srv.Close()
-
-	res, err := FetchMe(srv.URL, "admin-tok", srv.Client())
-	if err != nil {
-		t.Fatalf("FetchMe: %v", err)
-	}
-	if res.SubDaysLeft != -1 {
-		t.Errorf("SubDaysLeft = %d, want -1 (unlimited)", res.SubDaysLeft)
-	}
-}
+// VCD-65: TestFetchMe_Unlimited removed — SubDaysLeft dropped from MeResult.
+// The server still returns subDaysLeft=36500 sentinel; the client ignores it.
 
 func TestFetchMe_Unauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,11 +7,13 @@ import (
 	"time"
 )
 
-// MeResult holds the identity + subscription state returned by GET /v1/vc/me.
+// MeResult holds the identity + budget state returned by GET /v1/vc/me.
+// VCD-65: SubDaysLeft removed — subscriptionGate no longer exists; the server
+// still returns subDaysLeft (sentinel 36500) for old client back-compat but the
+// new client ignores it. budgetGate is the sole client-side gate.
 type MeResult struct {
-	UserID      string
-	Email       string
-	SubDaysLeft int // -1 = unlimited; 0 = no active subscription
+	UserID string
+	Email  string
 
 	// VCD-49 budget fields — nil when the server does not return budget data
 	// (older void-auth or budget not configured). Never block on nil values.
@@ -55,7 +57,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	var r struct {
 		UserID      string   `json:"userId"`
 		Email       string   `json:"email"`
-		SubDaysLeft int      `json:"subDaysLeft"`
+		// subDaysLeft intentionally ignored — VCD-65: sentinel from server, no gate.
 		Pct         *float64 `json:"pct"`
 		ResetAt     string   `json:"resetAt"`
 		BalanceUsd  *float64 `json:"balanceUsd"`
@@ -64,11 +66,10 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
 	}
 	return MeResult{
-		UserID:      r.UserID,
-		Email:       r.Email,
-		SubDaysLeft: r.SubDaysLeft,
-		Pct:         r.Pct,
-		ResetAt:     r.ResetAt,
-		BalanceUsd:  r.BalanceUsd,
+		UserID:     r.UserID,
+		Email:      r.Email,
+		Pct:        r.Pct,
+		ResetAt:    r.ResetAt,
+		BalanceUsd: r.BalanceUsd,
 	}, nil
 }

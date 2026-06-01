@@ -53,17 +53,17 @@ func TestNeedsWelcome(t *testing.T) {
 }
 
 // TestAuthState_LoggedIn ensures the AuthState struct captures state correctly.
+// VCD-65: SubDaysLeft removed from AuthState.
 func TestAuthState_LoggedIn(t *testing.T) {
 	state := welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "user@example.com",
-		SubDaysLeft: 14,
+		LoggedIn: true,
+		Identity: "user@example.com",
 	}
 	if !state.LoggedIn {
 		t.Error("LoggedIn must be true")
 	}
-	if state.SubDaysLeft != 14 {
-		t.Errorf("SubDaysLeft = %d, want 14", state.SubDaysLeft)
+	if state.Identity != "user@example.com" {
+		t.Errorf("Identity = %q, want user@example.com", state.Identity)
 	}
 }
 
@@ -75,17 +75,7 @@ func TestAuthState_LoggedOut(t *testing.T) {
 	}
 }
 
-// TestAuthState_Unlimited ensures -1 represents unlimited sub.
-func TestAuthState_Unlimited(t *testing.T) {
-	state := welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "admin@example.com",
-		SubDaysLeft: -1,
-	}
-	if state.SubDaysLeft != -1 {
-		t.Errorf("SubDaysLeft = %d, want -1 (unlimited)", state.SubDaysLeft)
-	}
-}
+// VCD-65: TestAuthState_Unlimited removed — SubDaysLeft dropped from AuthState.
 
 // --- VCD-44: subscription warning tests ---
 
@@ -198,8 +188,7 @@ func TestPlainBanner_NoBudgetWhenNilPct(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{
 		LoggedIn:    true,
 		Identity:    "u@x.com",
-		SubDaysLeft: -1,
-		BudgetPct:   nil,
+		BudgetPct: nil,
 	})
 	// Should NOT mention "budget" at all when nil pct.
 	if strings.Contains(out, "budget") {
@@ -213,8 +202,7 @@ func TestPlainBanner_ShowsVersion(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{
 		LoggedIn:    true,
 		Identity:    "u@x.com",
-		SubDaysLeft: -1,
-		BudgetPct:   nil,
+		BudgetPct: nil,
 	})
 	// Banner must contain "void-code" and some version indicator.
 	if !strings.Contains(out, "void-code") {
@@ -239,10 +227,9 @@ func TestPlainBanner_NilBalanceShowsDash(t *testing.T) {
 func TestPlainBanner_NoSubDaysNoBudgetPct(t *testing.T) {
 	pct := 30.0
 	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "u@x.com",
-		SubDaysLeft: 5,
-		BudgetPct:   &pct,
+		LoggedIn:  true,
+		Identity:  "u@x.com",
+		BudgetPct: &pct,
 	})
 	// VCD-56: sub-days and budget-pct lines dropped from plain banner.
 	if strings.Contains(out, "days left on subscription") {
@@ -360,7 +347,7 @@ func TestView_HeaderShowsBalanceAndIdentity(t *testing.T) {
 
 func TestView_NoSubDaysNoBudgetPct(t *testing.T) {
 	bal := 7.5
-	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal, SubDaysLeft: 5, BudgetPct: ptrF(80)})
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal, BudgetPct: ptrF(80)})
 	out := m.View()
 	if strings.Contains(out, "days left on subscription") {
 		t.Errorf("view still shows sub-days:\n%s", out)

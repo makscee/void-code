@@ -88,11 +88,13 @@ func TestAuthGate_ServerError(t *testing.T) {
 	}
 }
 
-// TestAuthGate_ReturnsDaysLeft verifies authGate surfaces SubDaysLeft from /v1/vc/me.
-func TestAuthGate_ReturnsDaysLeft(t *testing.T) {
+// TestAuthGate_ReachesServer verifies authGate sets reached=true and parses userId/email.
+// VCD-65: SubDaysLeft removed; subDaysLeft in JSON is now ignored by the client.
+func TestAuthGate_ReachesServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"userId":"u1","email":"u@example.com","subDaysLeft":0}`))
+		// Server sends sentinel subDaysLeft=36500; client ignores it.
+		w.Write([]byte(`{"userId":"u1","email":"u@example.com","subDaysLeft":36500}`))
 	}))
 	defer srv.Close()
 
@@ -103,7 +105,7 @@ func TestAuthGate_ReturnsDaysLeft(t *testing.T) {
 	if !reached {
 		t.Error("expected reached=true for reachable server")
 	}
-	if me.SubDaysLeft != 0 {
-		t.Errorf("SubDaysLeft = %d, want 0", me.SubDaysLeft)
+	if me.UserID != "u1" {
+		t.Errorf("UserID = %q, want u1", me.UserID)
 	}
 }

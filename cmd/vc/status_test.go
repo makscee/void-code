@@ -10,9 +10,10 @@ import (
 
 // statusTestServer creates a fake auth server for status tests.
 // It serves both /v1/auth/me and /v1/vc/me.
+// VCD-65: subDaysLeft is sentinel (36500) and ignored by client.
 // Per VCD-49 contract (2026-05-30): /v1/vc/me returns only { pct, reset_at, status } —
 // no dollar fields.
-func statusTestServer(subDaysLeft int, budgetPct *float64, _ *float64, _ *float64, _ *float64, resetAt string) *httptest.Server {
+func statusTestServer(budgetPct *float64, _ *float64, _ *float64, _ *float64, resetAt string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -25,7 +26,7 @@ func statusTestServer(subDaysLeft int, budgetPct *float64, _ *float64, _ *float6
 			resp := map[string]interface{}{
 				"userId":      "user-1",
 				"email":       "test@example.com",
-				"subDaysLeft": subDaysLeft,
+				"subDaysLeft": 36500, // sentinel (VCD-65): ignored by new client
 			}
 			if budgetPct != nil {
 				resp["pct"] = *budgetPct
@@ -44,7 +45,7 @@ func statusTestServer(subDaysLeft int, budgetPct *float64, _ *float64, _ *float6
 // It captures stdout by directly calling the budget display helper.
 func TestStatusBudgetLine_Present(t *testing.T) {
 	pct := 27.4
-	srv := statusTestServer(10, &pct, nil, nil, nil, "2026-06-01T00:00:00.000Z")
+	srv := statusTestServer(&pct, nil, nil, nil, "2026-06-01T00:00:00.000Z")
 	defer srv.Close()
 
 	// Test formatBudgetLine directly — percentages only, no dollar values.

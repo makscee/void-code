@@ -186,11 +186,10 @@ func resolveAuthState() welcome.AuthState {
 		if err == auth.ErrNotLoggedIn {
 			return welcome.AuthState{LoggedIn: false}
 		}
-		// Network error — still logged in, but sub status unknown.
+		// Network error — still logged in; degrade gracefully.
 		return welcome.AuthState{
-			LoggedIn:   true,
-			Identity:   "(unknown)",
-			SubUnknown: true,
+			LoggedIn: true,
+			Identity: "(unknown)",
 		}
 	}
 
@@ -206,11 +205,10 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 		identity = me.UserID
 	}
 	return welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    identity,
-		SubDaysLeft: me.SubDaysLeft,
-		BudgetPct:   me.Pct,        // nil when no budget set or server absent → degrade safely
-		BalanceUsd:  me.BalanceUsd, // nil when VCD-55 not yet deployed → degrade safely
+		LoggedIn:   true,
+		Identity:   identity,
+		BudgetPct:  me.Pct,        // nil when no budget set or server absent → degrade safely
+		BalanceUsd: me.BalanceUsd, // nil when VCD-55 not yet deployed → degrade safely
 	}
 }
 
@@ -239,16 +237,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
-	// Expiry hard-block: only when we actually reached the server.
-	// Transient FetchMe failures yield reached=false and must NOT block.
-	if reached {
-		if d := subscriptionGate(me.SubDaysLeft); d.Block {
-			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
-			os.Exit(1)
-		}
-	}
-
 	// VCD-49 budget gate: only when reached + pct present (degrade-safe).
+	// VCD-65: subscriptionGate removed — budgetGate is the sole client-side gate.
 	// Hard-block at ≥100%; soft warn (print, still spawn) at 80–99%.
 	// pct==nil = no budget / server absent → proceed without warning.
 	if reached && me.Pct != nil {
@@ -344,42 +334,12 @@ func buildSpawnEnv(p provider.Provider, parent []string, relayHost, token, caPat
 	}
 }
 
-// subscriptionDecision is the pure outcome of inspecting days-left.
+// subscriptionDecision is the pure outcome of a spawn-gate check.
+// VCD-65: subscriptionGate removed; this struct is kept because budgetGate returns it.
 type subscriptionDecision struct {
 	Block   bool   // true → do NOT spawn; print Message; exit non-zero
 	Warn    bool   // true → spawn, but show Message as a soft banner warning
 	Message string // user-facing copy (lipgloss styling applied by caller)
-}
-
-// subscriptionGate maps days-left (auth.MeResult.SubDaysLeft) to a spawn decision.
-//
-//	-1       → unlimited            → clean
-//	 0       → expired/no active   → hard block
-//	 1..3    → ending soon         → warn (still spawn)
-//	>=4      → healthy             → clean
-func subscriptionGate(daysLeft int) subscriptionDecision {
-	switch {
-	case daysLeft == 0:
-		return subscriptionDecision{
-			Block: true,
-			Message: "Your void-code subscription has expired.\n" +
-				"To keep using it, message @makscee on Telegram to top up.\n" +
-				"(Automatic top-up is coming soon.)",
-		}
-	case daysLeft >= 1 && daysLeft <= 3:
-		unit := "days"
-		if daysLeft == 1 {
-			unit = "day"
-		}
-		return subscriptionDecision{
-			Warn: true,
-			Message: fmt.Sprintf(
-				"Subscription ending in %d %s — top up via @makscee on Telegram to avoid interruption.",
-				daysLeft, unit),
-		}
-	default:
-		return subscriptionDecision{} // -1 unlimited or >=4 healthy → clean
-	}
 }
 
 // budgetGate maps budget pct + budget_usd to a spawn decision (VCD-49).
@@ -418,9 +378,8 @@ func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
 //   - token present, server reachable → returns (me, true, nil)
 //   - token present, network/server error → returns (zero, false, nil) — transient blip, do not block
 //
-// Returns reached=true only when the server responded successfully, so callers
-// can distinguish a genuine SubDaysLeft==0 (expired) from the transient-blip
-// zero-value MeResult (which must NOT block).
+// Returns reached=true only when the server responded successfully.
+// VCD-65: SubDaysLeft removed; budgetGate uses reached to distinguish transient blip.
 func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, bool, error) {
 	if token == "" {
 		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")

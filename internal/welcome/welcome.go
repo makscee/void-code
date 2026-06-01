@@ -24,11 +24,6 @@ type AuthState struct {
 	LoggedIn bool
 	// Identity is the user identity string (email or userId) when logged in.
 	Identity string
-	// SubDaysLeft is days remaining on subscription.
-	// -1 = unlimited; 0 = no active subscription; positive = days remaining.
-	SubDaysLeft int
-	// SubUnknown is true when subscription status could not be fetched.
-	SubUnknown bool
 	// UpdateNudge is an optional one-line message shown in the banner when
 	// the user declined an update or when no auto-update is configured.
 	// Empty means no nudge.
@@ -40,6 +35,7 @@ type AuthState struct {
 	// BalanceUsd is the prepaid wallet balance in USD (VCD-55). nil = unknown /
 	// server did not return it → render a neutral dash, never a $ figure.
 	BalanceUsd *float64
+	// VCD-65: SubDaysLeft and SubUnknown removed — subscriptionGate removed.
 }
 
 // RunResult is returned by Run to indicate what the keypress should trigger.
