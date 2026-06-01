@@ -112,6 +112,12 @@ func main() {
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
 					continue menuLoop // re-show menu
+				case welcome.RunStatusline:
+					fmt.Println()
+					runStatuslineDemo(os.Stdout)
+					fmt.Println("\n  press enter to return to the menu…")
+					bufio.NewScanner(os.Stdin).Scan()
+					continue menuLoop // re-show menu
 				case welcome.RunLogin:
 					if lerr := runLoginInteractive(); lerr != nil {
 						fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)

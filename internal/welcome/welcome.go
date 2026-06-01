@@ -58,6 +58,8 @@ const (
 	ShowTopUp
 	// ShowProviders is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
 	ShowProviders
+	// RunStatusline means the user chose "Statusline preview" — caller prints the demo bar.
+	RunStatusline
 )
 
 // Callbacks holds I/O functions for the Providers sub-view. Passed into Run
@@ -77,7 +79,7 @@ type Callbacks struct {
 }
 
 // Run shows the interactive selectable menu and blocks until the user makes a
-// choice (or quits). Returns one of SpawnClaude / RunLogin / RunDoctor / Quit.
+// choice (or quits). Returns one of SpawnClaude / RunLogin / RunDoctor / RunStatusline / Quit.
 //
 // In non-TTY environments (CI, pipe) it falls back to a plain-text banner
 // and returns SpawnClaude (logged-in) or RunLogin (logged-out).
@@ -264,6 +266,7 @@ func menuItemsFor(state AuthState) []menuItem {
 		{label: "Providers", result: ShowProviders},
 		{label: "Top up", result: ShowTopUp},
 		{label: "Run doctor", result: RunDoctor},
+		{label: "Statusline preview", result: RunStatusline},
 	}
 }
 

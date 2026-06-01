@@ -267,9 +267,9 @@ func TestMenu_StartItemDefault(t *testing.T) {
 
 func TestMenu_NavigationWraps(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	n := m.ItemCount() // 4 when logged in: Start, Providers, Top up, Run doctor
-	if n != 4 {
-		t.Fatalf("item count = %d, want 4", n)
+	n := m.ItemCount() // 5 when logged in: Start, Providers, Top up, Run doctor, Statusline preview
+	if n != 5 {
+		t.Fatalf("item count = %d, want 5", n)
 	}
 	m = m.MoveCursor(-1) // up from 0 wraps to last
 	if m.Cursor() != n-1 {
@@ -294,6 +294,31 @@ func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
 	m = m.SetCursor(3) // Start(0), Providers(1), Top up(2), Run doctor(3)
 	if got := m.Activate(); got != welcome.RunDoctor {
 		t.Errorf("activate Run doctor = %v, want RunDoctor", got)
+	}
+}
+
+// VCD-64: statusline menu item tests.
+
+func TestMenu_StatuslinePreviewItem(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	// Start(0), Providers(1), Top up(2), Run doctor(3), Statusline preview(4)
+	if m.ItemCount() != 5 {
+		t.Fatalf("item count = %d, want 5 (Start, Providers, Top up, Run doctor, Statusline preview)", m.ItemCount())
+	}
+	m = m.SetCursor(4)
+	if got := m.ItemLabel(4); got != "Statusline preview" {
+		t.Errorf("item 4 label = %q, want 'Statusline preview'", got)
+	}
+	if got := m.Activate(); got != welcome.RunStatusline {
+		t.Errorf("activate Statusline preview = %v, want RunStatusline", got)
+	}
+}
+
+func TestView_MenuShowsStatuslinePreview(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "u@x.com"})
+	out := m.View()
+	if !strings.Contains(out, "Statusline preview") {
+		t.Errorf("menu view must include 'Statusline preview' item:\n%s", out)
 	}
 }
 
@@ -359,7 +384,7 @@ func TestView_NilBalanceShowsDash(t *testing.T) {
 func TestView_MenuListsItemsWithCursor(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com"})
 	out := m.View()
-	for _, it := range []string{"Start", "Top up", "Run doctor"} {
+	for _, it := range []string{"Start", "Top up", "Run doctor", "Statusline preview"} {
 		if !strings.Contains(out, it) {
 			t.Errorf("menu missing %q:\n%s", it, out)
 		}

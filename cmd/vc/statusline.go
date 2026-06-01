@@ -112,11 +112,28 @@ var statuslineCmd = &cobra.Command{
 	Hidden: true,
 	Short:  "Internal: Claude Code statusLine renderer (context · $ balance)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// When stdin is an interactive terminal there is no CC JSON to decode;
+		// reading would block forever. Print a demo preview instead.
+		if isStdinTTY() {
+			runStatuslineDemo(os.Stdout)
+			return nil
+		}
 		if statuslineMerge {
 			return runStatuslineMerge(os.Stdin, os.Stdout)
 		}
 		return runStatusline(os.Stdin, os.Stdout)
 	},
+}
+
+// runStatuslineDemo prints a static preview of the statusline bar.
+// Used when vc statusline is invoked interactively (TTY stdin) — no CC JSON feed.
+func runStatuslineDemo(w io.Writer) {
+	// Synthetic "demo" context: 45k tokens, known balance placeholder.
+	demo := statusInput{}
+	demo.ContextWindow.TotalInputTokens = 45000
+	demo.ContextWindow.ContextWindowSize = 200000
+	d := fetchSegData() // fetch real balance if logged in; otherwise hidden
+	fmt.Fprintln(w, renderSegments(demo, d)+" (demo — pipe CC statusLine JSON to see live data)")
 }
 
 func init() {

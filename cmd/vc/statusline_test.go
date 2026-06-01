@@ -234,3 +234,25 @@ func TestRunStatuslineMerge_NoPriorFile_FallsBackToPlain(t *testing.T) {
 		t.Fatal("runStatuslineMerge produced empty output without prior file")
 	}
 }
+
+// ─── VCD-64: TTY-bypass demo + menu item ─────────────────────────────────────
+
+// TestRunStatuslineDemo_OutputsLineWithEmoji verifies that runStatuslineDemo prints
+// a non-empty line containing the context emoji and the "(demo)" suffix.
+// This is the function used when vc statusline is invoked from a TTY (no CC stdin).
+func TestRunStatuslineDemo_OutputsLineWithEmoji(t *testing.T) {
+	var out bytes.Buffer
+	runStatuslineDemo(&out)
+	result := out.String()
+	if strings.TrimSpace(result) == "" {
+		t.Fatal("runStatuslineDemo: empty output")
+	}
+	// 45k tokens → 🤓 face
+	if !strings.Contains(result, "🤓") {
+		t.Errorf("runStatuslineDemo: expected 🤓 emoji for 45k tokens, got %q", result)
+	}
+	// Must include the demo label so user understands it's not live data.
+	if !strings.Contains(result, "demo") {
+		t.Errorf("runStatuslineDemo: expected '(demo' suffix, got %q", result)
+	}
+}
