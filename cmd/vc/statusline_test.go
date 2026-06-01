@@ -256,3 +256,86 @@ func TestRunStatuslineDemo_OutputsLineWithEmoji(t *testing.T) {
 		t.Errorf("runStatuslineDemo: expected '(demo' suffix, got %q", result)
 	}
 }
+
+// ─── VCD-64 REVISION: Install statusline menu item ───────────────────────────
+
+// TestInstallStatuslineMenu_FreshInstall verifies that installStatuslineMenu writes
+// the statusLine entry when settings.json is absent (fresh user).
+func TestInstallStatuslineMenu_FreshInstall(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	slCmd := "/usr/local/bin/vc statusline"
+
+	var out bytes.Buffer
+	installStatuslineMenu(&out, settingsPath, slCmd)
+
+	result := out.String()
+	if !strings.Contains(result, "✓") {
+		t.Errorf("expected ✓ in output for fresh install, got %q", result)
+	}
+	if !strings.Contains(result, "installed") {
+		t.Errorf("expected 'installed' in output, got %q", result)
+	}
+
+	// Verify settings.json was actually written with our statusLine entry.
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings.json not written: %v", err)
+	}
+	if !strings.Contains(string(data), slCmd) {
+		t.Errorf("settings.json does not contain slCmd %q: %s", slCmd, data)
+	}
+}
+
+// TestInstallStatuslineMenu_AlreadyInstalled verifies that installStatuslineMenu
+// reports "already current" without modifying the file when ours is already set.
+func TestInstallStatuslineMenu_AlreadyInstalled(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	slCmd := "/usr/local/bin/vc statusline"
+
+	// Pre-write our statusLine into settings.json.
+	existing := `{"statusLine":{"type":"command","command":"/usr/local/bin/vc statusline"}}`
+	if err := os.WriteFile(settingsPath, []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fi1, _ := os.Stat(settingsPath)
+
+	var out bytes.Buffer
+	installStatuslineMenu(&out, settingsPath, slCmd)
+
+	result := out.String()
+	if !strings.Contains(result, "already current") {
+		t.Errorf("expected 'already current' in output, got %q", result)
+	}
+
+	// File must not be rewritten (idempotent).
+	fi2, _ := os.Stat(settingsPath)
+	if fi1.ModTime() != fi2.ModTime() {
+		t.Error("installStatuslineMenu rewrote settings.json when already installed — should be no-op")
+	}
+}
+
+// TestInstallStatuslineMenu_ForeignOffersFixSelect verifies that installStatuslineMenu
+// produces a fixSelect (3-way prompt) when a foreign statusLine is present.
+// We verify via checkStatusLine directly since promptSelect is interactive/TTY.
+func TestInstallStatuslineMenu_ForeignCheckResult(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	slCmd := "/usr/local/bin/vc statusline"
+
+	// Write a foreign statusLine.
+	foreign := `{"statusLine":{"type":"command","command":"~/.claude/statusline.sh"}}`
+	if err := os.WriteFile(settingsPath, []byte(foreign), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := checkStatusLine(settingsPath, slCmd)
+	if c.fixSelect == nil {
+		t.Fatal("foreign statusLine: expected fixSelect to be non-nil (3-way prompt)")
+	}
+	if len(c.selectOptions) != 3 {
+		t.Fatalf("foreign statusLine: want 3 selectOptions (merge/override/skip), got %d: %v",
+			len(c.selectOptions), c.selectOptions)
+	}
+}

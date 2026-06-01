@@ -114,7 +114,7 @@ func main() {
 					continue menuLoop // re-show menu
 				case welcome.RunStatusline:
 					fmt.Println()
-					runStatuslineDemo(os.Stdout)
+					runInstallStatuslineMenu(os.Stdout)
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
 					continue menuLoop // re-show menu

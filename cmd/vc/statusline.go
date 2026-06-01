@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -134,6 +135,70 @@ func runStatuslineDemo(w io.Writer) {
 	demo.ContextWindow.ContextWindowSize = 200000
 	d := fetchSegData() // fetch real balance if logged in; otherwise hidden
 	fmt.Fprintln(w, renderSegments(demo, d)+" (demo — pipe CC statusLine JSON to see live data)")
+}
+
+// installStatuslineMenu runs the statusline install flow for a given settingsPath
+// and slCmd. It reuses checkStatusLine (doctor.go, same package) which handles
+// all three cases:
+//   - already installed → report "already current"
+//   - absent            → install directly (EnsureStatusLine, no prompt needed)
+//   - foreign           → 3-way merge/override/skip prompt (VCD-62 logic)
+//
+// The result is reported to w. The caller is responsible for the "press enter"
+// prompt after this returns. Separated from runInstallStatuslineMenu for testability.
+func installStatuslineMenu(w io.Writer, settingsPath, slCmd string) {
+	c := checkStatusLine(settingsPath, slCmd)
+	switch {
+	case c.fix == nil && c.fixSelect == nil:
+		// Already installed (or merge-wrapper) — nothing to do.
+		fmt.Fprintln(w, "  ✓  statusline already current")
+
+	case c.fix != nil:
+		// Absent — install directly, no prompt needed.
+		if err := c.fix(); err != nil {
+			fmt.Fprintln(w, "  install statusline: error:", err)
+			return
+		}
+		fmt.Fprintln(w, "  ✓  statusline installed")
+
+	case c.fixSelect != nil:
+		// Foreign statusLine — offer merge/override/skip exactly as doctor does.
+		header := buildConfirmHeader([]checkResult{c})
+		choice, ok := promptSelect(c.message, header, c.selectOptions)
+		if !ok {
+			fmt.Fprintln(w, "  statusline install cancelled")
+			return
+		}
+		if err := c.fixSelect(choice); err != nil {
+			fmt.Fprintln(w, "  install statusline: error:", err)
+			return
+		}
+		switch choice {
+		case 0:
+			fmt.Fprintln(w, "  ✓  statusline merged (vc wraps existing)")
+		case 1:
+			fmt.Fprintln(w, "  ✓  statusline installed (existing replaced)")
+		default:
+			fmt.Fprintln(w, "  skipped — existing statusline kept")
+		}
+	}
+}
+
+// runInstallStatuslineMenu resolves the binary path + settings path and delegates
+// to installStatuslineMenu. Called from the title-screen "Install statusline" item.
+func runInstallStatuslineMenu(w io.Writer) {
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(w, "  install statusline: cannot resolve binary path:", err)
+		return
+	}
+	settingsPath, err := ccsettings.SettingsPath()
+	if err != nil {
+		fmt.Fprintln(w, "  install statusline: cannot resolve settings path:", err)
+		return
+	}
+	slCmd := ccsettings.StatusLineCmd(ccsettings.ForwardSlash(execPath))
+	installStatuslineMenu(w, settingsPath, slCmd)
 }
 
 func init() {

@@ -54,7 +54,7 @@ const (
 	ShowTopUp
 	// ShowProviders is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
 	ShowProviders
-	// RunStatusline means the user chose "Statusline preview" — caller prints the demo bar.
+	// RunStatusline means the user chose "Install statusline" — caller runs the install flow.
 	RunStatusline
 )
 
@@ -262,7 +262,7 @@ func menuItemsFor(state AuthState) []menuItem {
 		{label: "Providers", result: ShowProviders},
 		{label: "Top up", result: ShowTopUp},
 		{label: "Run doctor", result: RunDoctor},
-		{label: "Statusline preview", result: RunStatusline},
+		{label: "Install statusline", result: RunStatusline},
 	}
 }
 
