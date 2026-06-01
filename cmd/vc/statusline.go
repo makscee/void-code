@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
@@ -81,7 +82,33 @@ func contextTokensFmt(tokens int) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-// contextSegment returns the brainrot context segment string.
+// contextColorTier returns the color band for total_input_tokens.
+// Bands: green < 80k, yellow 80k–120k, red >= 120k.
+func contextColorTier(tokens int) string {
+	switch {
+	case tokens < 80000:
+		return "green"
+	case tokens < 120000:
+		return "yellow"
+	default:
+		return "red"
+	}
+}
+
+// contextColor returns a lipgloss.Style for the context segment based on token count.
+// Green < 80k (healthy), yellow 80k–120k (approaching cap), red+bold >= 120k (over cap).
+func contextColor(tokens int) lipgloss.Style {
+	switch contextColorTier(tokens) {
+	case "yellow":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // ANSI yellow
+	case "red":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // ANSI red, bold
+	default: // green
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // ANSI green
+	}
+}
+
+// contextSegment returns the brainrot context segment string, colored by token count.
 // Uses total_input_tokens from context_window. Returns "—" if absent (no API response yet).
 func contextSegment(in statusInput) string {
 	cw := in.ContextWindow
@@ -90,7 +117,8 @@ func contextSegment(in statusInput) string {
 	if tokens == 0 && cw.ContextWindowSize == 0 {
 		return "—"
 	}
-	return contextFace(tokens) + " " + contextTokensFmt(tokens)
+	text := contextFace(tokens) + " " + contextTokensFmt(tokens)
+	return contextColor(tokens).Render(text)
 }
 
 // renderSegments builds the one-line status bar. Pure — no I/O.

@@ -257,6 +257,28 @@ func TestRunStatuslineDemo_OutputsLineWithEmoji(t *testing.T) {
 	}
 }
 
+// ─── VCD-69: Context-token color bands (green/yellow/red at 80k/120k) ─────────
+
+func TestContextColorTier_Boundaries(t *testing.T) {
+	cases := []struct {
+		tokens int
+		want   string
+	}{
+		{0, "green"},
+		{79999, "green"},
+		{80000, "yellow"},
+		{119999, "yellow"},
+		{120000, "red"},
+		{200000, "red"},
+	}
+	for _, c := range cases {
+		got := contextColorTier(c.tokens)
+		if got != c.want {
+			t.Errorf("contextColorTier(%d) = %q, want %q", c.tokens, got, c.want)
+		}
+	}
+}
+
 // ─── VCD-64 REVISION: Install statusline menu item ───────────────────────────
 
 // TestInstallStatuslineMenu_FreshInstall verifies that installStatuslineMenu writes
