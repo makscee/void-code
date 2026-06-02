@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"strings"
 
-	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/permguard"
 	"github.com/spf13/cobra"
 )
@@ -17,7 +15,7 @@ import (
 var hookCmd = &cobra.Command{
 	Use:    "hook",
 	Hidden: true,
-	Short:  "Internal: Claude Code PreToolUse permission hook (deepseek relay, no Anthropic egress)",
+	Short:  "Internal: Claude Code PreToolUse permission hook (always-allow, VCD-70)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runHook(os.Stdin, os.Stdout)
 	},
@@ -35,34 +33,20 @@ type ccEvent struct {
 	Cwd string `json:"cwd"`
 }
 
-// runHook reads one PreToolUse event from r and writes the decision to w.
-// It NEVER exits non-zero on policy decisions — deny is expressed in the
-// JSON payload, not the process exit code.  Any internal error → fail-open.
+// runHook reads one PreToolUse event from r and writes an unconditional
+// "allow" decision to w. VCD-70: the relay/deepseek classifier path is
+// removed entirely — vc auto mode allows every tool call with ZERO model
+// sub-call, so a stale settings.json hook entry can never surface a
+// classifier error or make Anthropic egress. The event body is decoded only
+// to stay tolerant of malformed input (fail-open identical to the allow
+// path). NEVER exits non-zero on a decision.
 func runHook(r io.Reader, w io.Writer) error {
 	var ev ccEvent
-	if err := json.NewDecoder(r).Decode(&ev); err != nil {
-		// Malformed input: fail-open rather than blocking claude.
-		return writeDecision(w, permguard.Decision{Decision: "allow", Reason: "hook: decode error, fail-open"})
-	}
-
-	g, err := permguard.Load()
-	if err != nil {
-		return writeDecision(w, permguard.Decision{Decision: "allow", Reason: "hook: rules load error, fail-open"})
-	}
-
-	// Wire the relay LLM classifier if we can resolve proxy + token.
-	base, token := relayFallbackParams()
-	if base != "" {
-		g.SetClassifier(permguard.NewRelayClassifier(base, token))
-	}
-
-	d := g.Classify(permguard.Event{
-		ToolName: ev.ToolName,
-		Command:  ev.ToolInput.Command,
-		FilePath: ev.ToolInput.FilePath,
-		Cwd:      ev.Cwd,
+	_ = json.NewDecoder(r).Decode(&ev) // decode errors are irrelevant: we always allow
+	return writeDecision(w, permguard.Decision{
+		Decision: "allow",
+		Reason:   "vc auto mode: always-allow (no classifier, VCD-70)",
 	})
-	return writeDecision(w, d)
 }
 
 // writeDecision encodes the CC hookSpecificOutput JSON to w.
@@ -80,28 +64,4 @@ func writeDecision(w io.Writer, d permguard.Decision) error {
 		},
 	}
 	return json.NewEncoder(w).Encode(payload)
-}
-
-// relayFallbackParams extracts the relay proxy URL and token from the
-// environment that CC propagates to hook subprocesses.
-//
-// vc injects HTTPS_PROXY=http://<host> into claude's env; CC passes that
-// env through to PreToolUse hook processes.  The token is loaded from
-// ~/.void-code/token via the existing auth loader.
-//
-// Returns ("","") when unavailable — caller uses rules-only (fail-open) mode.
-func relayFallbackParams() (base, token string) {
-	proxy := os.Getenv("HTTPS_PROXY")
-	if proxy == "" {
-		proxy = os.Getenv("https_proxy")
-	}
-	if proxy == "" {
-		return "", ""
-	}
-	// Hard-refuse if proxy looks like Anthropic (should never happen, but guard).
-	if strings.Contains(strings.ToLower(proxy), "api.anthropic.com") {
-		return "", ""
-	}
-	tok, _ := auth.LoadAndMigrate()
-	return proxy, tok
 }

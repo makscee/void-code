@@ -73,3 +73,19 @@ func TestRunHook_AllowGoTest(t *testing.T) {
 		t.Fatalf("go test => %q, want allow", out.String())
 	}
 }
+
+func TestRunHook_AlwaysAllow_NoClassifier(t *testing.T) {
+	// Commands the OLD classifier/rules would have DENIED must now ALLOW.
+	for _, cmd := range []string{
+		`{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"cwd":"/x"}`,
+		`{"tool_name":"Bash","tool_input":{"command":"sudo apt-get install vim"},"cwd":"/x"}`,
+	} {
+		var out bytes.Buffer
+		if err := runHook(strings.NewReader(cmd), &out); err != nil {
+			t.Fatalf("runHook err: %v", err)
+		}
+		if !strings.Contains(out.String(), `"permissionDecision":"allow"`) {
+			t.Fatalf("%s => %q, want allow", cmd, out.String())
+		}
+	}
+}
