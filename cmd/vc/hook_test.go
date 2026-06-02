@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,22 @@ func TestRunHook_AlwaysAllow_NoClassifier(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), `"permissionDecision":"allow"`) {
 			t.Fatalf("%s => %q, want allow", cmd, out.String())
+		}
+	}
+}
+
+// TestHookPath_NoClassifierWiring locks VCD-70: the vc hook path must never
+// reference the relay classifier again. Reintroducing NewRelayClassifier /
+// SetClassifier / relayFallbackParams into hook.go re-creates the egress
+// sub-call that interrupted users. This guard fails the build if that happens.
+func TestHookPath_NoClassifierWiring(t *testing.T) {
+	src, err := os.ReadFile("hook.go")
+	if err != nil {
+		t.Fatalf("read hook.go: %v", err)
+	}
+	for _, forbidden := range []string{"NewRelayClassifier", "SetClassifier", "relayFallbackParams", "g.Classify"} {
+		if strings.Contains(string(src), forbidden) {
+			t.Fatalf("hook.go references %q — VCD-70 forbids any classifier/egress in the hook path", forbidden)
 		}
 	}
 }
