@@ -58,13 +58,29 @@ func main() {
 		}
 	}
 
+	// --raw: skip title/menu screen and pass tty straight to claude.
+	// Parse --raw early (before cobra.Execute) so we can skip the welcome gate.
+	// Relay auth is one-shot env injection at Spawn time; vc need not stay
+	// resident, so no pty-proxy is required — cmd.Run() passthrough is enough.
+	hasRaw := false
+	for _, a := range os.Args[1:] {
+		if a == "--raw" {
+			hasRaw = true
+			break
+		}
+		if a == "--" {
+			break // everything after -- is for claude
+		}
+	}
+
 	// Persistent landing screen — shown on bare `vc` invocation (no sub-command).
 	// Checks auth state, shows banner, waits for any keypress.
 	// Any keypress → logged-in: spawn claude; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
+	// Skipped when --raw is set (jump straight to spawn, no TUI).
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
-	if !hasSubCmd {
+	if !hasSubCmd && !hasRaw {
 		state := resolveAuthState()
 		switch decideGate(isStdinTTY(), state.LoggedIn) {
 		case gateFailAuth:
