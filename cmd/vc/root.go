@@ -11,6 +11,9 @@ import (
 var (
 	// versionFlag is set by the --version flag on rootCmd.
 	versionFlag bool
+	// rawModeFlag is set by --raw; skips the title/menu screen and passes the
+	// controlling tty straight to claude for tmux send-keys / daemon use.
+	rawModeFlag bool
 )
 
 // brandStyle is the top-level banner style for vc.
@@ -39,6 +42,9 @@ Run "vc <command> --help" for sub-command details.`,
 	Example: `  # Launch claude normally
   vc
 
+  # Skip title screen — pass tty straight to claude (for tmux send-keys / daemon use)
+  vc --raw -- --session-id <id> --permission-mode bypassPermissions
+
   # Pass flags directly to claude using -- (double-dash terminator)
   vc -- --dangerously-skip-permissions
   vc -- --debug --verbose
@@ -59,6 +65,7 @@ Run "vc <command> --help" for sub-command details.`,
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&versionFlag, "version", false, "Print version and exit")
+	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to claude (for tmux/daemon use)")
 	// Disable the auto-generated 'completion' sub-command — not needed for v0.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 }
