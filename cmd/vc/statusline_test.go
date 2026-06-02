@@ -279,6 +279,45 @@ func TestContextColorTier_Boundaries(t *testing.T) {
 	}
 }
 
+// TestContextSegment_BalanceNotColored verifies that the $balance text is NOT
+// inside the colored span emitted by contextSegment. The context segment must
+// contain only the emoji + token count — never the separator or balance value.
+// This is verified structurally: renderSegments joins contextSegment + balance
+// with " | "; the balance must appear AFTER contextSegment's output and
+// therefore outside any ANSI color sequence emitted by contextSegment.
+func TestContextSegment_BalanceNotColored(t *testing.T) {
+	// Use a high-context input (red band) + a known balance.
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 130000
+	in.ContextWindow.ContextWindowSize = 200000
+
+	// ctxOnly is what contextSegment returns — must NOT contain "$".
+	ctxOnly := contextSegment(in)
+	if strings.Contains(ctxOnly, "$") {
+		t.Errorf("contextSegment must not contain '$' (balance leaked into colored span), got %q", ctxOnly)
+	}
+	// ctxOnly must contain the token count.
+	if !strings.Contains(ctxOnly, "130k") {
+		t.Errorf("contextSegment must contain '130k', got %q", ctxOnly)
+	}
+
+	// Full render with balance: balance comes after contextSegment, NOT inside it.
+	bal := 51.04
+	d := segData{balanceUsd: &bal, balanceKnown: true}
+	full := renderSegments(in, d)
+
+	// The balance must appear in the full string.
+	if !strings.Contains(full, "$51.04") {
+		t.Errorf("renderSegments must contain '$51.04', got %q", full)
+	}
+	// The balance must appear AFTER the context portion.
+	ctxEnd := strings.Index(full, "130k") + len("130k")
+	balStart := strings.Index(full, "$51.04")
+	if balStart < ctxEnd {
+		t.Errorf("balance '$51.04' appears before or inside context token portion in %q", full)
+	}
+}
+
 // ─── VCD-64 REVISION: Install statusline menu item ───────────────────────────
 
 // TestInstallStatuslineMenu_FreshInstall verifies that installStatuslineMenu writes
