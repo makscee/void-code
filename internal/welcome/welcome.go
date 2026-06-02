@@ -56,6 +56,8 @@ const (
 	ShowProviders
 	// RunStatusline means the user chose "Install statusline" — caller runs the install flow.
 	RunStatusline
+	// RunProfile means the user chose "Open profile" — caller opens the profile URL in a browser.
+	RunProfile
 )
 
 // Callbacks holds I/O functions for the Providers sub-view. Passed into Run
@@ -266,6 +268,7 @@ func menuItemsFor(state AuthState) []menuItem {
 		{label: "Top up", result: ShowTopUp},
 		{label: "Run doctor", result: RunDoctor},
 		{label: "Install statusline", result: RunStatusline},
+		{label: "Open profile", result: RunProfile},
 	}
 }
 

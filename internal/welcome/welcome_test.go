@@ -254,9 +254,9 @@ func TestMenu_StartItemDefault(t *testing.T) {
 
 func TestMenu_NavigationWraps(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	n := m.ItemCount() // 5 when logged in: Start, Providers, Top up, Run doctor, Install statusline
-	if n != 5 {
-		t.Fatalf("item count = %d, want 5", n)
+	n := m.ItemCount() // 6 when logged in: Start, Providers, Top up, Run doctor, Install statusline, Open profile
+	if n != 6 {
+		t.Fatalf("item count = %d, want 6", n)
 	}
 	m = m.MoveCursor(-1) // up from 0 wraps to last
 	if m.Cursor() != n-1 {
@@ -288,9 +288,9 @@ func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
 
 func TestMenu_StatuslinePreviewItem(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	// Start(0), Providers(1), Top up(2), Run doctor(3), Install statusline(4)
-	if m.ItemCount() != 5 {
-		t.Fatalf("item count = %d, want 5 (Start, Providers, Top up, Run doctor, Install statusline)", m.ItemCount())
+	// Start(0), Providers(1), Top up(2), Run doctor(3), Install statusline(4), Open profile(5)
+	if m.ItemCount() != 6 {
+		t.Fatalf("item count = %d, want 6 (Start, Providers, Top up, Run doctor, Install statusline, Open profile)", m.ItemCount())
 	}
 	m = m.SetCursor(4)
 	if got := m.ItemLabel(4); got != "Install statusline" {
@@ -298,6 +298,23 @@ func TestMenu_StatuslinePreviewItem(t *testing.T) {
 	}
 	if got := m.Activate(); got != welcome.RunStatusline {
 		t.Errorf("activate Install statusline = %v, want RunStatusline", got)
+	}
+}
+
+// VCD-73: profile menu item tests.
+
+func TestMenu_ProfileItem(t *testing.T) {
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
+	// Start(0), Providers(1), Top up(2), Run doctor(3), Install statusline(4), Open profile(5)
+	if m.ItemCount() != 6 {
+		t.Fatalf("item count = %d, want 6", m.ItemCount())
+	}
+	m = m.SetCursor(5)
+	if got := m.ItemLabel(5); got != "Open profile" {
+		t.Errorf("item 5 label = %q, want 'Open profile'", got)
+	}
+	if got := m.Activate(); got != welcome.RunProfile {
+		t.Errorf("activate Open profile = %v, want RunProfile", got)
 	}
 }
 

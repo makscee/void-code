@@ -27,6 +27,7 @@ import (
 	"github.com/makscee/void-code/internal/harness/direct"
 	"github.com/makscee/void-code/internal/harness/relay"
 	"github.com/makscee/void-code/internal/keystore"
+	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
@@ -130,6 +131,12 @@ func main() {
 				case welcome.RunStatusline:
 					fmt.Println()
 					runInstallStatuslineMenu(os.Stdout)
+					fmt.Println("\n  press enter to return to the menu…")
+					bufio.NewScanner(os.Stdin).Scan()
+					continue menuLoop // re-show menu
+				case welcome.RunProfile:
+					fmt.Println()
+					_ = browser.OpenURL(browser.ProfileURL, os.Stdout)
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
 					continue menuLoop // re-show menu
