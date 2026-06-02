@@ -21,10 +21,26 @@ type providersModel struct {
 	active string // persisted-string form of the currently active provider
 }
 
-// buildProviderRows assembles: Relay, one row per key name, Plain, + Add key…
-func buildProviderRows(keyNames []string) []providerRow {
+// ProviderRowInfo is a granted-provider entry for the menu (safe fields only).
+// Mirrors auth.ProviderInfo without importing internal/auth (keeps welcome pure).
+type ProviderRowInfo struct {
+	ID   string
+	Name string
+}
+
+// buildProviderRows assembles: Relay, one row per granted relay-provider,
+// one row per saved BYO key, Plain, + Add key…
+func buildProviderRows(keyNames []string, granted []ProviderRowInfo) []providerRow {
 	rows := []providerRow{
 		{label: provider.Provider{Kind: provider.Relay}.Label(), prov: provider.Provider{Kind: provider.Relay}},
+	}
+	for _, g := range granted {
+		p := provider.Provider{Kind: provider.RelayProvider, ID: g.ID}
+		label := g.Name
+		if label == "" {
+			label = g.ID
+		}
+		rows = append(rows, providerRow{label: label, prov: p})
 	}
 	for _, n := range keyNames {
 		p := provider.Provider{Kind: provider.NamedKey, Name: n}
@@ -37,14 +53,14 @@ func buildProviderRows(keyNames []string) []providerRow {
 	return rows
 }
 
-func newProvidersModel(keyNames []string, activeStr string) providersModel {
-	return providersModel{rows: buildProviderRows(keyNames), active: activeStr}
+func newProvidersModel(keyNames []string, granted []ProviderRowInfo, activeStr string) providersModel {
+	return providersModel{rows: buildProviderRows(keyNames, granted), active: activeStr}
 }
 
 // ─── white-box test accessors ────────────────────────────────────────────────
 
 func NewProvidersModelForTest(keyNames []string, activeStr string) providersModel {
-	return newProvidersModel(keyNames, activeStr)
+	return newProvidersModel(keyNames, nil, activeStr)
 }
 func (m providersModel) RowCount() int         { return len(m.rows) }
 func (m providersModel) RowLabel(i int) string { return m.rows[i].label }

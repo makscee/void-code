@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	term "github.com/charmbracelet/x/term"
@@ -85,9 +86,23 @@ func main() {
 			for {
 				keyNames, _ := keystore.ListKeys()
 				activeProv := provider.Load()
+				// Fetch the granted provider list from void-auth (VCD-72).
+				// Failure degrades to an empty list — relay/deepseek baseline preserved.
+				var grantedRows []welcome.ProviderRowInfo
+				if tok, _ := auth.LoadAndMigrate(); strings.TrimSpace(tok) != "" {
+					cfg := config.OSResolve()
+					if infos, gErr := auth.FetchProviders(cfg.AuthHost, tok, &http.Client{Timeout: 10 * time.Second}); gErr == nil {
+						for _, pi := range infos {
+							grantedRows = append(grantedRows, welcome.ProviderRowInfo{ID: pi.ID, Name: pi.Name})
+						}
+					} else {
+						fmt.Fprintf(os.Stderr, "vc: could not fetch providers (%v) — showing relay default only\n", gErr)
+					}
+				}
 				cb := welcome.Callbacks{
-					KeyNames:       keyNames,
-					ActiveProvider: activeProv.String(),
+					KeyNames:         keyNames,
+					ActiveProvider:   activeProv.String(),
+					GrantedProviders: grantedRows,
 					OnSelect: func(p provider.Provider) error {
 						return provider.Save(p)
 					},
@@ -316,9 +331,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 }
 
 // buildSpawnEnv selects the claude env for the active provider.
-//   - Relay    → relay.BuildEnv (proxy + pool token) — UNCHANGED path.
-//   - NamedKey → direct.NamedKeyEnv with the saved OAuth token (relay bypassed).
-//   - Plain    → direct.PlainEnv (native CC auth, no injection).
+//   - Relay         → relay.BuildEnv (proxy + pool token) — UNCHANGED path.
+//   - RelayProvider → relay.BuildEnv + ANTHROPIC_CUSTOM_HEADERS=x-void-provider: <id>
+//     (VCD-72: CC emits this header; void-relay (VRL-61) resolves credential + base_url)
+//   - NamedKey      → direct.NamedKeyEnv with the saved OAuth token (relay bypassed).
+//   - Plain         → direct.PlainEnv (native CC auth, no injection).
 func buildSpawnEnv(p provider.Provider, parent []string, relayHost, token, caPath string) ([]string, error) {
 	switch p.Kind {
 	case provider.Plain:
@@ -329,6 +346,13 @@ func buildSpawnEnv(p provider.Provider, parent []string, relayHost, token, caPat
 			return nil, fmt.Errorf("provider %q: %w", p.Name, err)
 		}
 		return direct.NamedKeyEnv(parent, key), nil
+	case provider.RelayProvider:
+		// Relay path + x-void-provider header so void-relay injects the right credential.
+		// CC reads ANTHROPIC_CUSTOM_HEADERS (Name: Value, newline-separated) and emits
+		// them on every Anthropic request. The credential never reaches the client.
+		env := relay.BuildEnv(parent, relayHost, token, caPath)
+		env = append(env, "ANTHROPIC_CUSTOM_HEADERS=x-void-provider: "+p.ID)
+		return env, nil
 	default: // Relay
 		return relay.BuildEnv(parent, relayHost, token, caPath), nil
 	}

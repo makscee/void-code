@@ -4,7 +4,47 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/makscee/void-code/internal/provider"
 )
+
+func TestBuildProviderRowsIncludesGranted(t *testing.T) {
+	granted := []ProviderRowInfo{
+		{ID: "deepseek", Name: "DeepSeek"},
+		{ID: "plat-2", Name: "Platform 2"},
+	}
+	rows := buildProviderRows([]string{"mykey"}, granted)
+
+	var haveDeepseek, havePlat2, haveRelay, haveMyKey bool
+	for _, r := range rows {
+		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "deepseek" && r.label == "DeepSeek" {
+			haveDeepseek = true
+		}
+		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "plat-2" && r.label == "Platform 2" {
+			havePlat2 = true
+		}
+		if r.prov.Kind == provider.Relay {
+			haveRelay = true
+		}
+		if r.prov.Kind == provider.NamedKey && r.prov.Name == "mykey" {
+			haveMyKey = true
+		}
+	}
+	if !haveDeepseek || !havePlat2 || !haveRelay || !haveMyKey {
+		t.Fatalf("rows missing expected entries: deepseek=%v plat2=%v relay=%v mykey=%v\nrows=%+v",
+			haveDeepseek, havePlat2, haveRelay, haveMyKey, rows)
+	}
+}
+
+func TestBuildProviderRowsNoGrantedIsBaseline(t *testing.T) {
+	// ungranted user: empty granted list → no RelayProvider rows, only Relay/Plain/Add (+ any keys).
+	rows := buildProviderRows(nil, nil)
+	for _, r := range rows {
+		if r.prov.Kind == provider.RelayProvider {
+			t.Fatalf("unexpected RelayProvider row for ungranted user: %+v", r)
+		}
+	}
+}
 
 func TestProvidersModel_RowsFromKeys(t *testing.T) {
 	keys := []string{"work", "personal"}

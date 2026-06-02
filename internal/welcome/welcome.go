@@ -66,6 +66,9 @@ type Callbacks struct {
 	KeyNames []string
 	// ActiveProvider is the persisted-string form of the currently active provider.
 	ActiveProvider string
+	// GrantedProviders is the user's relay-routed granted-provider list (VCD-72),
+	// fetched from void-auth GET /v1/vc/providers. Empty for ungranted users.
+	GrantedProviders []ProviderRowInfo
 	// OnSelect is called when the user selects a provider row. May be nil.
 	OnSelect func(provider.Provider) error
 	// OnAddKey is called when the Add-key flow completes. May be nil.
@@ -322,7 +325,7 @@ func NewMenuModelForDeleteTest(cb Callbacks) model {
 // cancelled (confirm=false) the deletion.
 func (m model) SimulateDeleteKey(keyName string, confirm bool) model {
 	// Enter providers view.
-	m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+	m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)
 	m.view = providersView
 
 	// Find the row index for keyName.
@@ -409,7 +412,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if r == ShowProviders {
-			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)
 			m.view = providersView
 			return m, nil
 		}
@@ -498,7 +501,7 @@ func (m model) updateDeleteConfirm(s string) (tea.Model, tea.Cmd) {
 					_ = m.cb.OnSelect(provider.Provider{Kind: provider.Relay})
 				}
 			}
-			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)
 			m.view = providersView
 			return m, nil
 		}
@@ -542,7 +545,7 @@ func (m model) updateAddKey(s string) (tea.Model, tea.Cmd) {
 					m.cb.KeyNames = append(m.cb.KeyNames, m.addKey.Name())
 				}
 			}
-			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.ActiveProvider)
+			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)
 			m.view = providersView
 		}
 		return m, nil

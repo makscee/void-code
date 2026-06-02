@@ -31,6 +31,31 @@ func TestBuildSpawnEnv_Relay(t *testing.T) {
 	}
 }
 
+func TestBuildSpawnEnvRelayProviderInjectsHeader(t *testing.T) {
+	p := provider.Provider{Kind: provider.RelayProvider, ID: "plat-2"}
+	env, err := buildSpawnEnv(p, []string{}, "relay.example:8448", "pooltok", "/tmp/ca.pem")
+	if err != nil {
+		t.Fatalf("buildSpawnEnv: %v", err)
+	}
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "ANTHROPIC_CUSTOM_HEADERS=x-void-provider: plat-2") {
+		t.Fatalf("missing custom header; env=%v", env)
+	}
+	// still the relay path: proxy + pool token present.
+	if !strings.Contains(joined, "HTTPS_PROXY=http://relay.example:8448") ||
+		!strings.Contains(joined, "CLAUDE_CODE_OAUTH_TOKEN=pooltok") {
+		t.Fatalf("relay proxy vars missing; env=%v", env)
+	}
+}
+
+func TestBuildSpawnEnvBareRelayHasNoHeader(t *testing.T) {
+	p := provider.Provider{Kind: provider.Relay}
+	env, _ := buildSpawnEnv(p, []string{}, "relay.example:8448", "pooltok", "/tmp/ca.pem")
+	if strings.Contains(strings.Join(env, "\n"), "ANTHROPIC_CUSTOM_HEADERS") {
+		t.Fatalf("bare Relay must not inject x-void-provider; env=%v", env)
+	}
+}
+
 func TestBuildSpawnEnv_Plain(t *testing.T) {
 	env, err := buildSpawnEnv(provider.Provider{Kind: provider.Plain},
 		[]string{"PATH=/usr/bin", "HTTPS_PROXY=x"}, "h", "tok", "/ca.pem")
