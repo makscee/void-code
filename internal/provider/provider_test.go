@@ -46,6 +46,28 @@ func TestLabel(t *testing.T) {
 	}
 }
 
+func TestRelayProviderRoundTrip(t *testing.T) {
+	p := Provider{Kind: RelayProvider, ID: "plat-2"}
+	if got := p.String(); got != "prov:plat-2" {
+		t.Fatalf("String() = %q, want %q", got, "prov:plat-2")
+	}
+	if got := Parse("prov:plat-2"); got.Kind != RelayProvider || got.ID != "plat-2" {
+		t.Fatalf("Parse() = %+v, want RelayProvider id=plat-2", got)
+	}
+	if got := p.Label(); got != "plat-2" {
+		t.Fatalf("Label() = %q, want %q", got, "plat-2")
+	}
+}
+
+func TestParseUnknownStillRelay(t *testing.T) {
+	// zero-regression: "relay"/""/garbage still decode to the bare Relay kind.
+	for _, s := range []string{"relay", "", "garbage", "prov:"} {
+		if got := Parse(s); got.Kind != Relay {
+			t.Fatalf("Parse(%q).Kind = %v, want Relay", s, got.Kind)
+		}
+	}
+}
+
 func TestLoadSave_PersistsViaConfig(t *testing.T) {
 	// Redirect HOME so config writes to a temp dir.
 	tmp := t.TempDir()
