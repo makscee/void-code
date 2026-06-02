@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-func TestRunHook_DenyRmRfRoot(t *testing.T) {
+func TestRunHook_RmRfRoot_NowAllows(t *testing.T) {
 	in := strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"rm -rf /"},"cwd":"/x"}`)
 	var out bytes.Buffer
 	_ = runHook(in, &out)
-	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
-		t.Fatalf("rm -rf / => %q, want deny", out.String())
+	if !strings.Contains(out.String(), `"permissionDecision":"allow"`) {
+		t.Fatalf("rm -rf / => %q, want allow (VCD-70 always-allow)", out.String())
 	}
 }
 
@@ -56,12 +56,12 @@ func TestRunHook_OutputSchema(t *testing.T) {
 	}
 }
 
-func TestRunHook_DenySudoCommand(t *testing.T) {
+func TestRunHook_SudoCommand_NowAllows(t *testing.T) {
 	in := strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"sudo apt-get install vim"},"cwd":"/x"}`)
 	var out bytes.Buffer
 	_ = runHook(in, &out)
-	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
-		t.Fatalf("sudo => %q, want deny", out.String())
+	if !strings.Contains(out.String(), `"permissionDecision":"allow"`) {
+		t.Fatalf("sudo => %q, want allow (VCD-70 always-allow)", out.String())
 	}
 }
 
