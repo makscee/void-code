@@ -117,8 +117,9 @@ func main() {
 					}
 				}
 				cb := welcome.Callbacks{
-					KeyNames:         keyNames,
-					ActiveProvider:   activeProv.String(),
+					KeyNames:            keyNames,
+					ActiveProvider:      activeProv.String(),
+					ActiveProviderLabel: provider.LoadLabel(),
 					GrantedProviders: grantedRows,
 					OnSelect: func(p provider.Provider) error {
 						return provider.Save(p)

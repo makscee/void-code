@@ -68,6 +68,10 @@ type Callbacks struct {
 	KeyNames []string
 	// ActiveProvider is the persisted-string form of the currently active provider.
 	ActiveProvider string
+	// ActiveProviderLabel is the human-facing display label for the active provider.
+	// Populated at startup from provider.LoadLabel() so the view never shows raw ids.
+	// If empty, the view falls back to provider.Parse(ActiveProvider).Label().
+	ActiveProviderLabel string
 	// GrantedProviders is the user's relay-routed granted-provider list (VCD-72),
 	// fetched from void-auth GET /v1/vc/providers. Empty for ungranted users.
 	GrantedProviders []ProviderRowInfo
@@ -633,8 +637,12 @@ func (m model) View() string {
 	sb.WriteString("\n")
 
 	// ◇  Provider: <active provider label>  — visible without entering Providers sub-menu.
-	activeProv := provider.Parse(m.cb.ActiveProvider)
-	sb.WriteString(railLine("◇", "  "+hintStyle.Render("Provider: "+activeProv.Label())))
+	// Use the pre-loaded friendly label (never raw prov: ids); fall back to .Label() for tests.
+	provLabel := m.cb.ActiveProviderLabel
+	if provLabel == "" {
+		provLabel = provider.Parse(m.cb.ActiveProvider).Label()
+	}
+	sb.WriteString(railLine("◇", "  "+hintStyle.Render("Provider: "+provLabel)))
 	sb.WriteString("\n")
 
 	// Update nudge (if present) — shown as an extra ◇ line.
