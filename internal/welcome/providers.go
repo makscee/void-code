@@ -28,19 +28,18 @@ type ProviderRowInfo struct {
 	Name string
 }
 
-// buildProviderRows assembles: Relay, one row per granted relay-provider,
+// buildProviderRows assembles: one "Relay: <name>" row per granted relay-provider,
 // one row per saved BYO key, Plain, + Add key…
+// The bare "Relay" entry is omitted — every relay route is now a named provider.
 func buildProviderRows(keyNames []string, granted []ProviderRowInfo) []providerRow {
-	rows := []providerRow{
-		{label: provider.Provider{Kind: provider.Relay}.Label(), prov: provider.Provider{Kind: provider.Relay}},
-	}
+	var rows []providerRow
 	for _, g := range granted {
 		p := provider.Provider{Kind: provider.RelayProvider, ID: g.ID}
-		label := g.Name
-		if label == "" {
-			label = g.ID
+		name := g.Name
+		if name == "" {
+			name = g.ID
 		}
-		rows = append(rows, providerRow{label: label, prov: p})
+		rows = append(rows, providerRow{label: "Relay: " + name, prov: p})
 	}
 	for _, n := range keyNames {
 		p := provider.Provider{Kind: provider.NamedKey, Name: n}
@@ -61,6 +60,10 @@ func newProvidersModel(keyNames []string, granted []ProviderRowInfo, activeStr s
 
 func NewProvidersModelForTest(keyNames []string, activeStr string) providersModel {
 	return newProvidersModel(keyNames, nil, activeStr)
+}
+
+func NewProvidersModelWithGrantedForTest(keyNames []string, granted []ProviderRowInfo, activeStr string) providersModel {
+	return newProvidersModel(keyNames, granted, activeStr)
 }
 func (m providersModel) RowCount() int         { return len(m.rows) }
 func (m providersModel) RowLabel(i int) string { return m.rows[i].label }
