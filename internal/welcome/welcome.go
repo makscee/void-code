@@ -73,6 +73,10 @@ type Callbacks struct {
 	GrantedProviders []ProviderRowInfo
 	// OnSelect is called when the user selects a provider row. May be nil.
 	OnSelect func(provider.Provider) error
+	// OnSelectLabel is called with the display label of the selected row when a
+	// provider is chosen. May be nil. Used to persist the label at selection time
+	// so the statusline renderer can show it without a network call.
+	OnSelectLabel func(label string) error
 	// OnAddKey is called when the Add-key flow completes. May be nil.
 	OnAddKey func(name, token string) error
 	// OnDeleteKey is called when the user confirms deletion of a named key. May be nil.
@@ -465,6 +469,9 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 		if m.cb.OnSelect != nil {
 			_ = m.cb.OnSelect(row.prov)
 		}
+		if m.cb.OnSelectLabel != nil {
+			_ = m.cb.OnSelectLabel(row.label)
+		}
 		m.cb.ActiveProvider = row.prov.String()
 		m.providers.active = row.prov.String()
 		m.view = menuView
@@ -500,8 +507,12 @@ func (m model) updateDeleteConfirm(s string) (tea.Model, tea.Cmd) {
 			// If the deleted key was the active provider, reset to relay.
 			if m.cb.ActiveProvider == "key:"+keyName {
 				m.cb.ActiveProvider = "relay"
+				relayProv := provider.Provider{Kind: provider.Relay}
 				if m.cb.OnSelect != nil {
-					_ = m.cb.OnSelect(provider.Provider{Kind: provider.Relay})
+					_ = m.cb.OnSelect(relayProv)
+				}
+				if m.cb.OnSelectLabel != nil {
+					_ = m.cb.OnSelectLabel(relayProv.Label())
 				}
 			}
 			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)

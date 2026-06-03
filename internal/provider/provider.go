@@ -83,6 +83,10 @@ func (p Provider) Label() string {
 // configKey is the key under which the active provider is persisted.
 const configKey = "active_provider"
 
+// labelKey is the key under which the active provider's display label is persisted.
+// Written at selection time so the statusline renderer never needs a network call.
+const labelKey = "active_provider_label"
+
 // Load reads the active provider from the vc config file. Any error or absent
 // key degrades to Relay (the safe default).
 func Load() Provider {
@@ -96,4 +100,26 @@ func Load() Provider {
 // Save persists the active provider to the vc config file.
 func Save(p Provider) error {
 	return config.WriteConfigFile(map[string]string{configKey: p.String()})
+}
+
+// SaveLabel persists the provider's display label alongside its id.
+// Called at selection time so the statusline renderer can read the label without
+// a network round-trip.
+func SaveLabel(label string) error {
+	return config.WriteConfigFile(map[string]string{labelKey: label})
+}
+
+// LoadLabel returns the persisted display label for the active provider.
+// Falls back to a best-effort derived label when the key is absent (existing
+// users who selected before this was added). Never returns an empty string.
+func LoadLabel() string {
+	kv, err := config.ReadConfigFile()
+	if err != nil {
+		return Load().Label()
+	}
+	if label, ok := kv[labelKey]; ok && label != "" {
+		return label
+	}
+	// Backfill: derive from active_provider id.
+	return Parse(kv[configKey]).Label()
 }

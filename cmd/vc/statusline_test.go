@@ -400,3 +400,84 @@ func TestInstallStatuslineMenu_ForeignCheckResult(t *testing.T) {
 			len(c.selectOptions), c.selectOptions)
 	}
 }
+
+// ─── VCD-78: provider label in statusline segment ────────────────────────────
+
+// TestRenderSegments_IncludesProviderLabel verifies that renderSegments includes
+// the provider label from segData in its output.
+func TestRenderSegments_IncludesProviderLabel(t *testing.T) {
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 5000
+	in.ContextWindow.ContextWindowSize = 200000
+
+	d := segData{providerLabel: "Relay: DeepSeek"}
+	got := renderSegments(in, d)
+	if !strings.Contains(got, "Relay: DeepSeek") {
+		t.Errorf("renderSegments = %q, want it to contain provider label %q", got, "Relay: DeepSeek")
+	}
+}
+
+// TestRenderSegments_ProviderLabelAfterBalance verifies provider label appears after
+// the balance segment (order: ctx | $balance | provider).
+func TestRenderSegments_ProviderLabelAfterBalance(t *testing.T) {
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 5000
+	in.ContextWindow.ContextWindowSize = 200000
+
+	bal := 10.0
+	d := segData{balanceUsd: &bal, balanceKnown: true, providerLabel: "key: work"}
+	got := renderSegments(in, d)
+
+	balPos := strings.Index(got, "$10.00")
+	provPos := strings.Index(got, "key: work")
+	if balPos < 0 {
+		t.Fatalf("renderSegments = %q, missing balance", got)
+	}
+	if provPos < 0 {
+		t.Fatalf("renderSegments = %q, missing provider label", got)
+	}
+	if provPos < balPos {
+		t.Errorf("provider label appears before balance in %q — want ctx | $bal | provider", got)
+	}
+}
+
+// TestRenderSegments_EmptyProviderLabelOmitted verifies that an empty providerLabel
+// does not emit a trailing " | " separator.
+func TestRenderSegments_EmptyProviderLabelOmitted(t *testing.T) {
+	in := statusInput{}
+	in.ContextWindow.TotalInputTokens = 5000
+	in.ContextWindow.ContextWindowSize = 200000
+
+	d := segData{providerLabel: ""}
+	got := renderSegments(in, d)
+	if strings.HasSuffix(got, " | ") {
+		t.Errorf("renderSegments = %q, must not end with ' | ' when label is empty", got)
+	}
+}
+
+// TestRunStatuslineMerge_IncludesProviderLabel verifies that the merge path
+// passes provider label through into the final composed line.
+func TestRunStatuslineMerge_IncludesProviderLabel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	// Write active_provider_label to the config file so fetchSegData picks it up.
+	vcDir := filepath.Join(tmpHome, ".void-code")
+	if err := os.MkdirAll(vcDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(vcDir, "config")
+	if err := os.WriteFile(cfgPath, []byte("active_provider_label=Plain Claude Code\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runStatuslineMerge(bytes.NewReader(sampleStatusJSON()), &out); err != nil {
+		t.Fatalf("runStatuslineMerge: %v", err)
+	}
+	result := out.String()
+	if !strings.Contains(result, "Plain Claude Code") {
+		t.Errorf("runStatuslineMerge output = %q, want it to contain provider label", result)
+	}
+}

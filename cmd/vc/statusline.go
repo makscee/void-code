@@ -16,6 +16,7 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
+	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -34,11 +35,13 @@ type statusInput struct {
 	} `json:"context_window"`
 }
 
-// segData carries network-derived segments so the pure renderer stays testable.
+// segData carries network-derived and config-derived segments so the pure renderer stays testable.
 // balanceKnown=false → hide the $ segment (auth error / field absent / not logged in).
+// providerLabel is always non-empty (defaults to the Relay label when nothing is persisted).
 type segData struct {
-	balanceUsd   *float64
-	balanceKnown bool
+	balanceUsd    *float64
+	balanceKnown  bool
+	providerLabel string // active provider display label, read from config (no network call)
 }
 
 func newSegDataUnknown() segData { return segData{balanceKnown: false} }
@@ -122,13 +125,18 @@ func contextSegment(in statusInput) string {
 }
 
 // renderSegments builds the one-line status bar. Pure — no I/O.
-// Order: ctx | $balance (optional)
+// Order: ctx | $balance (optional) | provider
 func renderSegments(in statusInput, d segData) string {
 	parts := []string{contextSegment(in)} // brainrot context emoji — unchanged
 
 	// Segment 2: $ balance. Hidden when balanceKnown=false (not logged in / field absent).
 	if d.balanceKnown && d.balanceUsd != nil {
 		parts = append(parts, fmt.Sprintf("$%.2f", *d.balanceUsd))
+	}
+
+	// Segment 3: active provider label. Always shown — never blank.
+	if d.providerLabel != "" {
+		parts = append(parts, d.providerLabel)
 	}
 
 	return strings.Join(parts, " | ")
@@ -319,10 +327,14 @@ func runStatusline(r io.Reader, w io.Writer) error {
 	return nil
 }
 
-// fetchSegData fetches network-derived segment data.
+// fetchSegData fetches network-derived segment data and reads config-derived fields.
 // Returns unknown sentinels on any failure — never blocks the CC UI.
 func fetchSegData() segData {
 	d := newSegDataUnknown()
+
+	// Provider label: read from config file — no network call.
+	d.providerLabel = provider.LoadLabel()
+
 	cfg := config.OSResolve()
 	token, _, err := auth.Load()
 	if err != nil || strings.TrimSpace(token) == "" {

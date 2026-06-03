@@ -86,3 +86,74 @@ func TestLoadSave_PersistsViaConfig(t *testing.T) {
 		t.Fatalf("Load after Save = %+v, want %+v", got, want)
 	}
 }
+
+// VCD-78: label persistence and backfill.
+
+func TestSaveLabel_PersistedAndLoadedVerbatim(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	const want = "Relay: DeepSeek"
+	if err := SaveLabel(want); err != nil {
+		t.Fatalf("SaveLabel: %v", err)
+	}
+	if got := LoadLabel(); got != want {
+		t.Errorf("LoadLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestLoadLabel_BackfillFromActiveProvider_NamedKey(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// Persist active_provider without a label (simulates existing user).
+	if err := Save(Provider{Kind: NamedKey, Name: "mykey"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// LoadLabel must derive "key: mykey" without crashing.
+	got := LoadLabel()
+	if got == "" {
+		t.Fatal("LoadLabel() returned empty string — must never be empty")
+	}
+	// Must contain the key name.
+	if got != "key: mykey" {
+		t.Errorf("LoadLabel() = %q, want %q", got, "key: mykey")
+	}
+}
+
+func TestLoadLabel_BackfillFromActiveProvider_Relay(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// No config at all → relay default label.
+	got := LoadLabel()
+	if got == "" {
+		t.Fatal("LoadLabel() returned empty string for default relay case")
+	}
+	// Relay defaults to "Relay (void-relay)".
+	wantRelayLabel := (Provider{Kind: Relay}).Label()
+	if got != wantRelayLabel {
+		t.Errorf("LoadLabel() = %q, want %q", got, wantRelayLabel)
+	}
+}
+
+func TestLoadLabel_PersistOverridesBackfill(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// Save provider + a different menu label (e.g. relay provider with friendly name).
+	if err := Save(Provider{Kind: RelayProvider, ID: "plat-1"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := SaveLabel("Relay: DeepSeek"); err != nil {
+		t.Fatalf("SaveLabel: %v", err)
+	}
+	// Persisted label wins over derived "plat-1".
+	if got := LoadLabel(); got != "Relay: DeepSeek" {
+		t.Errorf("LoadLabel() = %q, want %q", got, "Relay: DeepSeek")
+	}
+}

@@ -123,6 +123,9 @@ func main() {
 					OnSelect: func(p provider.Provider) error {
 						return provider.Save(p)
 					},
+					OnSelectLabel: func(label string) error {
+						return provider.SaveLabel(label)
+					},
 					OnAddKey: func(name, token string) error {
 						return keystore.AddKey(name, token)
 					},
