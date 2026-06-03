@@ -16,9 +16,10 @@ import (
 	"strings"
 	"time"
 
-	term "github.com/charmbracelet/x/term"
 	"github.com/charmbracelet/lipgloss"
+	term "github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/ccjson"
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/claudebin"
@@ -27,7 +28,6 @@ import (
 	"github.com/makscee/void-code/internal/harness/direct"
 	"github.com/makscee/void-code/internal/harness/relay"
 	"github.com/makscee/void-code/internal/keystore"
-	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
@@ -510,4 +510,3 @@ func isFdTTY(fd int) bool {
 func isStdinTTY() bool {
 	return isFdTTY(int(os.Stdin.Fd()))
 }
-
