@@ -12,12 +12,25 @@ package browser
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"runtime"
 )
 
 // ProfileURL is the canonical void-code profile page URL.
 const ProfileURL = "https://profile.makscee.ru/profile"
+
+// profileHost is the scheme+host of the profile web app, shared with ProfileURL.
+const profileHost = "https://profile.makscee.ru"
+
+// RedeemURL returns the magic-link redeem URL for a vc-web-session token.
+// VCD-80: the void-auth server emits a broken magic link
+// (auth.makscee.ru/profile?ml=…, 404), so vc builds the correct redeem URL
+// itself — it hits void-client's GET /api/profile/ml handler, which validates
+// the token, sets the vc_session cookie, and redirects to /profile.
+func RedeemURL(mlToken string) string {
+	return profileHost + "/api/profile/ml?ml=" + url.QueryEscape(mlToken)
+}
 
 // CommandForGOOS returns the open-browser command for the given GOOS value.
 // Returns nil if no known command exists for the platform.

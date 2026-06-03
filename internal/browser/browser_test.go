@@ -90,3 +90,26 @@ func TestProfileURL(t *testing.T) {
 		t.Errorf("ProfileURL = %q, want %q", browser.ProfileURL, want)
 	}
 }
+
+// TestRedeemURL verifies that RedeemURL derives the correct magic-link redeem URL.
+// VCD-80: vc builds this URL itself because the void-auth server emits a broken
+// URL (auth.makscee.ru/profile?ml=…, 404) — the live redeem handler is on
+// profile.makscee.ru/api/profile/ml.
+func TestRedeemURL(t *testing.T) {
+	got := browser.RedeemURL("ABC123")
+	want := "https://profile.makscee.ru/api/profile/ml?ml=ABC123"
+	if got != want {
+		t.Errorf("RedeemURL = %q, want %q", got, want)
+	}
+}
+
+// TestRedeemURL_SpecialChars verifies that special characters in the token are
+// percent-encoded so the URL remains valid.
+func TestRedeemURL_SpecialChars(t *testing.T) {
+	got := browser.RedeemURL("tok+en/special=val")
+	// url.QueryEscape encodes + → %2B, / → %2F, = → %3D
+	want := "https://profile.makscee.ru/api/profile/ml?ml=tok%2Ben%2Fspecial%3Dval"
+	if got != want {
+		t.Errorf("RedeemURL special chars = %q, want %q", got, want)
+	}
+}
