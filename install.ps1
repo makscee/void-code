@@ -91,7 +91,7 @@ if ($env:VC_INSTALL_DRY_RUN -eq '1') {
         if ($hasWinget) {
             Write-Output "WOULD: winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent"
         } else {
-            Write-Output "WOULD: download https://nodejs.org/dist/latest-v22.x/node-v22.14.0-x64.msi"
+            Write-Output "WOULD: download https://nodejs.org/dist/latest-v22.x/node-v<latest>-x64.msi"
             Write-Output "WOULD: msiexec /i <node.msi> /qb"
         }
     }
@@ -184,8 +184,18 @@ if (-not $nodeOk) {
             exit 1
         }
     } else {
-        # winget not present (pre-2021 Windows 10) — download official Node LTS .msi
-        $nodeMsiUrl = 'https://nodejs.org/dist/latest-v22.x/node-v22.14.0-x64.msi'
+        # winget not present (pre-2021 Windows 10) — download official Node LTS .msi.
+        # Resolve the CURRENT v22 patch: the filename in latest-v22.x/ changes every
+        # release, so a hardcoded patch (e.g. v22.14.0) 404s once Node moves on.
+        # Fall back to a known-good only if the index fetch itself fails.
+        $nodeBase = 'https://nodejs.org/dist/latest-v22.x'
+        $nodeMsiFile = 'node-v22.22.3-x64.msi'
+        try {
+            $shaTxt = (Invoke-WebRequest -Uri "$nodeBase/SHASUMS256.txt" -UseBasicParsing).Content
+            $m = [regex]::Match($shaTxt, 'node-v[0-9][0-9.]*-x64\.msi')
+            if ($m.Success) { $nodeMsiFile = $m.Value }
+        } catch { }
+        $nodeMsiUrl = "$nodeBase/$nodeMsiFile"
         $nodeMsiTmp = Join-Path $env:TEMP 'node-installer.msi'
         Write-Host "vc: winget not found — downloading Node.js LTS installer from nodejs.org…" -ForegroundColor Cyan
         try {

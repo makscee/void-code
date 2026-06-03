@@ -254,13 +254,18 @@ ensure_node() {
       return 1
     }
   else
-    # No Homebrew — download official Apple-notarized Node LTS .pkg from nodejs.org.
-    _node_arch="$(uname -m)"
-    case "$_node_arch" in
-      arm64|aarch64) _node_pkg_arch="arm64" ;;
-      *)             _node_pkg_arch="x64" ;;
-    esac
-    _node_lts_url="https://nodejs.org/dist/latest-v22.x/node-v22.14.0-darwin-${_node_pkg_arch}.pkg"
+    # No Homebrew — download the official Apple-notarized Node LTS .pkg from
+    # nodejs.org. The macOS .pkg is UNIVERSAL (one file, both arches) — named
+    # node-vX.Y.Z.pkg with NO -darwin-<arch> suffix (the arch-suffixed names are
+    # tarballs only). Resolve the CURRENT v22 patch from the index, because the
+    # filename changes every release — a hardcoded patch (e.g. v22.14.0) 404s once
+    # Node moves on. This was the live break behind the fresh-Mac onboarding fails.
+    # Fall back to a known-good only if the index fetch itself fails.
+    _node_base="https://nodejs.org/dist/latest-v22.x"
+    _node_file="$(fetch_to_stdout "$_node_base/SHASUMS256.txt" 2>/dev/null \
+      | grep -o 'node-v[0-9][0-9.]*\.pkg' | head -1)" || true
+    [ -z "$_node_file" ] && _node_file="node-v22.22.3.pkg"
+    _node_lts_url="$_node_base/$_node_file"
     _node_tmp="$(mktemp /tmp/node-installer-XXXXXX.pkg)"
 
     if [ "$DRY_RUN" = 1 ]; then
@@ -374,8 +379,7 @@ if [ "$DRY_RUN" = 1 ]; then
     if command -v brew >/dev/null 2>&1; then
       printf 'WOULD: brew install node\n'
     else
-      _dry_arch="$(uname -m)"; case "$_dry_arch" in arm64|aarch64) _dry_pkg_arch="arm64";; *) _dry_pkg_arch="x64";; esac
-      printf 'WOULD: download https://nodejs.org/dist/latest-v22.x/node-v22.14.0-darwin-%s.pkg\n' "$_dry_pkg_arch"
+      printf 'WOULD: download https://nodejs.org/dist/latest-v22.x/node-v<latest>.pkg  (universal)\n'
       printf 'WOULD: sudo installer -pkg <node.pkg> -target /\n'
     fi
   fi
@@ -423,18 +427,25 @@ printf '==> provisioning relay CA\n' >&2
 fetch_to_file "$RELAY_CA_URL" "$CA_DIR/relay-ca.pem" \
   || { printf 'vc: failed to download relay CA\n' >&2; exit 1; }
 
-# 3. node/npm + claude bootstrap
-printf '==> bootstrapping node / claude\n' >&2
-ensure_node || {
-  printf 'vc: node bootstrap failed — see guidance above. Aborting (no partial install).\n' >&2
-  exit 1
-}
-check_claude || true
-
-# 4. PATH — detect rc file, create if absent, append idempotently
+# 3. PATH — register vc FIRST, before the node/claude bootstrap. The vc launcher
+# (vc login, vc doctor) works without node; a node/claude hiccup must NEVER leave
+# vc off PATH. Previously this ran AFTER node bootstrap, so a node failure's
+# `exit 1` skipped it entirely → vc installed but unreachable on fresh machines.
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   RC_FILE="$(detect_rc_file)"
   append_path_to_rc "$RC_FILE" "$BIN_DIR"
+fi
+
+# 4. node/npm + claude bootstrap — NON-FATAL. On failure, vc is already installed
+# and on PATH; the post-install steps print exactly what's left to finish (node +
+# claude). We never abort the whole install over a node hiccup.
+printf '==> bootstrapping node / claude\n' >&2
+NODE_OK=0
+if ensure_node; then
+  NODE_OK=1
+  check_claude || true
+else
+  printf 'vc: node bootstrap incomplete — vc itself is installed; finish node + claude per the steps below.\n' >&2
 fi
 
 # 5. vc login — use VC_CODE if provided, then wipe it from env
@@ -453,41 +464,37 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   command -v claude >/dev/null 2>&1 && _claude_ok=1
   [ -x "$HOME/.void-code/bin/claude" ] && _claude_ok=1
 
+  _vc_ok=0
+  command -v vc >/dev/null 2>&1 && _vc_ok=1
+  if [ "$_vc_ok" = 1 ]; then _vc_note="now"; else _vc_note="after you open a new terminal"; fi
+
   printf '\n'
   printf '==============================================\n'
-  printf '  vc installed successfully!\n'
+  printf '  vc installed — reachable as `vc` %s\n' "$_vc_note"
   printf '==============================================\n'
   printf '\n'
   printf 'NEXT STEPS:\n'
 
-  if [ "$_claude_ok" = 0 ]; then
-    printf '\n'
-    printf '  1. Install claude-code (not yet installed):\n'
-    printf '         npm install -g @anthropic-ai/claude-code\n'
-    printf '\n'
-    printf '  2. Open a NEW terminal (picks up PATH + npm changes)\n'
-    printf '         source %s\n' "${RC_FILE:-~/.zshrc}"
-    printf '     or just open a new terminal window.\n'
-    printf '\n'
-    printf '  3. Log in: vc login --code <YOUR-CODE-FROM-OPERATOR>\n'
-    printf '\n'
-    printf '  4. Run: vc\n'
-  else
-    printf '\n'
-    if command -v vc >/dev/null 2>&1; then
-      printf '  1. Log in: vc login --code <YOUR-CODE-FROM-OPERATOR>\n'
-      printf '\n'
-      printf '  2. Run: vc\n'
-    else
-      printf '  1. Open a NEW terminal (vc is installed — new terminal picks up PATH)\n'
-      printf '         source %s\n' "${RC_FILE:-~/.zshrc}"
-      printf '     or open a new terminal window.\n'
-      printf '\n'
-      printf '  2. Log in: vc login --code <YOUR-CODE-FROM-OPERATOR>\n'
-      printf '\n'
-      printf '  3. Run: vc\n'
-    fi
+  # Numbered steps, only for what is actually missing — never a silent dead end.
+  _n=1
+  if [ "$NODE_OK" = 0 ]; then
+    printf '\n  %s. Install Node.js (required — claude runs on it):\n' "$_n"
+    printf '         Download the macOS installer from https://nodejs.org and run it.\n'
+    _n=$((_n + 1))
   fi
+  if [ "$_claude_ok" = 0 ]; then
+    printf '\n  %s. Install Claude Code:\n' "$_n"
+    printf '         npm install -g @anthropic-ai/claude-code\n'
+    _n=$((_n + 1))
+  fi
+  if [ "$_vc_ok" = 0 ] || [ "$NODE_OK" = 0 ] || [ "$_claude_ok" = 0 ]; then
+    printf '\n  %s. Open a NEW terminal (picks up PATH + npm changes)\n' "$_n"
+    printf '         or run: source %s\n' "${RC_FILE:-~/.zshrc}"
+    _n=$((_n + 1))
+  fi
+  printf '\n  %s. Log in: vc login --code <YOUR-CODE-FROM-OPERATOR>\n' "$_n"
+  _n=$((_n + 1))
+  printf '\n  %s. Run: vc\n' "$_n"
 
   printf '\n'
   printf '  Stuck? Run: vc doctor\n'
