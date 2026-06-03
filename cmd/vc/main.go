@@ -170,7 +170,14 @@ func main() {
 					continue menuLoop // re-show menu
 				case welcome.RunProfile:
 					fmt.Println()
-					_ = browser.OpenURL(browser.ProfileURL, os.Stdout)
+					{
+						cfg := config.OSResolve()
+						token, _, _ := auth.Load()
+						client := &http.Client{Timeout: 10 * time.Second}
+						openProfile(cfg.AuthHost, token, client, func(u string) {
+							_ = browser.OpenURL(u, os.Stdout)
+						})
+					}
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
 					continue menuLoop // re-show menu
@@ -266,6 +273,21 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 		BudgetPct:  me.Pct,        // nil when no budget set or server absent → degrade safely
 		BalanceUsd: me.BalanceUsd, // nil when VCD-55 not yet deployed → degrade safely
 	}
+}
+
+// openProfile mints a vc-web-session and opens the auto-login redeem URL in the
+// browser. On ANY failure (empty token, mint error) it falls back to opening
+// the bare ProfileURL so the button never dead-ends (VCD-80). The opener seam
+// allows tests to capture the chosen URL without launching a browser.
+func openProfile(authHost, token string, httpClient *http.Client, open func(string)) {
+	token = strings.TrimSpace(token)
+	if token != "" {
+		if ws, err := auth.MintWebSession(authHost, token, httpClient); err == nil {
+			open(browser.RedeemURL(ws.Token))
+			return
+		}
+	}
+	open(browser.ProfileURL)
 }
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch claude".
