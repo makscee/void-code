@@ -106,15 +106,29 @@ func main() {
 				// Fetch the granted provider list from void-auth (VCD-72).
 				// Failure degrades to an empty list — relay/deepseek baseline preserved.
 				var grantedRows []welcome.ProviderRowInfo
+				fetchOK := false
 				if tok, _ := auth.LoadAndMigrate(); strings.TrimSpace(tok) != "" {
 					cfg := config.OSResolve()
 					if infos, gErr := auth.FetchProviders(cfg.AuthHost, tok, &http.Client{Timeout: 10 * time.Second}); gErr == nil {
 						for _, pi := range infos {
 							grantedRows = append(grantedRows, welcome.ProviderRowInfo{ID: pi.ID, Name: pi.Name})
 						}
+						fetchOK = true
 					} else {
 						fmt.Fprintf(os.Stderr, "vc: could not fetch providers (%v) — showing relay default only\n", gErr)
 					}
+				} else {
+					// No token — still reconcile non-relay-provider labels (derived locally).
+					fetchOK = true
+				}
+				// VCD-79: reconcile + persist active provider label from live list so
+				// pre-existing prov:<id> configs (no label) self-heal on first launch.
+				if fetchOK {
+					granted := make([]provider.GrantedEntry, len(grantedRows))
+					for i, r := range grantedRows {
+						granted[i] = provider.GrantedEntry{ID: r.ID, Name: r.Name}
+					}
+					_ = provider.ReconcileLabel(granted, keyNames)
 				}
 				cb := welcome.Callbacks{
 					KeyNames:            keyNames,

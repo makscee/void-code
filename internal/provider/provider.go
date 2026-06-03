@@ -123,3 +123,59 @@ func LoadLabel() string {
 	// Backfill: derive from active_provider id.
 	return Parse(kv[configKey]).Label()
 }
+
+// GrantedEntry is a server-granted relay-provider entry (id + display name).
+// Mirrors welcome.ProviderRowInfo; kept here so provider can reconcile labels
+// without importing welcome (avoids circular deps).
+type GrantedEntry struct {
+	ID   string
+	Name string
+}
+
+// FriendlyLabel returns the menu-style friendly label for a provider, mirroring
+// the label logic in welcome.buildProviderRows.  It is the single source of truth
+// for label strings used by both selection and reconcile paths.
+//
+//   - RelayProvider: looked up in granted list → "Relay: <name>" (name falls back to id).
+//     Returns "" when the id is not present in the list (caller must guard).
+//   - NamedKey / Plain / Relay: derived purely from the Provider itself.
+func FriendlyLabel(p Provider, granted []GrantedEntry, keyNames []string) string {
+	switch p.Kind {
+	case RelayProvider:
+		for _, g := range granted {
+			if g.ID == p.ID {
+				name := g.Name
+				if name == "" {
+					name = g.ID
+				}
+				return "Relay: " + name
+			}
+		}
+		return "" // not found — caller must not persist
+	case NamedKey:
+		return p.Label() // "key: <name>"
+	case Plain:
+		return p.Label() // "Plain Claude Code"
+	default:
+		return p.Label() // "Relay (void-relay)"
+	}
+}
+
+// ReconcileLabel refreshes the persisted active_provider_label from the live
+// granted-providers list fetched at launch.  Call this ONLY on a successful
+// fetch (non-empty granted list or confirmed-empty from server).
+//
+// Guards:
+//   - For RelayProvider: only persists when the active id is found in granted.
+//     If not found (provider revoked / list empty on error), label is left as-is.
+//   - For all other kinds: always refreshes (label is derivable without the list).
+//   - Never persists an empty string.
+func ReconcileLabel(granted []GrantedEntry, keyNames []string) error {
+	active := Load()
+	label := FriendlyLabel(active, granted, keyNames)
+	if label == "" {
+		// RelayProvider not found in granted list — do not clobber.
+		return nil
+	}
+	return SaveLabel(label)
+}

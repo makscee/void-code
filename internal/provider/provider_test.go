@@ -157,3 +157,128 @@ func TestLoadLabel_PersistOverridesBackfill(t *testing.T) {
 		t.Errorf("LoadLabel() = %q, want %q", got, "Relay: DeepSeek")
 	}
 }
+
+// VCD-79: ReconcileLabel + FriendlyLabel tests.
+
+func TestReconcileLabel_RelayProvider_PersistsFriendlyLabel(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// Pre-VCD-78 state: active_provider=prov:plat-2, no label.
+	if err := Save(Provider{Kind: RelayProvider, ID: "plat-2"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Verify pre-state: LoadLabel falls back to raw id.
+	if got := LoadLabel(); got != "plat-2" {
+		t.Errorf("pre-state LoadLabel() = %q, want raw id %q", got, "plat-2")
+	}
+
+	// Reconcile with a granted list that contains plat-2.
+	granted := []GrantedEntry{{ID: "plat-2", Name: "Claude Sub"}}
+	if err := ReconcileLabel(granted, nil); err != nil {
+		t.Fatalf("ReconcileLabel: %v", err)
+	}
+
+	// After reconcile: LoadLabel returns the friendly label.
+	const want = "Relay: Claude Sub"
+	if got := LoadLabel(); got != want {
+		t.Errorf("post-reconcile LoadLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestReconcileLabel_FetchFailure_NoClobber(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// Provider with an existing friendly label.
+	if err := Save(Provider{Kind: RelayProvider, ID: "plat-2"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := SaveLabel("Relay: Claude Sub"); err != nil {
+		t.Fatalf("SaveLabel: %v", err)
+	}
+
+	// Fetch failure: pass empty granted list (provider not found → no clobber).
+	if err := ReconcileLabel(nil, nil); err != nil {
+		t.Fatalf("ReconcileLabel: %v", err)
+	}
+
+	// Label must be unchanged.
+	if got := LoadLabel(); got != "Relay: Claude Sub" {
+		t.Errorf("after fetch-failure ReconcileLabel, LoadLabel() = %q, want %q", got, "Relay: Claude Sub")
+	}
+}
+
+func TestReconcileLabel_LabelRefreshOnRename(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// Provider with old friendly label.
+	if err := Save(Provider{Kind: RelayProvider, ID: "plat-2"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := SaveLabel("Relay: Old Name"); err != nil {
+		t.Fatalf("SaveLabel: %v", err)
+	}
+
+	// Server renames provider.
+	granted := []GrantedEntry{{ID: "plat-2", Name: "New Name"}}
+	if err := ReconcileLabel(granted, nil); err != nil {
+		t.Fatalf("ReconcileLabel: %v", err)
+	}
+
+	// Label must reflect the new name.
+	const want = "Relay: New Name"
+	if got := LoadLabel(); got != want {
+		t.Errorf("after rename reconcile, LoadLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestReconcileLabel_NonRelayProvider_AlwaysRefreshes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	cases := []struct {
+		prov Provider
+		want string
+	}{
+		{Provider{Kind: NamedKey, Name: "mykey"}, "key: mykey"},
+		{Provider{Kind: Plain}, "Plain Claude Code"},
+		{Provider{Kind: Relay}, "Relay (void-relay)"},
+	}
+	for _, tc := range cases {
+		// Reset config for each case.
+		if err := Save(tc.prov); err != nil {
+			t.Fatalf("Save %+v: %v", tc.prov, err)
+		}
+		// No pre-existing label — reconcile with empty granted list.
+		if err := ReconcileLabel(nil, nil); err != nil {
+			t.Fatalf("ReconcileLabel: %v", err)
+		}
+		if got := LoadLabel(); got != tc.want {
+			t.Errorf("prov=%+v: LoadLabel() = %q, want %q", tc.prov, got, tc.want)
+		}
+	}
+}
+
+func TestFriendlyLabel_RelayProviderNameFallsBackToID(t *testing.T) {
+	p := Provider{Kind: RelayProvider, ID: "plat-9"}
+	// Entry present but Name is empty — should fall back to id.
+	granted := []GrantedEntry{{ID: "plat-9", Name: ""}}
+	got := FriendlyLabel(p, granted, nil)
+	if got != "Relay: plat-9" {
+		t.Errorf("FriendlyLabel() = %q, want %q", got, "Relay: plat-9")
+	}
+}
+
+func TestFriendlyLabel_RelayProviderNotInList_ReturnsEmpty(t *testing.T) {
+	p := Provider{Kind: RelayProvider, ID: "plat-2"}
+	got := FriendlyLabel(p, nil, nil)
+	if got != "" {
+		t.Errorf("FriendlyLabel() for missing provider = %q, want empty", got)
+	}
+}
