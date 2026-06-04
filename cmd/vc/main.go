@@ -341,10 +341,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	active := provider.Load()
-	env, err := buildSpawnEnv(active, os.Environ(), cfg.RelayHost, token, caPath)
+	env, err := buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vc: %v\n  falling back to relay. Fix the provider in the Providers menu.\n", err)
-		env = relay.BuildEnv(os.Environ(), cfg.RelayHost, token, caPath)
+		env = relay.BuildEnv(os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	}
 
 	// Pre-seed ~/.claude.json if absent so Claude Code skips first-run onboarding.
@@ -399,7 +399,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 //     (VCD-72: CC emits this header; void-relay (VRL-61) resolves credential + base_url)
 //   - NamedKey      → direct.NamedKeyEnv with the saved OAuth token (relay bypassed).
 //   - Plain         → direct.PlainEnv (native CC auth, no injection).
-func buildSpawnEnv(p provider.Provider, parent []string, relayHost, token, caPath string) ([]string, error) {
+func buildSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) ([]string, error) {
 	switch p.Kind {
 	case provider.Plain:
 		return direct.PlainEnv(parent), nil
@@ -413,11 +413,11 @@ func buildSpawnEnv(p provider.Provider, parent []string, relayHost, token, caPat
 		// Relay path + x-void-provider header so void-relay injects the right credential.
 		// CC reads ANTHROPIC_CUSTOM_HEADERS (Name: Value, newline-separated) and emits
 		// them on every Anthropic request. The credential never reaches the client.
-		env := relay.BuildEnv(parent, relayHost, token, caPath)
+		env := relay.BuildEnv(parent, relayScheme, relayHost, token, caPath)
 		env = append(env, "ANTHROPIC_CUSTOM_HEADERS=x-void-provider: "+p.ID)
 		return env, nil
 	default: // Relay
-		return relay.BuildEnv(parent, relayHost, token, caPath), nil
+		return relay.BuildEnv(parent, relayScheme, relayHost, token, caPath), nil
 	}
 }
 

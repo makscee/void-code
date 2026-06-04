@@ -29,7 +29,7 @@ CGO_ENABLED=0 always — static binary, no libc dep.
 | Token file | `~/.void-code/token` mode 0600 |
 | Cache dir | `~/.void-code/` |
 | Relay CA cache | `~/.void-code/relay-ca.pem` |
-| Relay host default | `relay.makscee.ru:8448` |
+| Relay host default | `relay.makscee.ru:443` (https); `:8448` plaintext still supported via `VC_RELAY_HOST=http://relay.makscee.ru:8448` |
 | Auth host default | `https://auth.makscee.ru` |
 | Env override: relay | `VC_RELAY_HOST` |
 | Env override: CA | `VC_RELAY_CA` |

@@ -38,7 +38,7 @@ func findEnv(slice []string, key string) (string, bool) {
 }
 
 func TestBuildEnv_StripsParentKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "relay.makscee.ru:8448", "tok", "/tmp/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/tmp/ca.pem")
 
 	stripped := []string{
 		"HTTPS_PROXY",
@@ -60,8 +60,8 @@ func TestBuildEnv_StripsParentKeys(t *testing.T) {
 		// old-proxy, sk-ant-old, old-oauth-token, https://old-base.com must NOT appear
 		switch k {
 		case "HTTPS_PROXY":
-			if val != "http://relay.makscee.ru:8448" {
-				t.Errorf("HTTPS_PROXY: want http://relay.makscee.ru:8448, got %q", val)
+			if val != "https://relay.makscee.ru:443" {
+				t.Errorf("HTTPS_PROXY: want https://relay.makscee.ru:443, got %q", val)
 			}
 		case "NODE_EXTRA_CA_CERTS":
 			if val != "/tmp/ca.pem" {
@@ -84,7 +84,7 @@ func TestBuildEnv_StripsParentKeys(t *testing.T) {
 }
 
 func TestBuildEnv_PreservesUnrelatedKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "relay.makscee.ru:8448", "tok", "/tmp/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/tmp/ca.pem")
 
 	val, found := findEnv(result, "USER_SET_VAR")
 	if !found {
@@ -101,13 +101,13 @@ func TestBuildEnv_PreservesUnrelatedKeys(t *testing.T) {
 }
 
 func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "relay.makscee.ru:8448", "my-token", "/path/to/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "my-token", "/path/to/ca.pem")
 
 	tests := []struct {
 		key  string
 		want string
 	}{
-		{"HTTPS_PROXY", "http://relay.makscee.ru:8448"},
+		{"HTTPS_PROXY", "https://relay.makscee.ru:443"},
 		{"NODE_EXTRA_CA_CERTS", "/path/to/ca.pem"},
 		{"CLAUDE_CODE_OAUTH_TOKEN", "my-token"},
 		{"ANTHROPIC_API_KEY", ""},
@@ -125,8 +125,20 @@ func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
 	}
 }
 
+func TestBuildEnv_HttpScheme(t *testing.T) {
+	result := relay.BuildEnv(parentEnv(), "http", "relay.makscee.ru:8448", "tok", "/ca.pem")
+
+	val, found := findEnv(result, "HTTPS_PROXY")
+	if !found {
+		t.Fatal("HTTPS_PROXY not found")
+	}
+	if val != "http://relay.makscee.ru:8448" {
+		t.Errorf("HTTPS_PROXY: want http://relay.makscee.ru:8448, got %q", val)
+	}
+}
+
 func TestBuildEnv_NoDuplicateKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "relay.makscee.ru:8448", "tok", "/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/ca.pem")
 
 	seen := map[string]int{}
 	for _, e := range result {
@@ -141,12 +153,12 @@ func TestBuildEnv_NoDuplicateKeys(t *testing.T) {
 }
 
 func TestBuildEnv_EmptyParent(t *testing.T) {
-	result := relay.BuildEnv(nil, "relay.makscee.ru:8448", "tok", "/ca.pem")
+	result := relay.BuildEnv(nil, "https", "relay.makscee.ru:443", "tok", "/ca.pem")
 	if len(result) == 0 {
 		t.Fatal("expected non-empty result with nil parent")
 	}
 	val, _ := findEnv(result, "HTTPS_PROXY")
-	if val != "http://relay.makscee.ru:8448" {
+	if val != "https://relay.makscee.ru:443" {
 		t.Errorf("HTTPS_PROXY: got %q", val)
 	}
 }

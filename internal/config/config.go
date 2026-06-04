@@ -21,25 +21,38 @@ const (
 
 // Defaults — DNS names, not raw IPs (grill decision A8/A10).
 const (
-	DefaultRelayHost = "relay.makscee.ru:8448"
-	DefaultAuthHost  = "https://auth.makscee.ru"
-	DefaultLang      = "en"
+	DefaultRelayHost   = "relay.makscee.ru:443"
+	DefaultRelayScheme = "https"
+	DefaultAuthHost    = "https://auth.makscee.ru"
+	DefaultLang        = "en"
 )
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	RelayHost  string // host:port
-	AuthHost   string // base URL, no trailing slash
-	CAOverride string // empty = use cached/embedded
-	Lang       string // "en" or "ru"
+	RelayHost   string // host:port
+	RelayScheme string // "http" or "https"
+	AuthHost    string // base URL, no trailing slash
+	CAOverride  string // empty = use cached/embedded
+	Lang        string // "en" or "ru"
 }
 
 // Resolve builds Config from env, falling back to compiled defaults.
 // Pass os.Getenv in production; pass a stub in tests.
 func Resolve(getenv func(string) string) Config {
 	relayHost := getenv(EnvRelayHost)
+	relayScheme := DefaultRelayScheme
 	if relayHost == "" {
 		relayHost = DefaultRelayHost
+	} else {
+		// If VC_RELAY_HOST carries a scheme prefix, strip it and record the scheme.
+		switch {
+		case strings.HasPrefix(relayHost, "https://"):
+			relayScheme = "https"
+			relayHost = strings.TrimPrefix(relayHost, "https://")
+		case strings.HasPrefix(relayHost, "http://"):
+			relayScheme = "http"
+			relayHost = strings.TrimPrefix(relayHost, "http://")
+		}
 	}
 
 	authHost := getenv(EnvAuthHost)
@@ -57,10 +70,11 @@ func Resolve(getenv func(string) string) Config {
 	}
 
 	return Config{
-		RelayHost:  relayHost,
-		AuthHost:   authHost,
-		CAOverride: getenv(EnvRelayCA),
-		Lang:       lang,
+		RelayHost:   relayHost,
+		RelayScheme: relayScheme,
+		AuthHost:    authHost,
+		CAOverride:  getenv(EnvRelayCA),
+		Lang:        lang,
 	}
 }
 

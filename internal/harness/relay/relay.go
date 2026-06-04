@@ -28,14 +28,15 @@ var stripKeys = map[string]bool{
 // It:
 //  1. Copies every entry from parent, skipping the keys in stripKeys.
 //  2. Appends the relay-specific variables:
-//     - HTTPS_PROXY=http://<host>
+//     - HTTPS_PROXY=<scheme>://<host>
 //     - NODE_EXTRA_CA_CERTS=<caPath>
 //     - ANTHROPIC_BASE_URL=          (empty — relay intercepts at proxy level)
 //     - CLAUDE_CODE_OAUTH_TOKEN=<token>
 //     - ANTHROPIC_API_KEY=           (empty — not used in full-feature mode)
 //
+// scheme should be "http" or "https"; callers pass Config.RelayScheme.
 // The Bare mode from cv's BuildEnv is explicitly NOT ported (ADR-0002).
-func BuildEnv(parent []string, host, token, caPath string) []string {
+func BuildEnv(parent []string, scheme, host, token, caPath string) []string {
 	out := make([]string, 0, len(parent)+5)
 	for _, e := range parent {
 		k, _, _ := strings.Cut(e, "=")
@@ -46,7 +47,7 @@ func BuildEnv(parent []string, host, token, caPath string) []string {
 	}
 
 	out = append(out,
-		fmt.Sprintf("HTTPS_PROXY=http://%s", host),
+		fmt.Sprintf("HTTPS_PROXY=%s://%s", scheme, host),
 		"NODE_EXTRA_CA_CERTS="+caPath,
 		"ANTHROPIC_BASE_URL=",
 		"CLAUDE_CODE_OAUTH_TOKEN="+token,

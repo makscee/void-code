@@ -13,6 +13,15 @@ func TestResolveDefaults(t *testing.T) {
 	if cfg.RelayHost != config.DefaultRelayHost {
 		t.Errorf("RelayHost: want %q got %q", config.DefaultRelayHost, cfg.RelayHost)
 	}
+	if cfg.RelayScheme != config.DefaultRelayScheme {
+		t.Errorf("RelayScheme: want %q got %q", config.DefaultRelayScheme, cfg.RelayScheme)
+	}
+	if cfg.RelayHost != "relay.makscee.ru:443" {
+		t.Errorf("RelayHost default value: want relay.makscee.ru:443, got %q", cfg.RelayHost)
+	}
+	if cfg.RelayScheme != "https" {
+		t.Errorf("RelayScheme default value: want https, got %q", cfg.RelayScheme)
+	}
 	if cfg.AuthHost != config.DefaultAuthHost {
 		t.Errorf("AuthHost: want %q got %q", config.DefaultAuthHost, cfg.AuthHost)
 	}
@@ -21,6 +30,46 @@ func TestResolveDefaults(t *testing.T) {
 	}
 	if cfg.Lang != config.DefaultLang {
 		t.Errorf("Lang default: want %q got %q", config.DefaultLang, cfg.Lang)
+	}
+}
+
+func TestResolveRelayHostSchemePrefix(t *testing.T) {
+	cases := []struct {
+		name        string
+		envVal      string
+		wantHost    string
+		wantScheme  string
+	}{
+		{
+			name:       "http scheme prefix",
+			envVal:     "http://relay.makscee.ru:8448",
+			wantHost:   "relay.makscee.ru:8448",
+			wantScheme: "http",
+		},
+		{
+			name:       "https scheme prefix",
+			envVal:     "https://somehost:9999",
+			wantHost:   "somehost:9999",
+			wantScheme: "https",
+		},
+		{
+			name:       "no scheme prefix defaults to https",
+			envVal:     "somehost:9999",
+			wantHost:   "somehost:9999",
+			wantScheme: "https",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{config.EnvRelayHost: c.envVal}
+			cfg := config.Resolve(func(k string) string { return env[k] })
+			if cfg.RelayHost != c.wantHost {
+				t.Errorf("RelayHost: want %q got %q", c.wantHost, cfg.RelayHost)
+			}
+			if cfg.RelayScheme != c.wantScheme {
+				t.Errorf("RelayScheme: want %q got %q", c.wantScheme, cfg.RelayScheme)
+			}
+		})
 	}
 }
 
@@ -34,6 +83,10 @@ func TestResolveOverrides(t *testing.T) {
 	cfg := config.Resolve(func(k string) string { return env[k] })
 	if cfg.RelayHost != "custom.host:9999" {
 		t.Errorf("RelayHost override failed: got %q", cfg.RelayHost)
+	}
+	// No scheme prefix → RelayScheme stays at default "https".
+	if cfg.RelayScheme != "https" {
+		t.Errorf("RelayScheme without prefix: want https, got %q", cfg.RelayScheme)
 	}
 	if cfg.AuthHost != "https://my-auth.example.com" {
 		t.Errorf("AuthHost override failed: got %q", cfg.AuthHost)

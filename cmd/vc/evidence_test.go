@@ -26,7 +26,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 
 	fmt.Println("\n=== MODE: Relay ===")
 	relayEnv, err := buildSpawnEnv(provider.Provider{Kind: provider.Relay},
-		parent, "relay.makscee.ru:8448", "pool-token-relay", "/ca.pem")
+		parent, "https", "relay.makscee.ru:443", "pool-token-relay", "/ca.pem")
 	if err != nil {
 		t.Fatalf("relay: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 
 	fmt.Println("\n=== MODE: Named key (direct Anthropic) ===")
 	namedEnv, err := buildSpawnEnv(provider.Provider{Kind: provider.NamedKey, Name: "evidence-key"},
-		parent, "relay.makscee.ru:8448", "pool-token-relay", "/ca.pem")
+		parent, "https", "relay.makscee.ru:443", "pool-token-relay", "/ca.pem")
 	if err != nil {
 		t.Fatalf("named key: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 
 	fmt.Println("\n=== MODE: Plain (native CC auth) ===")
 	plainEnv, err := buildSpawnEnv(provider.Provider{Kind: provider.Plain},
-		parent, "relay.makscee.ru:8448", "pool-token-relay", "/ca.pem")
+		parent, "https", "relay.makscee.ru:443", "pool-token-relay", "/ca.pem")
 	if err != nil {
 		t.Fatalf("plain: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 		k, v, _ := strings.Cut(e, "=")
 		relayMap[k] = v
 	}
-	if relayMap["HTTPS_PROXY"] != "http://relay.makscee.ru:8448" {
+	if relayMap["HTTPS_PROXY"] != "https://relay.makscee.ru:443" {
 		t.Errorf("relay HTTPS_PROXY wrong: %q", relayMap["HTTPS_PROXY"])
 	}
 	if relayMap["CLAUDE_CODE_OAUTH_TOKEN"] != "pool-token-relay" {
