@@ -3,11 +3,39 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// Regression (statusline $ balance vanished on relay/deepseek providers):
+// the statusline runs as a child of `claude` and inherits HTTPS_PROXY=<relay>.
+// A default client tunnels /v1/vc/me through that proxy (which only fronts the
+// model upstream) and the call fails, hiding the $ segment. The statusline
+// client must dial the auth host directly regardless of HTTPS_PROXY.
+func TestStatuslineHTTPClient_IgnoresProxyEnv(t *testing.T) {
+	// Real auth host stand-in; a direct dial reaches it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Point HTTPS_PROXY at a dead address — a proxy-honoring client would fail here.
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+
+	resp, err := statuslineHTTPClient().Get(srv.URL)
+	if err != nil {
+		t.Fatalf("statusline client honored HTTPS_PROXY (should dial direct): %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
 
 // Context segment: brainrot emoji meter (mirrors cv-statusline.sh thresholds)
 

@@ -327,6 +327,23 @@ func runStatusline(r io.Reader, w io.Writer) error {
 	return nil
 }
 
+// statuslineHTTPClient returns the HTTP client the statusline uses to reach the
+// auth host. It MUST bypass any inherited HTTPS_PROXY.
+//
+// The statusline runs as a child of `claude`, whose environment carries
+// HTTPS_PROXY=<relay> for relay / relay-provider harnesses (Plain strips it).
+// A default client honors that proxy via ProxyFromEnvironment and tunnels the
+// /v1/vc/me request through the relay — which only fronts the model upstream,
+// not auth.makscee.ru — so the call fails and the $ balance segment silently
+// disappears on relay/deepseek providers (it worked under Plain only because
+// Plain strips HTTPS_PROXY). Proxy:nil forces a direct dial to the auth host.
+func statuslineHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
+}
+
 // fetchSegData fetches network-derived segment data and reads config-derived fields.
 // Returns unknown sentinels on any failure — never blocks the CC UI.
 func fetchSegData() segData {
@@ -341,8 +358,7 @@ func fetchSegData() segData {
 		return d // not logged in → $ hidden
 	}
 	token = strings.TrimSpace(token)
-	client := &http.Client{Timeout: 2 * time.Second}
-	me, err := auth.FetchMe(cfg.AuthHost, token, client)
+	me, err := auth.FetchMe(cfg.AuthHost, token, statuslineHTTPClient())
 	if err != nil || me.BalanceUsd == nil {
 		return d // error / field absent → hide $ segment
 	}
