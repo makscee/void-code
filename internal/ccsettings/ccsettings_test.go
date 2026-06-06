@@ -521,3 +521,67 @@ func TestGetStatusLineCommand_Present(t *testing.T) {
 		t.Fatalf("present: cmd=%q err=%v", cmd, err)
 	}
 }
+
+func TestWriteManagedSettings(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cc-settings.json")
+	const hookCmd = "C:/Users/u/.void-code/bin/vc.exe hook"
+	if err := WriteManagedSettings(p, hookCmd); err != nil {
+		t.Fatalf("WriteManagedSettings: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("written file is not valid JSON: %v", err)
+	}
+
+	// permissions.defaultMode == bypassPermissions, skipDangerousModePermissionPrompt set both places
+	pm, _ := obj["permissions"].(map[string]any)
+	if pm == nil || pm["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("permissions.defaultMode = %v, want bypassPermissions", pm["defaultMode"])
+	}
+	if pm["skipDangerousModePermissionPrompt"] != true {
+		t.Fatalf("permissions.skipDangerousModePermissionPrompt = %v, want true", pm["skipDangerousModePermissionPrompt"])
+	}
+	if obj["skipDangerousModePermissionPrompt"] != true {
+		t.Fatalf("top-level skipDangerousModePermissionPrompt = %v, want true", obj["skipDangerousModePermissionPrompt"])
+	}
+
+	// hooks.PreToolUse[0].hooks[0].command == hookCmd, matcher "*"
+	hooks, _ := obj["hooks"].(map[string]any)
+	pre, _ := hooks["PreToolUse"].([]any)
+	if len(pre) != 1 {
+		t.Fatalf("PreToolUse len = %d, want 1", len(pre))
+	}
+	e := pre[0].(map[string]any)
+	if e["matcher"] != "*" {
+		t.Fatalf("matcher = %v, want *", e["matcher"])
+	}
+	inner := e["hooks"].([]any)
+	h := inner[0].(map[string]any)
+	if h["command"] != hookCmd {
+		t.Fatalf("hook command = %v, want %q", h["command"], hookCmd)
+	}
+}
+
+// The managed file is rewritten verbatim each launch — a second write must
+// produce identical, still-valid content (idempotent overwrite).
+func TestWriteManagedSettings_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cc-settings.json")
+	const hookCmd = "/abs/vc hook"
+	if err := WriteManagedSettings(p, hookCmd); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(p)
+	if err := WriteManagedSettings(p, hookCmd); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(p)
+	if string(first) != string(second) {
+		t.Fatalf("non-idempotent write:\nfirst=%s\nsecond=%s", first, second)
+	}
+}
