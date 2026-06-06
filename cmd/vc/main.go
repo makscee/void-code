@@ -347,26 +347,46 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		env = relay.BuildEnv(os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	}
 
-	// Pre-seed ~/.claude.json if absent so Claude Code skips first-run onboarding.
+	// Pre-seed ~/.claude.json if absent so Claude Code skips first-run onboarding,
+	// and mark the current working directory as a trusted folder. Folder trust is
+	// load-bearing: CC does not load ~/.claude/settings.json (bypassPermissions,
+	// hooks) until the working dir is trusted, so a fresh project folder otherwise
+	// drops CC into `auto` mode and fires its safety classifier — a model sub-call
+	// the relay can't serve ("<model> not accessible" when running a script). On
+	// Windows the trust dialog also fails to persist upstream, so we always seed.
 	if home, err := os.UserHomeDir(); err == nil {
-		if err := ccjson.EnsureDefaults(filepath.Join(home, ".claude.json")); err != nil {
+		claudeJSON := filepath.Join(home, ".claude.json")
+		if err := ccjson.EnsureDefaults(claudeJSON); err != nil {
 			fmt.Fprintf(os.Stderr, "vc: warning: cannot pre-seed ~/.claude.json: %v\n", err)
+		}
+		if cwd, err := os.Getwd(); err == nil {
+			if err := ccjson.EnsureFolderTrust(claudeJSON, ccjson.TrustKeys(cwd)...); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot pre-seed folder trust: %v\n", err)
+			}
 		}
 	}
 
-	// VCD-53 — automode killed. Instead of the DeepSeek-classifier PreToolUse
-	// hook, install Claude Code's native allow-all permission posture
-	// (bypassPermissions + skip the bypass confirm) so every tool runs with no
-	// prompt and no classifier sub-call. Also strip any stale classifier hook
-	// left by an older vc, so upgraders stop making classifier requests.
+	// Permission posture: belt-and-suspenders so a tool call never triggers
+	// Claude Code's server-side safety classifier (a model sub-call the relay
+	// can't serve — it surfaces as "<model> not accessible" mid-task):
+	//   1. bypassPermissions + skip-confirm — runs every tool with no prompt and
+	//      no classifier WHEN the user stays in bypass mode.
+	//   2. always-allow `vc hook` PreToolUse hook — short-circuits the classifier
+	//      in EVERY mode (auto/acceptEdits/default), so even if the user cycles
+	//      off bypass (shift+tab) a bash command is still allowed locally with
+	//      ZERO model sub-call (VCD-70 always-allow; VCD-46 proved CC honors it
+	//      in auto mode). The hook is the durable fix; #1 alone left `auto` mode
+	//      hitting the flaky classifier. Both only load once the folder is
+	//      trusted — hence the folder-trust pre-seed above.
 	if execPath, err := os.Executable(); err == nil {
 		settingsPath, pathErr := ccsettings.SettingsPath()
 		if pathErr == nil {
 			if err := ccsettings.EnsureAllowAllPermissions(settingsPath); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot set allow-all permissions: %v\n", err)
 			}
-			if err := ccsettings.RemoveHook(settingsPath); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot remove stale automode hook: %v\n", err)
+			hookCmd := ccsettings.HookCmd(ccsettings.ForwardSlash(execPath))
+			if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot install always-allow hook: %v\n", err)
 			}
 			// Install the statusLine command (non-clobbering — leaves user's foreign statusLine untouched).
 			slCmd := ccsettings.StatusLineCmd(ccsettings.ForwardSlash(execPath))
