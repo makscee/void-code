@@ -134,7 +134,7 @@ func main() {
 					KeyNames:            keyNames,
 					ActiveProvider:      activeProv.String(),
 					ActiveProviderLabel: provider.LoadLabel(),
-					GrantedProviders: grantedRows,
+					GrantedProviders:    grantedRows,
 					OnSelect: func(p provider.Provider) error {
 						return provider.Save(p)
 					},
@@ -378,13 +378,20 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	//      in auto mode). The hook is the durable fix; #1 alone left `auto` mode
 	//      hitting the flaky classifier. Both only load once the folder is
 	//      trusted — hence the folder-trust pre-seed above.
+	// ccSettingsPath, when non-empty, is a vc-owned settings file passed to claude
+	// via --settings. It loads regardless of folder trust (unlike
+	// ~/.claude/settings.json), so the always-allow hook + bypass posture it
+	// carries take effect even in a fresh/untrusted folder — making `auto` mode
+	// classifier-free everywhere. See ccsettings.WriteManagedSettings.
+	var ccSettingsPath string
 	if execPath, err := os.Executable(); err == nil {
+		hookCmd := ccsettings.HookCmd(ccsettings.ForwardSlash(execPath))
+
 		settingsPath, pathErr := ccsettings.SettingsPath()
 		if pathErr == nil {
 			if err := ccsettings.EnsureAllowAllPermissions(settingsPath); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot set allow-all permissions: %v\n", err)
 			}
-			hookCmd := ccsettings.HookCmd(ccsettings.ForwardSlash(execPath))
 			if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot install always-allow hook: %v\n", err)
 			}
@@ -394,9 +401,35 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot install statusLine: %v\n", err)
 			}
 		}
+
+		// Trust-independent layer: write vc's full posture (bypass defaults +
+		// skip-prompt + the always-allow hook) to ~/.void-code/cc-settings.json and
+		// pass it via --settings below. This is what guarantees `auto` mode never
+		// calls the classifier even when ~/.claude/settings.json hasn't loaded.
+		if cacheDir, cerr := config.CacheDir(); cerr == nil {
+			p := filepath.Join(cacheDir, "cc-settings.json")
+			if err := ccsettings.WriteManagedSettings(p, hookCmd); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot write managed CC settings: %v\n", err)
+			} else {
+				ccSettingsPath = p
+			}
+		}
 	}
 
-	if err := harness.Spawn(context.Background(), "claude", args, env); err != nil {
+	// Build the claude argv. Two trust-independent layers (see permmode.go and
+	// ccsettings.WriteManagedSettings):
+	//   1. --permission-mode bypassPermissions → session STARTS in bypass (no
+	//      classifier), unless the user picked a posture explicitly.
+	//   2. --settings <cc-settings.json> → delivers the always-allow PreToolUse
+	//      hook + skip-prompt regardless of folder trust, so if the user shift+tab's
+	//      into `auto` mode every tool is still approved locally with ZERO model
+	//      sub-call (no "<model> temporarily unavailable" classifier error).
+	spawnArgs := ensureBypassPermissionMode(args)
+	if ccSettingsPath != "" {
+		spawnArgs = append([]string{"--settings", ccSettingsPath}, spawnArgs...)
+	}
+
+	if err := harness.Spawn(context.Background(), "claude", spawnArgs, env); err != nil {
 		// Post-spawn not-found fallback (should be caught by pre-flight above,
 		// but defend against race conditions such as claude being removed between
 		// the pre-flight check and the actual spawn).

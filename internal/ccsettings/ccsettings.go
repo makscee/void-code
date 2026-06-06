@@ -54,6 +54,45 @@ func EnsureHook(path, hookCmd string) error {
 	return nil // already present and correct — no write needed
 }
 
+// WriteManagedSettings writes vc's full, trust-independent Claude Code settings
+// to path (typically ~/.void-code/cc-settings.json) for passing to claude via
+// `--settings <path>`.
+//
+// Why a separate --settings file instead of only ~/.claude/settings.json:
+// CC withholds ~/.claude/settings.json until the working folder is TRUSTED, but a
+// file passed explicitly with --settings is loaded regardless of trust. So the
+// always-allow PreToolUse hook below takes effect even in a fresh/untrusted folder
+// — which is what makes `auto` mode approve every tool locally with ZERO model
+// sub-call. Without it, a user who shift+tab's into auto mode in an untrusted
+// folder hits the server-side safety classifier, which a DeepSeek/relay backend
+// can't serve ("<model> temporarily unavailable, so auto mode cannot determine the
+// safety of Bash"). The bypass defaults + skipDangerousModePermissionPrompt make
+// the --permission-mode bypassPermissions startup flag silent (no accept dialog)
+// on every platform regardless of trust.
+//
+// The file is owned wholly by vc and rewritten each launch (atomic, 0600). hookCmd
+// is the same string as for EnsureHook (e.g. "C:/Users/u/.void-code/bin/vc.exe hook").
+func WriteManagedSettings(path, hookCmd string) error {
+	mode, skip := allowAllPermissions()
+	doc := map[string]any{
+		"permissions": map[string]any{
+			"defaultMode":                       mode,
+			"skipDangerousModePermissionPrompt": skip,
+		},
+		// Top-level mirror: CC has accepted this key at the top level too, and
+		// vc's prior ~/.claude/settings.json carried both — keep parity.
+		"skipDangerousModePermissionPrompt": skip,
+		"hooks": map[string]any{
+			"PreToolUse": []any{entry(hookCmd)},
+		},
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("ccsettings: marshal managed settings: %w", err)
+	}
+	return writeAtomic(path, append(out, '\n'))
+}
+
 // SettingsPath returns the canonical path to ~/.claude/settings.json.
 // Uses os.UserHomeDir for cross-platform correctness (handles %USERPROFILE% on Windows).
 func SettingsPath() (string, error) {
