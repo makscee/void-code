@@ -78,6 +78,7 @@ if (-not $env:VC_LANG) {
 if ($env:VC_INSTALL_DRY_RUN -eq '1') {
     Write-Output "GET $vcUrl"
     Write-Output "GET $relayCaUrl"
+    Write-Output "WOULD: Import-Certificate <relay-ca.pem> -CertStoreLocation Cert:\CurrentUser\Root"
     # Node dry-run: show which install path would be taken
     $dryNodePresent = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
     $dryNodeOk = $false
@@ -140,6 +141,23 @@ Write-Host "==> installing to $target" -ForegroundColor Green
 $caPath = Join-Path $vcDir 'relay-ca.pem'
 Write-Host "==> provisioning relay CA" -ForegroundColor Cyan
 Invoke-WebRequest -Uri $relayCaUrl -OutFile $caPath -UseBasicParsing
+
+# 2b. Trust the relay CA in the OS store so Schannel/.NET consumers (PowerShell
+# Invoke-WebRequest, etc.) can validate the relay's HTTPS proxy cert. vc injects
+# NODE_EXTRA_CA_CERTS so *Node* (claude) already trusts it; this covers the rest.
+# NOTE (VCD-81): this is necessary but NOT sufficient for Windows system32 curl.exe
+# — Schannel fail-closes on a revocation check of the relay leaf cert
+# (CRYPT_E_NO_REVOCATION_CHECK) that a private CA can't satisfy, and curl has no
+# proxy-revocation override. Full curl fix is relay-side (leaf cert CRL/OCSP) or the
+# plaintext relay (VC_RELAY_HOST=http://relay.makscee.ru:8448). A trust prompt appears
+# once (CurrentUser\Root). Non-fatal + idempotent (same-thumbprint re-import is a no-op).
+try {
+    Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
+    Write-Host "==> trusted relay CA in CurrentUser\Root store" -ForegroundColor Green
+} catch {
+    Write-Host "vc: could not auto-trust relay CA: $_" -ForegroundColor Yellow
+    Write-Host "    In-session curl/git may show SSL errors; import $caPath into Certificates (Current User) > Trusted Root." -ForegroundColor Yellow
+}
 
 # Add ~/.void-code/bin to user PATH if not already there (idempotent)
 $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
