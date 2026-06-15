@@ -341,19 +341,39 @@ func promptSelect(question, header string, options []string) (int, bool) {
 
 // ─── doctor command ───────────────────────────────────────────────────────────
 
+// doctorFixFlag is set by `vc doctor --fix`. When set, doctor applies the
+// available fixes without any prompt (it is non-interactive by definition).
+var doctorFixFlag bool
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check vc setup and fix common issues",
-	Long: `Run diagnostic checks on your vc installation and offer to fix any issues found.
+	Short: "Check vc setup and report (or fix) common issues",
+	Long: `Run diagnostic checks on your vc installation.
+
+By default doctor is report-only: it prints each check plus guidance and never
+prompts — safe to run in scripts, daemons, and CI. For checks that have an
+available fix it prints how to apply it (e.g. ` + "`vc doctor --fix`" + `).
+
+Pass --fix to apply the available fixes without any prompt (works whether or
+not stdin is a TTY):
+  • absent statusline → install it
+  • foreign statusline → merge (keep existing + add vc; least destructive)
+  • shell-rc PATH gap → append the vc PATH marker
 
 Currently checks:
   statusline   Claude Code statusLine renderer (context · budget · sub days)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if doctorFixFlag {
+			return runDoctorFix()
+		}
 		return runDoctor()
 	},
 }
 
-func init() { rootCmd.AddCommand(doctorCmd) }
+func init() {
+	doctorCmd.Flags().BoolVar(&doctorFixFlag, "fix", false, "Apply available fixes without prompting (statusline, shell-rc PATH)")
+	rootCmd.AddCommand(doctorCmd)
+}
 
 func runDoctor() error {
 	execPath, err := os.Executable()
@@ -371,87 +391,123 @@ func runDoctor() error {
 
 	checks := buildChecks(settingsPath, slCmd)
 
-	// Determine whether any check needs an interactive fix prompt.
-	// If yes: render the entire layout (header + checks + blank + prompt) inside
-	// a single bubbletea program so no fmt.Println/TUI interleaving produces
-	// garbled ^0 escape artifacts (defect 1 fix).
-	// If no fix needed: just print everything to stdout directly.
-	needsFix := false
+	// Report-only: doctor never opens a bubbletea prompt. It prints each check,
+	// any per-check guidance, and — for checks that have an available fix — a
+	// line telling the user how to apply it (`vc doctor --fix`). This keeps
+	// doctor safe to run in scripts, daemons, and CI (the owner's directive),
+	// and exits 0 so existing callers are unaffected.
+	doctorRailLine("┌", "  "+clackui.TitleStyle.Render("doctor"))
+	doctorRailLine("│", "")
 	for _, c := range checks {
-		if c.fix != nil || c.fixSelect != nil {
-			needsFix = true
-			break
+		doctorRailLine("│", renderCheckLine(c))
+		// Per-check guidance (e.g. install instructions).
+		for _, g := range c.guidance {
+			doctorRailLine("│", "    "+clackui.HintStyle.Render(g))
+		}
+		// Fix availability: point the user at `vc doctor --fix` rather than
+		// prompting. The hint is tailored per fix kind.
+		for _, g := range fixGuidance(c) {
+			doctorRailLine("│", "    "+clackui.HintStyle.Render(g))
 		}
 	}
-
-	if needsFix {
-		// Build the pre-rendered header (┌  doctor + blank + check lines + blank).
-		// This is passed into confirmModel/selectModel.View() so the full layout is one block.
-		header := buildConfirmHeader(checks)
-
-		for _, c := range checks {
-			switch {
-			case c.fixSelect != nil && len(c.selectOptions) > 0:
-				// 3-way selector (e.g. merge / override / skip for foreign statusLine).
-				choice, ok := promptSelect(c.message, header, c.selectOptions)
-				if !ok {
-					continue // cancelled
-				}
-				if err := c.fixSelect(choice); err != nil {
-					fmt.Fprintf(os.Stderr, "  error: %v\n", err)
-					continue
-				}
-				// Re-verify after fix.
-				after := classifyStatusLine(settingsPath, slCmd)
-				doctorRailLine("│", "")
-				if after == slInstalled {
-					doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("installed"))
-				} else {
-					doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("statusline not installed — run `vc doctor` to enable"))
-				}
-			case c.fix != nil:
-				// Yes/No confirm (e.g. absent statusLine install).
-				// The bubbletea confirm renders the complete view including header,
-				// the ◆ question line, and the ○/● options (defect 2 fix: question present).
-				if promptConfirm("Install void-code statusline now?", header) {
-					if err := c.fix(); err != nil {
-						fmt.Fprintf(os.Stderr, "  error: %v\n", err)
-						continue
-					}
-					// Re-verify after fix.
-					after := classifyStatusLine(settingsPath, slCmd)
-					doctorRailLine("│", "")
-					if after == slInstalled {
-						doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("installed"))
-					} else {
-						doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("install may have failed — run `vc doctor` again"))
-					}
-				}
-			}
-		}
-		// Bottom cap after the confirm + any post-fix lines.
-		doctorRailLine("│", "")
-		doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
-	} else {
-		// No interactive fix needed — print directly to stdout.
-		// ┌  doctor
-		doctorRailLine("┌", "  "+clackui.TitleStyle.Render("doctor"))
-		// │
-		doctorRailLine("│", "")
-		for _, c := range checks {
-			doctorRailLine("│", renderCheckLine(c))
-			// Print any non-interactive guidance lines (e.g. install instructions).
-			for _, g := range c.guidance {
-				doctorRailLine("│", "    "+clackui.HintStyle.Render(g))
-			}
-		}
-		// │
-		doctorRailLine("│", "")
-		// └  done
-		doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
-	}
+	doctorRailLine("│", "")
+	doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
 
 	return nil
+}
+
+// fixGuidance returns the non-interactive guidance line(s) for a check that has
+// an available fix, telling the user how to apply it via `vc doctor --fix`.
+// Returns nil for checks with no fix.
+func fixGuidance(c checkResult) []string {
+	switch {
+	case c.fixSelect != nil && len(c.selectOptions) > 0:
+		// Foreign statusline: --fix applies the merge choice (least destructive).
+		return []string{"run `vc doctor --fix` to merge the vc statusline into your existing one"}
+	case c.fix != nil && c.name == "statusline":
+		return []string{"run `vc doctor --fix` to install the statusline"}
+	case c.fix != nil:
+		return []string{"run `vc doctor --fix` to apply the fix"}
+	default:
+		return nil
+	}
+}
+
+// runDoctorFix applies the available fixes for each check without any prompt,
+// then re-verifies and prints the result. It works whether or not stdin is a
+// TTY — it never opens a bubbletea program.
+//
+// Fix policy:
+//   - absent statusline → install (c.fix).
+//   - foreign statusline → choice 0 = merge (keep existing + add vc; least
+//     destructive), via c.fixSelect(0).
+//   - shell-rc PATH gap → append the vc marker (c.fix).
+func runDoctorFix() error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("doctor: cannot resolve vc binary path: %w", err)
+	}
+	execPath = ccsettings.ForwardSlash(execPath)
+
+	settingsPath, err := ccsettings.SettingsPath()
+	if err != nil {
+		return fmt.Errorf("doctor: cannot resolve settings path: %w", err)
+	}
+
+	slCmd := ccsettings.StatusLineCmd(execPath)
+	checks := buildChecks(settingsPath, slCmd)
+
+	doctorRailLine("┌", "  "+clackui.TitleStyle.Render("doctor --fix"))
+	doctorRailLine("│", "")
+	for _, c := range checks {
+		doctorRailLine("│", renderCheckLine(c))
+	}
+
+	for _, c := range checks {
+		switch {
+		case c.fixSelect != nil && len(c.selectOptions) > 0:
+			// Foreign statusline → merge (choice 0).
+			doctorRailLine("│", "")
+			doctorRailLine("│", "  "+clackui.HintStyle.Render("merging vc statusline into your existing one…"))
+			if err := c.fixSelect(0); err != nil {
+				fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+				continue
+			}
+			reverifyStatusLine(settingsPath, slCmd)
+		case c.fix != nil && c.name == "statusline":
+			doctorRailLine("│", "")
+			doctorRailLine("│", "  "+clackui.HintStyle.Render("installing statusline…"))
+			if err := c.fix(); err != nil {
+				fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+				continue
+			}
+			reverifyStatusLine(settingsPath, slCmd)
+		case c.fix != nil:
+			// Other fixes (e.g. shell-rc PATH gap).
+			doctorRailLine("│", "")
+			doctorRailLine("│", "  "+clackui.HintStyle.Render("applying fix for "+c.name+"…"))
+			if err := c.fix(); err != nil {
+				fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+				continue
+			}
+			doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render(c.name)+"   "+clackui.HintStyle.Render("fix applied"))
+		}
+	}
+
+	doctorRailLine("│", "")
+	doctorRailLine("└", "  "+clackui.HintStyle.Render("done"))
+	return nil
+}
+
+// reverifyStatusLine re-classifies the statusline after a fix and prints the
+// result line on the rail. Shared by the absent-install and foreign-merge paths.
+func reverifyStatusLine(settingsPath, slCmd string) {
+	after := classifyStatusLine(settingsPath, slCmd)
+	if after == slInstalled {
+		doctorRailLine("│", "  "+clackui.OkStyle.Render("✓")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("installed"))
+	} else {
+		doctorRailLine("│", "  "+clackui.WarnStyle.Render("!")+"  "+clackui.InfoTextStyle.Render("statusline")+"   "+clackui.HintStyle.Render("fix may have failed — run `vc doctor` again"))
+	}
 }
 
 // checkNode verifies that node is present and >= minNodeMajor.

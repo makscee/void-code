@@ -82,7 +82,13 @@ func main() {
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd && !hasRaw {
 		state := resolveAuthState()
-		switch decideGate(isStdinTTY(), state.LoggedIn) {
+		// Interactive only when stdin is a TTY AND --non-interactive was not
+		// passed. cobra has not parsed flags yet at this point, so scan os.Args
+		// for the flag directly (mirrors the early --raw scan above). When not
+		// interactive, the title screen is skipped — same effect as --raw, but
+		// the gate still distinguishes logged-in (spawn) from logged-out (fail).
+		interactive := isStdinTTY() && !hasNonInteractiveArg()
+		switch decideGate(interactive, state.LoggedIn) {
 		case gateFailAuth:
 			// Non-interactive (non-TTY) context with no usable token: fail fast
 			// instead of hanging in the login picker or device-flow poll loop.

@@ -55,11 +55,24 @@ func runLogin(_ *cobra.Command, _ []string) error {
 	if loginCodeFlag != "" {
 		return runCodeExchange(cfg, loginCodeFlag)
 	}
+	// Non-interactive: an operator code supplied via $VC_CODE redeems without a
+	// prompt. This is the supported automation path (the --code flag is the
+	// interactive equivalent).
+	if code := strings.TrimSpace(os.Getenv(config.EnvCode)); code != "" {
+		return runCodeExchange(cfg, code)
+	}
 	if loginDeviceFlag {
 		return runDeviceFlow(cfg)
 	}
 	if loginEmailFlag {
 		return runEmailFlow(cfg)
+	}
+
+	// No flag and no code: the picker needs a TTY. In non-interactive mode we
+	// cannot open it — fail fast with guidance instead of hanging on a prompt
+	// that a non-TTY stdin can never satisfy.
+	if nonInteractive() {
+		return errNonInteractiveLogin()
 	}
 
 	// No flag: show picker menu.
@@ -83,6 +96,14 @@ func runLogin(_ *cobra.Command, _ []string) error {
 // state on any-key.  It runs the picker and completes login, or returns error.
 func runLoginInteractive() error {
 	return runLogin(nil, nil)
+}
+
+// errNonInteractiveLogin is returned (and printed to stderr) when login needs
+// interactive input but vc is running non-interactively. It tells the caller how
+// to supply credentials without a prompt.
+func errNonInteractiveLogin() error {
+	fmt.Fprintln(os.Stderr, "vc login: non-interactive — no code to redeem.\n  supply an operator code via $VC_CODE (or `vc login --code AAAA-BBBB`),\n  or run `vc login --device` from an interactive terminal.")
+	return fmt.Errorf("login requires input but vc is non-interactive")
 }
 
 // otpExhaustedError returns the error shown after all OTP attempts are exhausted.
@@ -266,6 +287,9 @@ func runEmailFlow(cfg config.Config) error {
 
 // promptEmail reads an email address from stdin using a bubbletea model.
 func promptEmail() (string, error) {
+	if nonInteractive() {
+		return "", errNonInteractiveLogin()
+	}
 	m := newEmailInputModel()
 	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
@@ -287,6 +311,9 @@ func promptEmail() (string, error) {
 
 // promptOTP reads a 6-digit OTP from stdin using a bubbletea model.
 func promptOTP() (string, error) {
+	if nonInteractive() {
+		return "", errNonInteractiveLogin()
+	}
 	m := newOTPInputModel()
 	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
@@ -564,6 +591,9 @@ func (m codeInputModel) View() string {
 
 // promptCode reads an operator access code from stdin using a bubbletea model.
 func promptCode() (string, error) {
+	if nonInteractive() {
+		return "", errNonInteractiveLogin()
+	}
 	m := newCodeInputModel()
 	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr))
 	result, err := p.Run()

@@ -18,7 +18,16 @@ const (
 
 // promptUpdate displays the [y]es/[n]o/[a]lways prompt and returns the choice.
 // Falls back to updateChoiceNo in non-TTY environments.
+//
+// In non-interactive mode it never opens the prompt: it prints a one-line
+// notice that an update is available and how to apply it, then returns
+// updateChoiceNo (do not auto-update, do not block).
 func promptUpdate(current, latest string) updateChoice {
+	if nonInteractive() {
+		fmt.Printf("\n  update available · %s (you have %s) — run `vc update` to install\n", latest, current)
+		return updateChoiceNo
+	}
+
 	fmt.Printf("\n  update available · %s (you have %s)\n", latest, current)
 
 	m := updatePromptModel{}
