@@ -37,6 +37,10 @@ Sub-commands:
   status   Show current auth / relay / version status
   update   Fetch the latest vc release and swap the binary
 
+Non-interactive mode (--non-interactive, or automatically when stdin is not a
+TTY) never opens a prompt: vc prints guidance and picks safe defaults so it
+never hangs in scripts, daemons, or CI.
+
 Run "vc <command> --help" for sub-command details.`,
 		brandStyle.Render("void-code")),
 	Example: `  # Launch claude normally
@@ -44,6 +48,9 @@ Run "vc <command> --help" for sub-command details.`,
 
   # Skip title screen — pass tty straight to claude (for tmux send-keys / daemon use)
   vc --raw -- --session-id <id> --permission-mode bypassPermissions
+
+  # Never prompt; fail fast / print guidance instead of blocking (scripts, CI)
+  vc --non-interactive doctor
 
   # Pass flags directly to claude using -- (double-dash terminator)
   vc -- --dangerously-skip-permissions
@@ -65,6 +72,7 @@ Run "vc <command> --help" for sub-command details.`,
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&versionFlag, "version", false, "Print version and exit")
+	rootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "non-interactive", false, "Never prompt; print guidance and pick safe defaults (also implied when stdin is not a TTY)")
 	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to claude (for tmux/daemon use)")
 	// Disable the auto-generated 'completion' sub-command — not needed for v0.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true

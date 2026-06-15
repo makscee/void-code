@@ -369,11 +369,70 @@ check_claude() {
   fi
 }
 
+# ── relay CA → OS trust store ─────────────────────────────────────────────────
+# vc injects NODE_EXTRA_CA_CERTS so *Node* (claude) trusts the relay's HTTPS
+# proxy cert — but tools the agent shells out to (curl, git, python) use the OS
+# trust store and otherwise fail the proxy TLS hop with:
+#   curl: (60) SSL certificate problem: unable to get local issuer certificate
+# Teach the OS to trust the relay CA. Non-fatal + idempotent: a failure here
+# leaves vc fully working; only in-session curl/git would need a manual trust.
+trust_relay_ca() {
+  _ca="$CA_DIR/relay-ca.pem"
+  [ -f "$_ca" ] || return 0
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    _kc="$HOME/Library/Keychains/login.keychain-db"
+    [ -f "$_kc" ] || _kc="$HOME/Library/Keychains/login.keychain"
+    if security add-trusted-cert -r trustRoot -k "$_kc" "$_ca" >/dev/null 2>&1; then
+      printf '==> trusted relay CA in login keychain\n' >&2
+    else
+      printf 'vc: could not auto-trust relay CA in keychain — in-session curl/git may show SSL errors.\n' >&2
+      printf '    Fix manually: security add-trusted-cert -r trustRoot -k %s %s\n' "$_kc" "$_ca" >&2
+    fi
+    return 0
+  fi
+
+  # Linux — need root to write the system anchor dir.
+  _sudo=""
+  if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then _sudo="sudo"; else
+      printf 'vc: not root and no sudo — skipping OS CA trust (in-session curl/git may show SSL errors).\n' >&2
+      return 0
+    fi
+  fi
+
+  if command -v update-ca-certificates >/dev/null 2>&1; then
+    # Debian / Ubuntu / Alpine — anchor must end in .crt
+    if $_sudo install -m 0644 "$_ca" /usr/local/share/ca-certificates/void-relay-ca.crt 2>/dev/null \
+       && $_sudo update-ca-certificates >/dev/null 2>&1; then
+      printf '==> trusted relay CA via update-ca-certificates\n' >&2
+    else
+      printf 'vc: update-ca-certificates failed — in-session curl/git may show SSL errors.\n' >&2
+    fi
+  elif command -v update-ca-trust >/dev/null 2>&1; then
+    # RHEL / Fedora / CentOS
+    if $_sudo install -m 0644 "$_ca" /etc/pki/ca-trust/source/anchors/void-relay-ca.pem 2>/dev/null \
+       && $_sudo update-ca-trust extract >/dev/null 2>&1; then
+      printf '==> trusted relay CA via update-ca-trust\n' >&2
+    else
+      printf 'vc: update-ca-trust failed — in-session curl/git may show SSL errors.\n' >&2
+    fi
+  else
+    printf 'vc: no known CA-trust tool found — in-session curl/git may show SSL errors.\n' >&2
+    printf '    Add %s to your system trust store manually.\n' "$_ca" >&2
+  fi
+}
+
 # ── dry-run ───────────────────────────────────────────────────────────────────
 if [ "$DRY_RUN" = 1 ]; then
   printf '%s\n' "$VERSION_BANNER"
   printf 'GET %s  (-> %s/vc)\n' "$VC_BIN_URL" "$BIN_DIR"
   printf 'GET %s  (-> %s/relay-ca.pem)\n' "$RELAY_CA_URL" "$CA_DIR"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    printf 'WOULD: security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db <relay-ca.pem>\n'
+  else
+    printf 'WOULD: install relay-ca.pem to system anchors + update-ca-certificates / update-ca-trust\n'
+  fi
   _dry_major="$(node_major)"
   if [ -z "$_dry_major" ] || ! [ "$_dry_major" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
     if command -v brew >/dev/null 2>&1; then
@@ -426,6 +485,9 @@ fi
 printf '==> provisioning relay CA\n' >&2
 fetch_to_file "$RELAY_CA_URL" "$CA_DIR/relay-ca.pem" \
   || { printf 'vc: failed to download relay CA\n' >&2; exit 1; }
+
+# 2b. Trust the relay CA in the OS store so curl/git (not just node) work in-session.
+trust_relay_ca
 
 # 3. PATH — register vc FIRST, before the node/claude bootstrap. The vc launcher
 # (vc login, vc doctor) works without node; a node/claude hiccup must NEVER leave
