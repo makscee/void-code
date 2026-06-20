@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/makscee/void-code/internal/update"
 )
 
 // --- compareVersions ---
@@ -24,9 +26,9 @@ func TestCompareVersions(t *testing.T) {
 		{"1.10.0", "1.9.0", 1},
 	}
 	for _, c := range cases {
-		got := compareVersions(c.a, c.b)
+		got := update.CompareVersions(c.a, c.b)
 		if got != c.want {
-			t.Errorf("compareVersions(%q, %q) = %d; want %d", c.a, c.b, got, c.want)
+			t.Errorf("CompareVersions(%q, %q) = %d; want %d", c.a, c.b, got, c.want)
 		}
 	}
 }
@@ -141,10 +143,10 @@ func (e *stubError) Error() string { return e.msg }
 
 func TestCompareVersionsEmpty(t *testing.T) {
 	// Empty string should be treated as 0.0.0
-	if compareVersions("", "1.0.0") >= 0 {
+	if update.CompareVersions("", "1.0.0") >= 0 {
 		t.Error("empty version should be less than 1.0.0")
 	}
-	if compareVersions("1.0.0", "") <= 0 {
+	if update.CompareVersions("1.0.0", "") <= 0 {
 		t.Error("1.0.0 should be greater than empty")
 	}
 }

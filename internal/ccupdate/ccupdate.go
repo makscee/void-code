@@ -21,12 +21,14 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/makscee/void-code/internal/update"
 )
 
 const (
-	pkg           = "@anthropic-ai/claude-code"
-	defaultTTL    = time.Hour
-	envTTL        = "VC_UPDATE_CHECK_TTL_S"
+	pkg            = "@anthropic-ai/claude-code"
+	defaultTTL     = time.Hour
+	envTTL         = "VC_UPDATE_CHECK_TTL_S"
 	npmCallTimeout = 3 * time.Second
 	installTimeout = 5 * time.Minute // npm install can take a while
 )
@@ -69,7 +71,7 @@ func CheckAndUpdate() string {
 		return ""
 	}
 
-	if compareVersions(installed, latest) >= 0 {
+	if update.CompareVersions(installed, latest) >= 0 {
 		return "" // already at latest
 	}
 
@@ -213,34 +215,4 @@ func ttl() time.Duration {
 		}
 	}
 	return defaultTTL
-}
-
-// compareVersions compares two semver-ish strings (strips leading "v").
-// Returns -1 if a < b, 0 if equal, +1 if a > b.
-func compareVersions(a, b string) int {
-	return cmpVer(parseVer(a), parseVer(b))
-}
-
-func parseVer(v string) [3]int {
-	v = strings.TrimPrefix(v, "v")
-	parts := strings.SplitN(v, ".", 3)
-	var out [3]int
-	for i := range 3 {
-		if i < len(parts) {
-			fmt.Sscanf(parts[i], "%d", &out[i])
-		}
-	}
-	return out
-}
-
-func cmpVer(a, b [3]int) int {
-	for i := range 3 {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	return 0
 }

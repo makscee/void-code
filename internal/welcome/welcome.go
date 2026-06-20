@@ -159,12 +159,12 @@ type menuItem struct {
 
 type model struct {
 	AuthState
-	items     []menuItem
-	cursor    int
-	view      viewState
-	result    RunResult
-	chosen    bool // true once a process-exiting result was selected
-	quitting  bool
+	items         []menuItem
+	cursor        int
+	view          viewState
+	result        RunResult
+	chosen        bool // true once a process-exiting result was selected
+	quitting      bool
 	providers     providersModel
 	addKey        addKeyModel
 	deleteConfirm deleteConfirmModel
@@ -475,13 +475,6 @@ func (m model) updateAddKey(s string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// railLine returns a line with the left rail prefix.
-// prefix is the rail/cap glyph(s) rendered in railStyle,
-// content is the rest of the line (already styled by caller).
-func railLine(prefix, content string) string {
-	return clackui.RailLine(prefix, content)
-}
-
 func (m model) View() string {
 	if m.quitting {
 		return ""
@@ -490,11 +483,11 @@ func (m model) View() string {
 	var sb strings.Builder
 
 	// ┌  void-code  <version>
-	sb.WriteString(railLine("┌", "  "+titleStyle.Render("void-code")+"  "+titleStyle.Render(version.Version)))
+	sb.WriteString(clackui.RailLine("┌", "  "+titleStyle.Render("void-code")+"  "+titleStyle.Render(version.Version)))
 	sb.WriteString("\n")
 
 	// │  (blank separator)
-	sb.WriteString(railLine("│", ""))
+	sb.WriteString(clackui.RailLine("│", ""))
 	sb.WriteString("\n")
 
 	if m.view == providersView {
@@ -515,19 +508,19 @@ func (m model) View() string {
 	if m.view == topUpView {
 		// Top-up sub-view — clack style with ◇ info marker.
 		// ◇  Top up your balance
-		sb.WriteString(railLine("◇", "  "+topUpStyle.Render("Top up your balance")))
+		sb.WriteString(clackui.RailLine("◇", "  "+topUpStyle.Render("Top up your balance")))
 		sb.WriteString("\n")
 		// │
-		sb.WriteString(railLine("│", ""))
+		sb.WriteString(clackui.RailLine("│", ""))
 		sb.WriteString("\n")
 		// │  Text @makscee on Telegram to top up your balance.
-		sb.WriteString(railLine("│", "  "+topUpStyle.Render("Text @makscee on Telegram to top up your balance.")))
+		sb.WriteString(clackui.RailLine("│", "  "+topUpStyle.Render("Text @makscee on Telegram to top up your balance.")))
 		sb.WriteString("\n")
 		// │
-		sb.WriteString(railLine("│", ""))
+		sb.WriteString(clackui.RailLine("│", ""))
 		sb.WriteString("\n")
 		// └  press any key to go back
-		sb.WriteString(railLine("└", "  "+hintStyle.Render("press any key to go back")))
+		sb.WriteString(clackui.RailLine("└", "  "+hintStyle.Render("press any key to go back")))
 		sb.WriteString("\n")
 		return sb.String()
 	}
@@ -535,9 +528,9 @@ func (m model) View() string {
 	// ◇  identity · $X.XX left  (or "Not logged in")
 	if m.LoggedIn {
 		infoText := m.Identity + " · " + FormatBalance(m.BalanceUsd)
-		sb.WriteString(railLine("◇", "  "+infoTextStyle.Render(infoText)))
+		sb.WriteString(clackui.RailLine("◇", "  "+infoTextStyle.Render(infoText)))
 	} else {
-		sb.WriteString(railLine("◇", "  "+warnStyle.Render("Not logged in")))
+		sb.WriteString(clackui.RailLine("◇", "  "+warnStyle.Render("Not logged in")))
 	}
 	sb.WriteString("\n")
 
@@ -547,42 +540,42 @@ func (m model) View() string {
 	if provLabel == "" {
 		provLabel = provider.Parse(m.cb.ActiveProvider).Label()
 	}
-	sb.WriteString(railLine("◇", "  "+hintStyle.Render("Provider: "+provLabel)))
+	sb.WriteString(clackui.RailLine("◇", "  "+hintStyle.Render("Provider: "+provLabel)))
 	sb.WriteString("\n")
 
 	// Update nudge (if present) — shown as an extra ◇ line.
 	if m.UpdateNudge != "" {
-		sb.WriteString(railLine("│", ""))
+		sb.WriteString(clackui.RailLine("│", ""))
 		sb.WriteString("\n")
-		sb.WriteString(railLine("◇", "  "+hintStyle.Render(m.UpdateNudge)))
+		sb.WriteString(clackui.RailLine("◇", "  "+hintStyle.Render(m.UpdateNudge)))
 		sb.WriteString("\n")
 	}
 
 	// │  (blank separator)
-	sb.WriteString(railLine("│", ""))
+	sb.WriteString(clackui.RailLine("│", ""))
 	sb.WriteString("\n")
 
 	// ◆  What now?
-	sb.WriteString(railLine("◆", "  "+infoTextStyle.Render("What now?")))
+	sb.WriteString(clackui.RailLine("◆", "  "+infoTextStyle.Render("What now?")))
 	sb.WriteString("\n")
 
 	// │  ●  Start   (selected, purple)
 	// │  ○  Top up  (unselected, dim)
 	for i, it := range m.items {
 		if i == m.cursor {
-			sb.WriteString(railLine("│", "  "+selectedItemStyle.Render("●  "+it.label)))
+			sb.WriteString(clackui.RailLine("│", "  "+selectedItemStyle.Render("●  "+it.label)))
 		} else {
-			sb.WriteString(railLine("│", "  "+unselectedItemStyle.Render("○  "+it.label)))
+			sb.WriteString(clackui.RailLine("│", "  "+unselectedItemStyle.Render("○  "+it.label)))
 		}
 		sb.WriteString("\n")
 	}
 
 	// │  (blank separator)
-	sb.WriteString(railLine("│", ""))
+	sb.WriteString(clackui.RailLine("│", ""))
 	sb.WriteString("\n")
 
 	// └  ↑/↓ · enter · q quit
-	sb.WriteString(railLine("└", "  "+hintStyle.Render("↑/↓ · enter · q quit")))
+	sb.WriteString(clackui.RailLine("└", "  "+hintStyle.Render("↑/↓ · enter · q quit")))
 	sb.WriteString("\n")
 
 	return sb.String()
