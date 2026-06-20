@@ -12,7 +12,6 @@ import (
 type ProviderInfo struct {
 	ID   string // stable provider id, sent verbatim as the x-void-provider header
 	Name string // human display label for the menu row
-	Type string // e.g. "universal" (always-shown, e.g. deepseek) or "anthropic-oauth"
 }
 
 // FetchProviders calls GET <authHost>/v1/vc/providers with the bearer token.
@@ -46,7 +45,6 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 		Providers []struct {
 			ID   string `json:"id"`
 			Name string `json:"name"`
-			Type string `json:"type"`
 		} `json:"providers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
@@ -54,7 +52,7 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 	}
 	out := make([]ProviderInfo, 0, len(r.Providers))
 	for _, p := range r.Providers {
-		out = append(out, ProviderInfo{ID: p.ID, Name: p.Name, Type: p.Type})
+		out = append(out, ProviderInfo{ID: p.ID, Name: p.Name})
 	}
 	return out, nil
 }

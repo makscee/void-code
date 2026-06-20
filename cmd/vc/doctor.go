@@ -84,7 +84,7 @@ type checkResult struct {
 	message       string
 	fix           func() error        // nil if no fix available (interactive yes/no prompt)
 	fixSelect     func(choice int) error // nil unless this check uses a 3-way selector
-	selectOptions []string             // non-nil → use selectModel instead of confirmModel
+	selectOptions []string             // non-nil → use selectModel for a 3-way selector
 	guidance      []string             // non-interactive extra lines printed after the check (no prompt)
 }
 
@@ -132,92 +132,14 @@ func RenderDoctorChecksForTest(checks []checkResult) string {
 	return sb.String()
 }
 
-// ─── bubbletea confirm model (Yes/No prompt) ─────────────────────────────────
+// ─── clack rail header builder ───────────────────────────────────────────────
 
-// confirmModel is a minimal bubbletea model for a clack-style Yes/No selector.
-// Default selection = No (index 1), matching the old [y/N] default.
-//
-// header holds the pre-rendered lines that precede the ◆ prompt (e.g. the
-// ┌  doctor cap + check lines). Including them in View() keeps the whole
-// transcript visible in a single inline bubbletea render pass — no alt-screen,
-// no garbled ^0 escape artifacts from mixing fmt.Println with TUI redraws.
-type confirmModel struct {
-	question string
-	header   string // pre-rendered lines above the ◆ prompt (e.g. ┌ doctor + checks)
-	cursor   int    // 0 = Yes, 1 = No
-	chosen   bool
-	quitting bool
-}
-
-func newConfirmModel(question, header string) confirmModel {
-	return confirmModel{question: question, header: header, cursor: 1} // default = No
-}
-
-func (m confirmModel) Init() tea.Cmd { return nil }
-
-func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	switch key.String() {
-	case "ctrl+c", "q", "esc":
-		m.quitting = true
-		return m, tea.Quit
-	case "up", "k", "left", "h":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-	case "down", "j", "right", "l":
-		if m.cursor < 1 {
-			m.cursor++
-		}
-	case "enter", " ":
-		m.chosen = true
-		m.quitting = true
-		return m, tea.Quit
-	}
-	return m, nil
-}
-
-func (m confirmModel) View() string {
-	if m.quitting {
-		return ""
-	}
-	var sb strings.Builder
-	// Pre-rendered header: ┌  doctor + blank rail + check lines + blank rail.
-	// Embedding it here keeps the full layout in one bubbletea render, avoiding
-	// ^0 escape artifacts that occur when fmt.Println and TUI redraws interleave.
-	if m.header != "" {
-		sb.WriteString(m.header)
-	}
-	// ◆  <question>
-	sb.WriteString(clackui.RailLine("◆", "  "+clackui.InfoTextStyle.Render(m.question)))
-	sb.WriteString("\n")
-	// │  ○  Yes  /  │  ●  No  (cursor-driven)
-	opts := []string{"Yes", "No"}
-	for i, opt := range opts {
-		if i == m.cursor {
-			sb.WriteString(clackui.RailLine("│", "  "+clackui.SelectedItemStyle.Render("●  "+opt)))
-		} else {
-			sb.WriteString(clackui.RailLine("│", "  "+clackui.UnselectedItemStyle.Render("○  "+opt)))
-		}
-		sb.WriteString("\n")
-	}
-	sb.WriteString(clackui.RailLine("│", ""))
-	sb.WriteString("\n")
-	// └  ↑/↓ · enter  (bottom cap)
-	sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("↑/↓ · enter")))
-	sb.WriteString("\n")
-	return sb.String()
-}
-
-// buildConfirmHeader builds the pre-rendered header string for the confirmModel:
+// buildConfirmHeader builds the pre-rendered header string for the prompt models:
 // ┌  doctor
 // │
 // │  <check lines>
 // │
-// This is passed into confirmModel so its View() renders the complete layout
+// This is passed into the prompt models so their View() renders the layout
 // without any fmt.Println calls preceding the bubbletea program (which would
 // produce garbled ^0 escape artifacts).
 func buildConfirmHeader(checks []checkResult) string {
@@ -235,27 +157,9 @@ func buildConfirmHeader(checks []checkResult) string {
 	return sb.String()
 }
 
-// promptConfirm shows a clack-style ◆ Yes/No selector with the given header
-// rendered above the prompt. Returns true if the user chose Yes.
-// Returns false on any quit/cancel or non-TTY (safe default-no).
-func promptConfirm(question, header string) bool {
-	m := newConfirmModel(question, header)
-	// Run inline (no alt-screen) so the full transcript is visible as one block.
-	p := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
-	out, err := p.Run()
-	if err != nil {
-		return false // non-TTY fallback = No
-	}
-	fm, ok := out.(confirmModel)
-	if !ok || !fm.chosen || fm.cursor != 0 {
-		return false
-	}
-	return true
-}
-
 // ─── bubbletea select model (N-option prompt) ────────────────────────────────
 
-// selectModel is a clack-style ◆ N-option selector (generalises confirmModel).
+// selectModel is a clack-style ◆ N-option selector.
 // Default selection = 0 (first option).
 type selectModel struct {
 	question string

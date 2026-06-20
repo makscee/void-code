@@ -9,15 +9,11 @@ import (
 )
 
 // EmailStartResult holds the confirmation returned by POST /v1/auth/login/email/start.
-type EmailStartResult struct {
-	Sent bool
-}
+type EmailStartResult struct{}
 
 // EmailVerifyResult holds the session credentials returned by a successful OTP verify.
 type EmailVerifyResult struct {
-	Token     string
-	SessionID string
-	ExpiresAt int64
+	Token string
 }
 
 // ErrOTPWrong is returned when the server rejects the OTP code.
@@ -45,7 +41,7 @@ func EmailStart(authHost, email string, httpClient *http.Client) (EmailStartResu
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		return EmailStartResult{Sent: true}, nil
+		return EmailStartResult{}, nil
 	}
 	var errBody struct {
 		Error string `json:"error"`
@@ -82,14 +78,12 @@ func EmailVerify(authHost, email, code string, httpClient *http.Client) (EmailVe
 
 	if resp.StatusCode == http.StatusOK {
 		var r struct {
-			Token     string `json:"token"`
-			SessionID string `json:"sessionId"`
-			ExpiresAt int64  `json:"expiresAt"`
+			Token string `json:"token"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 			return EmailVerifyResult{}, fmt.Errorf("decoding email/verify response: %w", err)
 		}
-		return EmailVerifyResult{Token: r.Token, SessionID: r.SessionID, ExpiresAt: r.ExpiresAt}, nil
+		return EmailVerifyResult{Token: r.Token}, nil
 	}
 
 	var errBody struct {

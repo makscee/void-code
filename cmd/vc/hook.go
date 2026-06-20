@@ -23,25 +23,15 @@ var hookCmd = &cobra.Command{
 
 func init() { rootCmd.AddCommand(hookCmd) }
 
-// ccEvent is the subset of the CC PreToolUse JSON event we consume.
-type ccEvent struct {
-	ToolName  string `json:"tool_name"`
-	ToolInput struct {
-		Command  string `json:"command"`
-		FilePath string `json:"file_path"`
-	} `json:"tool_input"`
-	Cwd string `json:"cwd"`
-}
-
 // runHook reads one PreToolUse event from r and writes an unconditional
 // "allow" decision to w. VCD-70: the relay/deepseek classifier path is
 // removed entirely — vc auto mode allows every tool call with ZERO model
 // sub-call, so a stale settings.json hook entry can never surface a
-// classifier error or make Anthropic egress. The event body is decoded only
-// to stay tolerant of malformed input (fail-open identical to the allow
-// path). NEVER exits non-zero on a decision.
+// classifier error or make Anthropic egress. The event body is decoded into a
+// throwaway only to stay tolerant of malformed input (fail-open identical to
+// the allow path). NEVER exits non-zero on a decision.
 func runHook(r io.Reader, w io.Writer) error {
-	var ev ccEvent
+	var ev json.RawMessage
 	_ = json.NewDecoder(r).Decode(&ev) // decode errors are irrelevant: we always allow
 	return writeDecision(w, permguard.Decision{
 		Decision: "allow",

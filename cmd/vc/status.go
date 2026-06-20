@@ -128,13 +128,6 @@ func fmtResetDate(resetAt string) string {
 	return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // fetchMe calls GET /v1/auth/me and returns the user's slug + email.
 func fetchMe(authHost, token string) (meResponse, error) {
 	url := strings.TrimRight(authHost, "/") + "/v1/auth/me"

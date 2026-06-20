@@ -139,7 +139,7 @@ type GrantedEntry struct {
 //   - RelayProvider: looked up in granted list → "Relay: <name>" (name falls back to id).
 //     Returns "" when the id is not present in the list (caller must guard).
 //   - NamedKey / Plain / Relay: derived purely from the Provider itself.
-func FriendlyLabel(p Provider, granted []GrantedEntry, keyNames []string) string {
+func FriendlyLabel(p Provider, granted []GrantedEntry) string {
 	switch p.Kind {
 	case RelayProvider:
 		for _, g := range granted {
@@ -170,9 +170,9 @@ func FriendlyLabel(p Provider, granted []GrantedEntry, keyNames []string) string
 //     If not found (provider revoked / list empty on error), label is left as-is.
 //   - For all other kinds: always refreshes (label is derivable without the list).
 //   - Never persists an empty string.
-func ReconcileLabel(granted []GrantedEntry, keyNames []string) error {
+func ReconcileLabel(granted []GrantedEntry) error {
 	active := Load()
-	label := FriendlyLabel(active, granted, keyNames)
+	label := FriendlyLabel(active, granted)
 	if label == "" {
 		// RelayProvider not found in granted list — do not clobber.
 		return nil
