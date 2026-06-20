@@ -37,9 +37,6 @@ func TestDeviceStart_HappyPath(t *testing.T) {
 	if res.UserCode != "ABCD-EFGH" {
 		t.Errorf("UserCode = %q", res.UserCode)
 	}
-	if res.VerificationURI != "https://auth.makscee.ru/device" {
-		t.Errorf("VerificationURI = %q", res.VerificationURI)
-	}
 	if res.Interval != 5 {
 		t.Errorf("Interval = %d, want 5", res.Interval)
 	}

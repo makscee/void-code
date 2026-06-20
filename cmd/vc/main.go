@@ -134,7 +134,7 @@ func main() {
 					for i, r := range grantedRows {
 						granted[i] = provider.GrantedEntry{ID: r.ID, Name: r.Name}
 					}
-					_ = provider.ReconcileLabel(granted, keyNames)
+					_ = provider.ReconcileLabel(granted)
 				}
 				cb := welcome.Callbacks{
 					KeyNames:            keyNames,
@@ -276,7 +276,6 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 	return welcome.AuthState{
 		LoggedIn:   true,
 		Identity:   identity,
-		BudgetPct:  me.Pct,        // nil when no budget set or server absent → degrade safely
 		BalanceUsd: me.BalanceUsd, // nil when VCD-55 not yet deployed → degrade safely
 	}
 }

@@ -10,10 +10,9 @@ import (
 type updateChoice int
 
 const (
-	updateChoiceNone   updateChoice = iota
-	updateChoiceYes                 // install now
-	updateChoiceNo                  // skip this launch
-	updateChoiceAlways              // always-update
+	updateChoiceYes    updateChoice = iota + 1 // install now
+	updateChoiceNo                             // skip this launch
+	updateChoiceAlways                         // always-update
 )
 
 // promptUpdate displays the [y]es/[n]o/[a]lways prompt and returns the choice.

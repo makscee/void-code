@@ -22,14 +22,5 @@ func restartImpl(newBinaryPath string, args []string) error {
 	return restartUnix(newBinaryPath, args)
 }
 
-// PlatformRestartNote returns a human-readable note about restart behaviour on
-// the current platform.  Used in test assertions.
-func PlatformRestartNote() string {
-	if runtime.GOOS == "windows" {
-		return "windows-spawn"
-	}
-	return "unix-exec"
-}
-
 // ErrRestartUnsupported is returned when the restart mechanism is not available.
 var ErrRestartUnsupported = fmt.Errorf("restart not supported on this platform")

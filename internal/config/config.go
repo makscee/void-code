@@ -167,12 +167,6 @@ func WriteConfigFile(updates map[string]string) error {
 	return w.Flush()
 }
 
-// PersistLang writes the lang key to the vc config file (best-effort).
-// Errors are silently discarded — language is cosmetic, not auth-critical.
-func PersistLang(lang string) {
-	_ = WriteConfigFile(map[string]string{"lang": lang})
-}
-
 // UpdatePrefs holds auto-update preferences read from the config file.
 type UpdatePrefs struct {
 	// AutoUpdate is true when the user pressed 'a' (always-update).
@@ -261,19 +255,3 @@ func ClearStatusLineSkipped() error {
 	return WriteConfigFile(map[string]string{statuslineSkippedKey: ""})
 }
 
-// OSResolveWithFile resolves Config from env but also reads the config file for
-// keys absent from env (e.g. lang set by install.sh).
-func OSResolveWithFile() Config {
-	cfg := OSResolve()
-	// If VC_LANG was not set in env, try the config file.
-	if os.Getenv(EnvLang) == "" {
-		if kv, err := ReadConfigFile(); err == nil {
-			if v, ok := kv["lang"]; ok && v != "" {
-				if v == "ru" {
-					cfg.Lang = "ru"
-				}
-			}
-		}
-	}
-	return cfg
-}

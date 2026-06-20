@@ -26,7 +26,7 @@ func TestFetchProvidersHappyPath(t *testing.T) {
 	if len(got) != 2 || got[0].ID != "deepseek" || got[1].ID != "plat-2" {
 		t.Fatalf("providers = %+v", got)
 	}
-	if got[0].Type != "universal" || got[1].Name != "Platform 2" {
+	if got[0].Name != "DeepSeek" || got[1].Name != "Platform 2" {
 		t.Fatalf("fields = %+v", got)
 	}
 }

@@ -8,14 +8,11 @@ import (
 )
 
 // WebSession is the result of POST /v1/vc/web-session (VCD-66 mint endpoint).
-// Token is the short-lived (1-day) magic-link token; URL is the server-built
-// magic link — NOTE (VCD-80): the prod server emits a broken URL
-// (auth.makscee.ru/profile?ml=…, 404), so callers build the redeem URL from
-// Token via browser.RedeemURL instead of trusting URL.
+// Token is the short-lived (1-day) magic-link token. NOTE (VCD-80): the prod
+// server emits a broken magic-link URL (auth.makscee.ru/profile?ml=…, 404), so
+// callers build the redeem URL from Token via browser.RedeemURL instead.
 type WebSession struct {
-	URL       string
-	Token     string
-	ExpiresAt string
+	Token string
 }
 
 // MintWebSession calls POST <authHost>/v1/vc/web-session with the bearer token.
@@ -43,9 +40,7 @@ func MintWebSession(authHost, token string, httpClient *http.Client) (WebSession
 	}
 
 	var r struct {
-		URL       string `json:"url"`
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expiresAt"`
+		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return WebSession{}, fmt.Errorf("decoding vc/web-session response: %w", err)
@@ -53,5 +48,5 @@ func MintWebSession(authHost, token string, httpClient *http.Client) (WebSession
 	if r.Token == "" {
 		return WebSession{}, fmt.Errorf("vc/web-session returned empty token")
 	}
-	return WebSession{URL: r.URL, Token: r.Token, ExpiresAt: r.ExpiresAt}, nil
+	return WebSession{Token: r.Token}, nil
 }

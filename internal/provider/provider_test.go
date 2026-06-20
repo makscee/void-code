@@ -176,7 +176,7 @@ func TestReconcileLabel_RelayProvider_PersistsFriendlyLabel(t *testing.T) {
 
 	// Reconcile with a granted list that contains plat-2.
 	granted := []GrantedEntry{{ID: "plat-2", Name: "Claude Sub"}}
-	if err := ReconcileLabel(granted, nil); err != nil {
+	if err := ReconcileLabel(granted); err != nil {
 		t.Fatalf("ReconcileLabel: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestReconcileLabel_FetchFailure_NoClobber(t *testing.T) {
 	}
 
 	// Fetch failure: pass empty granted list (provider not found → no clobber).
-	if err := ReconcileLabel(nil, nil); err != nil {
+	if err := ReconcileLabel(nil); err != nil {
 		t.Fatalf("ReconcileLabel: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestReconcileLabel_LabelRefreshOnRename(t *testing.T) {
 
 	// Server renames provider.
 	granted := []GrantedEntry{{ID: "plat-2", Name: "New Name"}}
-	if err := ReconcileLabel(granted, nil); err != nil {
+	if err := ReconcileLabel(granted); err != nil {
 		t.Fatalf("ReconcileLabel: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestReconcileLabel_NonRelayProvider_AlwaysRefreshes(t *testing.T) {
 			t.Fatalf("Save %+v: %v", tc.prov, err)
 		}
 		// No pre-existing label — reconcile with empty granted list.
-		if err := ReconcileLabel(nil, nil); err != nil {
+		if err := ReconcileLabel(nil); err != nil {
 			t.Fatalf("ReconcileLabel: %v", err)
 		}
 		if got := LoadLabel(); got != tc.want {
@@ -269,7 +269,7 @@ func TestFriendlyLabel_RelayProviderNameFallsBackToID(t *testing.T) {
 	p := Provider{Kind: RelayProvider, ID: "plat-9"}
 	// Entry present but Name is empty — should fall back to id.
 	granted := []GrantedEntry{{ID: "plat-9", Name: ""}}
-	got := FriendlyLabel(p, granted, nil)
+	got := FriendlyLabel(p, granted)
 	if got != "Relay: plat-9" {
 		t.Errorf("FriendlyLabel() = %q, want %q", got, "Relay: plat-9")
 	}
@@ -277,7 +277,7 @@ func TestFriendlyLabel_RelayProviderNameFallsBackToID(t *testing.T) {
 
 func TestFriendlyLabel_RelayProviderNotInList_ReturnsEmpty(t *testing.T) {
 	p := Provider{Kind: RelayProvider, ID: "plat-2"}
-	got := FriendlyLabel(p, nil, nil)
+	got := FriendlyLabel(p, nil)
 	if got != "" {
 		t.Errorf("FriendlyLabel() for missing provider = %q, want empty", got)
 	}

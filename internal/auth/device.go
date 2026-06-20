@@ -12,7 +12,6 @@ import (
 type DeviceStartResult struct {
 	DeviceCode              string
 	UserCode                string
-	VerificationURI         string
 	VerificationURIComplete string
 	ExpiresIn               int
 	Interval                int
@@ -53,7 +52,6 @@ func DeviceStart(authHost string, httpClient *http.Client) (DeviceStartResult, e
 	var r struct {
 		DeviceCode              string `json:"device_code"`
 		UserCode                string `json:"user_code"`
-		VerificationURI         string `json:"verification_uri"`
 		VerificationURIComplete string `json:"verification_uri_complete"`
 		ExpiresIn               int    `json:"expires_in"`
 		Interval                int    `json:"interval"`
@@ -64,7 +62,6 @@ func DeviceStart(authHost string, httpClient *http.Client) (DeviceStartResult, e
 	return DeviceStartResult{
 		DeviceCode:              r.DeviceCode,
 		UserCode:                r.UserCode,
-		VerificationURI:         r.VerificationURI,
 		VerificationURIComplete: r.VerificationURIComplete,
 		ExpiresIn:               r.ExpiresIn,
 		Interval:                r.Interval,

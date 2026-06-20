@@ -8,11 +8,9 @@ package welcome
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/clackui"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/version"
@@ -28,10 +26,6 @@ type AuthState struct {
 	// the user declined an update or when no auto-update is configured.
 	// Empty means no nudge.
 	UpdateNudge string
-	// BudgetPct is the month-to-date spend as a percentage of budget.
-	// nil = no budget set (server absent / budget_usd=0 → no cap) → do not display.
-	// ≥80 = warn; ≥100 = block copy.
-	BudgetPct *float64
 	// BalanceUsd is the prepaid wallet balance in USD (VCD-55). nil = unknown /
 	// server did not return it → render a neutral dash, never a $ figure.
 	BalanceUsd *float64
@@ -126,90 +120,10 @@ func FormatBalance(v *float64) string {
 	return fmt.Sprintf("$%.2f left", *v)
 }
 
-// ─── budget warning (VCD-49) ─────────────────────────────────────────────────
-
-// BudgetWarning returns a user-facing copy string for the budget state, or ""
-// when no warning is needed.
-//
-//	pct == nil       → no budget configured (or server absent) → ""
-//	pct < 80         → healthy → ""
-//	80 <= pct < 100  → warn: approaching cap
-//	pct >= 100       → block copy: budget reached
-//
-// The caller decides whether to block or just warn; this function only returns
-// the copy. The relay enforces the actual hard block — client copy is additive.
-func BudgetWarning(pct *float64) string {
-	if pct == nil {
-		return ""
-	}
-	p := *pct
-	switch {
-	case p >= 100:
-		return "Monthly budget reached — message @makscee on Telegram to top up."
-	case p >= 80:
-		return fmt.Sprintf("Budget at %.0f%% — top up via @makscee on Telegram before you hit the cap.", p)
-	default:
-		return ""
-	}
-}
-
-// budgetLeftPct returns (N% left, show) where N = round(100 - pct), clamped to [0,100].
-// Returns (0, false) when pct is nil (no budget cap) — hide the line entirely.
-func budgetLeftPct(pct *float64) (int, bool) {
-	if pct == nil {
-		return 0, false
-	}
-	left := 100.0 - *pct
-	if left < 0 {
-		left = 0
-	}
-	return int(math.Round(left)), true
-}
-
-// ─── subscription warning ────────────────────────────────────────────────────
-
-// SubscriptionWarning returns the soft ≤3-day expiry warning copy, or "" when
-// days-left is outside the 1–3 band.  Days=0 is handled upstream as a hard block.
-func SubscriptionWarning(daysLeft int) string {
-	if daysLeft < 1 || daysLeft > 3 {
-		return ""
-	}
-	unit := "days"
-	if daysLeft == 1 {
-		unit = "day"
-	}
-	return fmt.Sprintf(
-		"Subscription ending in %d %s — top up via @makscee on Telegram to avoid interruption.",
-		daysLeft, unit)
-}
-
 // PlainBannerForTest exposes plainBanner for white-box testing from the
 // welcome_test package without making it part of the public API.
 func PlainBannerForTest(state AuthState) string {
 	return plainBanner(state)
-}
-
-// ─── legacy compat shim (tests + callers that used the old sentinel API) ──────
-
-// DefaultSentinelPath is kept for callers that reference it; it no longer
-// gates the banner (banner is always shown).
-func DefaultSentinelPath() string {
-	return ""
-}
-
-// NeedsWelcome always returns true — banner is always shown now.
-func NeedsWelcome(_ string) bool {
-	return true
-}
-
-// TouchSentinel is a no-op kept for backward compat.
-func TouchSentinel(_ string) error {
-	return nil
-}
-
-// SentinelExists is a no-op kept for backward compat; always returns false.
-func SentinelExists(_ string) bool {
-	return false
 }
 
 // ─── bubbletea model ───────────────────────────────────────────────────────
@@ -224,15 +138,6 @@ var (
 	hintStyle           = clackui.HintStyle
 	warnStyle           = clackui.WarnStyle
 	topUpStyle          = clackui.InfoTextStyle
-
-	// Legacy styles kept for plainBanner / BudgetWarning callers.
-	subStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
-	accentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
-	// boxStyle retained for backward compat (unused in clack View).
-	boxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7C3AED")).
-			Padding(1, 3)
 )
 
 // viewState distinguishes the top-level menu from sub-views.

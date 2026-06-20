@@ -8,50 +8,6 @@ import (
 	"github.com/makscee/void-code/internal/welcome"
 )
 
-// Legacy sentinel shims — these functions are now no-ops but must compile.
-
-func TestSentinelMissing(t *testing.T) {
-	// SentinelExists always returns false now (banner is always shown).
-	if welcome.SentinelExists("/nonexistent/path") {
-		t.Fatal("SentinelExists must return false")
-	}
-}
-
-func TestSentinelCreate(t *testing.T) {
-	// TouchSentinel is a no-op; must not error.
-	if err := welcome.TouchSentinel("/any/path"); err != nil {
-		t.Fatalf("TouchSentinel: %v", err)
-	}
-}
-
-func TestSentinelIdempotent(t *testing.T) {
-	// TouchSentinel is a no-op; calling twice must not error.
-	if err := welcome.TouchSentinel("/any/path"); err != nil {
-		t.Fatalf("first Touch: %v", err)
-	}
-	if err := welcome.TouchSentinel("/any/path"); err != nil {
-		t.Fatalf("second Touch must be idempotent: %v", err)
-	}
-}
-
-func TestDefaultSentinelPath(t *testing.T) {
-	// DefaultSentinelPath returns empty string now (banner always shown).
-	got := welcome.DefaultSentinelPath()
-	if got != "" {
-		t.Errorf("DefaultSentinelPath() = %q; want empty", got)
-	}
-}
-
-func TestNeedsWelcome(t *testing.T) {
-	// NeedsWelcome always returns true — banner is always shown.
-	if !welcome.NeedsWelcome("") {
-		t.Fatal("NeedsWelcome must always return true")
-	}
-	if !welcome.NeedsWelcome("/some/path") {
-		t.Fatal("NeedsWelcome must always return true regardless of path")
-	}
-}
-
 // TestAuthState_LoggedIn ensures the AuthState struct captures state correctly.
 // VCD-65: SubDaysLeft removed from AuthState.
 func TestAuthState_LoggedIn(t *testing.T) {
@@ -77,29 +33,6 @@ func TestAuthState_LoggedOut(t *testing.T) {
 
 // VCD-65: TestAuthState_Unlimited removed — SubDaysLeft dropped from AuthState.
 
-// --- VCD-44: subscription warning tests ---
-
-func TestSubscriptionWarning_Band(t *testing.T) {
-	if welcome.SubscriptionWarning(0) != "" {
-		t.Error("days=0 should not produce a banner warning (handled by hard block)")
-	}
-	if welcome.SubscriptionWarning(4) != "" {
-		t.Error("days=4 should not warn")
-	}
-	if welcome.SubscriptionWarning(-1) != "" {
-		t.Error("unlimited should not warn")
-	}
-	for _, d := range []int{1, 2, 3} {
-		w := welcome.SubscriptionWarning(d)
-		if w == "" {
-			t.Errorf("days=%d should warn", d)
-		}
-		if !strings.Contains(w, "@makscee") {
-			t.Errorf("days=%d warning %q must name @makscee", d, w)
-		}
-	}
-}
-
 func TestPlainBanner_ShowsIdentity(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: "x@vk.com"})
 	if !strings.Contains(out, "x@vk.com") {
@@ -111,64 +44,6 @@ func TestPlainBanner_NotLoggedIn(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: false})
 	if !strings.Contains(out, "Not logged in") {
 		t.Errorf("plain banner for logged-out must say 'Not logged in': %q", out)
-	}
-}
-
-// --- VCD-49: budget warning tests ---
-
-func TestBudgetWarning_NilPct(t *testing.T) {
-	// nil pct = no budget set → must not warn.
-	if w := welcome.BudgetWarning(nil); w != "" {
-		t.Errorf("BudgetWarning(nil) = %q, want empty (no budget)", w)
-	}
-}
-
-func TestBudgetWarning_BelowThreshold(t *testing.T) {
-	pct := 50.0
-	if w := welcome.BudgetWarning(&pct); w != "" {
-		t.Errorf("BudgetWarning(50) = %q, want empty", w)
-	}
-	pct2 := 79.9
-	if w := welcome.BudgetWarning(&pct2); w != "" {
-		t.Errorf("BudgetWarning(79.9) = %q, want empty", w)
-	}
-}
-
-func TestBudgetWarning_WarnBand(t *testing.T) {
-	for _, p := range []float64{80.0, 85.0, 95.0, 99.9} {
-		pct := p
-		w := welcome.BudgetWarning(&pct)
-		if w == "" {
-			t.Errorf("BudgetWarning(%v) = empty, want warn string", p)
-		}
-		if !strings.Contains(w, "@makscee") {
-			t.Errorf("BudgetWarning(%v) = %q, must name @makscee", p, w)
-		}
-		// Warn band must NOT say "reached" — that's the block copy.
-		if strings.Contains(w, "reached") {
-			t.Errorf("BudgetWarning(%v) = %q, warn should not say 'reached'", p, w)
-		}
-		// Operator constraint 2026-05-30: no dollar values in user-facing copy.
-		if strings.Contains(w, "$") {
-			t.Errorf("BudgetWarning(%v) = %q, must NOT contain '$' (percentages only)", p, w)
-		}
-	}
-}
-
-func TestBudgetWarning_BlockAt100(t *testing.T) {
-	for _, p := range []float64{100.0, 110.0, 150.0} {
-		pct := p
-		w := welcome.BudgetWarning(&pct)
-		if !strings.Contains(w, "reached") {
-			t.Errorf("BudgetWarning(%v) = %q, must say 'reached' for block copy", p, w)
-		}
-		if !strings.Contains(w, "@makscee") {
-			t.Errorf("BudgetWarning(%v) = %q, must name @makscee", p, w)
-		}
-		// Operator constraint 2026-05-30: no dollar values in block copy.
-		if strings.Contains(w, "$") {
-			t.Errorf("BudgetWarning(%v) = %q, must NOT contain '$' (percentages only)", p, w)
-		}
 	}
 }
 
@@ -186,9 +61,8 @@ func TestPlainBanner_ShowsBalance(t *testing.T) {
 
 func TestPlainBanner_NoBudgetWhenNilPct(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "u@x.com",
-		BudgetPct: nil,
+		LoggedIn: true,
+		Identity: "u@x.com",
 	})
 	// Should NOT mention "budget" at all when nil pct.
 	if strings.Contains(out, "budget") {
@@ -200,9 +74,8 @@ func TestPlainBanner_NoBudgetWhenNilPct(t *testing.T) {
 
 func TestPlainBanner_ShowsVersion(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:    true,
-		Identity:    "u@x.com",
-		BudgetPct: nil,
+		LoggedIn: true,
+		Identity: "u@x.com",
 	})
 	// Banner must contain "void-code" and some version indicator.
 	if !strings.Contains(out, "void-code") {
@@ -225,11 +98,9 @@ func TestPlainBanner_NilBalanceShowsDash(t *testing.T) {
 }
 
 func TestPlainBanner_NoSubDaysNoBudgetPct(t *testing.T) {
-	pct := 30.0
 	out := welcome.PlainBannerForTest(welcome.AuthState{
-		LoggedIn:  true,
-		Identity:  "u@x.com",
-		BudgetPct: &pct,
+		LoggedIn: true,
+		Identity: "u@x.com",
 	})
 	// VCD-56: sub-days and budget-pct lines dropped from plain banner.
 	if strings.Contains(out, "days left on subscription") {
@@ -348,8 +219,6 @@ func TestMenu_LoggedOutSingleLoginItem(t *testing.T) {
 
 // VCD-56: View rendering tests.
 
-func ptrF(v float64) *float64 { return &v }
-
 func TestView_HeaderShowsBalanceAndIdentity(t *testing.T) {
 	bal := 7.5
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal})
@@ -364,7 +233,7 @@ func TestView_HeaderShowsBalanceAndIdentity(t *testing.T) {
 
 func TestView_NoSubDaysNoBudgetPct(t *testing.T) {
 	bal := 7.5
-	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal, BudgetPct: ptrF(80)})
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "x@y.com", BalanceUsd: &bal})
 	out := m.View()
 	if strings.Contains(out, "days left on subscription") {
 		t.Errorf("view still shows sub-days:\n%s", out)

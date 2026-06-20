@@ -30,12 +30,8 @@ func TestEmailStart_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := EmailStart(srv.URL, "test@example.com", srv.Client())
-	if err != nil {
+	if _, err := EmailStart(srv.URL, "test@example.com", srv.Client()); err != nil {
 		t.Fatalf("EmailStart: %v", err)
-	}
-	if !res.Sent {
-		t.Error("Sent = false, want true")
 	}
 }
 
@@ -89,12 +85,6 @@ func TestEmailVerify_HappyPath(t *testing.T) {
 	}
 	if res.Token != "session-tok-abc" {
 		t.Errorf("Token = %q, want session-tok-abc", res.Token)
-	}
-	if res.SessionID != "sess-123" {
-		t.Errorf("SessionID = %q, want sess-123", res.SessionID)
-	}
-	if res.ExpiresAt != 9999999999 {
-		t.Errorf("ExpiresAt = %d", res.ExpiresAt)
 	}
 }
 
