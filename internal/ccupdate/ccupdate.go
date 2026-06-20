@@ -71,6 +71,9 @@ func CheckAndUpdate() string {
 		return ""
 	}
 
+	// Delegates to the canonical comparator; the @anthropic-ai/claude-code npm
+	// channel only emits plain X.Y.Z semver, so this is equivalent to the former
+	// private compareVersions (see TestCompareVersionsEquivalence).
 	if update.CompareVersions(installed, latest) >= 0 {
 		return "" // already at latest
 	}

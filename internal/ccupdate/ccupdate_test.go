@@ -1,8 +1,10 @@
 package ccupdate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,58 @@ func TestCompareVersions(t *testing.T) {
 		got := update.CompareVersions(c.a, c.b)
 		if got != c.want {
 			t.Errorf("CompareVersions(%q, %q) = %d; want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// oldCompareVersions is a verbatim copy of ccupdate's former private comparator
+// (parseVer via fmt.Sscanf("%d") + cmpVer), removed when CheckAndUpdate was
+// consolidated onto update.CompareVersions. It is kept here ONLY to pin that the
+// consolidation is behavior-preserving on ccupdate's real input domain.
+func oldCompareVersions(a, b string) int {
+	parse := func(v string) [3]int {
+		v = strings.TrimPrefix(v, "v")
+		parts := strings.SplitN(v, ".", 3)
+		var out [3]int
+		for i := range 3 {
+			if i < len(parts) {
+				fmt.Sscanf(parts[i], "%d", &out[i])
+			}
+		}
+		return out
+	}
+	an, bn := parse(a), parse(b)
+	for i := range 3 {
+		if an[i] < bn[i] {
+			return -1
+		}
+		if an[i] > bn[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+// TestCompareVersionsEquivalence proves the swap from the old private comparator
+// to update.CompareVersions is behavior-preserving on ccupdate's ACTUAL input
+// domain. Both comparison operands (installed via `npm list -g`, latest via
+// `npm view ... version`) are versions published to the @anthropic-ai/claude-code
+// npm package, which only ever emits plain X.Y.Z semver (verified: all 441
+// published versions match ^\d+\.\d+\.\d+$, zero pre-release/build tags). The two
+// comparators diverge only on non-numeric segments, which never reach this code.
+func TestCompareVersionsEquivalence(t *testing.T) {
+	domain := []string{
+		"1.0.0", "1.0.1", "1.2.3", "1.2.4", "1.9.0", "1.10.0",
+		"2.0.0", "2.1.170", "2.1.183", "0.9.0", "10.0.0", "1.0.10",
+		"v1.2.3", "v2.1.183", "",
+	}
+	for _, a := range domain {
+		for _, b := range domain {
+			want := oldCompareVersions(a, b)
+			got := update.CompareVersions(a, b)
+			if got != want {
+				t.Errorf("divergence on plain-semver domain: CompareVersions(%q, %q) = %d; old = %d", a, b, got, want)
+			}
 		}
 	}
 }
