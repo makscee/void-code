@@ -18,12 +18,12 @@ func parentEnv() []string {
 	return []string{
 		"HOME=/home/user",
 		"PATH=/usr/bin:/bin",
-		"HTTPS_PROXY=http://old-proxy:1234",          // must be stripped
-		"NODE_EXTRA_CA_CERTS=/old/ca.pem",            // must be stripped
-		"CLAUDE_CODE_OAUTH_TOKEN=old-oauth-token",    // must be stripped
-		"ANTHROPIC_API_KEY=sk-ant-old",               // must be stripped (set empty)
-		"ANTHROPIC_BASE_URL=https://old-base.com",    // must be stripped (set empty)
-		"USER_SET_VAR=keep-me",                        // must survive
+		"HTTPS_PROXY=http://old-proxy:1234",       // must be stripped
+		"NODE_EXTRA_CA_CERTS=/old/ca.pem",         // must be stripped
+		"CLAUDE_CODE_OAUTH_TOKEN=old-oauth-token", // must be stripped
+		"ANTHROPIC_API_KEY=sk-ant-old",            // must be stripped (re-set empty)
+		"ANTHROPIC_BASE_URL=https://old-base.com", // must be stripped (re-set to relay)
+		"USER_SET_VAR=keep-me",                    // must survive
 	}
 }
 
@@ -38,53 +38,37 @@ func findEnv(slice []string, key string) (string, bool) {
 }
 
 func TestBuildEnv_StripsParentKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/tmp/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok")
 
-	stripped := []string{
-		"HTTPS_PROXY",
-		"NODE_EXTRA_CA_CERTS",
-		"CLAUDE_CODE_OAUTH_TOKEN",
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_BASE_URL",
+	// HTTPS_PROXY and NODE_EXTRA_CA_CERTS are no longer emitted at all: CC reaches
+	// the relay via ANTHROPIC_BASE_URL, not a global proxy. They must be absent
+	// from the output (stripped from the parent, never re-added).
+	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"} {
+		if val, found := findEnv(result, k); found {
+			t.Errorf("%s: want absent, got %q", k, val)
+		}
 	}
-	// These keys must NOT survive from the parent (they are re-set below).
-	// We verify the values are what WE set, not what parent had.
-	for _, k := range stripped {
+
+	// The remaining relay keys must carry OUR values, never the parent's.
+	checks := map[string]string{
+		"CLAUDE_CODE_OAUTH_TOKEN": "tok",                          // not "old-oauth-token"
+		"ANTHROPIC_API_KEY":       "",                             // not "sk-ant-old"
+		"ANTHROPIC_BASE_URL":      "https://relay.makscee.ru:443", // not "https://old-base.com"
+	}
+	for k, want := range checks {
 		val, found := findEnv(result, k)
 		if !found {
-			// ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL should appear as empty
-			// HTTPS_PROXY and NODE_EXTRA_CA_CERTS should appear with new values
-			// CLAUDE_CODE_OAUTH_TOKEN should appear with token
+			t.Errorf("%s: not found in result", k)
 			continue
 		}
-		// old-proxy, sk-ant-old, old-oauth-token, https://old-base.com must NOT appear
-		switch k {
-		case "HTTPS_PROXY":
-			if val != "https://relay.makscee.ru:443" {
-				t.Errorf("HTTPS_PROXY: want https://relay.makscee.ru:443, got %q", val)
-			}
-		case "NODE_EXTRA_CA_CERTS":
-			if val != "/tmp/ca.pem" {
-				t.Errorf("NODE_EXTRA_CA_CERTS: want /tmp/ca.pem, got %q", val)
-			}
-		case "CLAUDE_CODE_OAUTH_TOKEN":
-			if val != "tok" {
-				t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: want tok, got %q", val)
-			}
-		case "ANTHROPIC_API_KEY":
-			if val != "" {
-				t.Errorf("ANTHROPIC_API_KEY: want empty, got %q", val)
-			}
-		case "ANTHROPIC_BASE_URL":
-			if val != "" {
-				t.Errorf("ANTHROPIC_BASE_URL: want empty, got %q", val)
-			}
+		if val != want {
+			t.Errorf("%s: want %q, got %q", k, want, val)
 		}
 	}
 }
 
 func TestBuildEnv_PreservesUnrelatedKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/tmp/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok")
 
 	val, found := findEnv(result, "USER_SET_VAR")
 	if !found {
@@ -101,17 +85,15 @@ func TestBuildEnv_PreservesUnrelatedKeys(t *testing.T) {
 }
 
 func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "my-token", "/path/to/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "my-token")
 
 	tests := []struct {
 		key  string
 		want string
 	}{
-		{"HTTPS_PROXY", "https://relay.makscee.ru:443"},
-		{"NODE_EXTRA_CA_CERTS", "/path/to/ca.pem"},
 		{"CLAUDE_CODE_OAUTH_TOKEN", "my-token"},
 		{"ANTHROPIC_API_KEY", ""},
-		{"ANTHROPIC_BASE_URL", ""},
+		{"ANTHROPIC_BASE_URL", "https://relay.makscee.ru:443"},
 	}
 	for _, tc := range tests {
 		val, found := findEnv(result, tc.key)
@@ -123,22 +105,29 @@ func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
 			t.Errorf("%s: want %q, got %q", tc.key, tc.want, val)
 		}
 	}
+
+	// The forward-proxy keys are no longer emitted.
+	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"} {
+		if val, found := findEnv(result, k); found {
+			t.Errorf("%s: want absent, got %q", k, val)
+		}
+	}
 }
 
 func TestBuildEnv_HttpScheme(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "http", "relay.makscee.ru:8448", "tok", "/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "http", "relay.makscee.ru:8448", "tok")
 
-	val, found := findEnv(result, "HTTPS_PROXY")
+	val, found := findEnv(result, "ANTHROPIC_BASE_URL")
 	if !found {
-		t.Fatal("HTTPS_PROXY not found")
+		t.Fatal("ANTHROPIC_BASE_URL not found")
 	}
 	if val != "http://relay.makscee.ru:8448" {
-		t.Errorf("HTTPS_PROXY: want http://relay.makscee.ru:8448, got %q", val)
+		t.Errorf("ANTHROPIC_BASE_URL: want http://relay.makscee.ru:8448, got %q", val)
 	}
 }
 
 func TestBuildEnv_NoDuplicateKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/ca.pem")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok")
 
 	seen := map[string]int{}
 	for _, e := range result {
@@ -153,13 +142,13 @@ func TestBuildEnv_NoDuplicateKeys(t *testing.T) {
 }
 
 func TestBuildEnv_EmptyParent(t *testing.T) {
-	result := relay.BuildEnv(nil, "https", "relay.makscee.ru:443", "tok", "/ca.pem")
+	result := relay.BuildEnv(nil, "https", "relay.makscee.ru:443", "tok")
 	if len(result) == 0 {
 		t.Fatal("expected non-empty result with nil parent")
 	}
-	val, _ := findEnv(result, "HTTPS_PROXY")
+	val, _ := findEnv(result, "ANTHROPIC_BASE_URL")
 	if val != "https://relay.makscee.ru:443" {
-		t.Errorf("HTTPS_PROXY: got %q", val)
+		t.Errorf("ANTHROPIC_BASE_URL: got %q", val)
 	}
 }
 

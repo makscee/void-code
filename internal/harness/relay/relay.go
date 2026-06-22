@@ -28,16 +28,19 @@ var stripKeys = map[string]bool{
 // It:
 //  1. Copies every entry from parent, skipping the keys in stripKeys.
 //  2. Appends the relay-specific variables:
-//     - HTTPS_PROXY=<scheme>://<host>
-//     - NODE_EXTRA_CA_CERTS=<caPath>
-//     - ANTHROPIC_BASE_URL=          (empty — relay intercepts at proxy level)
-//     - CLAUDE_CODE_OAUTH_TOKEN=<token>
-//     - ANTHROPIC_API_KEY=           (empty — not used in full-feature mode)
+//     - ANTHROPIC_BASE_URL=<scheme>://<host>  (point CC at the relay as an API base)
+//     - CLAUDE_CODE_OAUTH_TOKEN=<token>       (CC forwards it as Authorization: Bearer)
+//     - ANTHROPIC_API_KEY=                    (empty — OAuth-mode CC, no API key)
+//
+// CC reaches the relay via ANTHROPIC_BASE_URL rather than a global HTTPS_PROXY,
+// so the agent's other tool egress is no longer captured (the bug VCD-059 fixes).
+// HTTPS_PROXY and NODE_EXTRA_CA_CERTS are no longer emitted; they remain in
+// stripKeys so a parent's values never leak in.
 //
 // scheme should be "http" or "https"; callers pass Config.RelayScheme.
 // The Bare mode from cv's BuildEnv is explicitly NOT ported (ADR-0002).
-func BuildEnv(parent []string, scheme, host, token, caPath string) []string {
-	out := make([]string, 0, len(parent)+5)
+func BuildEnv(parent []string, scheme, host, token string) []string {
+	out := make([]string, 0, len(parent)+3)
 	for _, e := range parent {
 		k, _, _ := strings.Cut(e, "=")
 		if stripKeys[k] {
@@ -47,9 +50,7 @@ func BuildEnv(parent []string, scheme, host, token, caPath string) []string {
 	}
 
 	out = append(out,
-		fmt.Sprintf("HTTPS_PROXY=%s://%s", scheme, host),
-		"NODE_EXTRA_CA_CERTS="+caPath,
-		"ANTHROPIC_BASE_URL=",
+		fmt.Sprintf("ANTHROPIC_BASE_URL=%s://%s", scheme, host),
 		"CLAUDE_CODE_OAUTH_TOKEN="+token,
 		"ANTHROPIC_API_KEY=",
 	)
