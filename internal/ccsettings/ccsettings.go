@@ -10,6 +10,15 @@
 // from prior installs (RemoveHook). The classifier hook machinery below
 // (EnsureHook / HookCmd / freshDoc / mergeHook / entry) is retained but no
 // longer wired from main.go, so a proper automode can be reintroduced later.
+//
+// always-allow hook, ASCII-guarded: the always-allow PreToolUse hook (a
+// belt-and-suspenders that keeps `auto` mode — reachable via shift+tab off
+// bypass — classifier-free) is seeded ONLY when the exec path is pure ASCII and
+// space-free (PathHookSafe). When the path contains non-ASCII (e.g. Cyrillic) or
+// a space, Claude Code's Windows spawn of the hook command fails and emits a
+// CP1251 error CC mis-decodes as UTF-8, surfacing a garbled "hook failed" banner
+// on EVERY tool call. Those users get native bypassPermissions only (no hook),
+// and any stale hook from a prior install is stripped via RemoveHook.
 package ccsettings
 
 import (
@@ -72,7 +81,16 @@ func EnsureHook(path, hookCmd string) error {
 //
 // The file is owned wholly by vc and rewritten each launch (atomic, 0600). hookCmd
 // is the same string as for EnsureHook (e.g. "C:/Users/u/.void-code/bin/vc.exe hook").
-func WriteManagedSettings(path, hookCmd string) error {
+//
+// seedHook gates the always-allow PreToolUse hook (FIX B, Path 3): it is included
+// only when the exec path is ASCII + space-free (see PathHookSafe). On non-ASCII
+// or spaced paths the hook spawn fails on Windows and spams a garbled banner, so
+// those installs get the bypassPermissions posture only and rely on the native
+// allow-all (the hook is redundant with bypass; it only matters in `auto` mode).
+//
+// skipWebFetchPreflight (FIX A) is always written top-level so WebFetch's
+// claude.ai safety preflight is skipped for relay users.
+func WriteManagedSettings(path, hookCmd string, seedHook bool) error {
 	mode, skip := allowAllPermissions()
 	doc := map[string]any{
 		"permissions": map[string]any{
@@ -82,9 +100,13 @@ func WriteManagedSettings(path, hookCmd string) error {
 		// Top-level mirror: CC has accepted this key at the top level too, and
 		// vc's prior ~/.claude/settings.json carried both — keep parity.
 		"skipDangerousModePermissionPrompt": skip,
-		"hooks": map[string]any{
+		// FIX A: skip CC's hardcoded claude.ai WebFetch safety preflight.
+		"skipWebFetchPreflight": true,
+	}
+	if seedHook {
+		doc["hooks"] = map[string]any{
 			"PreToolUse": []any{entry(hookCmd)},
-		},
+		}
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -146,6 +168,50 @@ func EnsureAllowAllPermissions(path string) error {
 		return writeAtomic(path, append(out, '\n'))
 	}
 	return nil // already correct — no write needed
+}
+
+// EnsureSkipWebFetchPreflight sets the top-level "skipWebFetchPreflight": true
+// in the settings file at path (FIX A). Claude Code runs a server-side URL-safety
+// preflight before WebFetch that calls a HARDCODED host
+// (https://claude.ai/api/web/domain_info, NOT ANTHROPIC_BASE_URL). Relay users
+// can't reach claude.ai directly, and PRD #059 dropped the global HTTPS_PROXY
+// that used to tunnel it, so every WebFetch fails with "Unable to verify if
+// domain X is safe to fetch". This top-level boolean (sibling of "permissions",
+// per the CC settings schema) skips that check.
+//
+// Non-clobbering + idempotent, mirroring EnsureAllowAllPermissions:
+//   - Absent file              → write fresh with just the flag.
+//   - Present + valid JSON      → set our top-level key, keep the rest.
+//   - Already true              → no-op (no write).
+//   - Present + invalid JSON    → return error, do NOT clobber.
+func EnsureSkipWebFetchPreflight(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeAtomic(path, freshSkipWebFetchPreflightDoc())
+	}
+	if err != nil {
+		return err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+	if obj["skipWebFetchPreflight"] == true {
+		return nil // already correct — no write needed
+	}
+	obj["skipWebFetchPreflight"] = true
+	out, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("ccsettings: marshal: %w", err)
+	}
+	return writeAtomic(path, append(out, '\n'))
+}
+
+// freshSkipWebFetchPreflightDoc builds a minimal settings.json with only the flag.
+func freshSkipWebFetchPreflightDoc() []byte {
+	doc := map[string]any{"skipWebFetchPreflight": true}
+	out, _ := json.MarshalIndent(doc, "", "  ")
+	return append(out, '\n')
 }
 
 // allowAllPermissions returns the two keys vc sets inside "permissions".
@@ -278,6 +344,24 @@ func QuoteIfSpace(path string) string {
 // Returns (<abs-path-or-quoted> + " hook").
 func HookCmd(execPath string) string {
 	return QuoteIfSpace(execPath) + " hook"
+}
+
+// PathHookSafe reports whether execPath is safe to use as a spawned PreToolUse
+// hook command on Windows: pure ASCII and space-free. Claude Code spawns the
+// hook command via the OS shell; when the path contains non-ASCII bytes (e.g.
+// Cyrillic in a Windows username) or a space, that spawn fails and Windows
+// emits a CP1251 error CC mis-decodes as UTF-8 — a garbled "PreToolUse hook
+// failed" banner on every tool call. vc only seeds the hook when this returns
+// true; otherwise it relies on native bypassPermissions alone and strips any
+// stale hook (RemoveHook). Pass the ORIGINAL exec path (pre-ForwardSlash) so the
+// space check sees the real characters.
+func PathHookSafe(execPath string) bool {
+	for _, r := range execPath {
+		if r > 0x7e || r < 0x20 || r == ' ' {
+			return false
+		}
+	}
+	return true
 }
 
 // entry builds a single PreToolUse hook entry map.

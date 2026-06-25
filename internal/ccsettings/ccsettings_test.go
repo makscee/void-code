@@ -526,7 +526,7 @@ func TestWriteManagedSettings(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "cc-settings.json")
 	const hookCmd = "C:/Users/u/.void-code/bin/vc.exe hook"
-	if err := WriteManagedSettings(p, hookCmd); err != nil {
+	if err := WriteManagedSettings(p, hookCmd, true); err != nil {
 		t.Fatalf("WriteManagedSettings: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -573,15 +573,130 @@ func TestWriteManagedSettings_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "cc-settings.json")
 	const hookCmd = "/abs/vc hook"
-	if err := WriteManagedSettings(p, hookCmd); err != nil {
+	if err := WriteManagedSettings(p, hookCmd, true); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := os.ReadFile(p)
-	if err := WriteManagedSettings(p, hookCmd); err != nil {
+	if err := WriteManagedSettings(p, hookCmd, true); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := os.ReadFile(p)
 	if string(first) != string(second) {
 		t.Fatalf("non-idempotent write:\nfirst=%s\nsecond=%s", first, second)
+	}
+}
+
+// FIX A: WriteManagedSettings always writes the top-level skipWebFetchPreflight flag.
+func TestWriteManagedSettings_SkipWebFetchPreflight(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cc-settings.json")
+	if err := WriteManagedSettings(p, "/abs/vc hook", true); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	if m["skipWebFetchPreflight"] != true {
+		t.Fatalf("skipWebFetchPreflight = %v, want true", m["skipWebFetchPreflight"])
+	}
+}
+
+// FIX B Path 3: seedHook=false omits the PreToolUse hook entirely.
+func TestWriteManagedSettings_NoHookWhenUnsafe(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cc-settings.json")
+	if err := WriteManagedSettings(p, "/abs/vc hook", false); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	if _, present := m["hooks"]; present {
+		t.Fatalf("hooks key present with seedHook=false: %v", m["hooks"])
+	}
+	// permissions + skipWebFetchPreflight must still be there (bypass-only posture).
+	pm, _ := m["permissions"].(map[string]any)
+	if pm == nil || pm["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("permissions.defaultMode = %v, want bypassPermissions", pm["defaultMode"])
+	}
+	if m["skipWebFetchPreflight"] != true {
+		t.Fatalf("skipWebFetchPreflight = %v, want true", m["skipWebFetchPreflight"])
+	}
+}
+
+// FIX A: EnsureSkipWebFetchPreflight, fresh / merge / idempotent / non-clobber.
+func TestEnsureSkipWebFetchPreflight_AbsentWritesFresh(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := EnsureSkipWebFetchPreflight(p); err != nil {
+		t.Fatalf("EnsureSkipWebFetchPreflight: %v", err)
+	}
+	if read(t, p)["skipWebFetchPreflight"] != true {
+		t.Fatal("skipWebFetchPreflight not true after fresh write")
+	}
+}
+
+func TestEnsureSkipWebFetchPreflight_Idempotent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := EnsureSkipWebFetchPreflight(p); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(p)
+	if err := EnsureSkipWebFetchPreflight(p); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(p)
+	if string(first) != string(second) {
+		t.Fatal("second EnsureSkipWebFetchPreflight rewrote file — not idempotent")
+	}
+}
+
+func TestEnsureSkipWebFetchPreflight_PreservesForeignKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(`{"permissions":{"defaultMode":"bypassPermissions"},"model":"opus"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSkipWebFetchPreflight(p); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	if m["skipWebFetchPreflight"] != true {
+		t.Fatal("flag not set")
+	}
+	if m["model"] != "opus" {
+		t.Fatalf("foreign key model lost: %v", m["model"])
+	}
+	pm, _ := m["permissions"].(map[string]any)
+	if pm == nil || pm["defaultMode"] != "bypassPermissions" {
+		t.Fatal("permissions block clobbered")
+	}
+}
+
+func TestEnsureSkipWebFetchPreflight_UnparseableNotClobbered(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(`{not json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSkipWebFetchPreflight(p); err == nil {
+		t.Fatal("expected error on invalid JSON, got nil")
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != `{not json` {
+		t.Fatalf("invalid JSON was clobbered: %s", b)
+	}
+}
+
+// FIX B Path 3: PathHookSafe — ASCII + space-free only.
+func TestPathHookSafe(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{`C:/Users/u/.void-code/bin/vc.exe`, true},
+		{`/Users/admin/.void-code/bin/vc`, true},
+		{`D:/WinUsers/Антон Поваров/.void-code/bin/vc.exe`, false}, // Cyrillic + space
+		{`D:/WinUsers/АнтонПоваров/.void-code/bin/vc.exe`, false},  // Cyrillic only
+		{`C:/Program Files/vc/vc.exe`, false},                      // space only
+		{`C:/Users/josé/vc.exe`, false},                            // accented latin
+	}
+	for _, c := range cases {
+		if got := PathHookSafe(c.path); got != c.want {
+			t.Errorf("PathHookSafe(%q) = %v, want %v", c.path, got, c.want)
+		}
 	}
 }

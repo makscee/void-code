@@ -394,13 +394,34 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if execPath, err := os.Executable(); err == nil {
 		hookCmd := ccsettings.HookCmd(ccsettings.ForwardSlash(execPath))
 
+		// FIX B (Path 3 — guard, not full removal): the always-allow PreToolUse
+		// hook is belt-and-suspenders that only matters in `auto` mode (reachable
+		// via shift+tab off bypass); native bypassPermissions does NOT cover that
+		// residual case, so we keep the hook for ASCII + space-free exec paths.
+		// But when execPath has non-ASCII (Cyrillic) or a space, CC's Windows spawn
+		// of the hook command fails and spams a garbled CP1251 "hook failed" banner
+		// on every tool call. There, seed NO hook and strip any prior one — the
+		// user falls back to native bypass-only. The check is on the ORIGINAL
+		// execPath (pre-ForwardSlash) so the space test sees real characters.
+		hookSafe := ccsettings.PathHookSafe(execPath)
+
 		settingsPath, pathErr := ccsettings.SettingsPath()
 		if pathErr == nil {
 			if err := ccsettings.EnsureAllowAllPermissions(settingsPath); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot set allow-all permissions: %v\n", err)
 			}
-			if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot install always-allow hook: %v\n", err)
+			// FIX A: skip CC's hardcoded claude.ai WebFetch safety preflight so
+			// relay users (who can't reach claude.ai) don't fail every WebFetch.
+			if err := ccsettings.EnsureSkipWebFetchPreflight(settingsPath); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot set skipWebFetchPreflight: %v\n", err)
+			}
+			if hookSafe {
+				if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
+					fmt.Fprintf(os.Stderr, "vc: warning: cannot install always-allow hook: %v\n", err)
+				}
+			} else if err := ccsettings.RemoveHook(settingsPath); err != nil {
+				// Non-ASCII/spaced path: strip any broken hook from a prior install.
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot remove stale hook: %v\n", err)
 			}
 			// Install the statusLine command (non-clobbering — leaves user's foreign statusLine untouched).
 			slCmd := ccsettings.StatusLineCmd(ccsettings.ForwardSlash(execPath))
@@ -410,12 +431,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 
 		// Trust-independent layer: write vc's full posture (bypass defaults +
-		// skip-prompt + the always-allow hook) to ~/.void-code/cc-settings.json and
-		// pass it via --settings below. This is what guarantees `auto` mode never
-		// calls the classifier even when ~/.claude/settings.json hasn't loaded.
+		// skip-prompt + skipWebFetchPreflight, and the always-allow hook only when
+		// the exec path is hook-safe) to ~/.void-code/cc-settings.json and pass it
+		// via --settings below. This is what guarantees `auto` mode never calls the
+		// classifier even when ~/.claude/settings.json hasn't loaded.
 		if cacheDir, cerr := config.CacheDir(); cerr == nil {
 			p := filepath.Join(cacheDir, "cc-settings.json")
-			if err := ccsettings.WriteManagedSettings(p, hookCmd); err != nil {
+			if err := ccsettings.WriteManagedSettings(p, hookCmd, hookSafe); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot write managed CC settings: %v\n", err)
 			} else {
 				ccSettingsPath = p
