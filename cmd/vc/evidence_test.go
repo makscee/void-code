@@ -33,7 +33,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 	for _, e := range relayEnv {
 		k, _, _ := strings.Cut(e, "=")
 		switch k {
-		case "HTTPS_PROXY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_API_KEY":
+		case "HTTPS_PROXY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_API_KEY":
 			fmt.Printf("  %s\n", e)
 		}
 	}
@@ -44,7 +44,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("named key: %v", err)
 	}
-	injectedKeys := []string{"HTTPS_PROXY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_API_KEY"}
+	injectedKeys := []string{"HTTPS_PROXY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_API_KEY"}
 	found := map[string]string{}
 	for _, e := range namedEnv {
 		k, v, _ := strings.Cut(e, "=")
@@ -98,8 +98,8 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 	if _, ok := relayMap["HTTPS_PROXY"]; ok {
 		t.Error("relay must no longer emit HTTPS_PROXY")
 	}
-	if relayMap["CLAUDE_CODE_OAUTH_TOKEN"] != "pool-token-relay" {
-		t.Errorf("relay token wrong: %q", relayMap["CLAUDE_CODE_OAUTH_TOKEN"])
+	if relayMap["ANTHROPIC_AUTH_TOKEN"] != "pool-token-relay" {
+		t.Errorf("relay token wrong: %q", relayMap["ANTHROPIC_AUTH_TOKEN"])
 	}
 
 	namedMap := map[string]string{}
@@ -110,8 +110,8 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 	if _, ok := namedMap["HTTPS_PROXY"]; ok {
 		t.Error("named key must NOT have HTTPS_PROXY")
 	}
-	if namedMap["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-EVID" {
-		t.Errorf("named key token wrong: %q", namedMap["CLAUDE_CODE_OAUTH_TOKEN"])
+	if namedMap["ANTHROPIC_AUTH_TOKEN"] != "sk-ant-oat01-EVID" {
+		t.Errorf("named key token wrong: %q", namedMap["ANTHROPIC_AUTH_TOKEN"])
 	}
 	if _, ok := namedMap["ANTHROPIC_BASE_URL"]; ok {
 		t.Error("named key must NOT have ANTHROPIC_BASE_URL")

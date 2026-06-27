@@ -54,7 +54,7 @@ func TestSpawnEnvInjection(t *testing.T) {
 		"NODE_EXTRA_CA_CERTS=/tmp/test-ca.pem",
 		"ANTHROPIC_API_KEY=",
 		"ANTHROPIC_BASE_URL=",
-		"CLAUDE_CODE_OAUTH_TOKEN=test-token-xyz",
+		"ANTHROPIC_AUTH_TOKEN=test-token-xyz",
 	}
 
 	// Redirect stdout so we can capture it.
@@ -85,8 +85,8 @@ func TestSpawnEnvInjection(t *testing.T) {
 	if !strings.Contains(output, "HTTPS_PROXY=http://relay.makscee.ru:8448") {
 		t.Errorf("HTTPS_PROXY not found in child env output:\n%s", output)
 	}
-	if !strings.Contains(output, "CLAUDE_CODE_OAUTH_TOKEN=test-token-xyz") {
-		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN not found in child env output:\n%s", output)
+	if !strings.Contains(output, "ANTHROPIC_AUTH_TOKEN=test-token-xyz") {
+		t.Errorf("ANTHROPIC_AUTH_TOKEN not found in child env output:\n%s", output)
 	}
 }
 

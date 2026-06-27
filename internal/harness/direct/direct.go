@@ -11,6 +11,7 @@ import "strings"
 // stripKeys are the relay/auth vars removed from the parent env before the
 // direct or plain values (if any) are applied. Mirrors relay.stripKeys.
 var stripKeys = map[string]bool{
+	"ANTHROPIC_AUTH_TOKEN":    true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true,
 	"HTTPS_PROXY":             true,
 	"NODE_EXTRA_CA_CERTS":     true,
@@ -31,11 +32,15 @@ func stripped(parent []string) []string {
 }
 
 // NamedKeyEnv builds env for direct-to-Anthropic with a BYO OAuth token.
-// No proxy, no base-url override (CC defaults to api.anthropic.com), token
-// supplied via CLAUDE_CODE_OAUTH_TOKEN (the var CC reads for sk-ant-oat01 tokens).
+// No proxy, no base-url override (ANTHROPIC_AUTH_TOKEN defaults to
+// api.anthropic.com), token supplied via ANTHROPIC_AUTH_TOKEN — CC sends it as
+// Authorization: Bearer. We use ANTHROPIC_AUTH_TOKEN rather than
+// CLAUDE_CODE_OAUTH_TOKEN because interactive CC lets the machine's stored OAuth
+// account override CLAUDE_CODE_OAUTH_TOKEN (VCD-060), which would silently
+// replace the user's selected BYO key; ANTHROPIC_AUTH_TOKEN is not overridden.
 func NamedKeyEnv(parent []string, token string) []string {
 	out := stripped(parent)
-	out = append(out, "CLAUDE_CODE_OAUTH_TOKEN="+token)
+	out = append(out, "ANTHROPIC_AUTH_TOKEN="+token)
 	return out
 }
 

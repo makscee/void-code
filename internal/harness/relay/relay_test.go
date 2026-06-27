@@ -20,7 +20,8 @@ func parentEnv() []string {
 		"PATH=/usr/bin:/bin",
 		"HTTPS_PROXY=http://old-proxy:1234",       // must be stripped
 		"NODE_EXTRA_CA_CERTS=/old/ca.pem",         // must be stripped
-		"CLAUDE_CODE_OAUTH_TOKEN=old-oauth-token", // must be stripped
+		"CLAUDE_CODE_OAUTH_TOKEN=old-oauth-token", // must be stripped (never re-emitted)
+		"ANTHROPIC_AUTH_TOKEN=stale-bearer",       // must be stripped (re-set to relay token)
 		"ANTHROPIC_API_KEY=sk-ant-old",            // must be stripped (re-set empty)
 		"ANTHROPIC_BASE_URL=https://old-base.com", // must be stripped (re-set to relay)
 		"USER_SET_VAR=keep-me",                    // must survive
@@ -43,7 +44,9 @@ func TestBuildEnv_StripsParentKeys(t *testing.T) {
 	// HTTPS_PROXY and NODE_EXTRA_CA_CERTS are no longer emitted at all: CC reaches
 	// the relay via ANTHROPIC_BASE_URL, not a global proxy. They must be absent
 	// from the output (stripped from the parent, never re-added).
-	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"} {
+	// CLAUDE_CODE_OAUTH_TOKEN is likewise stripped and never re-emitted — the
+	// bearer is carried by ANTHROPIC_AUTH_TOKEN instead (VCD-060).
+	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_OAUTH_TOKEN"} {
 		if val, found := findEnv(result, k); found {
 			t.Errorf("%s: want absent, got %q", k, val)
 		}
@@ -51,9 +54,9 @@ func TestBuildEnv_StripsParentKeys(t *testing.T) {
 
 	// The remaining relay keys must carry OUR values, never the parent's.
 	checks := map[string]string{
-		"CLAUDE_CODE_OAUTH_TOKEN": "tok",                          // not "old-oauth-token"
-		"ANTHROPIC_API_KEY":       "",                             // not "sk-ant-old"
-		"ANTHROPIC_BASE_URL":      "https://relay.makscee.ru:443", // not "https://old-base.com"
+		"ANTHROPIC_AUTH_TOKEN": "tok",                          // the relay bearer
+		"ANTHROPIC_API_KEY":    "",                             // not "sk-ant-old"
+		"ANTHROPIC_BASE_URL":   "https://relay.makscee.ru:443", // not "https://old-base.com"
 	}
 	for k, want := range checks {
 		val, found := findEnv(result, k)
@@ -91,7 +94,7 @@ func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
 		key  string
 		want string
 	}{
-		{"CLAUDE_CODE_OAUTH_TOKEN", "my-token"},
+		{"ANTHROPIC_AUTH_TOKEN", "my-token"},
 		{"ANTHROPIC_API_KEY", ""},
 		{"ANTHROPIC_BASE_URL", "https://relay.makscee.ru:443"},
 	}
@@ -149,6 +152,30 @@ func TestBuildEnv_EmptyParent(t *testing.T) {
 	val, _ := findEnv(result, "ANTHROPIC_BASE_URL")
 	if val != "https://relay.makscee.ru:443" {
 		t.Errorf("ANTHROPIC_BASE_URL: got %q", val)
+	}
+}
+
+// TestBuildEnv_StaleOAuthTokenStripped is a focused regression for VCD-060: a
+// parent env carrying a stale CLAUDE_CODE_OAUTH_TOKEN must never appear in the
+// child env (it would let the stored account override our bearer and 401 the
+// relay). The bearer must be carried solely by ANTHROPIC_AUTH_TOKEN=<relay token>.
+func TestBuildEnv_StaleOAuthTokenStripped(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin",
+		"CLAUDE_CODE_OAUTH_TOKEN=parentval",
+		"ANTHROPIC_AUTH_TOKEN=parent-bearer",
+	}
+	result := relay.BuildEnv(parent, "https", "relay.makscee.ru:443", "relaytoken")
+
+	if val, found := findEnv(result, "CLAUDE_CODE_OAUTH_TOKEN"); found {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent, got %q", val)
+	}
+	val, found := findEnv(result, "ANTHROPIC_AUTH_TOKEN")
+	if !found {
+		t.Fatal("ANTHROPIC_AUTH_TOKEN not found in result")
+	}
+	if val != "relaytoken" {
+		t.Errorf("ANTHROPIC_AUTH_TOKEN: want relaytoken, got %q", val)
 	}
 }
 

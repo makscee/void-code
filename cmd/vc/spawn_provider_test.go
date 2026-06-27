@@ -26,8 +26,11 @@ func TestBuildSpawnEnv_Relay(t *testing.T) {
 	if v, ok := findEnv(env, "ANTHROPIC_BASE_URL"); !ok || v != "https://relay.makscee.ru:443" {
 		t.Errorf("relay ANTHROPIC_BASE_URL = %q ok=%v", v, ok)
 	}
-	if v, _ := findEnv(env, "CLAUDE_CODE_OAUTH_TOKEN"); v != "pool-tok" {
+	if v, _ := findEnv(env, "ANTHROPIC_AUTH_TOKEN"); v != "pool-tok" {
 		t.Errorf("relay token = %q", v)
+	}
+	if _, ok := findEnv(env, "CLAUDE_CODE_OAUTH_TOKEN"); ok {
+		t.Error("relay must not emit CLAUDE_CODE_OAUTH_TOKEN")
 	}
 	if _, ok := findEnv(env, "HTTPS_PROXY"); ok {
 		t.Error("relay must no longer emit HTTPS_PROXY")
@@ -46,7 +49,7 @@ func TestBuildSpawnEnvRelayProviderInjectsHeader(t *testing.T) {
 	}
 	// still the relay path: base URL + pool token present.
 	if !strings.Contains(joined, "ANTHROPIC_BASE_URL=https://relay.example:8448") ||
-		!strings.Contains(joined, "CLAUDE_CODE_OAUTH_TOKEN=pooltok") {
+		!strings.Contains(joined, "ANTHROPIC_AUTH_TOKEN=pooltok") {
 		t.Fatalf("relay base-url vars missing; env=%v", env)
 	}
 }
@@ -68,7 +71,7 @@ func TestBuildSpawnEnv_Plain(t *testing.T) {
 	if _, ok := findEnv(env, "HTTPS_PROXY"); ok {
 		t.Error("plain must strip HTTPS_PROXY")
 	}
-	if _, ok := findEnv(env, "CLAUDE_CODE_OAUTH_TOKEN"); ok {
+	if _, ok := findEnv(env, "ANTHROPIC_AUTH_TOKEN"); ok {
 		t.Error("plain must inject no token")
 	}
 }

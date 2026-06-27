@@ -16,6 +16,7 @@ import (
 // environment before relay-specific values are injected.  Any value supplied
 // by the parent for these keys would conflict with relay operation.
 var stripKeys = map[string]bool{
+	"ANTHROPIC_AUTH_TOKEN":    true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true,
 	"HTTPS_PROXY":             true,
 	"NODE_EXTRA_CA_CERTS":     true,
@@ -29,8 +30,15 @@ var stripKeys = map[string]bool{
 //  1. Copies every entry from parent, skipping the keys in stripKeys.
 //  2. Appends the relay-specific variables:
 //     - ANTHROPIC_BASE_URL=<scheme>://<host>  (point CC at the relay as an API base)
-//     - CLAUDE_CODE_OAUTH_TOKEN=<token>       (CC forwards it as Authorization: Bearer)
+//     - ANTHROPIC_AUTH_TOKEN=<token>          (CC sends it as Authorization: Bearer)
 //     - ANTHROPIC_API_KEY=                    (empty — OAuth-mode CC, no API key)
+//
+// The bearer is injected via ANTHROPIC_AUTH_TOKEN, not CLAUDE_CODE_OAUTH_TOKEN,
+// because interactive CC lets the machine's stored OAuth account override
+// CLAUDE_CODE_OAUTH_TOKEN — the relay then received a foreign account token and
+// returned 401 (VCD-060). ANTHROPIC_AUTH_TOKEN is CC's gateway-bearer var and is
+// not overridden; CLAUDE_CODE_OAUTH_TOKEN stays in stripKeys so a stale parent
+// value can't leak and re-trigger the override.
 //
 // CC reaches the relay via ANTHROPIC_BASE_URL rather than a global HTTPS_PROXY,
 // so the agent's other tool egress is no longer captured (the bug VCD-059 fixes).
@@ -51,7 +59,7 @@ func BuildEnv(parent []string, scheme, host, token string) []string {
 
 	out = append(out,
 		fmt.Sprintf("ANTHROPIC_BASE_URL=%s://%s", scheme, host),
-		"CLAUDE_CODE_OAUTH_TOKEN="+token,
+		"ANTHROPIC_AUTH_TOKEN="+token,
 		"ANTHROPIC_API_KEY=",
 	)
 	return out

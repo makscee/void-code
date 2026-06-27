@@ -22,6 +22,7 @@ var parent = []string{
 	"NODE_EXTRA_CA_CERTS=/some/ca.pem",
 	"ANTHROPIC_BASE_URL=",
 	"CLAUDE_CODE_OAUTH_TOKEN=pool-token",
+	"ANTHROPIC_AUTH_TOKEN=stale-bearer",
 	"ANTHROPIC_API_KEY=",
 }
 
@@ -41,8 +42,13 @@ func TestNamedKeyEnv_DirectToAnthropic(t *testing.T) {
 	if _, ok := m["ANTHROPIC_BASE_URL"]; ok {
 		t.Error("ANTHROPIC_BASE_URL must be absent so CC talks to api.anthropic.com directly")
 	}
-	if m["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-USERKEY" {
-		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN = %q, want the user key", m["CLAUDE_CODE_OAUTH_TOKEN"])
+	// Bearer is carried by ANTHROPIC_AUTH_TOKEN (not CLAUDE_CODE_OAUTH_TOKEN),
+	// so the machine's stored account can't override the user's selected key.
+	if _, ok := m["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
+		t.Error("CLAUDE_CODE_OAUTH_TOKEN must be stripped, never re-emitted")
+	}
+	if m["ANTHROPIC_AUTH_TOKEN"] != "sk-ant-oat01-USERKEY" {
+		t.Errorf("ANTHROPIC_AUTH_TOKEN = %q, want the user key", m["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
 
@@ -53,7 +59,7 @@ func TestPlainEnv_NoInjection(t *testing.T) {
 	if m["PATH"] != "/usr/bin" {
 		t.Errorf("PATH not preserved: %q", m["PATH"])
 	}
-	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"} {
+	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"} {
 		if _, ok := m[k]; ok {
 			t.Errorf("%s should be stripped on plain path (native CC auth)", k)
 		}
