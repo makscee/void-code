@@ -34,8 +34,8 @@ CGO_ENABLED=0 always — static binary, no libc dep.
 | Env override: relay | `VC_RELAY_HOST` |
 | Env override: CA | `VC_RELAY_CA` |
 | Env override: auth | `VC_AUTH_HOST` |
-| Env into claude | `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` + `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY=` (empty) + `ANTHROPIC_BASE_URL=` (empty) |
-| Env stripped | `CLAUDE_CODE_OAUTH_TOKEN`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
+| Env into claude | `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` + `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_API_KEY=` (empty) + `ANTHROPIC_BASE_URL=` (empty) |
+| Env stripped | `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
 | GH artifacts | `vc-{darwin,linux,windows}-{amd64,arm64}` (windows: `.exe`) |
 | Spawn seam | `internal/harness.Spawn(ctx, wrappedBin, args, env)` |
 

@@ -29,26 +29,32 @@ var stripKeys = map[string]bool{
 // It:
 //  1. Copies every entry from parent, skipping the keys in stripKeys.
 //  2. Appends the relay-specific variables:
-//     - ANTHROPIC_BASE_URL=<scheme>://<host>  (point CC at the relay as an API base)
-//     - ANTHROPIC_AUTH_TOKEN=<token>          (CC sends it as Authorization: Bearer)
-//     - ANTHROPIC_API_KEY=                    (empty — OAuth-mode CC, no API key)
+//     - HTTPS_PROXY=<scheme>://<host>     (route all HTTPS via the relay's MITM proxy)
+//     - NODE_EXTRA_CA_CERTS=<caPath>      (trust the relay CA so the MITM TLS validates)
+//     - ANTHROPIC_BASE_URL=               (empty — CC hits api.anthropic.com, the proxy intercepts)
+//     - ANTHROPIC_AUTH_TOKEN=<token>      (CC sends it as Authorization: Bearer)
+//     - ANTHROPIC_API_KEY=                (empty — OAuth-mode CC, no API key)
+//
+// Routing is via HTTPS_PROXY + relay CA rather than ANTHROPIC_BASE_URL: the proxy
+// is an OS-standard mechanism that forwards traffic regardless of Claude Code
+// internals, whereas ANTHROPIC_BASE_URL depends on CC behaviour that can change
+// under us (VCD-061). The relay still serves the CONNECT/MITM ingress; this is a
+// client-side transport choice only. ANTHROPIC_BASE_URL is emitted empty so CC
+// resolves api.anthropic.com and the proxy intercepts at the TLS layer.
 //
 // The bearer is injected via ANTHROPIC_AUTH_TOKEN, not CLAUDE_CODE_OAUTH_TOKEN,
 // because interactive CC lets the machine's stored OAuth account override
-// CLAUDE_CODE_OAUTH_TOKEN — the relay then received a foreign account token and
-// returned 401 (VCD-060). ANTHROPIC_AUTH_TOKEN is CC's gateway-bearer var and is
-// not overridden; CLAUDE_CODE_OAUTH_TOKEN stays in stripKeys so a stale parent
-// value can't leak and re-trigger the override.
-//
-// CC reaches the relay via ANTHROPIC_BASE_URL rather than a global HTTPS_PROXY,
-// so the agent's other tool egress is no longer captured (the bug VCD-059 fixes).
-// HTTPS_PROXY and NODE_EXTRA_CA_CERTS are no longer emitted; they remain in
-// stripKeys so a parent's values never leak in.
+// CLAUDE_CODE_OAUTH_TOKEN — the relay then read a foreign account token from the
+// Authorization header to api.anthropic.com and returned 401 (VCD-060).
+// ANTHROPIC_AUTH_TOKEN is CC's gateway-bearer var and is not overridden;
+// CLAUDE_CODE_OAUTH_TOKEN stays in stripKeys so a stale parent value can't leak
+// and re-trigger the override.
 //
 // scheme should be "http" or "https"; callers pass Config.RelayScheme.
+// caPath is the relay CA path resolved by the caller (resolveCA in cmd/vc).
 // The Bare mode from cv's BuildEnv is explicitly NOT ported (ADR-0002).
-func BuildEnv(parent []string, scheme, host, token string) []string {
-	out := make([]string, 0, len(parent)+3)
+func BuildEnv(parent []string, scheme, host, token, caPath string) []string {
+	out := make([]string, 0, len(parent)+5)
 	for _, e := range parent {
 		k, _, _ := strings.Cut(e, "=")
 		if stripKeys[k] {
@@ -58,7 +64,9 @@ func BuildEnv(parent []string, scheme, host, token string) []string {
 	}
 
 	out = append(out,
-		fmt.Sprintf("ANTHROPIC_BASE_URL=%s://%s", scheme, host),
+		fmt.Sprintf("HTTPS_PROXY=%s://%s", scheme, host),
+		"NODE_EXTRA_CA_CERTS="+caPath,
+		"ANTHROPIC_BASE_URL=",
 		"ANTHROPIC_AUTH_TOKEN="+token,
 		"ANTHROPIC_API_KEY=",
 	)

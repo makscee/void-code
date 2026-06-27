@@ -39,24 +39,23 @@ func findEnv(slice []string, key string) (string, bool) {
 }
 
 func TestBuildEnv_StripsParentKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/etc/relay-ca.pem")
 
-	// HTTPS_PROXY and NODE_EXTRA_CA_CERTS are no longer emitted at all: CC reaches
-	// the relay via ANTHROPIC_BASE_URL, not a global proxy. They must be absent
-	// from the output (stripped from the parent, never re-added).
-	// CLAUDE_CODE_OAUTH_TOKEN is likewise stripped and never re-emitted — the
-	// bearer is carried by ANTHROPIC_AUTH_TOKEN instead (VCD-060).
-	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_OAUTH_TOKEN"} {
-		if val, found := findEnv(result, k); found {
-			t.Errorf("%s: want absent, got %q", k, val)
-		}
+	// CLAUDE_CODE_OAUTH_TOKEN is stripped and never re-emitted — the bearer is
+	// carried by ANTHROPIC_AUTH_TOKEN instead (VCD-060).
+	if val, found := findEnv(result, "CLAUDE_CODE_OAUTH_TOKEN"); found {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: want absent, got %q", val)
 	}
 
-	// The remaining relay keys must carry OUR values, never the parent's.
+	// Every relay key must carry OUR values, never the parent's (the parent's
+	// stale HTTPS_PROXY/NODE_EXTRA_CA_CERTS/etc. are stripped, then re-emitted
+	// with the relay transport values).
 	checks := map[string]string{
+		"HTTPS_PROXY":          "https://relay.makscee.ru:443", // not "http://old-proxy:1234"
+		"NODE_EXTRA_CA_CERTS":  "/etc/relay-ca.pem",            // not "/old/ca.pem"
 		"ANTHROPIC_AUTH_TOKEN": "tok",                          // the relay bearer
 		"ANTHROPIC_API_KEY":    "",                             // not "sk-ant-old"
-		"ANTHROPIC_BASE_URL":   "https://relay.makscee.ru:443", // not "https://old-base.com"
+		"ANTHROPIC_BASE_URL":   "",                             // empty: CC hits api.anthropic.com, proxy intercepts
 	}
 	for k, want := range checks {
 		val, found := findEnv(result, k)
@@ -71,7 +70,7 @@ func TestBuildEnv_StripsParentKeys(t *testing.T) {
 }
 
 func TestBuildEnv_PreservesUnrelatedKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/etc/relay-ca.pem")
 
 	val, found := findEnv(result, "USER_SET_VAR")
 	if !found {
@@ -88,15 +87,17 @@ func TestBuildEnv_PreservesUnrelatedKeys(t *testing.T) {
 }
 
 func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "my-token")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "my-token", "/etc/relay-ca.pem")
 
 	tests := []struct {
 		key  string
 		want string
 	}{
+		{"HTTPS_PROXY", "https://relay.makscee.ru:443"},
+		{"NODE_EXTRA_CA_CERTS", "/etc/relay-ca.pem"},
+		{"ANTHROPIC_BASE_URL", ""}, // empty: CC hits api.anthropic.com, proxy intercepts
 		{"ANTHROPIC_AUTH_TOKEN", "my-token"},
 		{"ANTHROPIC_API_KEY", ""},
-		{"ANTHROPIC_BASE_URL", "https://relay.makscee.ru:443"},
 	}
 	for _, tc := range tests {
 		val, found := findEnv(result, tc.key)
@@ -108,29 +109,22 @@ func TestBuildEnv_SetsRequiredKeys(t *testing.T) {
 			t.Errorf("%s: want %q, got %q", tc.key, tc.want, val)
 		}
 	}
-
-	// The forward-proxy keys are no longer emitted.
-	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"} {
-		if val, found := findEnv(result, k); found {
-			t.Errorf("%s: want absent, got %q", k, val)
-		}
-	}
 }
 
 func TestBuildEnv_HttpScheme(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "http", "relay.makscee.ru:8448", "tok")
+	result := relay.BuildEnv(parentEnv(), "http", "relay.makscee.ru:8448", "tok", "/etc/relay-ca.pem")
 
-	val, found := findEnv(result, "ANTHROPIC_BASE_URL")
+	val, found := findEnv(result, "HTTPS_PROXY")
 	if !found {
-		t.Fatal("ANTHROPIC_BASE_URL not found")
+		t.Fatal("HTTPS_PROXY not found")
 	}
 	if val != "http://relay.makscee.ru:8448" {
-		t.Errorf("ANTHROPIC_BASE_URL: want http://relay.makscee.ru:8448, got %q", val)
+		t.Errorf("HTTPS_PROXY: want http://relay.makscee.ru:8448, got %q", val)
 	}
 }
 
 func TestBuildEnv_NoDuplicateKeys(t *testing.T) {
-	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok")
+	result := relay.BuildEnv(parentEnv(), "https", "relay.makscee.ru:443", "tok", "/etc/relay-ca.pem")
 
 	seen := map[string]int{}
 	for _, e := range result {
@@ -145,13 +139,13 @@ func TestBuildEnv_NoDuplicateKeys(t *testing.T) {
 }
 
 func TestBuildEnv_EmptyParent(t *testing.T) {
-	result := relay.BuildEnv(nil, "https", "relay.makscee.ru:443", "tok")
+	result := relay.BuildEnv(nil, "https", "relay.makscee.ru:443", "tok", "/etc/relay-ca.pem")
 	if len(result) == 0 {
 		t.Fatal("expected non-empty result with nil parent")
 	}
-	val, _ := findEnv(result, "ANTHROPIC_BASE_URL")
+	val, _ := findEnv(result, "HTTPS_PROXY")
 	if val != "https://relay.makscee.ru:443" {
-		t.Errorf("ANTHROPIC_BASE_URL: got %q", val)
+		t.Errorf("HTTPS_PROXY: got %q", val)
 	}
 }
 
@@ -165,7 +159,7 @@ func TestBuildEnv_StaleOAuthTokenStripped(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN=parentval",
 		"ANTHROPIC_AUTH_TOKEN=parent-bearer",
 	}
-	result := relay.BuildEnv(parent, "https", "relay.makscee.ru:443", "relaytoken")
+	result := relay.BuildEnv(parent, "https", "relay.makscee.ru:443", "relaytoken", "/etc/relay-ca.pem")
 
 	if val, found := findEnv(result, "CLAUDE_CODE_OAUTH_TOKEN"); found {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent, got %q", val)

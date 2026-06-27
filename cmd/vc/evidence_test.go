@@ -26,7 +26,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 
 	fmt.Println("\n=== MODE: Relay ===")
 	relayEnv, err := buildSpawnEnv(provider.Provider{Kind: provider.Relay},
-		parent, "https", "relay.makscee.ru:443", "pool-token-relay")
+		parent, "https", "relay.makscee.ru:443", "pool-token-relay", "/etc/relay-ca.pem")
 	if err != nil {
 		t.Fatalf("relay: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 
 	fmt.Println("\n=== MODE: Named key (direct Anthropic) ===")
 	namedEnv, err := buildSpawnEnv(provider.Provider{Kind: provider.NamedKey, Name: "evidence-key"},
-		parent, "https", "relay.makscee.ru:443", "pool-token-relay")
+		parent, "https", "relay.makscee.ru:443", "pool-token-relay", "/etc/relay-ca.pem")
 	if err != nil {
 		t.Fatalf("named key: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 
 	fmt.Println("\n=== MODE: Plain (native CC auth) ===")
 	plainEnv, err := buildSpawnEnv(provider.Provider{Kind: provider.Plain},
-		parent, "https", "relay.makscee.ru:443", "pool-token-relay")
+		parent, "https", "relay.makscee.ru:443", "pool-token-relay", "/etc/relay-ca.pem")
 	if err != nil {
 		t.Fatalf("plain: %v", err)
 	}
@@ -92,11 +92,14 @@ func TestEvidence_AllThreeEnvModes(t *testing.T) {
 		k, v, _ := strings.Cut(e, "=")
 		relayMap[k] = v
 	}
-	if relayMap["ANTHROPIC_BASE_URL"] != "https://relay.makscee.ru:443" {
-		t.Errorf("relay ANTHROPIC_BASE_URL wrong: %q", relayMap["ANTHROPIC_BASE_URL"])
+	if relayMap["HTTPS_PROXY"] != "https://relay.makscee.ru:443" {
+		t.Errorf("relay HTTPS_PROXY wrong: %q", relayMap["HTTPS_PROXY"])
 	}
-	if _, ok := relayMap["HTTPS_PROXY"]; ok {
-		t.Error("relay must no longer emit HTTPS_PROXY")
+	if relayMap["NODE_EXTRA_CA_CERTS"] != "/etc/relay-ca.pem" {
+		t.Errorf("relay NODE_EXTRA_CA_CERTS wrong: %q", relayMap["NODE_EXTRA_CA_CERTS"])
+	}
+	if v, ok := relayMap["ANTHROPIC_BASE_URL"]; !ok || v != "" {
+		t.Errorf("relay ANTHROPIC_BASE_URL must be present and empty, got %q ok=%v", v, ok)
 	}
 	if relayMap["ANTHROPIC_AUTH_TOKEN"] != "pool-token-relay" {
 		t.Errorf("relay token wrong: %q", relayMap["ANTHROPIC_AUTH_TOKEN"])
