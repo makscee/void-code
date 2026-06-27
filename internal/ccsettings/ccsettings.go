@@ -102,6 +102,12 @@ func WriteManagedSettings(path, hookCmd string, seedHook bool) error {
 		"skipDangerousModePermissionPrompt": skip,
 		// FIX A: skip CC's hardcoded claude.ai WebFetch safety preflight.
 		"skipWebFetchPreflight": true,
+		// Suppress the warn-level "claude.ai connectors are disabled because
+		// ANTHROPIC_API_KEY ... takes precedence" nag. For relay/BYO users that
+		// injected auth always takes precedence, so claude.ai connectors can
+		// never load anyway — this takes CC's silent disabled_setting branch
+		// before the api_key_precedence warn branch.
+		"disableClaudeAiConnectors": true,
 	}
 	if seedHook {
 		doc["hooks"] = map[string]any{
@@ -210,6 +216,51 @@ func EnsureSkipWebFetchPreflight(path string) error {
 // freshSkipWebFetchPreflightDoc builds a minimal settings.json with only the flag.
 func freshSkipWebFetchPreflightDoc() []byte {
 	doc := map[string]any{"skipWebFetchPreflight": true}
+	out, _ := json.MarshalIndent(doc, "", "  ")
+	return append(out, '\n')
+}
+
+// EnsureDisableClaudeAiConnectors sets the top-level "disableClaudeAiConnectors":
+// true in the settings file at path. When vc injects a relay/BYO bearer, Claude
+// Code prints a warn-level nag at the bottom ("claude.ai connectors are disabled
+// because ANTHROPIC_API_KEY or another auth source is set and takes precedence
+// over your claude.ai login"). This top-level boolean takes CC's silent
+// disabled_setting branch BEFORE the api_key_precedence warn branch, so the
+// warning disappears and claude still works normally. This is correct for vc
+// users: relay/BYO auth always takes precedence, so claude.ai connectors can
+// never load anyway.
+//
+// Non-clobbering + idempotent, mirroring EnsureSkipWebFetchPreflight:
+//   - Absent file              → write fresh with just the flag.
+//   - Present + valid JSON      → set our top-level key, keep the rest.
+//   - Already true              → no-op (no write).
+//   - Present + invalid JSON    → return error, do NOT clobber.
+func EnsureDisableClaudeAiConnectors(path string) error {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return writeAtomic(path, freshDisableClaudeAiConnectorsDoc())
+	}
+	if err != nil {
+		return err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("ccsettings: %s invalid JSON (leaving untouched): %w", path, err)
+	}
+	if obj["disableClaudeAiConnectors"] == true {
+		return nil // already correct — no write needed
+	}
+	obj["disableClaudeAiConnectors"] = true
+	out, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("ccsettings: marshal: %w", err)
+	}
+	return writeAtomic(path, append(out, '\n'))
+}
+
+// freshDisableClaudeAiConnectorsDoc builds a minimal settings.json with only the flag.
+func freshDisableClaudeAiConnectorsDoc() []byte {
+	doc := map[string]any{"disableClaudeAiConnectors": true}
 	out, _ := json.MarshalIndent(doc, "", "  ")
 	return append(out, '\n')
 }

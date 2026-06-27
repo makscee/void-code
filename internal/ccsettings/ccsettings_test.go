@@ -681,6 +681,80 @@ func TestEnsureSkipWebFetchPreflight_UnparseableNotClobbered(t *testing.T) {
 	}
 }
 
+// WriteManagedSettings always writes the top-level disableClaudeAiConnectors flag.
+func TestWriteManagedSettings_DisableClaudeAiConnectors(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cc-settings.json")
+	if err := WriteManagedSettings(p, "/abs/vc hook", true); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	if m["disableClaudeAiConnectors"] != true {
+		t.Fatalf("disableClaudeAiConnectors = %v, want true", m["disableClaudeAiConnectors"])
+	}
+}
+
+// EnsureDisableClaudeAiConnectors, fresh / merge / idempotent / non-clobber.
+func TestEnsureDisableClaudeAiConnectors_AbsentWritesFresh(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := EnsureDisableClaudeAiConnectors(p); err != nil {
+		t.Fatalf("EnsureDisableClaudeAiConnectors: %v", err)
+	}
+	if read(t, p)["disableClaudeAiConnectors"] != true {
+		t.Fatal("disableClaudeAiConnectors not true after fresh write")
+	}
+}
+
+func TestEnsureDisableClaudeAiConnectors_Idempotent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := EnsureDisableClaudeAiConnectors(p); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(p)
+	if err := EnsureDisableClaudeAiConnectors(p); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(p)
+	if string(first) != string(second) {
+		t.Fatal("second EnsureDisableClaudeAiConnectors rewrote file — not idempotent")
+	}
+}
+
+func TestEnsureDisableClaudeAiConnectors_PreservesForeignKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(`{"permissions":{"defaultMode":"bypassPermissions"},"model":"opus"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDisableClaudeAiConnectors(p); err != nil {
+		t.Fatal(err)
+	}
+	m := read(t, p)
+	if m["disableClaudeAiConnectors"] != true {
+		t.Fatal("flag not set")
+	}
+	if m["model"] != "opus" {
+		t.Fatalf("foreign key model lost: %v", m["model"])
+	}
+	pm, _ := m["permissions"].(map[string]any)
+	if pm == nil || pm["defaultMode"] != "bypassPermissions" {
+		t.Fatal("permissions block clobbered")
+	}
+}
+
+func TestEnsureDisableClaudeAiConnectors_UnparseableNotClobbered(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(`{not json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDisableClaudeAiConnectors(p); err == nil {
+		t.Fatal("expected error on invalid JSON, got nil")
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != `{not json` {
+		t.Fatalf("invalid JSON was clobbered: %s", b)
+	}
+}
+
 // FIX B Path 3: PathHookSafe — ASCII + space-free only.
 func TestPathHookSafe(t *testing.T) {
 	cases := []struct {

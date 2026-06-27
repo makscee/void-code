@@ -415,6 +415,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			if err := ccsettings.EnsureSkipWebFetchPreflight(settingsPath); err != nil {
 				fmt.Fprintf(os.Stderr, "vc: warning: cannot set skipWebFetchPreflight: %v\n", err)
 			}
+			// Suppress the warn-level "claude.ai connectors are disabled because
+			// ANTHROPIC_API_KEY ... takes precedence" nag for relay/BYO users.
+			if err := ccsettings.EnsureDisableClaudeAiConnectors(settingsPath); err != nil {
+				fmt.Fprintf(os.Stderr, "vc: warning: cannot set disableClaudeAiConnectors: %v\n", err)
+			}
 			if hookSafe {
 				if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
 					fmt.Fprintf(os.Stderr, "vc: warning: cannot install always-allow hook: %v\n", err)
