@@ -1,5 +1,5 @@
 // Package provider models the active "where does claude's auth come from" choice
-// and persists it to the vc config file. Four kinds: Relay (default, void-relay),
+// and persists it to the vc config file. Four kinds: Relay (default, DeepSeek relay),
 // NamedKey (a saved BYO OAuth token, direct to Anthropic), Plain (native CC auth),
 // RelayProvider (a server-granted provider routed via relay, VCD-72).
 package provider
@@ -14,7 +14,7 @@ import (
 type Kind int
 
 const (
-	Relay         Kind = iota // void-relay proxy + pool token (default)
+	Relay         Kind = iota // DeepSeek relay default route
 	NamedKey                  // a saved OAuth token, direct to Anthropic
 	Plain                     // native Claude Code auth, no injection
 	RelayProvider             // a server-granted provider routed via relay; carries ID, sends x-void-provider
@@ -70,13 +70,13 @@ func (p Provider) String() string {
 func (p Provider) Label() string {
 	switch p.Kind {
 	case Plain:
-		return "Plain Claude Code"
+		return "Plain harness run"
 	case NamedKey:
 		return "key: " + p.Name
 	case RelayProvider:
 		return p.ID
 	default:
-		return "Relay (void-relay)"
+		return "DeepSeek relay"
 	}
 }
 
@@ -138,7 +138,7 @@ type GrantedEntry struct {
 //
 //   - RelayProvider: looked up in granted list → "Relay: <name>" (name falls back to id).
 //     Returns "" when the id is not present in the list (caller must guard).
-//   - NamedKey / Plain / Relay: derived purely from the Provider itself.
+//   - NamedKey / Plain / Relay: derived purely from the Provider itself (Relay → "DeepSeek relay").
 func FriendlyLabel(p Provider, granted []GrantedEntry) string {
 	switch p.Kind {
 	case RelayProvider:
@@ -148,16 +148,23 @@ func FriendlyLabel(p Provider, granted []GrantedEntry) string {
 				if name == "" {
 					name = g.ID
 				}
-				return "Relay: " + name
+				switch strings.ToLower(strings.TrimSpace(name)) {
+				case "deepseek":
+					return "DeepSeek relay"
+				case "chatgpt":
+					return "ChatGPT relay"
+				default:
+					return "Relay: " + name
+				}
 			}
 		}
 		return "" // not found — caller must not persist
 	case NamedKey:
 		return p.Label() // "key: <name>"
 	case Plain:
-		return p.Label() // "Plain Claude Code"
+		return p.Label() // "Plain harness run"
 	default:
-		return p.Label() // "Relay (void-relay)"
+		return p.Label() // "DeepSeek relay"
 	}
 }
 

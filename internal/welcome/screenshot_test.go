@@ -11,8 +11,7 @@ import (
 // TestEvidence_ProvidersMenuRender renders the Providers menu to stdout for
 // screenshot capture. Run with: go test -tags evidence ./internal/welcome/ -v -run TestEvidence_ProvidersMenu
 func TestEvidence_ProvidersMenuRender(t *testing.T) {
-	keys := []string{"evidence-key"}
-	m := NewProvidersModelForTest(keys, "key:evidence-key")
+	m := NewProvidersModelWithGrantedForTest(nil, []ProviderRowInfo{{ID: "deepseek", Name: "DeepSeek"}}, "prov:deepseek")
 
 	fmt.Println("=== Providers Menu TUI (rendered) ===")
 	// Strip ANSI for plain capture
@@ -25,17 +24,11 @@ func TestEvidence_ProvidersMenuRender(t *testing.T) {
 	if !strings.Contains(rendered, "Providers") {
 		t.Error("missing Providers header")
 	}
-	if !strings.Contains(rendered, "Relay (void-relay)") {
-		t.Error("missing Relay row")
+	if !strings.Contains(rendered, "DeepSeek relay") {
+		t.Error("missing DeepSeek relay row")
 	}
-	if !strings.Contains(rendered, "evidence-key") {
-		t.Error("missing evidence-key row")
-	}
-	if !strings.Contains(rendered, "Plain Claude Code") {
-		t.Error("missing Plain Claude Code row")
-	}
-	if !strings.Contains(rendered, "+ Add key") {
-		t.Error("missing + Add key row")
+	if !strings.Contains(rendered, "Plain harness run") {
+		t.Error("missing Plain harness run row")
 	}
 }
 

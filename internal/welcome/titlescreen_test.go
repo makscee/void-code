@@ -17,12 +17,12 @@ func TestView_ShowsActiveProvider(t *testing.T) {
 		activeProvider string
 		wantContains   string
 	}{
-		{"relay", "Relay (void-relay)"},
-		{"plain", "Plain Claude Code"},
+		{"relay", "DeepSeek relay"},
+		{"plain", "Plain harness run"},
 		{"key:work", "key: work"},
 		{"key:my-key", "key: my-key"},
 		// Empty / unset → defaults to Relay
-		{"", "Relay (void-relay)"},
+		{"", "DeepSeek relay"},
 	}
 	for _, c := range cases {
 		cb := Callbacks{ActiveProvider: c.activeProvider}
@@ -38,16 +38,12 @@ func TestView_ShowsActiveProvider(t *testing.T) {
 	}
 }
 
-// TestView_ShowsActiveProvider_NotLoggedIn verifies that the provider line is
-// still shown (as Relay default) even when logged out — the Providers menu is
-// accessible regardless of auth state.
-func TestView_ShowsActiveProvider_NotLoggedIn(t *testing.T) {
-	cb := Callbacks{ActiveProvider: "relay"}
-	m := newModel(AuthState{LoggedIn: false}, cb)
+func TestView_LoggedOutShowsLoginOnly(t *testing.T) {
+	m := newModel(AuthState{LoggedIn: false}, Callbacks{ActiveProvider: "relay"})
 	view := m.View()
 	plain := stripANSIInternal(view)
-	if !strings.Contains(plain, "Relay (void-relay)") {
-		t.Errorf("View() for logged-out must still show provider; got:\n%s", plain)
+	if !strings.Contains(plain, "Login") {
+		t.Errorf("View() for logged-out must show Login; got:\n%s", plain)
 	}
 }
 

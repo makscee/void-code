@@ -8,126 +8,105 @@ import (
 	"github.com/makscee/void-code/internal/provider"
 )
 
-func TestBuildProviderRowsIncludesGranted(t *testing.T) {
+func TestBuildProviderRowsIncludesOnlySupportedGranted(t *testing.T) {
 	granted := []ProviderRowInfo{
-		{ID: "deepseek", Name: "DeepSeek"},
+		{ID: "deepseek-sub", Name: "DeepSeek Sub"},
 		{ID: "plat-2", Name: "Platform 2"},
+		{ID: "chatgpt-sub", Name: "ChatGPT Sub"},
 	}
 	rows := buildProviderRows([]string{"mykey"}, granted)
 
-	var haveDeepseek, havePlat2, haveMyKey bool
-	var haveBareRelay bool
+	var deepseekRows, haveChatGPT int
+	var havePlat2, haveMyKey bool
 	for _, r := range rows {
-		// Each granted provider must appear as "Relay: <Name>", NOT bare name.
-		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "deepseek" && r.label == "Relay: DeepSeek" {
-			haveDeepseek = true
+		if r.prov.Kind == provider.Relay && r.label == "DeepSeek relay" {
+			deepseekRows++
 		}
-		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "plat-2" && r.label == "Relay: Platform 2" {
+		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "chatgpt-sub" && r.label == "ChatGPT relay" {
+			haveChatGPT++
+		}
+		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "plat-2" {
 			havePlat2 = true
-		}
-		// Bare "Relay" row (non-addKey) must NOT be present when granted providers are listed.
-		if !r.addKey && r.prov.Kind == provider.Relay {
-			haveBareRelay = true
 		}
 		if r.prov.Kind == provider.NamedKey && r.prov.Name == "mykey" {
 			haveMyKey = true
 		}
 	}
-	if !haveDeepseek || !havePlat2 || !haveMyKey {
-		t.Fatalf("rows missing expected entries: deepseek=%v plat2=%v mykey=%v\nrows=%+v",
-			haveDeepseek, havePlat2, haveMyKey, rows)
+	if deepseekRows != 1 || haveChatGPT != 1 {
+		t.Fatalf("rows missing supported entries or duplicated DeepSeek: deepseek=%d chatgpt=%d rows=%+v", deepseekRows, haveChatGPT, rows)
 	}
-	if haveBareRelay {
-		t.Fatalf("bare Relay row must not appear when granted providers are listed; rows=%+v", rows)
+	if havePlat2 || haveMyKey {
+		t.Fatalf("unsupported relay/named-key rows must be hidden: plat2=%v mykey=%v rows=%+v", havePlat2, haveMyKey, rows)
 	}
 }
 
-// TestBuildProviderRowsRelayPrefixFallback tests that when a provider has an empty Name
-// the ID is used with the "Relay: " prefix.
-func TestBuildProviderRowsRelayPrefixFallback(t *testing.T) {
-	granted := []ProviderRowInfo{{ID: "plat-3", Name: ""}}
+func TestBuildProviderRowsUsesSupportedIDFallback(t *testing.T) {
+	granted := []ProviderRowInfo{{ID: "chatgpt-sub", Name: ""}}
 	rows := buildProviderRows(nil, granted)
-	var found bool
-	for _, r := range rows {
-		if r.prov.Kind == provider.RelayProvider && r.prov.ID == "plat-3" {
-			if r.label != "Relay: plat-3" {
-				t.Fatalf("label = %q, want %q", r.label, "Relay: plat-3")
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("plat-3 row not found")
+	if rows[1].label != "ChatGPT relay" {
+		t.Fatalf("label = %q, want ChatGPT relay", rows[1].label)
 	}
 }
 
 func TestBuildProviderRowsNoGrantedIsBaseline(t *testing.T) {
-	// ungranted user: empty granted list → no RelayProvider rows, only Relay/Plain/Add (+ any keys).
+	// ungranted user: empty granted list → bare DeepSeek relay plus Plain.
 	rows := buildProviderRows(nil, nil)
-	for _, r := range rows {
-		if r.prov.Kind == provider.RelayProvider {
-			t.Fatalf("unexpected RelayProvider row for ungranted user: %+v", r)
-		}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if rows[0].prov.Kind != provider.Relay || rows[0].label != "DeepSeek relay" {
+		t.Fatalf("row0 = %+v, want bare DeepSeek relay", rows[0])
+	}
+	if rows[1].prov.Kind != provider.Plain || rows[1].label != "Plain harness run" {
+		t.Fatalf("row1 = %+v, want Plain harness run", rows[1])
 	}
 }
 
 func TestProvidersModel_RowsFromKeys(t *testing.T) {
 	keys := []string{"work", "personal"}
 	m := NewProvidersModelForTest(keys, "relay")
-	// Expected rows (no granted): key:work, key:personal, Plain Claude Code, + Add key…
-	// Bare "Relay" is gone — relay routes are only shown when granted providers exist.
-	if got := m.RowCount(); got != 4 {
-		t.Fatalf("RowCount = %d, want 4 (no bare Relay row)", got)
+	// Expected rows (no granted): DeepSeek relay, Plain harness run. Named keys are hidden.
+	if got := m.RowCount(); got != 2 {
+		t.Fatalf("RowCount = %d, want 2", got)
 	}
-	if m.RowLabel(2) != "Plain Claude Code" {
-		t.Errorf("row2 = %q, want Plain Claude Code", m.RowLabel(2))
+	if m.RowLabel(0) != "DeepSeek relay" {
+		t.Errorf("row0 = %q, want DeepSeek relay", m.RowLabel(0))
 	}
-	if m.RowLabel(3) != "+ Add key…" {
-		t.Errorf("row3 = %q, want + Add key…", m.RowLabel(3))
+	if m.RowLabel(1) != "Plain harness run" {
+		t.Errorf("row1 = %q, want Plain harness run", m.RowLabel(1))
 	}
 }
 
 func TestProvidersModel_RowsWithGranted(t *testing.T) {
 	keys := []string{"work"}
-	granted := []ProviderRowInfo{{ID: "deepseek", Name: "DeepSeek"}}
-	m := NewProvidersModelWithGrantedForTest(keys, granted, "prov:deepseek")
-	// Expected rows: Relay: DeepSeek, key:work, Plain Claude Code, + Add key…
-	if got := m.RowCount(); got != 4 {
-		t.Fatalf("RowCount = %d, want 4", got)
+	granted := []ProviderRowInfo{{ID: "deepseek-sub", Name: "DeepSeek Sub"}, {ID: "chatgpt-sub", Name: ""}}
+	m := NewProvidersModelWithGrantedForTest(keys, granted, "relay")
+	// Expected rows: bare DeepSeek relay, ChatGPT relay, Plain harness run. Named keys are hidden.
+	if got := m.RowCount(); got != 3 {
+		t.Fatalf("RowCount = %d, want 3", got)
 	}
-	if m.RowLabel(0) != "Relay: DeepSeek" {
-		t.Errorf("row0 = %q, want Relay: DeepSeek", m.RowLabel(0))
+	if m.RowLabel(0) != "DeepSeek relay" {
+		t.Errorf("row0 = %q, want DeepSeek relay", m.RowLabel(0))
+	}
+	if m.RowLabel(1) != "ChatGPT relay" {
+		t.Errorf("row1 = %q, want ChatGPT relay", m.RowLabel(1))
 	}
 	if !m.RowIsActive(0) {
-		t.Error("Relay: DeepSeek row should be active")
+		t.Error("DeepSeek relay row should be active")
 	}
 }
 
 func TestProvidersModel_SelectMarksActive(t *testing.T) {
-	m := NewProvidersModelForTest([]string{"work"}, "key:work")
-	// No bare Relay row; rows: key:work(0), Plain(1), +Add(2).
-	// The active row (key:work) is at index 0.
-	if !m.RowIsActive(0) {
-		t.Error("key:work should be the active row (index 0)")
-	}
-	if m.RowIsActive(1) {
-		t.Error("Plain should not be active when key:work is active")
+	m := NewProvidersModelForTest([]string{"work"}, "plain")
+	if !m.RowIsActive(1) {
+		t.Error("Plain should be the active row")
 	}
 }
 
 func TestProvidersModel_RowIsDeleteable(t *testing.T) {
-	// key:work (index 0), Plain (index 1), and + Add key… (index 2) — no bare Relay row.
-	// A named key (index 0) MUST be deleteable; Plain and +Add are not.
 	m := NewProvidersModelForTest([]string{"work"}, "relay")
-	// Rows: key:work(0), Plain(1), +Add key…(2)
-	if !m.RowIsDeletable(0) {
-		t.Error("named key row should be deletable")
-	}
-	if m.RowIsDeletable(1) {
+	if m.RowIsDeletable(0) {
 		t.Error("Plain row should not be deletable")
-	}
-	if m.RowIsDeletable(2) {
-		t.Error("+ Add key… row should not be deletable")
 	}
 }
 

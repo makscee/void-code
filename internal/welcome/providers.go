@@ -28,28 +28,38 @@ type ProviderRowInfo struct {
 	Name string
 }
 
-// buildProviderRows assembles: one "Relay: <name>" row per granted relay-provider,
-// one row per saved BYO key, Plain, + Add key…
-// The bare "Relay" entry is omitted — every relay route is now a named provider.
+// buildProviderRows assembles the PRD-088 top-level provider selector:
+// always the bare DeepSeek relay default, granted ChatGPT relay providers, plus
+// Plain harness run. Saved BYO keys remain supported by storage code but are not
+// shown in this selector.
 func buildProviderRows(keyNames []string, granted []ProviderRowInfo) []providerRow {
-	var rows []providerRow
+	_ = keyNames // named keys are intentionally hidden from the main selector.
+	rows := []providerRow{{label: provider.Provider{Kind: provider.Relay}.Label(), prov: provider.Provider{Kind: provider.Relay}}}
 	for _, g := range granted {
-		p := provider.Provider{Kind: provider.RelayProvider, ID: g.ID}
-		name := g.Name
-		if name == "" {
-			name = g.ID
+		name, ok := supportedRelayProviderName(g)
+		if !ok || name == "DeepSeek" {
+			continue
 		}
-		rows = append(rows, providerRow{label: "Relay: " + name, prov: p})
-	}
-	for _, n := range keyNames {
-		p := provider.Provider{Kind: provider.NamedKey, Name: n}
-		rows = append(rows, providerRow{label: p.Label(), prov: p})
+		p := provider.Provider{Kind: provider.RelayProvider, ID: g.ID}
+		rows = append(rows, providerRow{label: name + " relay", prov: p})
 	}
 	rows = append(rows,
 		providerRow{label: provider.Provider{Kind: provider.Plain}.Label(), prov: provider.Provider{Kind: provider.Plain}},
-		providerRow{label: "+ Add key…", addKey: true},
 	)
 	return rows
+}
+
+func supportedRelayProviderName(g ProviderRowInfo) (string, bool) {
+	for _, v := range []string{g.Name, g.ID} {
+		v = strings.ToLower(strings.TrimSpace(v))
+		switch {
+		case strings.Contains(v, "deepseek"):
+			return "DeepSeek", true
+		case strings.Contains(v, "chatgpt"):
+			return "ChatGPT", true
+		}
+	}
+	return "", false
 }
 
 func newProvidersModel(keyNames []string, granted []ProviderRowInfo, activeStr string) providersModel {
@@ -109,7 +119,7 @@ func (m providersModel) render() string {
 type addKeyStage int
 
 const (
-	addKeyStageName  addKeyStage = iota
+	addKeyStageName addKeyStage = iota
 	addKeyStageToken
 	addKeyStageDone
 )
@@ -130,8 +140,8 @@ func (m addKeyModel) Name() string       { return m.name }
 func (m addKeyModel) Token() string      { return m.token }
 
 // typeForTest / submitForTest drive the model in tests without a TTY.
-func (m addKeyModel) typeForTest(s string) addKeyModel  { m.buf += s; return m }
-func (m addKeyModel) submitForTest() addKeyModel        { return m.submit() }
+func (m addKeyModel) typeForTest(s string) addKeyModel { m.buf += s; return m }
+func (m addKeyModel) submitForTest() addKeyModel       { return m.submit() }
 
 // submit commits the current buffer to the active stage and advances.
 func (m addKeyModel) submit() addKeyModel {
@@ -213,9 +223,9 @@ func newDeleteConfirmModel(keyName string) deleteConfirmModel {
 	return deleteConfirmModel{keyName: keyName, state: deleteConfirmPending}
 }
 
-func (m deleteConfirmModel) KeyName() string   { return m.keyName }
-func (m deleteConfirmModel) Confirmed() bool   { return m.state == deleteConfirmConfirmed }
-func (m deleteConfirmModel) Cancelled() bool   { return m.state == deleteConfirmCancelled }
+func (m deleteConfirmModel) KeyName() string { return m.keyName }
+func (m deleteConfirmModel) Confirmed() bool { return m.state == deleteConfirmConfirmed }
+func (m deleteConfirmModel) Cancelled() bool { return m.state == deleteConfirmCancelled }
 
 // handleKey processes the y/n/esc input.
 func (m deleteConfirmModel) handleKey(s string) deleteConfirmModel {

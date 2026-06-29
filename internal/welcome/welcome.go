@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/clackui"
+	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/version"
 )
@@ -48,6 +49,10 @@ const (
 	ShowTopUp
 	// ShowProviders is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
 	ShowProviders
+	// ShowHarnesses is an INTERNAL sentinel (in-TUI navigation, never returned by Run).
+	ShowHarnesses
+	// RunInstallPi means the user selected Pi while it is not installed.
+	RunInstallPi
 	// RunStatusline means the user chose "Install statusline" — caller runs the install flow.
 	RunStatusline
 	// RunProfile means the user chose "Open profile" — caller opens the profile URL in a browser.
@@ -69,6 +74,15 @@ type Callbacks struct {
 	// GrantedProviders is the user's relay-routed granted-provider list (VCD-72),
 	// fetched from void-auth GET /v1/vc/providers. Empty for ungranted users.
 	GrantedProviders []ProviderRowInfo
+	// ActiveHarness is the persisted-string form of the currently active harness.
+	ActiveHarness string
+	// ActiveHarnessLabel is the human-facing display label for the active harness.
+	// If empty, the view falls back to harnesschoice.Parse(ActiveHarness).Label().
+	ActiveHarnessLabel string
+	// PiInstalled reports whether the pi binary is available on PATH.
+	PiInstalled bool
+	// OnSelectHarness is called when the user selects an installed harness row.
+	OnSelectHarness func(harnesschoice.Choice) error
 	// OnSelect is called when the user selects a provider row. May be nil.
 	OnSelect func(provider.Provider) error
 	// OnSelectLabel is called with the display label of the selected row when a
@@ -147,6 +161,7 @@ const (
 	menuView      viewState = iota
 	topUpView               // in-TUI info screen; any key returns to menu
 	providersView           // Providers radio list
+	harnessesView           // Harness radio list
 	addKeyView              // Add-key two-stage text input
 	deleteView              // Delete-key confirm dialog
 )
@@ -166,18 +181,20 @@ type model struct {
 	chosen        bool // true once a process-exiting result was selected
 	quitting      bool
 	providers     providersModel
+	harnesses     harnessesModel
 	addKey        addKeyModel
 	deleteConfirm deleteConfirmModel
 	cb            Callbacks // I/O callbacks (provider select, add key, delete key)
 }
 
-func menuItemsFor(state AuthState) []menuItem {
+func menuItemsFor(state AuthState, cb Callbacks) []menuItem {
 	if !state.LoggedIn {
 		return []menuItem{{label: "Login", result: RunLogin}}
 	}
 	return []menuItem{
 		{label: "Start", result: SpawnClaude},
-		{label: "Providers", result: ShowProviders},
+		{label: "Harness: " + activeHarnessLabel(cb), result: ShowHarnesses},
+		{label: "Provider: " + activeProviderLabel(cb), result: ShowProviders},
 		{label: "Top up", result: ShowTopUp},
 		{label: "Run doctor", result: RunDoctor},
 		{label: "Install statusline", result: RunStatusline},
@@ -185,13 +202,32 @@ func menuItemsFor(state AuthState) []menuItem {
 	}
 }
 
+func activeProviderLabel(cb Callbacks) string {
+	if cb.ActiveProviderLabel != "" {
+		return cb.ActiveProviderLabel
+	}
+	return provider.Parse(cb.ActiveProvider).Label()
+}
+
+func activeHarnessLabel(cb Callbacks) string {
+	if cb.ActiveHarnessLabel != "" {
+		return cb.ActiveHarnessLabel
+	}
+	return harnesschoice.Parse(cb.ActiveHarness).Label()
+}
+
+func (m *model) refreshMenuItems() {
+	m.items = menuItemsFor(m.AuthState, m.cb)
+}
+
 func newModel(state AuthState, cb Callbacks) model {
-	return model{
+	m := model{
 		AuthState: state,
-		items:     menuItemsFor(state),
 		view:      menuView,
 		cb:        cb,
 	}
+	m.refreshMenuItems()
+	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -240,8 +276,14 @@ func NewMenuModelForDeleteTest(cb Callbacks) model {
 // navigated to the named key, pressed d, and then confirmed (confirm=true) or
 // cancelled (confirm=false) the deletion.
 func (m model) SimulateDeleteKey(keyName string, confirm bool) model {
-	// Enter providers view.
-	m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)
+	// Enter a legacy key-management providers view. The PRD-088 main selector
+	// hides named keys, but the delete-key model/tests still exercise storage cleanup.
+	legacyRows := make([]providerRow, 0, len(m.cb.KeyNames))
+	for _, n := range m.cb.KeyNames {
+		p := provider.Provider{Kind: provider.NamedKey, Name: n}
+		legacyRows = append(legacyRows, providerRow{label: p.Label(), prov: p})
+	}
+	m.providers = providersModel{rows: legacyRows, active: m.cb.ActiveProvider}
 	m.view = providersView
 
 	// Find the row index for keyName.
@@ -301,6 +343,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateProviders(s)
 	}
 
+	if m.view == harnessesView {
+		return m.updateHarnesses(s)
+	}
+
 	if m.view == addKeyView {
 		return m.updateAddKey(s)
 	}
@@ -332,6 +378,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = providersView
 			return m, nil
 		}
+		if r == ShowHarnesses {
+			m.harnesses = newHarnessesModel(m.cb.ActiveHarness, m.cb.PiInstalled)
+			m.view = harnessesView
+			return m, nil
+		}
 		m.result = r
 		m.chosen = true
 		m.quitting = true
@@ -343,6 +394,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // updateProviders handles keystrokes in the Providers sub-view.
 func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 	n := len(m.providers.rows)
+	if n == 0 {
+		m.view = menuView
+		return m, nil
+	}
 	switch s {
 	case "ctrl+c":
 		m.result = Quit
@@ -359,7 +414,7 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 		m.providers.cursor = (m.providers.cursor + 1) % n
 		return m, nil
 	case "d", "D":
-		// Delete: only for named-key rows.
+		// Delete remains available for legacy named-key management rows.
 		if m.providers.RowIsDeletable(m.providers.cursor) {
 			row := m.providers.rows[m.providers.cursor]
 			m.deleteConfirm = newDeleteConfirmModel(row.prov.Name)
@@ -369,11 +424,6 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter", " ":
 		row := m.providers.rows[m.providers.cursor]
-		if row.addKey {
-			m.addKey = newAddKeyModel()
-			m.view = addKeyView
-			return m, nil
-		}
 		// Select this provider.
 		if m.cb.OnSelect != nil {
 			_ = m.cb.OnSelect(row.prov)
@@ -382,8 +432,53 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 			_ = m.cb.OnSelectLabel(row.label)
 		}
 		m.cb.ActiveProvider = row.prov.String()
+		m.cb.ActiveProviderLabel = row.label
 		m.providers.active = row.prov.String()
 		m.view = menuView
+		m.refreshMenuItems()
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateHarnesses handles keystrokes in the Harness radio sub-view.
+func (m model) updateHarnesses(s string) (tea.Model, tea.Cmd) {
+	n := len(m.harnesses.rows)
+	if n == 0 {
+		m.view = menuView
+		return m, nil
+	}
+	switch s {
+	case "ctrl+c":
+		m.result = Quit
+		m.chosen = true
+		m.quitting = true
+		return m, tea.Quit
+	case "esc", "q":
+		m.view = menuView
+		return m, nil
+	case "up", "k":
+		m.harnesses.cursor = ((m.harnesses.cursor-1)%n + n) % n
+		return m, nil
+	case "down", "j":
+		m.harnesses.cursor = (m.harnesses.cursor + 1) % n
+		return m, nil
+	case "enter", " ":
+		row := m.harnesses.rows[m.harnesses.cursor]
+		if row.installPi {
+			m.result = RunInstallPi
+			m.chosen = true
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if m.cb.OnSelectHarness != nil {
+			_ = m.cb.OnSelectHarness(row.choice)
+		}
+		m.cb.ActiveHarness = row.choice.String()
+		m.cb.ActiveHarnessLabel = row.choice.Label()
+		m.harnesses.active = row.choice.String()
+		m.view = menuView
+		m.refreshMenuItems()
 		return m, nil
 	}
 	return m, nil
@@ -417,12 +512,14 @@ func (m model) updateDeleteConfirm(s string) (tea.Model, tea.Cmd) {
 			if m.cb.ActiveProvider == "key:"+keyName {
 				m.cb.ActiveProvider = "relay"
 				relayProv := provider.Provider{Kind: provider.Relay}
+				m.cb.ActiveProviderLabel = relayProv.Label()
 				if m.cb.OnSelect != nil {
 					_ = m.cb.OnSelect(relayProv)
 				}
 				if m.cb.OnSelectLabel != nil {
 					_ = m.cb.OnSelectLabel(relayProv.Label())
 				}
+				m.refreshMenuItems()
 			}
 			m.providers = newProvidersModel(m.cb.KeyNames, m.cb.GrantedProviders, m.cb.ActiveProvider)
 			m.view = providersView
@@ -495,6 +592,11 @@ func (m model) View() string {
 		return sb.String()
 	}
 
+	if m.view == harnessesView {
+		sb.WriteString(m.harnesses.render())
+		return sb.String()
+	}
+
 	if m.view == addKeyView {
 		sb.WriteString(m.addKey.render())
 		return sb.String()
@@ -532,15 +634,6 @@ func (m model) View() string {
 	} else {
 		sb.WriteString(clackui.RailLine("◇", "  "+warnStyle.Render("Not logged in")))
 	}
-	sb.WriteString("\n")
-
-	// ◇  Provider: <active provider label>  — visible without entering Providers sub-menu.
-	// Use the pre-loaded friendly label (never raw prov: ids); fall back to .Label() for tests.
-	provLabel := m.cb.ActiveProviderLabel
-	if provLabel == "" {
-		provLabel = provider.Parse(m.cb.ActiveProvider).Label()
-	}
-	sb.WriteString(clackui.RailLine("◇", "  "+hintStyle.Render("Provider: "+provLabel)))
 	sb.WriteString("\n")
 
 	// Update nudge (if present) — shown as an extra ◇ line.

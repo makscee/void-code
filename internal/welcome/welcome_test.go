@@ -125,9 +125,9 @@ func TestMenu_StartItemDefault(t *testing.T) {
 
 func TestMenu_NavigationWraps(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	n := m.ItemCount() // 6 when logged in: Start, Providers, Top up, Run doctor, Install statusline, Open profile
-	if n != 6 {
-		t.Fatalf("item count = %d, want 6", n)
+	n := m.ItemCount() // 7 when logged in: Start, Harness, Provider, Top up, Run doctor, Install statusline, Open profile
+	if n != 7 {
+		t.Fatalf("item count = %d, want 7", n)
 	}
 	m = m.MoveCursor(-1) // up from 0 wraps to last
 	if m.Cursor() != n-1 {
@@ -149,7 +149,7 @@ func TestMenu_EnterStartReturnsSpawn(t *testing.T) {
 
 func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	m = m.SetCursor(3) // Start(0), Providers(1), Top up(2), Run doctor(3)
+	m = m.SetCursor(4) // Start(0), Harness(1), Provider(2), Top up(3), Run doctor(4)
 	if got := m.Activate(); got != welcome.RunDoctor {
 		t.Errorf("activate Run doctor = %v, want RunDoctor", got)
 	}
@@ -159,13 +159,13 @@ func TestMenu_EnterDoctorReturnsRunDoctor(t *testing.T) {
 
 func TestMenu_StatuslinePreviewItem(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	// Start(0), Providers(1), Top up(2), Run doctor(3), Install statusline(4), Open profile(5)
-	if m.ItemCount() != 6 {
-		t.Fatalf("item count = %d, want 6 (Start, Providers, Top up, Run doctor, Install statusline, Open profile)", m.ItemCount())
+	// Start(0), Harness(1), Provider(2), Top up(3), Run doctor(4), Install statusline(5), Open profile(6)
+	if m.ItemCount() != 7 {
+		t.Fatalf("item count = %d, want 7 (Start, Harness, Provider, Top up, Run doctor, Install statusline, Open profile)", m.ItemCount())
 	}
-	m = m.SetCursor(4)
-	if got := m.ItemLabel(4); got != "Install statusline" {
-		t.Errorf("item 4 label = %q, want 'Install statusline'", got)
+	m = m.SetCursor(5)
+	if got := m.ItemLabel(5); got != "Install statusline" {
+		t.Errorf("item 5 label = %q, want 'Install statusline'", got)
 	}
 	if got := m.Activate(); got != welcome.RunStatusline {
 		t.Errorf("activate Install statusline = %v, want RunStatusline", got)
@@ -176,13 +176,13 @@ func TestMenu_StatuslinePreviewItem(t *testing.T) {
 
 func TestMenu_ProfileItem(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	// Start(0), Providers(1), Top up(2), Run doctor(3), Install statusline(4), Open profile(5)
-	if m.ItemCount() != 6 {
-		t.Fatalf("item count = %d, want 6", m.ItemCount())
+	// Start(0), Harness(1), Provider(2), Top up(3), Run doctor(4), Install statusline(5), Open profile(6)
+	if m.ItemCount() != 7 {
+		t.Fatalf("item count = %d, want 7", m.ItemCount())
 	}
-	m = m.SetCursor(5)
-	if got := m.ItemLabel(5); got != "Open profile" {
-		t.Errorf("item 5 label = %q, want 'Open profile'", got)
+	m = m.SetCursor(6)
+	if got := m.ItemLabel(6); got != "Open profile" {
+		t.Errorf("item 6 label = %q, want 'Open profile'", got)
 	}
 	if got := m.Activate(); got != welcome.RunProfile {
 		t.Errorf("activate Open profile = %v, want RunProfile", got)
@@ -199,7 +199,7 @@ func TestView_MenuShowsStatuslinePreview(t *testing.T) {
 
 func TestMenu_TopUpIsInfoNotResult(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true})
-	m = m.SetCursor(2) // Start(0), Providers(1), Top up(2), Run doctor(3)
+	m = m.SetCursor(3) // Start(0), Harness(1), Provider(2), Top up(3), Run doctor(4)
 	// Top up does not exit the program — Activate returns the in-TUI sentinel.
 	if got := m.Activate(); got != welcome.ShowTopUp {
 		t.Errorf("activate Top up = %v, want ShowTopUp", got)

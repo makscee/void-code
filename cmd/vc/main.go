@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,7 +28,9 @@ import (
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/direct"
 	"github.com/makscee/void-code/internal/harness/relay"
+	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/keystore"
+	"github.com/makscee/void-code/internal/pibin"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
@@ -44,6 +47,10 @@ var warnStyle = lipgloss.NewStyle().
 var (
 	meCacheResult *auth.MeResult
 	meCacheExpiry time.Time
+
+	spawnHarness      = harness.Spawn
+	claudeIsInstalled = claudebin.IsInstalled
+	piIsInstalled     = pibin.IsInstalled
 )
 
 func main() {
@@ -109,6 +116,7 @@ func main() {
 			for {
 				keyNames, _ := keystore.ListKeys()
 				activeProv := provider.Load()
+				activeHarness := harnesschoice.Load()
 				// Fetch the granted provider list from void-auth (VCD-72).
 				// Failure degrades to an empty list — relay/deepseek baseline preserved.
 				var grantedRows []welcome.ProviderRowInfo
@@ -141,6 +149,12 @@ func main() {
 					ActiveProvider:      activeProv.String(),
 					ActiveProviderLabel: provider.LoadLabel(),
 					GrantedProviders:    grantedRows,
+					ActiveHarness:       activeHarness.String(),
+					ActiveHarnessLabel:  activeHarness.Label(),
+					PiInstalled:         piIsInstalled(),
+					OnSelectHarness: func(h harnesschoice.Choice) error {
+						return harnesschoice.Save(h)
+					},
 					OnSelect: func(p provider.Provider) error {
 						return provider.Save(p)
 					},
@@ -165,6 +179,12 @@ func main() {
 					if derr := runDoctor(); derr != nil {
 						fmt.Fprintf(os.Stderr, "vc: doctor: %v\n", derr)
 					}
+					fmt.Println("\n  press enter to return to the menu…")
+					bufio.NewScanner(os.Stdin).Scan()
+					continue menuLoop // re-show menu
+				case welcome.RunInstallPi:
+					fmt.Println()
+					runInstallPi(os.Stdout)
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
 					continue menuLoop // re-show menu
@@ -297,11 +317,9 @@ func openProfile(authHost, token string, httpClient *http.Client, open func(stri
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch claude".
 func runSpawn(cmd *cobra.Command, args []string) error {
-	// Pre-flight: verify claude CLI is reachable BEFORE doing any auth work.
-	// vc is a wrapper over claude; if claude is absent nothing can work, and
-	// we must surface a clear message rather than a raw cobra/exec error.
-	if !claudebin.IsInstalled() {
-		fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
+	activeHarness := harnesschoice.Load()
+	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(127)
 	}
 
@@ -333,10 +351,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check and update @anthropic-ai/claude-code before spawning.
+	// Check and update @anthropic-ai/claude-code before spawning Claude Code.
 	// This prevents claude-code's own auto-update from failing inside the proxy.
 	// Silent on network failures; only prints on actual update or hard error.
-	launchCCUpdateCheck()
+	if activeHarness.Kind == harnesschoice.Claude {
+		launchCCUpdateCheck()
+	}
 
 	// Resolve the relay CA: NODE_EXTRA_CA_CERTS must point at it so CC trusts the
 	// relay's MITM proxy TLS. resolveCA falls back to the embedded CA on network
@@ -348,7 +368,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	active := provider.Load()
-	env, err := buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+	var env []string
+	if activeHarness.Kind == harnesschoice.Pi {
+		env = buildPiSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+		return spawnSelectedHarness(activeHarness, args, env)
+	}
+	env, err = buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vc: %v\n  falling back to relay. Fix the provider in the Providers menu.\n", err)
 		env = relay.BuildEnv(os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
@@ -463,21 +488,55 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		spawnArgs = append([]string{"--settings", ccSettingsPath}, spawnArgs...)
 	}
 
-	if err := harness.Spawn(context.Background(), "claude", spawnArgs, env); err != nil {
+	return spawnSelectedHarness(activeHarness, spawnArgs, env)
+}
+
+func wrappedBinaryFor(h harnesschoice.Choice) string {
+	if h.Kind == harnesschoice.Pi {
+		return "pi"
+	}
+	return "claude"
+}
+
+func ensureSelectedHarnessInstalled(h harnesschoice.Choice) error {
+	switch h.Kind {
+	case harnesschoice.Pi:
+		if !piIsInstalled() {
+			return fmt.Errorf("%s", pibin.MissingMessage())
+		}
+	default:
+		if !claudeIsInstalled() {
+			return fmt.Errorf("%s", claudebin.MissingMessage())
+		}
+	}
+	return nil
+}
+
+func spawnSelectedHarness(h harnesschoice.Choice, args []string, env []string) error {
+	wrapped := wrappedBinaryFor(h)
+	if err := spawnHarness(context.Background(), wrapped, args, env); err != nil {
 		// Post-spawn not-found fallback (should be caught by pre-flight above,
-		// but defend against race conditions such as claude being removed between
-		// the pre-flight check and the actual spawn).
+		// but defend against race conditions such as the harness being removed
+		// between the pre-flight check and the actual spawn).
 		if claudebin.IsNotFoundErr(err) {
-			fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
+			if h.Kind == harnesschoice.Pi {
+				fmt.Fprintln(os.Stderr, pibin.MissingMessage())
+			} else {
+				fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
+			}
 			os.Exit(127)
 		}
-		// Propagate claude's exit code.
+		// Propagate the harness exit code.
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
 		return err
 	}
 	return nil
+}
+
+func runInstallPi(out io.Writer) {
+	fmt.Fprintln(out, pibin.InstallInstructions())
 }
 
 // buildSpawnEnv selects the claude env for the active provider.
@@ -506,6 +565,50 @@ func buildSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost,
 	default: // Relay
 		return relay.BuildEnv(parent, relayScheme, relayHost, token, caPath), nil
 	}
+}
+
+// buildPiSpawnEnv strips Claude-specific env and exposes only vc-owned relay
+// seams for Pi. No Pi CLI flags are injected here because PRD-088 did not give
+// a verified Pi provider/model contract.
+func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) []string {
+	strip := map[string]bool{
+		"VC_HARNESS":           true,
+		"VC_PROVIDER":          true,
+		"VC_RELAY_PROVIDER_ID": true,
+		"VC_RELAY_URL":         true,
+		"VC_RELAY_CA":          true,
+		"VC_AUTH_TOKEN":        true,
+	}
+	base := direct.PlainEnv(parent)
+	out := make([]string, 0, len(base)+6)
+	for _, e := range base {
+		k, _, _ := strings.Cut(e, "=")
+		if strip[k] {
+			continue
+		}
+		out = append(out, e)
+	}
+	out = append(out, "VC_HARNESS=pi")
+	switch p.Kind {
+	case provider.RelayProvider:
+		out = append(out,
+			"VC_PROVIDER=relay",
+			"VC_RELAY_PROVIDER_ID="+p.ID,
+			fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
+			"VC_RELAY_CA="+caPath,
+			"VC_AUTH_TOKEN="+token,
+		)
+	case provider.Relay:
+		out = append(out,
+			"VC_PROVIDER=relay",
+			fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
+			"VC_RELAY_CA="+caPath,
+			"VC_AUTH_TOKEN="+token,
+		)
+	default:
+		out = append(out, "VC_PROVIDER=plain")
+	}
+	return out
 }
 
 // subscriptionDecision is the pure outcome of a spawn-gate check.

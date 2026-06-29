@@ -35,10 +35,10 @@ func TestString_RoundTrip(t *testing.T) {
 }
 
 func TestLabel(t *testing.T) {
-	if l := (Provider{Kind: Relay}).Label(); l != "Relay (void-relay)" {
+	if l := (Provider{Kind: Relay}).Label(); l != "DeepSeek relay" {
 		t.Errorf("Relay label = %q", l)
 	}
-	if l := (Provider{Kind: Plain}).Label(); l != "Plain Claude Code" {
+	if l := (Provider{Kind: Plain}).Label(); l != "Plain harness run" {
 		t.Errorf("Plain label = %q", l)
 	}
 	if l := (Provider{Kind: NamedKey, Name: "work"}).Label(); l != "key: work" {
@@ -133,7 +133,7 @@ func TestLoadLabel_BackfillFromActiveProvider_Relay(t *testing.T) {
 	if got == "" {
 		t.Fatal("LoadLabel() returned empty string for default relay case")
 	}
-	// Relay defaults to "Relay (void-relay)".
+	// Relay defaults to "DeepSeek relay".
 	wantRelayLabel := (Provider{Kind: Relay}).Label()
 	if got != wantRelayLabel {
 		t.Errorf("LoadLabel() = %q, want %q", got, wantRelayLabel)
@@ -247,8 +247,8 @@ func TestReconcileLabel_NonRelayProvider_AlwaysRefreshes(t *testing.T) {
 		want string
 	}{
 		{Provider{Kind: NamedKey, Name: "mykey"}, "key: mykey"},
-		{Provider{Kind: Plain}, "Plain Claude Code"},
-		{Provider{Kind: Relay}, "Relay (void-relay)"},
+		{Provider{Kind: Plain}, "Plain harness run"},
+		{Provider{Kind: Relay}, "DeepSeek relay"},
 	}
 	for _, tc := range cases {
 		// Reset config for each case.

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/provider"
 )
 
@@ -62,6 +63,50 @@ func TestBuildSpawnEnvBareRelayHasNoHeader(t *testing.T) {
 	env, _ := buildSpawnEnv(p, []string{}, "https", "relay.example:8448", "pooltok", "/etc/relay-ca.pem")
 	if strings.Contains(strings.Join(env, "\n"), "ANTHROPIC_CUSTOM_HEADERS") {
 		t.Fatalf("bare Relay must not inject x-void-provider; env=%v", env)
+	}
+}
+
+func TestWrappedBinaryForHarness(t *testing.T) {
+	if got := wrappedBinaryFor(harnesschoice.Choice{Kind: harnesschoice.Claude}); got != "claude" {
+		t.Fatalf("Claude wrapped binary = %q, want claude", got)
+	}
+	if got := wrappedBinaryFor(harnesschoice.Choice{Kind: harnesschoice.Pi}); got != "pi" {
+		t.Fatalf("Pi wrapped binary = %q, want pi", got)
+	}
+}
+
+func TestEnsureSelectedHarnessInstalled_PiMissing(t *testing.T) {
+	oldPiInstalled := piIsInstalled
+	oldClaudeInstalled := claudeIsInstalled
+	t.Cleanup(func() { piIsInstalled = oldPiInstalled; claudeIsInstalled = oldClaudeInstalled })
+	piIsInstalled = func() bool { return false }
+	claudeIsInstalled = func() bool { return true }
+
+	err := ensureSelectedHarnessInstalled(harnesschoice.Choice{Kind: harnesschoice.Pi})
+	if err == nil || !strings.Contains(err.Error(), "pi CLI not found") {
+		t.Fatalf("Pi missing err = %v, want clear missing-pi message", err)
+	}
+}
+
+func TestBuildPiSpawnEnvRelayProviderUsesVCSeamAndStripsClaude(t *testing.T) {
+	env := buildPiSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "deepseek"},
+		[]string{"PATH=/usr/bin", "ANTHROPIC_AUTH_TOKEN=old", "HTTPS_PROXY=old", "VC_AUTH_TOKEN=old"},
+		"https", "relay.example:443", "pooltok", "/tmp/ca.pem")
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "ANTHROPIC_AUTH_TOKEN") || strings.Contains(joined, "HTTPS_PROXY=old") {
+		t.Fatalf("Pi env leaked Claude-specific vars: %v", env)
+	}
+	for _, want := range []string{
+		"VC_HARNESS=pi",
+		"VC_PROVIDER=relay",
+		"VC_RELAY_PROVIDER_ID=deepseek",
+		"VC_RELAY_URL=https://relay.example:443",
+		"VC_RELAY_CA=/tmp/ca.pem",
+		"VC_AUTH_TOKEN=pooltok",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Pi env missing %q: %v", want, env)
+		}
 	}
 }
 
