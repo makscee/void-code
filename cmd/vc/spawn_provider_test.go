@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -90,11 +92,13 @@ func TestEnsureSelectedHarnessInstalled_PiMissing(t *testing.T) {
 
 func TestBuildPiSpawnEnvRelayProviderUsesVCSeamAndStripsClaude(t *testing.T) {
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "deepseek"},
-		[]string{"PATH=/usr/bin", "ANTHROPIC_AUTH_TOKEN=old", "HTTPS_PROXY=old", "VC_AUTH_TOKEN=old"},
+		[]string{"PATH=/usr/bin", "ANTHROPIC_AUTH_TOKEN=old", "HTTPS_PROXY=old", "VC_AUTH_TOKEN=old", "OPENAI_API_KEY=sk-old", "CHATGPT_ACCOUNT_ID=acct"},
 		"https", "relay.example:443", "pooltok", "/tmp/ca.pem")
 	joined := strings.Join(env, "\n")
-	if strings.Contains(joined, "ANTHROPIC_AUTH_TOKEN") || strings.Contains(joined, "HTTPS_PROXY=old") {
-		t.Fatalf("Pi env leaked Claude-specific vars: %v", env)
+	for _, leak := range []string{"ANTHROPIC_AUTH_TOKEN", "HTTPS_PROXY=old", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
+		if strings.Contains(joined, leak) {
+			t.Fatalf("Pi env leaked client secret %q: %v", leak, env)
+		}
 	}
 	for _, want := range []string{
 		"VC_HARNESS=pi",
@@ -106,6 +110,53 @@ func TestBuildPiSpawnEnvRelayProviderUsesVCSeamAndStripsClaude(t *testing.T) {
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Pi env missing %q: %v", want, env)
+		}
+	}
+}
+
+func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
+	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.4", "-p", "hello"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildPiVoidCodexArgsKeepsUserProviderModel(t *testing.T) {
+	got := buildPiVoidCodexArgs([]string{"--provider=other", "--model", "other-model", "-p", "hello"}, "/tmp/vc-pi/index.ts")
+	joined := strings.Join(got, " ")
+	if strings.Count(joined, "--provider") != 1 || strings.Count(joined, "--model") != 1 {
+		t.Fatalf("provider/model flags duplicated: %#v", got)
+	}
+	if !strings.HasPrefix(joined, "-e /tmp/vc-pi/index.ts --provider=other --model other-model") {
+		t.Fatalf("user provider/model order not preserved after extension: %#v", got)
+	}
+}
+
+func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	path, err := ensurePiVoidCodexExtension()
+	if err != nil {
+		t.Fatalf("ensurePiVoidCodexExtension: %v", err)
+	}
+	if filepath.Base(path) != "index.ts" {
+		t.Fatalf("extension path = %q, want index.ts", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read extension: %v", err)
+	}
+	src := string(data)
+	for _, want := range []string{"pi.registerProvider(PROVIDER_ID", "void-codex", "/codex/responses", "authorization\": \"Bearer ", "x-void-provider"} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("extension missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("extension contains forbidden client secret/account material %q", forbidden)
 		}
 	}
 }

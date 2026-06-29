@@ -371,6 +371,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	var env []string
 	if activeHarness.Kind == harnesschoice.Pi {
 		env = buildPiSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+		if active.Kind == provider.RelayProvider {
+			extPath, err := ensurePiVoidCodexExtension()
+			if err != nil {
+				return fmt.Errorf("cannot write Pi void-codex extension: %w", err)
+			}
+			args = buildPiVoidCodexArgs(args, extPath)
+		}
 		return spawnSelectedHarness(activeHarness, args, env)
 	}
 	env, err = buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
@@ -539,6 +546,53 @@ func runInstallPi(out io.Writer) {
 	fmt.Fprintln(out, pibin.InstallInstructions())
 }
 
+const (
+	piVoidCodexProvider = "void-codex"
+	piVoidCodexModel    = "gpt-5.4"
+)
+
+func buildPiVoidCodexArgs(args []string, extensionPath string) []string {
+	out := make([]string, 0, len(args)+5)
+	out = append(out, "-e", extensionPath)
+	if !hasPiFlag(args, "--provider") {
+		out = append(out, "--provider", piVoidCodexProvider)
+	}
+	if !hasPiFlag(args, "--model") {
+		out = append(out, "--model", piVoidCodexModel)
+	}
+	out = append(out, args...)
+	return out
+}
+
+func hasPiFlag(args []string, name string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func ensurePiVoidCodexExtension() (string, error) {
+	dir, err := config.CacheDir()
+	if err != nil {
+		return "", err
+	}
+	extDir := filepath.Join(dir, "pi-void-codex")
+	if err := os.MkdirAll(extDir, 0700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(extDir, "index.ts")
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == piVoidCodexExtensionSource {
+		return path, nil
+	}
+	if err := os.WriteFile(path, []byte(piVoidCodexExtensionSource), 0600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // buildSpawnEnv selects the claude env for the active provider.
 //   - Relay         → relay.BuildEnv (HTTPS_PROXY + relay CA + pool token).
 //   - RelayProvider → relay.BuildEnv + ANTHROPIC_CUSTOM_HEADERS=x-void-provider: <id>
@@ -567,9 +621,8 @@ func buildSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost,
 	}
 }
 
-// buildPiSpawnEnv strips Claude-specific env and exposes only vc-owned relay
-// seams for Pi. No Pi CLI flags are injected here because PRD-088 did not give
-// a verified Pi provider/model contract.
+// buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay
+// seams for Pi relay modes.
 func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) []string {
 	strip := map[string]bool{
 		"VC_HARNESS":           true,
@@ -578,6 +631,20 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 		"VC_RELAY_URL":         true,
 		"VC_RELAY_CA":          true,
 		"VC_AUTH_TOKEN":        true,
+	}
+	if p.Kind == provider.Relay || p.Kind == provider.RelayProvider {
+		for _, k := range []string{
+			"OPENAI_API_KEY",
+			"OPENAI_BASE_URL",
+			"OPENAI_ORG_ID",
+			"AZURE_OPENAI_API_KEY",
+			"CHATGPT_ACCESS_TOKEN",
+			"CHATGPT_ACCOUNT_ID",
+			"CHATGPT_API_KEY",
+			"CODEX_API_KEY",
+		} {
+			strip[k] = true
+		}
 	}
 	base := direct.PlainEnv(parent)
 	out := make([]string, 0, len(base)+6)
