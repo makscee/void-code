@@ -42,8 +42,8 @@ VC_DIR="$HOME/.void-code"
 BIN_DIR="$VC_DIR/bin"
 CA_DIR="$VC_DIR"
 
-# Minimum node major version required by @anthropic-ai/claude-code (engines.node >=18.0.0)
-MIN_NODE_MAJOR=18
+# Minimum node major version installed for the Node-based agent CLIs (Claude Code + Pi).
+MIN_NODE_MAJOR=22
 
 VERSION_JSON_URL="$AUTH_HOST/vc/version.json"
 RELAY_CA_URL="$AUTH_HOST/vc/relay-ca.pem"
@@ -226,6 +226,85 @@ node_major() {
 }
 
 # ── node bootstrap ────────────────────────────────────────────────────────────
+print_linux_apt_node_dry_run() {
+  _sudo_label=""
+  [ "$(id -u)" -ne 0 ] && _sudo_label="sudo "
+  printf 'WOULD: %sapt-get update\n' "$_sudo_label"
+  printf 'WOULD: %sapt-get install -y ca-certificates curl gnupg\n' "$_sudo_label"
+  printf 'WOULD: install NodeSource GPG key to /etc/apt/keyrings/nodesource.gpg\n'
+  printf 'WOULD: write NodeSource apt source for node_22.x to /etc/apt/sources.list.d/nodesource.list\n'
+  printf 'WOULD: %sapt-get update\n' "$_sudo_label"
+  printf 'WOULD: %sapt-get install -y nodejs\n' "$_sudo_label"
+}
+
+install_node_linux_apt() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    printf 'vc: apt-get not found. Install Node.js >= %s via NodeSource or nodejs.org, then re-run.\n' "$MIN_NODE_MAJOR" >&2
+    return 1
+  fi
+
+  _sudo=""
+  if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then
+      _sudo="sudo"
+    else
+      printf 'vc: apt-get is available, but this user is not root and sudo is missing.\n' >&2
+      printf '    Install Node.js >= %s via NodeSource or nodejs.org, then re-run.\n' "$MIN_NODE_MAJOR" >&2
+      return 1
+    fi
+  fi
+
+  if [ "$DRY_RUN" = 1 ]; then
+    print_linux_apt_node_dry_run
+    return 0
+  fi
+
+  printf 'vc: installing Node.js %s.x via NodeSource apt repository...\n' "$MIN_NODE_MAJOR" >&2
+  $_sudo apt-get update >&2 || {
+    printf 'vc: apt-get update failed. Install Node.js >= %s via NodeSource or nodejs.org, then re-run.\n' "$MIN_NODE_MAJOR" >&2
+    return 1
+  }
+  $_sudo apt-get install -y ca-certificates curl gnupg >&2 || {
+    printf 'vc: failed to install apt prerequisites for NodeSource.\n' >&2
+    return 1
+  }
+
+  _key_tmp="$(mktemp /tmp/nodesource-key-XXXXXX)"
+  _keyring_tmp="$(mktemp /tmp/nodesource-keyring-XXXXXX)"
+  _list_tmp="$(mktemp /tmp/nodesource-list-XXXXXX)"
+  rm -f "$_keyring_tmp"
+
+  fetch_to_file 'https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key' "$_key_tmp" || {
+    printf 'vc: failed to download NodeSource signing key.\n' >&2
+    rm -f "$_key_tmp" "$_keyring_tmp" "$_list_tmp"
+    return 1
+  }
+  gpg --dearmor -o "$_keyring_tmp" "$_key_tmp" >&2 || {
+    printf 'vc: failed to prepare NodeSource signing key.\n' >&2
+    rm -f "$_key_tmp" "$_keyring_tmp" "$_list_tmp"
+    return 1
+  }
+  printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_%s.x nodistro main\n' "$MIN_NODE_MAJOR" > "$_list_tmp"
+
+  $_sudo install -d -m 0755 /etc/apt/keyrings >&2 \
+    && $_sudo install -m 0644 "$_keyring_tmp" /etc/apt/keyrings/nodesource.gpg >&2 \
+    && $_sudo install -m 0644 "$_list_tmp" /etc/apt/sources.list.d/nodesource.list >&2 || {
+      printf 'vc: failed to install NodeSource apt repository files.\n' >&2
+      rm -f "$_key_tmp" "$_keyring_tmp" "$_list_tmp"
+      return 1
+    }
+  rm -f "$_key_tmp" "$_keyring_tmp" "$_list_tmp"
+
+  $_sudo apt-get update >&2 || {
+    printf 'vc: apt-get update after adding NodeSource failed.\n' >&2
+    return 1
+  }
+  $_sudo apt-get install -y nodejs >&2 || {
+    printf 'vc: apt-get install nodejs failed. Install Node.js >= %s via NodeSource or nodejs.org, then re-run.\n' "$MIN_NODE_MAJOR" >&2
+    return 1
+  }
+}
+
 # ensure_node: guarantees node >= MIN_NODE_MAJOR is present, installing if needed.
 # Returns 0 on success, 1 on unrecoverable failure (caller must abort).
 ensure_node() {
@@ -253,9 +332,11 @@ ensure_node() {
       printf 'vc: brew install node failed. Visit https://nodejs.org to install manually.\n' >&2
       return 1
     }
-  else
-    # No Homebrew — download the official Apple-notarized Node LTS .pkg from
-    # nodejs.org. The macOS .pkg is UNIVERSAL (one file, both arches) — named
+  elif [ "$OS" = "linux" ]; then
+    install_node_linux_apt || return 1
+  elif [ "$OS" = "darwin" ]; then
+    # No Homebrew on macOS — download the official Apple-notarized Node LTS .pkg
+    # from nodejs.org. The macOS .pkg is UNIVERSAL (one file, both arches) — named
     # node-vX.Y.Z.pkg with NO -darwin-<arch> suffix (the arch-suffixed names are
     # tarballs only). Resolve the CURRENT v22 patch from the index, because the
     # filename changes every release — a hardcoded patch (e.g. v22.14.0) 404s once
@@ -302,6 +383,9 @@ ensure_node() {
 
     # Refresh PATH so newly installed node is found.
     export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+  else
+    printf 'vc: unsupported OS for automatic Node.js bootstrap. Install Node.js >= %s via nodejs.org, then re-run.\n' "$MIN_NODE_MAJOR" >&2
+    return 1
   fi
 
   # Re-verify after install.
@@ -437,9 +521,13 @@ if [ "$DRY_RUN" = 1 ]; then
   if [ -z "$_dry_major" ] || ! [ "$_dry_major" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
     if command -v brew >/dev/null 2>&1; then
       printf 'WOULD: brew install node\n'
-    else
+    elif [ "$OS" = "linux" ]; then
+      print_linux_apt_node_dry_run
+    elif [ "$OS" = "darwin" ]; then
       printf 'WOULD: download https://nodejs.org/dist/latest-v22.x/node-v<latest>.pkg  (universal)\n'
       printf 'WOULD: sudo installer -pkg <node.pkg> -target /\n'
+    else
+      printf 'MANUAL: install Node.js >= %s from https://nodejs.org, then re-run\n' "$MIN_NODE_MAJOR"
     fi
   fi
   if ! command -v claude >/dev/null 2>&1 && ! [ -x "$HOME/.void-code/bin/claude" ]; then
@@ -540,8 +628,14 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   # Numbered steps, only for what is actually missing — never a silent dead end.
   _n=1
   if [ "$NODE_OK" = 0 ]; then
-    printf '\n  %s. Install Node.js (required — claude runs on it):\n' "$_n"
-    printf '         Download the macOS installer from https://nodejs.org and run it.\n'
+    printf '\n  %s. Install Node.js >= %s (required — Claude Code and Pi both need Node):\n' "$_n" "$MIN_NODE_MAJOR"
+    if [ "$OS" = "linux" ]; then
+      printf '         Use NodeSource for Debian/Ubuntu or download from https://nodejs.org, then re-run.\n'
+    elif [ "$OS" = "darwin" ]; then
+      printf '         Download the macOS installer from https://nodejs.org and run it.\n'
+    else
+      printf '         Download from https://nodejs.org, then re-run.\n'
+    fi
     _n=$((_n + 1))
   fi
   if [ "$_claude_ok" = 0 ]; then
