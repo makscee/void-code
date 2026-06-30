@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/makscee/void-code/internal/config"
+	"github.com/makscee/void-code/internal/harnesschoice"
 )
 
 // ─── classifyStatusLine tests ─────────────────────────────────────────────────
@@ -264,15 +265,18 @@ func TestBuildChecks_IncludesProvider(t *testing.T) {
 	t.Setenv("USERPROFILE", tmp) // Windows
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
-	var found bool
-	for _, c := range checks {
-		if c.name == "provider" {
-			found = true
-		}
-	}
-	if !found {
+	if !hasCheck(checks, "provider") {
 		t.Fatal("doctor checks should include a 'provider' line")
 	}
+}
+
+func hasCheck(checks []checkResult, name string) bool {
+	for _, c := range checks {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── claude CLI check tests ───────────────────────────────────────────────────
@@ -321,14 +325,81 @@ func TestBuildChecks_IncludesClaude(t *testing.T) {
 	t.Setenv("USERPROFILE", tmp) // Windows
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
-	var found bool
-	for _, c := range checks {
-		if c.name == "claude CLI" {
-			found = true
+	if !hasCheck(checks, "claude CLI") {
+		t.Fatal("doctor checks should include a 'claude CLI' line")
+	}
+}
+
+func TestBuildChecks_DefaultClaudeKeepsClaudeChecks(t *testing.T) {
+	t.Setenv("PATH", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // Windows
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	for _, name := range []string{"harness", "node", "npm", "claude CLI", "statusline", "provider"} {
+		if !hasCheck(checks, name) {
+			t.Fatalf("default Claude doctor checks should include %q", name)
 		}
 	}
-	if !found {
-		t.Fatal("doctor checks should include a 'claude CLI' line")
+	if hasCheck(checks, "pi CLI") {
+		t.Fatal("default Claude doctor checks should not include a 'pi CLI' line")
+	}
+}
+
+func TestBuildChecks_PiActiveUsesPiChecks(t *testing.T) {
+	t.Setenv("PATH", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // Windows
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Pi}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	for _, name := range []string{"harness", "pi CLI", "provider"} {
+		if !hasCheck(checks, name) {
+			t.Fatalf("Pi doctor checks should include %q", name)
+		}
+	}
+	for _, name := range []string{"node", "npm", "claude CLI", "statusline"} {
+		if hasCheck(checks, name) {
+			t.Fatalf("Pi doctor checks should not include Claude-specific %q", name)
+		}
+	}
+}
+
+// ─── pi CLI check tests ───────────────────────────────────────────────────────
+
+func TestCheckPiCLI_NotFound(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	c := checkPiCLI()
+	if c.status != "✗" {
+		t.Errorf("checkPiCLI absent: want status=✗, got %q", c.status)
+	}
+	if c.name != "pi CLI" {
+		t.Errorf("checkPiCLI: want name='pi CLI', got %q", c.name)
+	}
+	if !strings.Contains(c.message, "not found") {
+		t.Errorf("checkPiCLI absent: message should mention 'not found', got: %s", c.message)
+	}
+	guidanceText := strings.Join(c.guidance, "\n")
+	if !strings.Contains(guidanceText, "pi-coding-agent") {
+		t.Errorf("checkPiCLI absent: guidance should include Pi install instructions, got: %s", guidanceText)
+	}
+}
+
+func TestCheckPiCLI_Found(t *testing.T) {
+	c := checkPiCLI()
+	if c.status == "✗" {
+		t.Skip("pi not installed on this machine — skipping found-path test")
+	}
+	if c.status != "✓" {
+		t.Errorf("checkPiCLI found: want status=✓, got %q", c.status)
+	}
+	if !strings.Contains(c.message, "found at") {
+		t.Errorf("checkPiCLI found: message should say 'found at', got: %s", c.message)
 	}
 }
 

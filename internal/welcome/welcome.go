@@ -2,7 +2,7 @@
 //
 // The landing screen is shown on every bare `vc` invocation (no sub-command).
 // It displays auth state + subscription info and waits for any keypress.
-// Logged-in: any key → spawn claude.
+// Logged-in: any key → spawn the active harness.
 // Logged-out: any key → vc login flow (caller interprets LoginRequested).
 package welcome
 
@@ -678,7 +678,7 @@ func (m model) View() string {
 // Used as a non-TTY fallback when the bubbletea program cannot run.
 func plainBanner(state AuthState) string {
 	var sb strings.Builder
-	sb.WriteString("\nvoid-code " + version.Version + " — relay harness for Claude Code — by makscee.ru\n\n")
+	sb.WriteString("\nvoid-code " + version.Version + " — relay harness for Claude Code and Pi — by makscee.ru\n\n")
 	if state.LoggedIn {
 		sb.WriteString("  Logged in as " + state.Identity + "\n")
 		sb.WriteString("  " + FormatBalance(state.BalanceUsd) + "\n")

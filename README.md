@@ -1,6 +1,6 @@
 # void-code
 
-`vc` — relay harness for Claude Code. Routes your `claude` session through void-relay for authentication and key management.
+`vc` — relay harness for Claude Code and Pi. Routes your selected coding harness through void-relay for authentication and provider selection.
 
 ## Install
 
@@ -16,25 +16,25 @@ $env:VC_CODE='ABCD-EFGH'; iex (irm https://auth.makscee.ru/vc/install.ps1)
 ## Usage
 
 ```
-vc                    # launch claude with relay env injected
+vc                    # launch the active harness with relay env injected
 vc login              # authenticate (reads $VC_CODE or prompts)
 vc login --device     # device-code flow
 vc logout             # wipe credentials
-vc status             # show auth / relay / version info
+vc status             # show auth / relay / provider / harness / version info
 vc update             # self-update to latest release
 vc --version          # print version
 ```
 
-## Passing flags to claude
+## Passing flags to the active harness
 
-Use `--` (double-dash) to forward any flag directly to `claude`:
+Use `--` (double-dash) to forward any flag directly to the selected harness:
 
 ```bash
 vc -- --dangerously-skip-permissions
 vc -- --debug --verbose
 ```
 
-Any flag that `claude` accepts can be passed this way. Flags before `--` are handled by `vc`; everything after `--` is forwarded verbatim.
+Any flag that the active harness accepts can be passed this way. Flags before `--` are handled by `vc`; everything after `--` is forwarded verbatim.
 
 ## Environment overrides
 

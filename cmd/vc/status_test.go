@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/makscee/void-code/internal/harnesschoice"
 )
 
 // statusTestServer creates a fake auth server for status tests.
@@ -41,8 +45,46 @@ func statusTestServer(budgetPct *float64, _ *float64, _ *float64, _ *float64, re
 	}))
 }
 
-// runStatusWithServer invokes runStatus logic against a fake server.
-// It captures stdout by directly calling the budget display helper.
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	runErr := fn()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	os.Stdout = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out), runErr
+}
+
+func TestStatusPrintsActiveHarness(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Pi}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error { return runStatus(nil, nil) })
+	if err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	if !strings.Contains(out, "provider:") {
+		t.Fatalf("status output missing provider line:\n%s", out)
+	}
+	if !strings.Contains(out, "harness:") || !strings.Contains(out, "Pi") {
+		t.Fatalf("status output missing active Pi harness:\n%s", out)
+	}
+}
+
 func TestStatusBudgetLine_Present(t *testing.T) {
 	pct := 27.4
 	srv := statusTestServer(&pct, nil, nil, nil, "2026-06-01T00:00:00.000Z")

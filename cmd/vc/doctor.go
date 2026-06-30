@@ -16,6 +16,8 @@ import (
 	"github.com/makscee/void-code/internal/clackui"
 	"github.com/makscee/void-code/internal/claudebin"
 	"github.com/makscee/void-code/internal/config"
+	"github.com/makscee/void-code/internal/harnesschoice"
+	"github.com/makscee/void-code/internal/pibin"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
@@ -80,12 +82,12 @@ func budgetLeft(pct *float64) (int, bool) {
 
 type checkResult struct {
 	name          string
-	status        string   // "✓", "✗", "!"
+	status        string // "✓", "✗", "!"
 	message       string
-	fix           func() error        // nil if no fix available (interactive yes/no prompt)
+	fix           func() error           // nil if no fix available (interactive yes/no prompt)
 	fixSelect     func(choice int) error // nil unless this check uses a 3-way selector
-	selectOptions []string             // non-nil → use selectModel for a 3-way selector
-	guidance      []string             // non-interactive extra lines printed after the check (no prompt)
+	selectOptions []string               // non-nil → use selectModel for a 3-way selector
+	guidance      []string               // non-interactive extra lines printed after the check (no prompt)
 }
 
 // ─── clack rail rendering for doctor ─────────────────────────────────────────
@@ -264,8 +266,9 @@ not stdin is a TTY):
   • foreign statusline → merge (keep existing + add vc; least destructive)
   • shell-rc PATH gap → append the vc PATH marker
 
-Currently checks:
-  statusline   Claude Code statusLine renderer (context · budget · sub days)`,
+Checks are selected for the active harness. Claude Code mode keeps the
+Claude-specific node/npm/claude/statusline checks; Pi mode checks Pi instead.`,
+
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if doctorFixFlag {
 			return runDoctorFix()
@@ -645,16 +648,30 @@ func checkShellRcGap() checkResult {
 
 // buildChecks assembles the slice of checks. Extensible — add more check funcs here.
 func buildChecks(settingsPath, slCmd string) []checkResult {
+	return buildChecksForHarness(settingsPath, slCmd, harnesschoice.Load())
+}
+
+func buildChecksForHarness(settingsPath, slCmd string, activeHarness harnesschoice.Choice) []checkResult {
 	checks := []checkResult{
-		checkNode(),
-		checkNpm(),
+		checkActiveHarness(activeHarness),
 		checkBinOnPath(),
-		checkClaudeCLI(),
-		checkStatusLine(settingsPath, slCmd),
-		checkActiveProvider(),
 	}
-	if runtime.GOOS == "windows" {
-		checks = append(checks, checkNpmGlobalOnPath())
+	if activeHarness.Kind == harnesschoice.Pi {
+		checks = append(checks,
+			checkPiCLI(),
+			checkActiveProvider(),
+		)
+	} else {
+		checks = append(checks,
+			checkNode(),
+			checkNpm(),
+			checkClaudeCLI(),
+			checkStatusLine(settingsPath, slCmd),
+			checkActiveProvider(),
+		)
+		if runtime.GOOS == "windows" {
+			checks = append(checks, checkNpmGlobalOnPath())
+		}
 	}
 	if runtime.GOOS == "darwin" {
 		checks = append(checks, checkShellRcGap())
@@ -662,8 +679,16 @@ func buildChecks(settingsPath, slCmd string) []checkResult {
 	return checks
 }
 
+func checkActiveHarness(activeHarness harnesschoice.Choice) checkResult {
+	return checkResult{
+		name:    "harness",
+		status:  "✓",
+		message: "harness: " + activeHarness.Label(),
+	}
+}
+
 // checkClaudeCLI verifies that the claude binary is reachable on PATH.
-// vc is a wrapper over claude; if claude is missing vc cannot function at all.
+// In Claude Code mode, vc cannot function if claude is missing.
 func checkClaudeCLI() checkResult {
 	path, err := claudebin.Resolve()
 	if err == nil {
@@ -687,7 +712,30 @@ func checkClaudeCLI() checkResult {
 	}
 }
 
-// checkActiveProvider reports which auth source claude will launch with.
+// checkPiCLI verifies that the pi binary is reachable on PATH.
+func checkPiCLI() checkResult {
+	path, err := pibin.Resolve()
+	if err == nil {
+		return checkResult{
+			name:    "pi CLI",
+			status:  "✓",
+			message: "pi CLI: found at " + path,
+		}
+	}
+	var guidance []string
+	guidance = append(guidance, "")
+	for _, line := range strings.Split(pibin.InstallInstructions(), "\n") {
+		guidance = append(guidance, line)
+	}
+	return checkResult{
+		name:     "pi CLI",
+		status:   "✗",
+		message:  "pi CLI: not found in PATH",
+		guidance: guidance,
+	}
+}
+
+// checkActiveProvider reports which auth source the active harness will launch with.
 func checkActiveProvider() checkResult {
 	p := provider.Load()
 	return checkResult{

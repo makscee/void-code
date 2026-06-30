@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
+	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/spf13/cobra"
@@ -45,6 +46,8 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
 	active := provider.Load()
 	fmt.Printf("%s %s\n", labelStyle.Render("provider:"), valueStyle.Render(active.Label()))
+	activeHarness := harnesschoice.Load()
+	fmt.Printf("%s %s\n", labelStyle.Render("harness:"), valueStyle.Render(activeHarness.Label()))
 
 	// Load token with legacy cv fallback and silent migration.
 	token, migrated, loadErr := auth.Load()

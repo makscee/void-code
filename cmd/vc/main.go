@@ -1,4 +1,4 @@
-// Binary vc — void-code relay harness for Claude Code.
+// Binary vc — void-code relay harness for Claude Code and Pi.
 //
 // Version is injected at build time:
 //
@@ -65,7 +65,7 @@ func main() {
 		}
 	}
 
-	// --raw: skip title/menu screen and pass tty straight to claude.
+	// --raw: skip title/menu screen and pass tty straight to the active harness.
 	// Parse --raw early (before cobra.Execute) so we can skip the welcome gate.
 	// Relay auth is one-shot env injection at Spawn time; vc need not stay
 	// resident, so no pty-proxy is required — cmd.Run() passthrough is enough.
@@ -76,13 +76,13 @@ func main() {
 			break
 		}
 		if a == "--" {
-			break // everything after -- is for claude
+			break // everything after -- is for the active harness
 		}
 	}
 
 	// Persistent landing screen — shown on bare `vc` invocation (no sub-command).
 	// Checks auth state, shows banner, waits for any keypress.
-	// Any keypress → logged-in: spawn claude; logged-out: run login.
+	// Any keypress → logged-in: spawn active harness; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
 	// Skipped when --raw is set (jump straight to spawn, no TUI).
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true}
@@ -232,7 +232,7 @@ type gateDecision int
 const (
 	// gateShowWelcome: interactive terminal — render the landing screen.
 	gateShowWelcome gateDecision = iota
-	// gateSpawn: non-TTY but logged in — skip welcome, spawn claude directly.
+	// gateSpawn: non-TTY but logged in — skip welcome, spawn active harness directly.
 	gateSpawn
 	// gateFailAuth: non-TTY and not logged in — cannot run login UI, fail fast.
 	gateFailAuth
@@ -315,7 +315,7 @@ func openProfile(authHost, token string, httpClient *http.Client, open func(stri
 	open(browser.ProfileURL)
 }
 
-// runSpawn is the default RunE for rootCmd — no sub-command means "launch claude".
+// runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
 func runSpawn(cmd *cobra.Command, args []string) error {
 	activeHarness := harnesschoice.Load()
 	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
@@ -329,9 +329,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// then falls back to ~/.claudev/token and silently migrates on success.
 	token, _ := auth.LoadAndMigrate()
 
-	// Pre-spawn auth gate: verify token before handing control to claude.
+	// Pre-spawn auth gate: verify token before handing control to the active harness.
 	// A missing or rejected token must surface a friendly message here — not a
-	// raw 401 error buried inside the claude UI.
+	// raw 401 error buried inside the harness UI.
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	me, reached, err := authGate(token, cfg.AuthHost, httpClient)
 	if err != nil {

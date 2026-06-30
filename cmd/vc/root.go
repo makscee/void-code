@@ -12,7 +12,7 @@ var (
 	// versionFlag is set by the --version flag on rootCmd.
 	versionFlag bool
 	// rawModeFlag is set by --raw; skips the title/menu screen and passes the
-	// controlling tty straight to claude for tmux send-keys / daemon use.
+	// controlling tty straight to the active harness for tmux send-keys / daemon use.
 	rawModeFlag bool
 )
 
@@ -22,14 +22,14 @@ var brandStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#7C3AED"))
 
 // rootCmd is the entry-point Cobra command.  When invoked with no sub-command
-// arguments it spawns claude with relay env (handled in main.go).
+// arguments it spawns the active harness with relay env (handled in main.go).
 var rootCmd = &cobra.Command{
-	Use:   "vc [flags] [-- claude-args...]",
-	Short: "void-code — relay harness for Claude Code",
+	Use:   "vc [flags] [-- harness-args...]",
+	Short: "void-code — relay harness for Claude Code and Pi",
 	Long: fmt.Sprintf(`%s
 
-vc wraps the claude CLI with void-relay authentication.
-Running "vc" with no sub-command launches claude with relay env injected.
+vc launches the selected coding harness (Claude Code or Pi) with void-relay authentication.
+Running "vc" with no sub-command starts the active harness with relay env injected.
 
 Sub-commands:
   login    Authenticate with an access code or device flow
@@ -43,28 +43,28 @@ never hangs in scripts, daemons, or CI.
 
 Run "vc <command> --help" for sub-command details.`,
 		brandStyle.Render("void-code")),
-	Example: `  # Launch claude normally
+	Example: `  # Launch the active harness normally
   vc
 
-  # Skip title screen — pass tty straight to claude (for tmux send-keys / daemon use)
+  # Skip title screen — pass tty straight to the active harness (for tmux send-keys / daemon use)
   vc --raw -- --session-id <id> --permission-mode bypassPermissions
 
   # Never prompt; fail fast / print guidance instead of blocking (scripts, CI)
   vc --non-interactive doctor
 
-  # Pass flags directly to claude using -- (double-dash terminator)
+  # Pass flags directly to the active harness using -- (double-dash terminator)
   vc -- --dangerously-skip-permissions
   vc -- --debug --verbose
 
-  # vc flags before --, claude flags after
+  # vc flags before --, harness flags after
   vc --version
   vc -- --help`,
 	// SilenceUsage hides the usage block on runtime errors — less noise for users.
 	SilenceUsage: true,
 	// ArbitraryArgs ensures any positional args are passed through to runSpawn
-	// (and on to claude) rather than cobra treating them as unknown subcommands.
+	// (and on to the active harness) rather than cobra treating them as unknown subcommands.
 	// Without this, strings like "dev-VCD57-paste" cause cobra to say
-	// "unknown command" instead of forwarding the arg to claude.
+	// "unknown command" instead of forwarding the arg to the harness.
 	Args: cobra.ArbitraryArgs,
 	// When no sub-command is matched, RunE (in main.go) handles the spawn.
 	RunE: runSpawn,
@@ -73,7 +73,7 @@ Run "vc <command> --help" for sub-command details.`,
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&versionFlag, "version", false, "Print version and exit")
 	rootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "non-interactive", false, "Never prompt; print guidance and pick safe defaults (also implied when stdin is not a TTY)")
-	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to claude (for tmux/daemon use)")
+	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to active harness (for tmux/daemon use)")
 	// Disable the auto-generated 'completion' sub-command — not needed for v0.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 }
