@@ -1,11 +1,18 @@
 # void-code
 
-`vc` — relay harness for Claude Code and Pi. Routes your selected coding harness through void-relay for authentication and provider selection.
+`vc` — relay harness for Claude Code, OpenAI Codex, and Pi. Routes your selected coding harness through void-relay for authentication and provider selection.
 
 ## Install
 
 ```bash
 curl -fsSL https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
+```
+
+Default install provisions `vc`, Node.js, and Pi only. Optional harness CLIs:
+
+```bash
+sh install.sh --with-claude --with-codex     # add Claude Code and Codex
+VC_INSTALL_PI=0 sh install.sh --with-codex   # Codex only
 ```
 
 Windows (PowerShell):
@@ -21,9 +28,20 @@ vc login              # authenticate (reads $VC_CODE or prompts)
 vc login --device     # device-code flow
 vc logout             # wipe credentials
 vc status             # show auth / relay / provider / harness / version info
+vc doctor             # check selected harness binary and compatibility matrix
 vc update             # self-update to latest release
 vc --version          # print version
 ```
+
+## Compatibility matrix
+
+| Harness | Providers |
+|---|---|
+| Claude Code | DeepSeek relay |
+| OpenAI Codex | ChatGPT relay |
+| Pi | DeepSeek relay, ChatGPT relay |
+
+Plain/native and named-key providers are not valid vc matrix rows.
 
 ## Passing flags to the active harness
 
@@ -40,7 +58,7 @@ Any flag that the active harness accepts can be passed this way. Flags before `-
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VC_RELAY_HOST` | `relay.makscee.ru:8448` | relay host:port |
+| `VC_RELAY_HOST` | `relay.makscee.ru:443` | relay host:port |
 | `VC_AUTH_HOST` | `https://auth.makscee.ru` | void-auth base URL |
 | `VC_RELAY_CA` | _(embedded)_ | filesystem path to relay CA PEM |
 | `VC_CODE` | _(none)_ | access code for `vc login` |
@@ -69,4 +87,4 @@ go build -ldflags "-X github.com/makscee/void-code/internal/version.Version=dev"
 go test ./...
 ```
 
-Design canon: `vault/projects/void-code/CONTEXT.md` · ADR: `docs/adr/0002-void-code-fresh-harness.md`
+Design canon: `hub/vault/projects/void-code/CONTEXT.md` · ADR: `docs/adr/0002-void-code-fresh-harness.md`

@@ -49,31 +49,25 @@ func TestBuildProviderRowsUsesSupportedIDFallback(t *testing.T) {
 }
 
 func TestBuildProviderRowsNoGrantedIsBaseline(t *testing.T) {
-	// ungranted user: empty granted list → bare DeepSeek relay plus Plain.
+	// ungranted user: empty granted list → bare DeepSeek relay only.
 	rows := buildProviderRows(nil, nil)
-	if len(rows) != 2 {
-		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
 	if rows[0].prov.Kind != provider.Relay || rows[0].label != "DeepSeek relay" {
 		t.Fatalf("row0 = %+v, want bare DeepSeek relay", rows[0])
-	}
-	if rows[1].prov.Kind != provider.Plain || rows[1].label != "Plain harness run" {
-		t.Fatalf("row1 = %+v, want Plain harness run", rows[1])
 	}
 }
 
 func TestProvidersModel_RowsFromKeys(t *testing.T) {
 	keys := []string{"work", "personal"}
 	m := NewProvidersModelForTest(keys, "relay")
-	// Expected rows (no granted): DeepSeek relay, Plain harness run. Named keys are hidden.
-	if got := m.RowCount(); got != 2 {
-		t.Fatalf("RowCount = %d, want 2", got)
+	// Expected rows (no granted): DeepSeek relay. Named keys are hidden.
+	if got := m.RowCount(); got != 1 {
+		t.Fatalf("RowCount = %d, want 1", got)
 	}
 	if m.RowLabel(0) != "DeepSeek relay" {
 		t.Errorf("row0 = %q, want DeepSeek relay", m.RowLabel(0))
-	}
-	if m.RowLabel(1) != "Plain harness run" {
-		t.Errorf("row1 = %q, want Plain harness run", m.RowLabel(1))
 	}
 }
 
@@ -81,9 +75,9 @@ func TestProvidersModel_RowsWithGranted(t *testing.T) {
 	keys := []string{"work"}
 	granted := []ProviderRowInfo{{ID: "deepseek-sub", Name: "DeepSeek Sub"}, {ID: "chatgpt-sub", Name: ""}}
 	m := NewProvidersModelWithGrantedForTest(keys, granted, "relay")
-	// Expected rows: bare DeepSeek relay, ChatGPT relay, Plain harness run. Named keys are hidden.
-	if got := m.RowCount(); got != 3 {
-		t.Fatalf("RowCount = %d, want 3", got)
+	// Expected rows: bare DeepSeek relay, ChatGPT relay. Named keys are hidden.
+	if got := m.RowCount(); got != 2 {
+		t.Fatalf("RowCount = %d, want 2", got)
 	}
 	if m.RowLabel(0) != "DeepSeek relay" {
 		t.Errorf("row0 = %q, want DeepSeek relay", m.RowLabel(0))
@@ -97,16 +91,16 @@ func TestProvidersModel_RowsWithGranted(t *testing.T) {
 }
 
 func TestProvidersModel_SelectMarksActive(t *testing.T) {
-	m := NewProvidersModelForTest([]string{"work"}, "plain")
-	if !m.RowIsActive(1) {
-		t.Error("Plain should be the active row")
+	m := NewProvidersModelForTest([]string{"work"}, "relay")
+	if !m.RowIsActive(0) {
+		t.Error("DeepSeek should be the active row")
 	}
 }
 
 func TestProvidersModel_RowIsDeleteable(t *testing.T) {
 	m := NewProvidersModelForTest([]string{"work"}, "relay")
 	if m.RowIsDeletable(0) {
-		t.Error("Plain row should not be deletable")
+		t.Error("DeepSeek row should not be deletable")
 	}
 }
 

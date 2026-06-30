@@ -15,6 +15,7 @@ import (
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/clackui"
 	"github.com/makscee/void-code/internal/claudebin"
+	"github.com/makscee/void-code/internal/codexbin"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/pibin"
@@ -266,8 +267,9 @@ not stdin is a TTY):
   • foreign statusline → merge (keep existing + add vc; least destructive)
   • shell-rc PATH gap → append the vc PATH marker
 
-Checks are selected for the active harness. Claude Code mode keeps the
-Claude-specific node/npm/claude/statusline checks; Pi mode checks Pi instead.`,
+Checks are selected for the active harness and include the supported matrix.
+Claude Code checks Claude+DeepSeek, Codex checks Codex+ChatGPT, and Pi checks
+Pi with DeepSeek/ChatGPT.`,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if doctorFixFlag {
@@ -654,14 +656,11 @@ func buildChecks(settingsPath, slCmd string) []checkResult {
 func buildChecksForHarness(settingsPath, slCmd string, activeHarness harnesschoice.Choice) []checkResult {
 	checks := []checkResult{
 		checkActiveHarness(activeHarness),
+		checkCompatibilityMatrix(activeHarness),
 		checkBinOnPath(),
 	}
-	if activeHarness.Kind == harnesschoice.Pi {
-		checks = append(checks,
-			checkPiCLI(),
-			checkActiveProvider(),
-		)
-	} else {
+	switch activeHarness.Kind {
+	case harnesschoice.Claude:
 		checks = append(checks,
 			checkNode(),
 			checkNpm(),
@@ -672,6 +671,18 @@ func buildChecksForHarness(settingsPath, slCmd string, activeHarness harnesschoi
 		if runtime.GOOS == "windows" {
 			checks = append(checks, checkNpmGlobalOnPath())
 		}
+	case harnesschoice.Codex:
+		checks = append(checks,
+			checkNode(),
+			checkNpm(),
+			checkCodexCLI(),
+			checkActiveProvider(),
+		)
+	default:
+		checks = append(checks,
+			checkPiCLI(),
+			checkActiveProvider(),
+		)
 	}
 	if runtime.GOOS == "darwin" {
 		checks = append(checks, checkShellRcGap())
@@ -684,6 +695,14 @@ func checkActiveHarness(activeHarness harnesschoice.Choice) checkResult {
 		name:    "harness",
 		status:  "✓",
 		message: "harness: " + activeHarness.Label(),
+	}
+}
+
+func checkCompatibilityMatrix(activeHarness harnesschoice.Choice) checkResult {
+	return checkResult{
+		name:    "matrix",
+		status:  "✓",
+		message: "matrix: Claude=DeepSeek, Codex=ChatGPT, Pi=DeepSeek/ChatGPT (active: " + activeHarness.Label() + ")",
 	}
 }
 
@@ -708,6 +727,29 @@ func checkClaudeCLI() checkResult {
 		name:     "claude CLI",
 		status:   "✗",
 		message:  "claude CLI: not found in PATH",
+		guidance: guidance,
+	}
+}
+
+// checkCodexCLI verifies that the codex binary is reachable on PATH.
+func checkCodexCLI() checkResult {
+	path, err := codexbin.Resolve()
+	if err == nil {
+		return checkResult{
+			name:    "codex CLI",
+			status:  "✓",
+			message: "codex CLI: found at " + path,
+		}
+	}
+	var guidance []string
+	guidance = append(guidance, "")
+	for _, line := range strings.Split(codexbin.InstallInstructions(), "\n") {
+		guidance = append(guidance, line)
+	}
+	return checkResult{
+		name:     "codex CLI",
+		status:   "✗",
+		message:  "codex CLI: not found in PATH",
 		guidance: guidance,
 	}
 }

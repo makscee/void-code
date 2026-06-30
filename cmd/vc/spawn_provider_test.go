@@ -72,6 +72,9 @@ func TestWrappedBinaryForHarness(t *testing.T) {
 	if got := wrappedBinaryFor(harnesschoice.Choice{Kind: harnesschoice.Claude}); got != "claude" {
 		t.Fatalf("Claude wrapped binary = %q, want claude", got)
 	}
+	if got := wrappedBinaryFor(harnesschoice.Choice{Kind: harnesschoice.Codex}); got != "codex" {
+		t.Fatalf("Codex wrapped binary = %q, want codex", got)
+	}
 	if got := wrappedBinaryFor(harnesschoice.Choice{Kind: harnesschoice.Pi}); got != "pi" {
 		t.Fatalf("Pi wrapped binary = %q, want pi", got)
 	}
@@ -80,9 +83,15 @@ func TestWrappedBinaryForHarness(t *testing.T) {
 func TestEnsureSelectedHarnessInstalled_PiMissing(t *testing.T) {
 	oldPiInstalled := piIsInstalled
 	oldClaudeInstalled := claudeIsInstalled
-	t.Cleanup(func() { piIsInstalled = oldPiInstalled; claudeIsInstalled = oldClaudeInstalled })
+	oldCodexInstalled := codexIsInstalled
+	t.Cleanup(func() {
+		piIsInstalled = oldPiInstalled
+		claudeIsInstalled = oldClaudeInstalled
+		codexIsInstalled = oldCodexInstalled
+	})
 	piIsInstalled = func() bool { return false }
 	claudeIsInstalled = func() bool { return true }
+	codexIsInstalled = func() bool { return true }
 
 	err := ensureSelectedHarnessInstalled(harnesschoice.Choice{Kind: harnesschoice.Pi})
 	if err == nil || !strings.Contains(err.Error(), "pi CLI not found") {
@@ -90,12 +99,68 @@ func TestEnsureSelectedHarnessInstalled_PiMissing(t *testing.T) {
 	}
 }
 
-func TestBuildPiSpawnEnvRelayProviderUsesVCSeamAndStripsClaude(t *testing.T) {
-	env := buildPiSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "deepseek"},
-		[]string{"PATH=/usr/bin", "ANTHROPIC_AUTH_TOKEN=old", "HTTPS_PROXY=old", "VC_AUTH_TOKEN=old", "OPENAI_API_KEY=sk-old", "CHATGPT_ACCOUNT_ID=acct"},
+func TestEnsureSelectedHarnessInstalled_CodexMissing(t *testing.T) {
+	oldPiInstalled := piIsInstalled
+	oldClaudeInstalled := claudeIsInstalled
+	oldCodexInstalled := codexIsInstalled
+	t.Cleanup(func() {
+		piIsInstalled = oldPiInstalled
+		claudeIsInstalled = oldClaudeInstalled
+		codexIsInstalled = oldCodexInstalled
+	})
+	piIsInstalled = func() bool { return true }
+	claudeIsInstalled = func() bool { return true }
+	codexIsInstalled = func() bool { return false }
+
+	err := ensureSelectedHarnessInstalled(harnesschoice.Choice{Kind: harnesschoice.Codex})
+	if err == nil || !strings.Contains(err.Error(), "codex CLI not found") {
+		t.Fatalf("Codex missing err = %v, want clear missing-codex message", err)
+	}
+}
+
+func TestBuildCodexArgsInjectsConfigBeforeUserArgs(t *testing.T) {
+	got := buildCodexArgs([]string{"--ask-for-approval", "never"}, "https", "relay.example:443")
+	joined := strings.Join(got, "\x00")
+	for _, want := range []string{
+		"model_provider=void",
+		"model_providers.void.base_url=https://relay.example:443/codex",
+		"model_providers.void.wire_api=responses",
+		"model_providers.void.env_key=VC_AUTH_TOKEN",
+		"model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
+		"model=gpt-5.4",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Codex args missing %q: %#v", want, got)
+		}
+	}
+	if got[len(got)-2] != "--ask-for-approval" || got[len(got)-1] != "never" {
+		t.Fatalf("user args not preserved at end: %#v", got)
+	}
+}
+
+func TestBuildCodexSpawnEnvUsesVCSeamAndStripsSecrets(t *testing.T) {
+	env := buildCodexSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "chatgpt-sub"},
+		[]string{"PATH=/usr/bin", "OPENAI_API_KEY=sk-old", "VC_AUTH_TOKEN=old", "CHATGPT_ACCOUNT_ID=acct"},
 		"https", "relay.example:443", "pooltok", "/tmp/ca.pem")
 	joined := strings.Join(env, "\n")
-	for _, leak := range []string{"ANTHROPIC_AUTH_TOKEN", "HTTPS_PROXY=old", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
+	for _, leak := range []string{"OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID=acct", "VC_AUTH_TOKEN=old"} {
+		if strings.Contains(joined, leak) {
+			t.Fatalf("Codex env leaked %q: %v", leak, env)
+		}
+	}
+	for _, want := range []string{"VC_HARNESS=codex", "VC_PROVIDER=relay", "VC_RELAY_PROVIDER_ID=chatgpt-sub", "VC_RELAY_URL=https://relay.example:443", "VC_RELAY_CA=/tmp/ca.pem", "VC_AUTH_TOKEN=pooltok"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Codex env missing %q: %v", want, env)
+		}
+	}
+}
+
+func TestBuildPiSpawnEnvRelayProviderUsesVCSeamAndStripsClaude(t *testing.T) {
+	env := buildPiSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "deepseek"},
+		[]string{"PATH=/usr/bin", "ANTHROPIC_AUTH_TOKEN=old", "HTTPS_PROXY=old", "VC_AUTH_TOKEN=old", "OPENAI_API_KEY=sk-old", "CHATGPT_ACCOUNT_ID=acct", "ANTHROPIC_CUSTOM_HEADERS=x-void-provider: stale"},
+		"https", "relay.example:443", "pooltok", "/tmp/ca.pem")
+	joined := strings.Join(env, "\n")
+	for _, leak := range []string{"ANTHROPIC_AUTH_TOKEN", "HTTPS_PROXY=old", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID", "ANTHROPIC_CUSTOM_HEADERS"} {
 		if strings.Contains(joined, leak) {
 			t.Fatalf("Pi env leaked client secret %q: %v", leak, env)
 		}
@@ -114,6 +179,30 @@ func TestBuildPiSpawnEnvRelayProviderUsesVCSeamAndStripsClaude(t *testing.T) {
 	}
 }
 
+func TestBuildPiSpawnEnvBareRelayUsesDeepSeekSentinel(t *testing.T) {
+	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay},
+		[]string{"PATH=/usr/bin", "ANTHROPIC_AUTH_TOKEN=old", "VC_RELAY_PROVIDER_ID=old", "VC_AUTH_TOKEN=old"},
+		"https", "relay.example:443", "pooltok", "/tmp/ca.pem")
+	joined := strings.Join(env, "\n")
+	for _, leak := range []string{"ANTHROPIC_AUTH_TOKEN", "VC_AUTH_TOKEN=old", "VC_RELAY_PROVIDER_ID=old"} {
+		if strings.Contains(joined, leak) {
+			t.Fatalf("Pi bare relay env leaked %q: %v", leak, env)
+		}
+	}
+	for _, want := range []string{
+		"VC_HARNESS=pi",
+		"VC_PROVIDER=relay",
+		"VC_RELAY_PROVIDER_ID=deepseek",
+		"VC_RELAY_URL=https://relay.example:443",
+		"VC_RELAY_CA=/tmp/ca.pem",
+		"VC_AUTH_TOKEN=pooltok",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Pi bare relay env missing %q: %v", want, env)
+		}
+	}
+}
+
 func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
 	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
 	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.4", "-p", "hello"}
@@ -124,6 +213,25 @@ func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
 
 func TestBuildPiVoidCodexArgsKeepsUserProviderModel(t *testing.T) {
 	got := buildPiVoidCodexArgs([]string{"--provider=other", "--model", "other-model", "-p", "hello"}, "/tmp/vc-pi/index.ts")
+	joined := strings.Join(got, " ")
+	if strings.Count(joined, "--provider") != 1 || strings.Count(joined, "--model") != 1 {
+		t.Fatalf("provider/model flags duplicated: %#v", got)
+	}
+	if !strings.HasPrefix(joined, "-e /tmp/vc-pi/index.ts --provider=other --model other-model") {
+		t.Fatalf("user provider/model order not preserved after extension: %#v", got)
+	}
+}
+
+func TestBuildPiVoidDeepSeekArgsInjectsExtensionProviderModel(t *testing.T) {
+	got := buildPiVoidDeepSeekArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-deepseek", "--model", "claude-sonnet-4-6", "-p", "hello"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildPiVoidDeepSeekArgsKeepsUserProviderModel(t *testing.T) {
+	got := buildPiVoidDeepSeekArgs([]string{"--provider=other", "--model", "other-model", "-p", "hello"}, "/tmp/vc-pi/index.ts")
 	joined := strings.Join(got, " ")
 	if strings.Count(joined, "--provider") != 1 || strings.Count(joined, "--model") != 1 {
 		t.Fatalf("provider/model flags duplicated: %#v", got)
@@ -149,7 +257,7 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(PROVIDER_ID", "void-codex", "/codex/responses", "authorization\": \"Bearer ", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "claude-sonnet-4-6", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}

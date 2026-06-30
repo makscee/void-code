@@ -10,18 +10,20 @@ const piVoidCodexExtensionSource = `import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const PROVIDER_ID = "void-codex";
-const MODEL_ID = "gpt-5.4";
+const CODEX_PROVIDER_ID = "void-codex";
+const CODEX_MODEL_ID = "gpt-5.4";
+const DEEPSEEK_PROVIDER_ID = "void-deepseek";
+const DEEPSEEK_MODEL_ID = "claude-sonnet-4-6";
 
 export default function (pi: ExtensionAPI) {
-	pi.registerProvider(PROVIDER_ID, {
+	pi.registerProvider(CODEX_PROVIDER_ID, {
 		name: "Void Codex relay",
 		baseUrl: "$VC_RELAY_URL",
 		apiKey: "$VC_AUTH_TOKEN",
 		api: "void-codex-sse",
 		models: [
 			{
-				id: MODEL_ID,
+				id: CODEX_MODEL_ID,
 				name: "GPT-5.4 via Void relay",
 				reasoning: true,
 				thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
@@ -32,6 +34,26 @@ export default function (pi: ExtensionAPI) {
 			},
 		],
 		streamSimple: streamVoidCodex,
+	});
+
+	pi.registerProvider(DEEPSEEK_PROVIDER_ID, {
+		name: "Void DeepSeek relay",
+		baseUrl: requiredEnv("VC_RELAY_URL"),
+		apiKey: "$VC_AUTH_TOKEN",
+		authHeader: true,
+		api: "anthropic-messages",
+		headers: { "x-void-provider": "$VC_RELAY_PROVIDER_ID" },
+		models: [
+			{
+				id: DEEPSEEK_MODEL_ID,
+				name: "Claude Sonnet 4.6 via Void DeepSeek relay",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200000,
+				maxTokens: 64000,
+			},
+		],
 	});
 }
 
@@ -137,7 +159,7 @@ function streamVoidCodex(
 
 function requiredEnv(name: string): string {
 	const value = process.env[name];
-	if (!value) throw new Error(name + " is required for void-codex");
+	if (!value) throw new Error(name + " is required for Pi void relay");
 	return value;
 }
 

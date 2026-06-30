@@ -48,6 +48,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	fmt.Printf("%s %s\n", labelStyle.Render("provider:"), valueStyle.Render(active.Label()))
 	activeHarness := harnesschoice.Load()
 	fmt.Printf("%s %s\n", labelStyle.Render("harness:"), valueStyle.Render(activeHarness.Label()))
+	fmt.Printf("%s %s\n", labelStyle.Render("matrix: "), valueStyle.Render("Claude=DeepSeek, Codex=ChatGPT, Pi=DeepSeek/ChatGPT"))
 
 	// Load token with legacy cv fallback and silent migration.
 	token, migrated, loadErr := auth.Load()

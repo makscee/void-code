@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/clackui"
+	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/version"
@@ -53,6 +54,10 @@ const (
 	ShowHarnesses
 	// RunInstallPi means the user selected Pi while it is not installed.
 	RunInstallPi
+	// RunInstallClaude means the user selected Claude Code while it is not installed.
+	RunInstallClaude
+	// RunInstallCodex means the user selected OpenAI Codex while it is not installed.
+	RunInstallCodex
 	// RunStatusline means the user chose "Install statusline" — caller runs the install flow.
 	RunStatusline
 	// RunProfile means the user chose "Open profile" — caller opens the profile URL in a browser.
@@ -79,6 +84,10 @@ type Callbacks struct {
 	// ActiveHarnessLabel is the human-facing display label for the active harness.
 	// If empty, the view falls back to harnesschoice.Parse(ActiveHarness).Label().
 	ActiveHarnessLabel string
+	// ClaudeInstalled reports whether the claude binary is available on PATH.
+	ClaudeInstalled bool
+	// CodexInstalled reports whether the codex binary is available on PATH.
+	CodexInstalled bool
 	// PiInstalled reports whether the pi binary is available on PATH.
 	PiInstalled bool
 	// OnSelectHarness is called when the user selects an installed harness row.
@@ -193,8 +202,8 @@ func menuItemsFor(state AuthState, cb Callbacks) []menuItem {
 	}
 	return []menuItem{
 		{label: "Start", result: SpawnClaude},
-		{label: "Harness: " + activeHarnessLabel(cb), result: ShowHarnesses},
-		{label: "Provider: " + activeProviderLabel(cb), result: ShowProviders},
+		{label: "Change harness", result: ShowHarnesses},
+		{label: "Change provider", result: ShowProviders},
 		{label: "Top up", result: ShowTopUp},
 		{label: "Run doctor", result: RunDoctor},
 		{label: "Install statusline", result: RunStatusline},
@@ -379,7 +388,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if r == ShowHarnesses {
-			m.harnesses = newHarnessesModel(m.cb.ActiveHarness, m.cb.PiInstalled)
+			m.harnesses = newHarnessesModel(m.cb.ActiveHarness, m.cb.ClaudeInstalled, m.cb.CodexInstalled, m.cb.PiInstalled)
 			m.view = harnessesView
 			return m, nil
 		}
@@ -424,16 +433,8 @@ func (m model) updateProviders(s string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter", " ":
 		row := m.providers.rows[m.providers.cursor]
-		// Select this provider.
-		if m.cb.OnSelect != nil {
-			_ = m.cb.OnSelect(row.prov)
-		}
-		if m.cb.OnSelectLabel != nil {
-			_ = m.cb.OnSelectLabel(row.label)
-		}
-		m.cb.ActiveProvider = row.prov.String()
-		m.cb.ActiveProviderLabel = row.label
-		m.providers.active = row.prov.String()
+		m.applyReconciledSelection(harnesschoice.Parse(m.cb.ActiveHarness), row.prov, row.label)
+		m.providers.active = m.cb.ActiveProvider
 		m.view = menuView
 		m.refreshMenuItems()
 		return m, nil
@@ -465,18 +466,14 @@ func (m model) updateHarnesses(s string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter", " ":
 		row := m.harnesses.rows[m.harnesses.cursor]
-		if row.installPi {
-			m.result = RunInstallPi
+		if row.installResult != SpawnClaude {
+			m.result = row.installResult
 			m.chosen = true
 			m.quitting = true
 			return m, tea.Quit
 		}
-		if m.cb.OnSelectHarness != nil {
-			_ = m.cb.OnSelectHarness(row.choice)
-		}
-		m.cb.ActiveHarness = row.choice.String()
-		m.cb.ActiveHarnessLabel = row.choice.Label()
-		m.harnesses.active = row.choice.String()
+		m.applyReconciledSelection(row.choice, provider.Parse(m.cb.ActiveProvider), m.cb.ActiveProviderLabel)
+		m.harnesses.active = m.cb.ActiveHarness
 		m.view = menuView
 		m.refreshMenuItems()
 		return m, nil
@@ -572,6 +569,27 @@ func (m model) updateAddKey(s string) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *model) applyReconciledSelection(h harnesschoice.Choice, p provider.Provider, label string) {
+	grants := make([]compat.Grant, len(m.cb.GrantedProviders))
+	for i, g := range m.cb.GrantedProviders {
+		grants[i] = compat.Grant{ID: g.ID, Name: g.Name}
+	}
+	d := compat.Reconcile(h, p, label, grants)
+	if m.cb.OnSelectHarness != nil {
+		_ = m.cb.OnSelectHarness(d.Harness)
+	}
+	if m.cb.OnSelect != nil {
+		_ = m.cb.OnSelect(d.Provider)
+	}
+	if m.cb.OnSelectLabel != nil {
+		_ = m.cb.OnSelectLabel(d.ProviderLabel)
+	}
+	m.cb.ActiveHarness = d.Harness.String()
+	m.cb.ActiveHarnessLabel = d.Harness.Label()
+	m.cb.ActiveProvider = d.Provider.String()
+	m.cb.ActiveProviderLabel = d.ProviderLabel
+}
+
 func (m model) View() string {
 	if m.quitting {
 		return ""
@@ -648,6 +666,12 @@ func (m model) View() string {
 	sb.WriteString(clackui.RailLine("│", ""))
 	sb.WriteString("\n")
 
+	if m.LoggedIn {
+		sb.WriteString(m.renderMatrixSummary())
+		sb.WriteString(clackui.RailLine("│", ""))
+		sb.WriteString("\n")
+	}
+
 	// ◆  What now?
 	sb.WriteString(clackui.RailLine("◆", "  "+infoTextStyle.Render("What now?")))
 	sb.WriteString("\n")
@@ -671,6 +695,37 @@ func (m model) View() string {
 	sb.WriteString(clackui.RailLine("└", "  "+hintStyle.Render("↑/↓ · enter · q quit")))
 	sb.WriteString("\n")
 
+	return sb.String()
+}
+
+func (m model) renderMatrixSummary() string {
+	var sb strings.Builder
+	sb.WriteString(clackui.RailLine("◆", "  "+infoTextStyle.Render("Harness")))
+	sb.WriteString("\n")
+	for _, r := range buildHarnessRows(m.cb.ClaudeInstalled, m.cb.CodexInstalled, m.cb.PiInstalled) {
+		marker := "○"
+		if r.choice.String() == m.cb.ActiveHarness {
+			marker = "◉"
+		}
+		style := unselectedItemStyle
+		if r.installResult != SpawnClaude {
+			style = hintStyle
+		}
+		sb.WriteString(clackui.RailLine("│", "  "+style.Render(marker+"  "+r.label)))
+		sb.WriteString("\n")
+	}
+	sb.WriteString(clackui.RailLine("◆", "  "+infoTextStyle.Render("Providers")))
+	sb.WriteString("\n")
+	sb.WriteString(clackui.RailLine("│", "  "+infoTextStyle.Render("Provider: "+activeProviderLabel(m.cb))))
+	sb.WriteString("\n")
+	for _, r := range buildProviderRows(m.cb.KeyNames, m.cb.GrantedProviders) {
+		marker := "○"
+		if r.prov.String() == m.cb.ActiveProvider {
+			marker = "◉"
+		}
+		sb.WriteString(clackui.RailLine("│", "  "+unselectedItemStyle.Render(marker+"  "+r.label)))
+		sb.WriteString("\n")
+	}
 	return sb.String()
 }
 

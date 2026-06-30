@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/makscee/void-code/internal/ccsettings"
+	"github.com/makscee/void-code/internal/harnesschoice"
 )
 
 // TestFixGuidance_AbsentStatusLine verifies that a check carrying a plain `fix`
@@ -83,6 +84,9 @@ func TestRunDoctorFix_InstallsAbsentStatusLine(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Claude}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
 
 	settingsPath, err := ccsettings.SettingsPath()
 	if err != nil {

@@ -1,8 +1,7 @@
 #!/bin/sh
 # vc/install.sh — installs the void-code relay launcher `vc`, provisions
-# the production relay CA, and bootstraps node + @anthropic-ai/claude-code
-# (needed for `claude` which vc delegates to). Bootstraps everything —
-# node runtime auto-installed on bare machines via official installer.
+# the production relay CA, and bootstraps node + selected agent CLIs.
+# Default: vc + node + Pi only. Optional flags install Claude Code and/or Codex.
 #
 # Usage (recommended):
 #   curl -fsSL https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
@@ -19,19 +18,32 @@
 #                       (still runs node+claude check). Used by tests.
 #   VC_INSTALL_DRY_RUN  set to 1 to print URLs + commands that would run,
 #                       then exit 0. No downloads, no filesystem writes.
+#   VC_INSTALL_PI       default 1; install @earendil-works/pi-coding-agent
+#   VC_INSTALL_CLAUDE   default 0; install @anthropic-ai/claude-code
+#   VC_INSTALL_CODEX    default 0; install @openai/codex
 #
 # Flags:
 #   --dry-run           same as VC_INSTALL_DRY_RUN=1
 #   -y / --yes          non-interactive: auto-confirm all prompts
 #                       (used by scripted one-liner installs)
+#   --with-pi / --without-pi
+#   --with-claude
+#   --with-codex
 set -eu
 
 DRY_RUN=0
 YES=0
+INSTALL_PI="${VC_INSTALL_PI:-1}"
+INSTALL_CLAUDE="${VC_INSTALL_CLAUDE:-0}"
+INSTALL_CODEX="${VC_INSTALL_CODEX:-0}"
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     -y|--yes)  YES=1 ;;
+    --with-pi) INSTALL_PI=1 ;;
+    --without-pi) INSTALL_PI=0 ;;
+    --with-claude) INSTALL_CLAUDE=1 ;;
+    --with-codex) INSTALL_CODEX=1 ;;
   esac
 done
 [ "${VC_INSTALL_DRY_RUN:-0}" = "1" ] && DRY_RUN=1
@@ -400,21 +412,188 @@ ensure_node() {
   fi
 }
 
-# Check claude binary; offer/prompt npm install if absent.
-# Returns 0 if claude is present (or successfully installed), 1 if still absent.
-check_claude() {
-  if command -v claude >/dev/null 2>&1 || [ -x "$HOME/.void-code/bin/claude" ]; then
-    printf 'vc: claude already installed\n' >&2
+NPM_INSTALL_RETRY_ARGS="--maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000"
+NPM_NODE_OPTIONS="--dns-result-order=ipv4first"
+
+npm_install_global() {
+  _pkg="$1"
+  _attempt=1
+  _node_options="$NPM_NODE_OPTIONS"
+  if [ -n "${NODE_OPTIONS:-}" ]; then
+    case " $NODE_OPTIONS " in
+      *" $NPM_NODE_OPTIONS "*) _node_options="$NODE_OPTIONS" ;;
+      *) _node_options="$NODE_OPTIONS $NPM_NODE_OPTIONS" ;;
+    esac
+  fi
+  while [ "$_attempt" -le 3 ]; do
+    if NODE_OPTIONS="$_node_options" npm install -g $NPM_INSTALL_RETRY_ARGS "$_pkg"; then
+      return 0
+    fi
+
+    if [ "$_attempt" -ge 3 ]; then
+      return 1
+    fi
+
+    _next_attempt=$((_attempt + 1))
+    case "$_attempt" in
+      1) _delay=5 ;;
+      *) _delay=10 ;;
+    esac
+    printf 'vc: npm install failed; retrying attempt %s/3 in %ss...\n' "$_next_attempt" "$_delay" >&2
+    sleep "$_delay"
+    _attempt="$_next_attempt"
+  done
+  return 1
+}
+
+print_npm_install_global() {
+  printf 'NODE_OPTIONS=%s npm install -g %s %s' "$NPM_NODE_OPTIONS" "$NPM_INSTALL_RETRY_ARGS" "$1"
+}
+
+agent_bin_present() {
+  _bin="$1"
+  command -v "$_bin" >/dev/null 2>&1 || [ -x "$HOME/.void-code/bin/$_bin" ]
+}
+
+codex_command() {
+  if command -v codex >/dev/null 2>&1; then
+    command -v codex
+    return 0
+  fi
+  if [ -x "$HOME/.void-code/bin/codex" ]; then
+    printf '%s\n' "$HOME/.void-code/bin/codex"
+    return 0
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    _prefix="$(npm prefix -g 2>/dev/null)" || true
+    if [ -n "$_prefix" ] && [ -x "$_prefix/bin/codex" ]; then
+      printf '%s\n' "$_prefix/bin/codex"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+codex_version_output() {
+  _codex_cmd="$(codex_command)" || return 1
+  [ -n "$_codex_cmd" ] || return 1
+  "$_codex_cmd" --version 2>&1
+}
+
+codex_health_check() {
+  _out="$(codex_version_output)" || return 1
+  case "$_out" in
+    *codex-cli*) return 0 ;;
+    *)           return 1 ;;
+  esac
+}
+
+codex_native_platform() {
+  case "$OS/$ARCH" in
+    linux/amd64)  printf 'linux-x64' ;;
+    linux/arm64)  printf 'linux-arm64' ;;
+    darwin/amd64) printf 'darwin-x64' ;;
+    darwin/arm64) printf 'darwin-arm64' ;;
+    *)            printf '' ;;
+  esac
+}
+
+codex_installed_version() {
+  _root="$(npm root -g 2>/dev/null)" || true
+  if [ -n "$_root" ] && [ -f "$_root/@openai/codex/package.json" ]; then
+    _ver="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$_root/@openai/codex/package.json" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
+    if [ -n "$_ver" ]; then
+      printf '%s' "$_ver"
+      return 0
+    fi
+  fi
+
+  _line="$(npm list -g @openai/codex --depth=0 2>/dev/null | grep '@openai/codex@' | head -1)" || true
+  _ver="$(printf '%s' "$_line" | sed 's/^.*@openai\/codex@//; s/[[:space:]].*$//')" || true
+  if [ -n "$_ver" ] && [ "$_ver" != "$_line" ]; then
+    printf '%s' "$_ver"
     return 0
   fi
 
+  return 1
+}
+
+codex_native_optional_missing() {
+  _out="$(codex_version_output)" || true
+  case "$_out" in
+    *"Missing optional dependency"*|*"missing optional dependency"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+repair_codex_native_optional() {
+  codex_native_optional_missing || return 1
+
   if ! command -v npm >/dev/null 2>&1; then
-    printf '\nvc: claude not found, and npm is not available.\n' >&2
+    printf 'vc: codex native repair needs npm, but npm is not available.\n' >&2
+    return 1
+  fi
+
+  _platform="$(codex_native_platform)"
+  if [ -z "$_platform" ]; then
+    printf 'vc: codex native repair is not available for %s/%s.\n' "$OS" "$ARCH" >&2
+    return 1
+  fi
+
+  _version="$(codex_installed_version)" || true
+  if [ -z "$_version" ]; then
+    printf 'vc: codex native repair could not determine installed @openai/codex version.\n' >&2
+    return 1
+  fi
+
+  _native_pkg="@openai/codex-$_platform@npm:@openai/codex@$_version-$_platform"
+  printf 'vc: codex wrapper found but native optional package is missing; repairing %s...\n' "$_native_pkg" >&2
+  if npm_install_global "$_native_pkg" >&2; then
+    if codex_health_check; then
+      printf 'vc: codex native package repaired.\n' >&2
+      return 0
+    fi
+    printf 'vc: codex native repair ran, but codex --version still did not report codex-cli.\n' >&2
+    return 1
+  fi
+
+  printf 'vc: codex native package repair failed.\n' >&2
+  return 1
+}
+
+agent_health_check() {
+  _bin="$1"
+  if [ "$_bin" = "codex" ]; then
+    codex_health_check
+  else
+    agent_bin_present "$_bin"
+  fi
+}
+
+# Check an npm-installed agent binary; install selected packages deterministically.
+# Returns 0 if present (or successfully installed), 1 if still absent.
+check_npm_agent() {
+  _bin="$1"
+  _pkg="$2"
+  _label="$3"
+
+  if agent_health_check "$_bin"; then
+    printf 'vc: %s already installed\n' "$_bin" >&2
+    return 0
+  fi
+
+  if [ "$_bin" = "codex" ] && codex_command >/dev/null 2>&1; then
+    repair_codex_native_optional && return 0
+    printf 'vc: codex found, but codex --version did not report codex-cli.\n' >&2
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    printf '\nvc: %s not found, and npm is not available.\n' "$_bin" >&2
     printf '    Install Node.js first (see above), then re-run.\n' >&2
     return 1
   fi
 
-  printf '\nvc: @anthropic-ai/claude-code (claude) is not installed.\n' >&2
+  printf '\nvc: %s (%s) is not installed or healthy.\n' "$_pkg" "$_label" >&2
 
   _do_install=0
   if [ "$YES" = 1 ]; then
@@ -429,28 +608,45 @@ check_claude() {
         *)     _do_install=1 ;;
       esac
     else
-      # Non-interactive (piped) without -y: print guidance and continue.
-      printf '    Run: npm install -g @anthropic-ai/claude-code\n' >&2
-      printf '    Then open a new terminal and run: vc\n' >&2
-      return 1
+      # Non-interactive selected installs are deterministic: no prompt, install.
+      _do_install=1
     fi
   fi
 
   if [ "$_do_install" = 1 ]; then
-    printf 'vc: installing @anthropic-ai/claude-code via npm...\n' >&2
-    if npm install -g @anthropic-ai/claude-code >&2; then
-      printf 'vc: @anthropic-ai/claude-code installed.\n' >&2
+    printf 'vc: installing %s via npm...\n' "$_pkg" >&2
+    if npm_install_global "$_pkg" >&2; then
+      if [ "$_bin" = "codex" ]; then
+        if codex_health_check || repair_codex_native_optional; then
+          printf 'vc: %s installed.\n' "$_pkg" >&2
+          printf '    Note: open a new terminal before running vc (npm PATH update).\n' >&2
+          return 0
+        fi
+        printf 'vc: %s installed, but codex --version did not report codex-cli.\n' "$_pkg" >&2
+        return 1
+      fi
+      printf 'vc: %s installed.\n' "$_pkg" >&2
       printf '    Note: open a new terminal before running vc (npm PATH update).\n' >&2
       return 0
     else
       printf 'vc: npm install failed.\n' >&2
-      printf '    Run manually: npm install -g @anthropic-ai/claude-code\n' >&2
+      printf '    Run manually: ' >&2
+      print_npm_install_global "$_pkg" >&2
+      printf '\n' >&2
       return 1
     fi
   else
-    printf '    Run when ready: npm install -g @anthropic-ai/claude-code\n' >&2
+    printf '    Run when ready: ' >&2
+    print_npm_install_global "$_pkg" >&2
+    printf '\n' >&2
     return 1
   fi
+}
+
+check_selected_agents() {
+  [ "$INSTALL_PI" = 1 ] && check_npm_agent pi @earendil-works/pi-coding-agent Pi || true
+  [ "$INSTALL_CLAUDE" = 1 ] && check_npm_agent claude @anthropic-ai/claude-code "Claude Code" || true
+  [ "$INSTALL_CODEX" = 1 ] && check_npm_agent codex @openai/codex "OpenAI Codex" || true
 }
 
 # ── relay CA → OS trust store ─────────────────────────────────────────────────
@@ -530,8 +726,20 @@ if [ "$DRY_RUN" = 1 ]; then
       printf 'MANUAL: install Node.js >= %s from https://nodejs.org, then re-run\n' "$MIN_NODE_MAJOR"
     fi
   fi
-  if ! command -v claude >/dev/null 2>&1 && ! [ -x "$HOME/.void-code/bin/claude" ]; then
-    printf 'WOULD: npm install -g @anthropic-ai/claude-code\n'
+  if [ "$INSTALL_PI" = 1 ]; then
+    printf 'WOULD: '
+    print_npm_install_global @earendil-works/pi-coding-agent
+    printf '\n'
+  fi
+  if [ "$INSTALL_CLAUDE" = 1 ]; then
+    printf 'WOULD: '
+    print_npm_install_global @anthropic-ai/claude-code
+    printf '\n'
+  fi
+  if [ "$INSTALL_CODEX" = 1 ]; then
+    printf 'WOULD: '
+    print_npm_install_global @openai/codex
+    printf '\n'
   fi
   _dry_rc="$(detect_rc_file)"
   printf 'RC file: %s\n' "${_dry_rc}"
@@ -577,8 +785,8 @@ fetch_to_file "$RELAY_CA_URL" "$CA_DIR/relay-ca.pem" \
 # 2b. Trust the relay CA in the OS store so curl/git (not just node) work in-session.
 trust_relay_ca
 
-# 3. PATH — register vc FIRST, before the node/claude bootstrap. The vc launcher
-# (vc login, vc doctor) works without node; a node/claude hiccup must NEVER leave
+# 3. PATH — register vc FIRST, before the node/agent bootstrap. The vc launcher
+# (vc login, vc doctor) works without node; a node/agent hiccup must NEVER leave
 # vc off PATH. Previously this ran AFTER node bootstrap, so a node failure's
 # `exit 1` skipped it entirely → vc installed but unreachable on fresh machines.
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
@@ -586,16 +794,15 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   append_path_to_rc "$RC_FILE" "$BIN_DIR"
 fi
 
-# 4. node/npm + claude bootstrap — NON-FATAL. On failure, vc is already installed
-# and on PATH; the post-install steps print exactly what's left to finish (node +
-# claude). We never abort the whole install over a node hiccup.
-printf '==> bootstrapping node / claude\n' >&2
+# 4. node/npm + selected agent bootstrap — NON-FATAL. On failure, vc is already
+# installed and on PATH; the post-install steps print exactly what's left.
+printf '==> bootstrapping node / selected agents\n' >&2
 NODE_OK=0
 if ensure_node; then
   NODE_OK=1
-  check_claude || true
+  check_selected_agents
 else
-  printf 'vc: node bootstrap incomplete — vc itself is installed; finish node + claude per the steps below.\n' >&2
+  printf 'vc: node bootstrap incomplete — vc itself is installed; finish node + selected agents per the steps below.\n' >&2
 fi
 
 # 5. vc login — use VC_CODE if provided, then wipe it from env
@@ -610,9 +817,14 @@ fi
 
 # ── post-install UX ───────────────────────────────────────────────────────────
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
+  _pi_ok=0
+  command -v pi >/dev/null 2>&1 && _pi_ok=1
+  [ -x "$HOME/.void-code/bin/pi" ] && _pi_ok=1
   _claude_ok=0
   command -v claude >/dev/null 2>&1 && _claude_ok=1
   [ -x "$HOME/.void-code/bin/claude" ] && _claude_ok=1
+  _codex_ok=0
+  codex_health_check && _codex_ok=1
 
   _vc_ok=0
   command -v vc >/dev/null 2>&1 && _vc_ok=1
@@ -628,7 +840,7 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   # Numbered steps, only for what is actually missing — never a silent dead end.
   _n=1
   if [ "$NODE_OK" = 0 ]; then
-    printf '\n  %s. Install Node.js >= %s (required — Claude Code and Pi both need Node):\n' "$_n" "$MIN_NODE_MAJOR"
+    printf '\n  %s. Install Node.js >= %s (required for selected agent CLIs):\n' "$_n" "$MIN_NODE_MAJOR"
     if [ "$OS" = "linux" ]; then
       printf '         Use NodeSource for Debian/Ubuntu or download from https://nodejs.org, then re-run.\n'
     elif [ "$OS" = "darwin" ]; then
@@ -638,12 +850,32 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
     fi
     _n=$((_n + 1))
   fi
-  if [ "$_claude_ok" = 0 ]; then
-    printf '\n  %s. Install Claude Code:\n' "$_n"
-    printf '         npm install -g @anthropic-ai/claude-code\n'
+  _agents_missing=0
+  if [ "$INSTALL_PI" = 1 ] && [ "$_pi_ok" = 0 ]; then
+    printf '\n  %s. Install Pi:\n' "$_n"
+    printf '         '
+    print_npm_install_global @earendil-works/pi-coding-agent
+    printf '\n'
+    _agents_missing=1
     _n=$((_n + 1))
   fi
-  if [ "$_vc_ok" = 0 ] || [ "$NODE_OK" = 0 ] || [ "$_claude_ok" = 0 ]; then
+  if [ "$INSTALL_CLAUDE" = 1 ] && [ "$_claude_ok" = 0 ]; then
+    printf '\n  %s. Install Claude Code:\n' "$_n"
+    printf '         '
+    print_npm_install_global @anthropic-ai/claude-code
+    printf '\n'
+    _agents_missing=1
+    _n=$((_n + 1))
+  fi
+  if [ "$INSTALL_CODEX" = 1 ] && [ "$_codex_ok" = 0 ]; then
+    printf '\n  %s. Install OpenAI Codex:\n' "$_n"
+    printf '         '
+    print_npm_install_global @openai/codex
+    printf '\n'
+    _agents_missing=1
+    _n=$((_n + 1))
+  fi
+  if [ "$_vc_ok" = 0 ] || [ "$NODE_OK" = 0 ] || [ "$_agents_missing" = 1 ]; then
     printf '\n  %s. Open a NEW terminal (picks up PATH + npm changes)\n' "$_n"
     printf '         or run: source %s\n' "${RC_FILE:-~/.zshrc}"
     _n=$((_n + 1))

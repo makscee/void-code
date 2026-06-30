@@ -2,17 +2,20 @@ package harnesschoice
 
 import "testing"
 
-func TestParseDefaultsToClaude(t *testing.T) {
-	for _, s := range []string{"", "claude", "garbage"} {
-		if got := Parse(s); got.Kind != Claude {
-			t.Fatalf("Parse(%q) = %+v, want Claude", s, got)
+func TestParseDefaultsToPi(t *testing.T) {
+	for _, s := range []string{"", "pi", "garbage"} {
+		if got := Parse(s); got.Kind != Pi {
+			t.Fatalf("Parse(%q) = %+v, want Pi", s, got)
 		}
 	}
 }
 
-func TestParsePi(t *testing.T) {
-	if got := Parse("pi"); got.Kind != Pi {
-		t.Fatalf("Parse(pi) = %+v, want Pi", got)
+func TestParseClaudeAndCodex(t *testing.T) {
+	if got := Parse("claude"); got.Kind != Claude {
+		t.Fatalf("Parse(claude) = %+v, want Claude", got)
+	}
+	if got := Parse("codex"); got.Kind != Codex {
+		t.Fatalf("Parse(codex) = %+v, want Codex", got)
 	}
 }
 
@@ -23,6 +26,7 @@ func TestStringAndLabel(t *testing.T) {
 		label  string
 	}{
 		{Choice{Kind: Claude}, "claude", "Claude Code"},
+		{Choice{Kind: Codex}, "codex", "OpenAI Codex"},
 		{Choice{Kind: Pi}, "pi", "Pi"},
 	}
 	for _, c := range cases {
@@ -40,8 +44,8 @@ func TestLoadSave(t *testing.T) {
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
 
-	if got := Load(); got.Kind != Claude {
-		t.Fatalf("default Load() = %+v, want Claude", got)
+	if got := Load(); got.Kind != Pi {
+		t.Fatalf("default Load() = %+v, want Pi", got)
 	}
 	want := Choice{Kind: Pi}
 	if err := Save(want); err != nil {

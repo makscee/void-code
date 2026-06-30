@@ -28,10 +28,9 @@ type ProviderRowInfo struct {
 	Name string
 }
 
-// buildProviderRows assembles the PRD-088 top-level provider selector:
-// always the bare DeepSeek relay default, granted ChatGPT relay providers, plus
-// Plain harness run. Saved BYO keys remain supported by storage code but are not
-// shown in this selector.
+// buildProviderRows assembles the provider selector: always the bare DeepSeek
+// relay default plus granted ChatGPT/OpenAI/Codex relay providers. Plain and
+// saved BYO keys remain readable from storage but are not valid matrix rows.
 func buildProviderRows(keyNames []string, granted []ProviderRowInfo) []providerRow {
 	_ = keyNames // named keys are intentionally hidden from the main selector.
 	rows := []providerRow{{label: provider.Provider{Kind: provider.Relay}.Label(), prov: provider.Provider{Kind: provider.Relay}}}
@@ -43,9 +42,6 @@ func buildProviderRows(keyNames []string, granted []ProviderRowInfo) []providerR
 		p := provider.Provider{Kind: provider.RelayProvider, ID: g.ID}
 		rows = append(rows, providerRow{label: name + " relay", prov: p})
 	}
-	rows = append(rows,
-		providerRow{label: provider.Provider{Kind: provider.Plain}.Label(), prov: provider.Provider{Kind: provider.Plain}},
-	)
 	return rows
 }
 
@@ -55,7 +51,7 @@ func supportedRelayProviderName(g ProviderRowInfo) (string, bool) {
 		switch {
 		case strings.Contains(v, "deepseek"):
 			return "DeepSeek", true
-		case strings.Contains(v, "chatgpt"):
+		case strings.Contains(v, "chatgpt") || strings.Contains(v, "openai") || strings.Contains(v, "codex"):
 			return "ChatGPT", true
 		}
 	}

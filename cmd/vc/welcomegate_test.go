@@ -22,10 +22,10 @@ func TestMeResultToState_CarriesBalance(t *testing.T) {
 // never deliver, so it hangs forever and claude never starts.
 func TestDecideGate(t *testing.T) {
 	cases := []struct {
-		name      string
-		stdinTTY  bool
-		loggedIn  bool
-		want      gateDecision
+		name     string
+		stdinTTY bool
+		loggedIn bool
+		want     gateDecision
 	}{
 		// Interactive terminal: always show the landing screen (login flow
 		// handled afterwards when not logged in).

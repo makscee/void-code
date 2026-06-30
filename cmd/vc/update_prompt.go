@@ -75,4 +75,3 @@ func (m updatePromptModel) View() string {
 	}
 	return "  install now? [y]es / [n]o / [a]lways\n"
 }
-

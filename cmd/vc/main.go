@@ -24,6 +24,8 @@ import (
 	"github.com/makscee/void-code/internal/ccjson"
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/claudebin"
+	"github.com/makscee/void-code/internal/codexbin"
+	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/direct"
@@ -50,6 +52,7 @@ var (
 
 	spawnHarness      = harness.Spawn
 	claudeIsInstalled = claudebin.IsInstalled
+	codexIsInstalled  = codexbin.IsInstalled
 	piIsInstalled     = pibin.IsInstalled
 )
 
@@ -116,6 +119,7 @@ func main() {
 			for {
 				keyNames, _ := keystore.ListKeys()
 				activeProv := provider.Load()
+				activeLabel := provider.LoadLabel()
 				activeHarness := harnesschoice.Load()
 				// Fetch the granted provider list from void-auth (VCD-72).
 				// Failure degrades to an empty list — relay/deepseek baseline preserved.
@@ -139,18 +143,32 @@ func main() {
 				// pre-existing prov:<id> configs (no label) self-heal on first launch.
 				if fetchOK {
 					granted := make([]provider.GrantedEntry, len(grantedRows))
+					compatGrants := make([]compat.Grant, len(grantedRows))
 					for i, r := range grantedRows {
 						granted[i] = provider.GrantedEntry{ID: r.ID, Name: r.Name}
+						compatGrants[i] = compat.Grant{ID: r.ID, Name: r.Name}
 					}
 					_ = provider.ReconcileLabel(granted)
+					activeLabel = provider.LoadLabel()
+					if d := compat.Reconcile(activeHarness, activeProv, activeLabel, compatGrants); d.Changed {
+						_ = harnesschoice.Save(d.Harness)
+						_ = provider.Save(d.Provider)
+						_ = provider.SaveLabel(d.ProviderLabel)
+						activeHarness, activeProv, activeLabel = d.Harness, d.Provider, d.ProviderLabel
+						if d.Warning != "" {
+							fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
+						}
+					}
 				}
 				cb := welcome.Callbacks{
 					KeyNames:            keyNames,
 					ActiveProvider:      activeProv.String(),
-					ActiveProviderLabel: provider.LoadLabel(),
+					ActiveProviderLabel: activeLabel,
 					GrantedProviders:    grantedRows,
 					ActiveHarness:       activeHarness.String(),
 					ActiveHarnessLabel:  activeHarness.Label(),
+					ClaudeInstalled:     claudeIsInstalled(),
+					CodexInstalled:      codexIsInstalled(),
 					PiInstalled:         piIsInstalled(),
 					OnSelectHarness: func(h harnesschoice.Choice) error {
 						return harnesschoice.Save(h)
@@ -185,6 +203,18 @@ func main() {
 				case welcome.RunInstallPi:
 					fmt.Println()
 					runInstallPi(os.Stdout)
+					fmt.Println("\n  press enter to return to the menu…")
+					bufio.NewScanner(os.Stdin).Scan()
+					continue menuLoop // re-show menu
+				case welcome.RunInstallClaude:
+					fmt.Println()
+					runInstallClaude(os.Stdout)
+					fmt.Println("\n  press enter to return to the menu…")
+					bufio.NewScanner(os.Stdin).Scan()
+					continue menuLoop // re-show menu
+				case welcome.RunInstallCodex:
+					fmt.Println()
+					runInstallCodex(os.Stdout)
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
 					continue menuLoop // re-show menu
@@ -315,13 +345,24 @@ func openProfile(authHost, token string, httpClient *http.Client, open func(stri
 	open(browser.ProfileURL)
 }
 
+func fetchCompatGrants(authHost, token string) []compat.Grant {
+	if strings.TrimSpace(token) == "" {
+		return nil
+	}
+	infos, err := auth.FetchProviders(authHost, token, &http.Client{Timeout: 10 * time.Second})
+	if err != nil {
+		return nil
+	}
+	grants := make([]compat.Grant, 0, len(infos))
+	for _, pi := range infos {
+		grants = append(grants, compat.Grant{ID: pi.ID, Name: pi.Name})
+	}
+	return grants
+}
+
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
 func runSpawn(cmd *cobra.Command, args []string) error {
 	activeHarness := harnesschoice.Load()
-	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(127)
-	}
 
 	cfg := config.OSResolve()
 
@@ -351,6 +392,24 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	active := provider.Load()
+	activeLabel := provider.LoadLabel()
+	compatGrants := fetchCompatGrants(cfg.AuthHost, token)
+	if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
+		_ = harnesschoice.Save(d.Harness)
+		_ = provider.Save(d.Provider)
+		_ = provider.SaveLabel(d.ProviderLabel)
+		activeHarness, active, activeLabel = d.Harness, d.Provider, d.ProviderLabel
+		if d.Warning != "" {
+			fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
+		}
+	}
+
+	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(127)
+	}
+
 	// Check and update @anthropic-ai/claude-code before spawning Claude Code.
 	// This prevents claude-code's own auto-update from failing inside the proxy.
 	// Silent on network failures; only prints on actual update or hard error.
@@ -367,18 +426,29 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
 	}
 
-	active := provider.Load()
 	var env []string
 	if activeHarness.Kind == harnesschoice.Pi {
 		env = buildPiSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-		if active.Kind == provider.RelayProvider {
+		switch compat.ClassifyProvider(active, activeLabel, compatGrants) {
+		case compat.ProviderChatGPT:
 			extPath, err := ensurePiVoidCodexExtension()
 			if err != nil {
-				return fmt.Errorf("cannot write Pi void-codex extension: %w", err)
+				return fmt.Errorf("cannot write Pi relay extension: %w", err)
 			}
 			args = buildPiVoidCodexArgs(args, extPath)
+		case compat.ProviderDeepSeek:
+			extPath, err := ensurePiVoidCodexExtension()
+			if err != nil {
+				return fmt.Errorf("cannot write Pi relay extension: %w", err)
+			}
+			args = buildPiVoidDeepSeekArgs(args, extPath)
 		}
 		return spawnSelectedHarness(activeHarness, args, env)
+	}
+	if activeHarness.Kind == harnesschoice.Codex {
+		env = buildCodexSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+		spawnArgs := buildCodexArgs(args, cfg.RelayScheme, cfg.RelayHost)
+		return spawnSelectedHarness(activeHarness, spawnArgs, env)
 	}
 	env, err = buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	if err != nil {
@@ -499,21 +569,29 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 }
 
 func wrappedBinaryFor(h harnesschoice.Choice) string {
-	if h.Kind == harnesschoice.Pi {
+	switch h.Kind {
+	case harnesschoice.Claude:
+		return "claude"
+	case harnesschoice.Codex:
+		return "codex"
+	default:
 		return "pi"
 	}
-	return "claude"
 }
 
 func ensureSelectedHarnessInstalled(h harnesschoice.Choice) error {
 	switch h.Kind {
-	case harnesschoice.Pi:
-		if !piIsInstalled() {
-			return fmt.Errorf("%s", pibin.MissingMessage())
-		}
-	default:
+	case harnesschoice.Claude:
 		if !claudeIsInstalled() {
 			return fmt.Errorf("%s", claudebin.MissingMessage())
+		}
+	case harnesschoice.Codex:
+		if !codexIsInstalled() {
+			return fmt.Errorf("%s", codexbin.MissingMessage())
+		}
+	default:
+		if !piIsInstalled() {
+			return fmt.Errorf("%s", pibin.MissingMessage())
 		}
 	}
 	return nil
@@ -526,10 +604,13 @@ func spawnSelectedHarness(h harnesschoice.Choice, args []string, env []string) e
 		// but defend against race conditions such as the harness being removed
 		// between the pre-flight check and the actual spawn).
 		if claudebin.IsNotFoundErr(err) {
-			if h.Kind == harnesschoice.Pi {
-				fmt.Fprintln(os.Stderr, pibin.MissingMessage())
-			} else {
+			switch h.Kind {
+			case harnesschoice.Claude:
 				fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
+			case harnesschoice.Codex:
+				fmt.Fprintln(os.Stderr, codexbin.MissingMessage())
+			default:
+				fmt.Fprintln(os.Stderr, pibin.MissingMessage())
 			}
 			os.Exit(127)
 		}
@@ -546,19 +627,37 @@ func runInstallPi(out io.Writer) {
 	fmt.Fprintln(out, pibin.InstallInstructions())
 }
 
+func runInstallClaude(out io.Writer) {
+	fmt.Fprintln(out, claudebin.InstallInstructions())
+}
+
+func runInstallCodex(out io.Writer) {
+	fmt.Fprintln(out, codexbin.InstallInstructions())
+}
+
 const (
-	piVoidCodexProvider = "void-codex"
-	piVoidCodexModel    = "gpt-5.4"
+	piVoidCodexProvider    = "void-codex"
+	piVoidCodexModel       = "gpt-5.4"
+	piVoidDeepSeekProvider = "void-deepseek"
+	piVoidDeepSeekModel    = "claude-sonnet-4-6"
 )
 
 func buildPiVoidCodexArgs(args []string, extensionPath string) []string {
+	return buildPiRelayArgs(args, extensionPath, piVoidCodexProvider, piVoidCodexModel)
+}
+
+func buildPiVoidDeepSeekArgs(args []string, extensionPath string) []string {
+	return buildPiRelayArgs(args, extensionPath, piVoidDeepSeekProvider, piVoidDeepSeekModel)
+}
+
+func buildPiRelayArgs(args []string, extensionPath, providerID, modelID string) []string {
 	out := make([]string, 0, len(args)+5)
 	out = append(out, "-e", extensionPath)
 	if !hasPiFlag(args, "--provider") {
-		out = append(out, "--provider", piVoidCodexProvider)
+		out = append(out, "--provider", providerID)
 	}
 	if !hasPiFlag(args, "--model") {
-		out = append(out, "--model", piVoidCodexModel)
+		out = append(out, "--model", modelID)
 	}
 	out = append(out, args...)
 	return out
@@ -621,16 +720,69 @@ func buildSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost,
 	}
 }
 
+func buildCodexArgs(args []string, relayScheme, relayHost string) []string {
+	baseURL := fmt.Sprintf("%s://%s/codex", relayScheme, relayHost)
+	prefix := []string{
+		"-c", "model_provider=void",
+		"-c", "model_providers.void.name=Void relay",
+		"-c", "model_providers.void.base_url=" + baseURL,
+		"-c", "model_providers.void.wire_api=responses",
+		"-c", "model_providers.void.env_key=VC_AUTH_TOKEN",
+		"-c", "model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
+		"-c", "model=gpt-5.4",
+	}
+	out := make([]string, 0, len(prefix)+len(args))
+	out = append(out, prefix...)
+	out = append(out, args...)
+	return out
+}
+
+func buildCodexSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) []string {
+	strip := map[string]bool{
+		"OPENAI_API_KEY":       true,
+		"OPENAI_BASE_URL":      true,
+		"OPENAI_ORG_ID":        true,
+		"AZURE_OPENAI_API_KEY": true,
+		"CHATGPT_ACCESS_TOKEN": true,
+		"CHATGPT_ACCOUNT_ID":   true,
+		"CHATGPT_API_KEY":      true,
+		"CODEX_API_KEY":        true,
+		"VC_AUTH_TOKEN":        true,
+		"VC_RELAY_PROVIDER_ID": true,
+		"VC_RELAY_URL":         true,
+		"VC_RELAY_CA":          true,
+	}
+	base := direct.PlainEnv(parent)
+	out := make([]string, 0, len(base)+6)
+	for _, e := range base {
+		k, _, _ := strings.Cut(e, "=")
+		if strip[k] {
+			continue
+		}
+		out = append(out, e)
+	}
+	out = append(out,
+		"VC_HARNESS=codex",
+		"VC_PROVIDER=relay",
+		fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
+		"VC_RELAY_CA="+caPath,
+		"VC_AUTH_TOKEN="+token,
+		"VC_RELAY_PROVIDER_ID="+p.ID,
+	)
+	return out
+}
+
 // buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay
 // seams for Pi relay modes.
 func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) []string {
 	strip := map[string]bool{
-		"VC_HARNESS":           true,
-		"VC_PROVIDER":          true,
-		"VC_RELAY_PROVIDER_ID": true,
-		"VC_RELAY_URL":         true,
-		"VC_RELAY_CA":          true,
-		"VC_AUTH_TOKEN":        true,
+		"VC_HARNESS":               true,
+		"VC_PROVIDER":              true,
+		"VC_RELAY_PROVIDER_ID":     true,
+		"VC_RELAY_URL":             true,
+		"VC_RELAY_CA":              true,
+		"VC_AUTH_TOKEN":            true,
+		"ANTHROPIC_CUSTOM_HEADERS": true,
 	}
 	if p.Kind == provider.Relay || p.Kind == provider.RelayProvider {
 		for _, k := range []string{
@@ -668,6 +820,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 	case provider.Relay:
 		out = append(out,
 			"VC_PROVIDER=relay",
+			"VC_RELAY_PROVIDER_ID=deepseek",
 			fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
 			"VC_RELAY_CA="+caPath,
 			"VC_AUTH_TOKEN="+token,

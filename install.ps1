@@ -7,7 +7,8 @@
 #   $env:VC_CODE='ABCD-EFGH'; iex (irm https://auth.makscee.ru/vc/install.ps1)
 #
 # Installs vc.exe — the void-code relay launcher for Windows.
-# Bootstraps node + @anthropic-ai/claude-code automatically on bare machines.
+# Bootstraps node + selected agent CLIs automatically on bare machines.
+# Default: vc + node + Pi only. Optional env/params install Claude Code and/or Codex.
 # node installed via winget (if present) or official Node LTS .msi fallback.
 #
 # Env:
@@ -17,12 +18,60 @@
 #                             Used by e2e harness to point at staging.
 #   $env:VC_LANG              language for vc UI: en (default) or ru. If set,
 #                             skips the interactive prompt and uses this value.
-#   $env:VC_INSTALL_DRY_RUN = '1'  print URLs that would be fetched, then exit.
+#   $env:VC_INSTALL_DRY_RUN = '1'  print selected npm installs, then exit.
+#   $env:VC_INSTALL_PI       default '1'; install @earendil-works/pi-coding-agent.
+#   $env:VC_INSTALL_CLAUDE   default '0'; install @anthropic-ai/claude-code.
+#   $env:VC_INSTALL_CODEX    default '0'; install @openai/codex.
+#
+# Local script params:
+#   -WithPi -WithoutPi -WithClaude -WithCodex
+
+param(
+    [switch]$WithPi,
+    [switch]$WithoutPi,
+    [switch]$WithClaude,
+    [switch]$WithCodex
+)
 
 $ErrorActionPreference = 'Stop'
 
-# Minimum node major version required by @anthropic-ai/claude-code (engines.node >=18.0.0)
-$MinNodeMajor = 18
+function Get-VCInstallFlag {
+    param(
+        [string]$Name,
+        [string]$DefaultValue
+    )
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrEmpty($value)) { return $DefaultValue }
+    return $value
+}
+
+$InstallPi = (Get-VCInstallFlag 'VC_INSTALL_PI' '1') -eq '1'
+$InstallClaude = (Get-VCInstallFlag 'VC_INSTALL_CLAUDE' '0') -eq '1'
+$InstallCodex = (Get-VCInstallFlag 'VC_INSTALL_CODEX' '0') -eq '1'
+if ($WithPi) { $InstallPi = $true }
+if ($WithoutPi) { $InstallPi = $false }
+if ($WithClaude) { $InstallClaude = $true }
+if ($WithCodex) { $InstallCodex = $true }
+
+$NpmInstallRetryArgs = @('--maxsockets=1', '--fetch-retries=5', '--fetch-retry-mintimeout=20000', '--fetch-retry-maxtimeout=120000', '--fetch-timeout=300000')
+
+function Format-NpmInstallGlobal {
+    param([string]$Package)
+    return "npm.cmd install -g $($NpmInstallRetryArgs -join ' ') $Package"
+}
+
+if ($env:VC_INSTALL_DRY_RUN -eq '1') {
+    if ($InstallPi) { Write-Output "WOULD: $(Format-NpmInstallGlobal '@earendil-works/pi-coding-agent')" }
+    if ($InstallClaude) { Write-Output "WOULD: $(Format-NpmInstallGlobal '@anthropic-ai/claude-code')" }
+    if ($InstallCodex) {
+        Write-Output "WOULD: $(Format-NpmInstallGlobal '@openai/codex')"
+        Write-Output 'WOULD: consider Codex healthy only if codex --version contains codex-cli; repair missing native optional package if needed'
+    }
+    exit 0
+}
+
+# Minimum node major version required by selected Node-based agent CLIs.
+$MinNodeMajor = 22
 
 $authHost = if ($env:VC_AUTH_HOST) { $env:VC_AUTH_HOST } else { 'https://auth.makscee.ru' }
 
@@ -73,36 +122,6 @@ if (-not $env:VC_LANG) {
     } else {
         $env:VC_LANG = 'en'
     }
-}
-
-if ($env:VC_INSTALL_DRY_RUN -eq '1') {
-    Write-Output "GET $vcUrl"
-    Write-Output "GET $relayCaUrl"
-    Write-Output "WOULD: Import-Certificate <relay-ca.pem> -CertStoreLocation Cert:\CurrentUser\Root"
-    # Node dry-run: show which install path would be taken
-    $dryNodePresent = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
-    $dryNodeOk = $false
-    if ($dryNodePresent) {
-        $dryNodeVer = (node --version 2>$null) -replace '^v',''
-        $dryNodeMajor = [int]($dryNodeVer -split '\.')[0]
-        if ($dryNodeMajor -ge $MinNodeMajor) { $dryNodeOk = $true }
-    }
-    if (-not $dryNodeOk) {
-        $hasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-        if ($hasWinget) {
-            Write-Output "WOULD: winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent"
-        } else {
-            Write-Output "WOULD: download https://nodejs.org/dist/latest-v22.x/node-v<latest>-x64.msi"
-            Write-Output "WOULD: msiexec /i <node.msi> /qb"
-        }
-    }
-    Write-Output "WOULD: npm.cmd install -g @anthropic-ai/claude-code (if claude absent, default prefix)"
-    Write-Output "WOULD: add $env:APPDATA\npm to user PATH (npm global dir)"
-    if ($env:VC_CODE) {
-        Write-Output "WOULD: vc login (VC_CODE set)"
-    }
-    Write-Output "VC_LANG=$($env:VC_LANG)"
-    exit 0
 }
 
 $vcDir  = Join-Path $env:USERPROFILE '.void-code'
@@ -168,8 +187,10 @@ if ($userPath -notlike "*$binDir*") {
 }
 if ($env:PATH -notlike "*$binDir*") { $env:PATH = "$env:PATH;$binDir" }
 
-# 3. Bootstrap node if absent or below minimum required version
-Write-Host "==> bootstrapping node / claude dependencies"
+# 3. Bootstrap node if absent or below minimum required version when an agent is selected.
+$AnyAgentSelected = $InstallPi -or $InstallClaude -or $InstallCodex
+if ($AnyAgentSelected) {
+Write-Host "==> bootstrapping node / selected agents"
 
 # Check if node is present and meets the minimum version requirement
 $hasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
@@ -259,49 +280,265 @@ if (-not $nodeOk) {
     }
     Write-Host "vc: node v$nodeVerStr ready" -ForegroundColor Green
 }
-
-# 4. Install @anthropic-ai/claude-code via npm.cmd if absent
-# npm.cmd bypasses Windows execution-policy restrictions that block npm.ps1.
-# Install to the default npm global prefix (AppData\Roaming\npm) — avoids
-# cross-platform path differences between Unix (~/.void-code/bin/) and Windows
-# (npm puts shims at <prefix>\ root, not <prefix>\bin\).
-$claudePresent = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
-if (-not $claudePresent) {
-    # Prefer npm.cmd (avoids execution-policy block on npm.ps1).
-    # Fall back to npm if npm.cmd is not found (e.g. non-standard installs).
-    $npmCmd = $null
-    $npmCmdExplicit = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
-    if (Test-Path $npmCmdExplicit) {
-        $npmCmd = $npmCmdExplicit
-    } elseif ($null -ne (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
-        $npmCmd = 'npm.cmd'
-    } elseif ($null -ne (Get-Command npm -ErrorAction SilentlyContinue)) {
-        $npmCmd = 'npm'
-    }
-    if ($npmCmd) {
-        Write-Host "vc: installing @anthropic-ai/claude-code via $npmCmd…" -ForegroundColor Cyan
-        try {
-            & $npmCmd install -g @anthropic-ai/claude-code
-            Write-Host "vc: @anthropic-ai/claude-code installed" -ForegroundColor Green
-        } catch {
-            Write-Host "vc: npm install failed: $_" -ForegroundColor Yellow
-            Write-Host "vc: install manually: npm.cmd install -g @anthropic-ai/claude-code" -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "vc: npm not found — install node first, then re-run." -ForegroundColor Yellow
-    }
 } else {
-    Write-Host "vc: claude already installed" -ForegroundColor Green
+    Write-Host "==> no agent CLIs selected; skipping node bootstrap"
 }
 
-# Add npm global dir (AppData\Roaming\npm) to user PATH so 'claude' shim is reachable
+# 4. Install selected agent CLIs via npm.cmd if absent.
+# npm.cmd bypasses Windows execution-policy restrictions that block npm.ps1.
+# Install to the default npm global prefix (AppData\Roaming\npm) so agent shims
+# are available from new terminals after PATH refresh.
+function Resolve-NpmCommand {
+    $npmCmdExplicit = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
+    if (Test-Path $npmCmdExplicit) { return $npmCmdExplicit }
+    if ($null -ne (Get-Command npm.cmd -ErrorAction SilentlyContinue)) { return 'npm.cmd' }
+    if ($null -ne (Get-Command npm -ErrorAction SilentlyContinue)) { return 'npm' }
+    return $null
+}
+
+function Get-NpmPackageInstallName {
+    param([string]$Package)
+    $name = $Package
+    $aliasIndex = $name.IndexOf('@npm:')
+    if ($aliasIndex -gt 0) { $name = $name.Substring(0, $aliasIndex) }
+    if ($name.StartsWith('@')) {
+        $parts = $name.Split('@')
+        if ($parts.Length -ge 3) { return "@$($parts[1])" }
+        return $name
+    }
+    return ($name -split '@')[0]
+}
+
+function Clear-NpmPartialGlobalInstall {
+    param(
+        [string]$NpmCommand,
+        [string]$Package
+    )
+    $name = Get-NpmPackageInstallName $Package
+    if (-not $name) { return }
+
+    try {
+        $rootOutput = & $NpmCommand root -g 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $root = (($rootOutput | Select-Object -First 1) -as [string]).Trim()
+            if ($root) {
+                $pkgPath = if ($name.StartsWith('@') -and $name.Contains('/')) {
+                    $parts = $name -split '/', 2
+                    Join-Path (Join-Path $root $parts[0]) $parts[1]
+                } else {
+                    Join-Path $root $name
+                }
+                Remove-Item -Recurse -Force $pkgPath -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { }
+}
+
+function Invoke-NpmInstallGlobal {
+    param(
+        [string]$NpmCommand,
+        [string]$Package
+    )
+
+    $maxAttempts = 5
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $npmArgs = @('install', '-g') + $NpmInstallRetryArgs + @($Package)
+        & $NpmCommand @npmArgs
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) { return $true }
+
+        Clear-NpmPartialGlobalInstall -NpmCommand $NpmCommand -Package $Package
+        if ($attempt -ge $maxAttempts) { return $false }
+        $nextAttempt = $attempt + 1
+        $delay = switch ($attempt) { 1 { 5 } 2 { 10 } default { 20 } }
+        Write-Host "vc: npm install failed (exit code $exitCode); retrying attempt $nextAttempt/$maxAttempts in ${delay}s..." -ForegroundColor Yellow
+        Start-Sleep -Seconds $delay
+    }
+    return $false
+}
+
+function Get-CommandSourceOrNull {
+    param([string]$Name)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Get-CodexCommandPath {
+    foreach ($name in @('codex.cmd', 'codex.exe', 'codex')) {
+        $source = Get-CommandSourceOrNull $name
+        if ($source) { return $source }
+    }
+
+    if ($env:APPDATA) {
+        foreach ($file in @('codex.cmd', 'codex.exe', 'codex')) {
+            $candidate = Join-Path (Join-Path $env:APPDATA 'npm') $file
+            if (Test-Path $candidate) { return $candidate }
+        }
+    }
+
+    return $null
+}
+
+function Invoke-CodexVersionOutput {
+    $codexCmd = Get-CodexCommandPath
+    if (-not $codexCmd) { return $null }
+
+    try {
+        $output = & $codexCmd --version 2>&1
+        $exitCode = $LASTEXITCODE
+        return [pscustomobject]@{
+            Output = ($output | Out-String)
+            ExitCode = $exitCode
+        }
+    } catch {
+        return [pscustomobject]@{
+            Output = ($_ | Out-String)
+            ExitCode = 1
+        }
+    }
+}
+
+function Test-CodexHealthy {
+    $result = Invoke-CodexVersionOutput
+    if (-not $result) { return $false }
+    return (($result.ExitCode -eq 0) -and ($result.Output -match 'codex-cli'))
+}
+
+function Test-CodexNativeOptionalMissing {
+    $result = Invoke-CodexVersionOutput
+    if (-not $result) { return $false }
+    return ($result.Output -match '(?i)Missing optional dependency')
+}
+
+function Get-CodexNativePlatform {
+    if ($env:PROCESSOR_ARCHITECTURE -match 'ARM64') { return 'win32-arm64' }
+    return 'win32-x64'
+}
+
+function Get-CodexInstalledVersion {
+    param([string]$NpmCommand)
+
+    if (-not $NpmCommand) { return $null }
+
+    $rootOutput = & $NpmCommand root -g 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $root = (($rootOutput | Select-Object -First 1) -as [string]).Trim()
+        if ($root) {
+            $packageJson = Join-Path (Join-Path $root '@openai') 'codex\package.json'
+            if (Test-Path $packageJson) {
+                try {
+                    $pkg = Get-Content -Raw $packageJson | ConvertFrom-Json
+                    if ($pkg.version) { return [string]$pkg.version }
+                } catch { }
+            }
+        }
+    }
+
+    $listOutput = & $NpmCommand list -g '@openai/codex' --depth=0 2>$null
+    $listText = ($listOutput | Out-String)
+    $match = [regex]::Match($listText, '@openai/codex@([^\s]+)')
+    if ($match.Success) { return $match.Groups[1].Value }
+
+    return $null
+}
+
+function Repair-CodexNativeOptional {
+    param([string]$NpmCommand)
+
+    if (-not (Test-CodexNativeOptionalMissing)) { return $false }
+    if (-not $NpmCommand) {
+        Write-Host "vc: codex native repair needs npm, but npm is not available." -ForegroundColor Yellow
+        return $false
+    }
+
+    $platform = Get-CodexNativePlatform
+    $version = Get-CodexInstalledVersion -NpmCommand $NpmCommand
+    if (-not $version) {
+        Write-Host "vc: codex native repair could not determine installed @openai/codex version." -ForegroundColor Yellow
+        return $false
+    }
+
+    $nativePackage = "@openai/codex-$platform@npm:@openai/codex@$version-$platform"
+    Write-Host "vc: codex wrapper found but native optional package is missing; repairing $nativePackage..." -ForegroundColor Cyan
+    if (Invoke-NpmInstallGlobal -NpmCommand $NpmCommand -Package $nativePackage) {
+        if (Test-CodexHealthy) {
+            Write-Host "vc: codex native package repaired." -ForegroundColor Green
+            return $true
+        }
+        Write-Host "vc: codex native repair ran, but codex --version still did not report codex-cli." -ForegroundColor Yellow
+        return $false
+    }
+
+    Write-Host "vc: codex native package repair failed." -ForegroundColor Yellow
+    return $false
+}
+
+function Test-AgentHealthy {
+    param([string]$Binary)
+    if ($Binary -eq 'codex') { return (Test-CodexHealthy) }
+    return ($null -ne (Get-Command $Binary -ErrorAction SilentlyContinue))
+}
+
+function Install-NpmAgent {
+    param(
+        [string]$Binary,
+        [string]$Package,
+        [string]$Label,
+        [bool]$Selected,
+        [string]$NpmCommand
+    )
+
+    if (-not $Selected) { return $true }
+    if (Test-AgentHealthy -Binary $Binary) {
+        Write-Host "vc: $Binary already installed" -ForegroundColor Green
+        return $true
+    }
+
+    if ($Binary -eq 'codex' -and (Get-CodexCommandPath)) {
+        if (Repair-CodexNativeOptional -NpmCommand $NpmCommand) { return $true }
+        Write-Host "vc: codex found, but codex --version did not report codex-cli." -ForegroundColor Yellow
+    }
+
+    if (-not $NpmCommand) {
+        Write-Host "vc: npm not found — install Node.js first, then run: $(Format-NpmInstallGlobal $Package)" -ForegroundColor Yellow
+        return $false
+    }
+
+    Write-Host "vc: installing $Package ($Label) via $NpmCommand…" -ForegroundColor Cyan
+    if (Invoke-NpmInstallGlobal -NpmCommand $NpmCommand -Package $Package) {
+        if ($Binary -eq 'codex') {
+            if ((Test-CodexHealthy) -or (Repair-CodexNativeOptional -NpmCommand $NpmCommand)) {
+                Write-Host "vc: $Package installed" -ForegroundColor Green
+                return $true
+            }
+            Write-Host "vc: $Package installed, but codex --version did not report codex-cli." -ForegroundColor Yellow
+            Write-Host "vc: install manually: $(Format-NpmInstallGlobal $Package)" -ForegroundColor Yellow
+            return $false
+        }
+
+        Write-Host "vc: $Package installed" -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host "vc: npm install failed for ${Package}" -ForegroundColor Yellow
+    Write-Host "vc: install manually: $(Format-NpmInstallGlobal $Package)" -ForegroundColor Yellow
+    return $false
+}
+
+$npmCmd = if ($AnyAgentSelected) { Resolve-NpmCommand } else { $null }
+$piAgentOk = Install-NpmAgent -Binary 'pi' -Package '@earendil-works/pi-coding-agent' -Label 'Pi' -Selected $InstallPi -NpmCommand $npmCmd
+$claudeAgentOk = Install-NpmAgent -Binary 'claude' -Package '@anthropic-ai/claude-code' -Label 'Claude Code' -Selected $InstallClaude -NpmCommand $npmCmd
+$codexAgentOk = Install-NpmAgent -Binary 'codex' -Package '@openai/codex' -Label 'OpenAI Codex' -Selected $InstallCodex -NpmCommand $npmCmd
+
+# Add npm global dir (AppData\Roaming\npm) to user PATH so npm-installed agent shims are reachable
 # in new terminals. This is the default npm global prefix on Windows.
 $npmGlobalDir = Join-Path $env:APPDATA 'npm'
 $userPathAfter = [Environment]::GetEnvironmentVariable('PATH', 'User')
 if ($userPathAfter -notlike "*$npmGlobalDir*") {
     $newUserPath = if ($userPathAfter) { "$userPathAfter;$npmGlobalDir" } else { $npmGlobalDir }
     [Environment]::SetEnvironmentVariable('PATH', $newUserPath, 'User')
-    Write-Host "==> added $npmGlobalDir to user PATH (claude shim location)" -ForegroundColor Green
+    Write-Host "==> added npm global binary directory to user PATH (open a new terminal to pick up)" -ForegroundColor Green
 }
 if ($env:PATH -notlike "*$npmGlobalDir*") { $env:PATH = "$env:PATH;$npmGlobalDir" }
 
@@ -331,10 +568,14 @@ if ($env:VC_CODE) {
 
 # Post-install UX
 # Refresh PATH so we can resolve the binaries we just installed.
-$env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
+$machinePathFinal = [System.Environment]::GetEnvironmentVariable('PATH','Machine')
+$userPathFinal = [System.Environment]::GetEnvironmentVariable('PATH','User')
+$env:PATH = "$machinePathFinal;$userPathFinal"
 
 $vcResolvable = $null -ne (Get-Command vc -ErrorAction SilentlyContinue)
-$claudeInstalled = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
+$piInstalled = Test-AgentHealthy -Binary 'pi'
+$claudeInstalled = Test-AgentHealthy -Binary 'claude'
+$codexInstalled = Test-AgentHealthy -Binary 'codex'
 
 Write-Host ""
 Write-Host "==============================================" -ForegroundColor Cyan
@@ -343,28 +584,32 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host ""
 Write-Host "NEXT STEPS:" -ForegroundColor White
 
-if (-not $claudeInstalled) {
+$step = 1
+if (-not $vcResolvable) {
     Write-Host ""
-    Write-Host "  1. Open a NEW terminal (required — claude-code needs the updated PATH)" -ForegroundColor Yellow
-    Write-Host "     Then run: npm.cmd install -g @anthropic-ai/claude-code" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  2. Run: vc login --code <YOUR-CODE-FROM-OPERATOR>" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  3. Run: vc" -ForegroundColor White
-} else {
-    Write-Host ""
-    if ($vcResolvable) {
-        Write-Host "  1. Run: vc login --code <YOUR-CODE-FROM-OPERATOR>" -ForegroundColor White
-        Write-Host ""
-        Write-Host "  2. Run: vc" -ForegroundColor White
-    } else {
-        Write-Host "  1. Open a NEW terminal (vc is installed — new terminal picks up the PATH)" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  2. Run: vc login --code <YOUR-CODE-FROM-OPERATOR>" -ForegroundColor White
-        Write-Host ""
-        Write-Host "  3. Run: vc" -ForegroundColor White
-    }
+    Write-Host "  $step. Open a NEW terminal (vc and npm PATH updates are picked up there)" -ForegroundColor Yellow
+    $step++
 }
+if ($InstallPi -and -not $piInstalled) {
+    Write-Host ""
+    Write-Host "  $step. Install Pi: $(Format-NpmInstallGlobal '@earendil-works/pi-coding-agent')" -ForegroundColor Yellow
+    $step++
+}
+if ($InstallClaude -and -not $claudeInstalled) {
+    Write-Host ""
+    Write-Host "  $step. Install Claude Code: $(Format-NpmInstallGlobal '@anthropic-ai/claude-code')" -ForegroundColor Yellow
+    $step++
+}
+if ($InstallCodex -and -not $codexInstalled) {
+    Write-Host ""
+    Write-Host "  $step. Install OpenAI Codex: $(Format-NpmInstallGlobal '@openai/codex')" -ForegroundColor Yellow
+    $step++
+}
+Write-Host ""
+Write-Host "  $step. Run: vc login --code <YOUR-CODE-FROM-OPERATOR>" -ForegroundColor White
+$step++
+Write-Host ""
+Write-Host "  $step. Run: vc" -ForegroundColor White
 
 Write-Host ""
 Write-Host "  Stuck? Run: vc doctor" -ForegroundColor DarkGray

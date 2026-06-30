@@ -11,7 +11,8 @@ import (
 type Kind int
 
 const (
-	Claude Kind = iota // Claude Code, the historical default
+	Claude Kind = iota // Claude Code
+	Codex              // OpenAI Codex CLI
 	Pi                 // Pi coding agent
 )
 
@@ -20,40 +21,50 @@ type Choice struct {
 	Kind Kind
 }
 
-// Parse decodes the persisted string form. Unknown/empty values default to Claude.
+// Parse decodes the persisted string form. Unknown/empty values default to Pi.
 func Parse(s string) Choice {
 	switch strings.TrimSpace(s) {
-	case "pi":
-		return Choice{Kind: Pi}
-	default:
+	case "claude":
 		return Choice{Kind: Claude}
+	case "codex":
+		return Choice{Kind: Codex}
+	default:
+		return Choice{Kind: Pi}
 	}
 }
 
 // String is the persisted form.
 func (c Choice) String() string {
-	if c.Kind == Pi {
+	switch c.Kind {
+	case Claude:
+		return "claude"
+	case Codex:
+		return "codex"
+	default:
 		return "pi"
 	}
-	return "claude"
 }
 
 // Label is the human-facing menu/status label.
 func (c Choice) Label() string {
-	if c.Kind == Pi {
+	switch c.Kind {
+	case Claude:
+		return "Claude Code"
+	case Codex:
+		return "OpenAI Codex"
+	default:
 		return "Pi"
 	}
-	return "Claude Code"
 }
 
 const configKey = "active_harness"
 
 // Load reads the active harness from the vc config file. Missing/invalid values
-// degrade to Claude Code for backward compatibility.
+// degrade to Pi, matching the default installer path.
 func Load() Choice {
 	kv, err := config.ReadConfigFile()
 	if err != nil {
-		return Choice{Kind: Claude}
+		return Choice{Kind: Pi}
 	}
 	return Parse(kv[configKey])
 }

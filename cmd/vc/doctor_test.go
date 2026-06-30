@@ -323,6 +323,9 @@ func TestBuildChecks_IncludesClaude(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp) // Windows
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Claude}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
 	if !hasCheck(checks, "claude CLI") {
@@ -330,20 +333,22 @@ func TestBuildChecks_IncludesClaude(t *testing.T) {
 	}
 }
 
-func TestBuildChecks_DefaultClaudeKeepsClaudeChecks(t *testing.T) {
+func TestBuildChecks_DefaultPiUsesPiChecks(t *testing.T) {
 	t.Setenv("PATH", "")
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp) // Windows
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
-	for _, name := range []string{"harness", "node", "npm", "claude CLI", "statusline", "provider"} {
+	for _, name := range []string{"harness", "matrix", "pi CLI", "provider"} {
 		if !hasCheck(checks, name) {
-			t.Fatalf("default Claude doctor checks should include %q", name)
+			t.Fatalf("default Pi doctor checks should include %q", name)
 		}
 	}
-	if hasCheck(checks, "pi CLI") {
-		t.Fatal("default Claude doctor checks should not include a 'pi CLI' line")
+	for _, name := range []string{"node", "npm", "claude CLI", "statusline", "codex CLI"} {
+		if hasCheck(checks, name) {
+			t.Fatalf("default Pi doctor checks should not include %q", name)
+		}
 	}
 }
 
@@ -357,7 +362,7 @@ func TestBuildChecks_PiActiveUsesPiChecks(t *testing.T) {
 	}
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
-	for _, name := range []string{"harness", "pi CLI", "provider"} {
+	for _, name := range []string{"harness", "matrix", "pi CLI", "provider"} {
 		if !hasCheck(checks, name) {
 			t.Fatalf("Pi doctor checks should include %q", name)
 		}
@@ -366,6 +371,47 @@ func TestBuildChecks_PiActiveUsesPiChecks(t *testing.T) {
 		if hasCheck(checks, name) {
 			t.Fatalf("Pi doctor checks should not include Claude-specific %q", name)
 		}
+	}
+}
+
+func TestBuildChecks_CodexActiveUsesCodexChecks(t *testing.T) {
+	t.Setenv("PATH", "")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // Windows
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Codex}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
+
+	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
+	for _, name := range []string{"harness", "matrix", "node", "npm", "codex CLI", "provider"} {
+		if !hasCheck(checks, name) {
+			t.Fatalf("Codex doctor checks should include %q", name)
+		}
+	}
+	for _, name := range []string{"claude CLI", "pi CLI", "statusline"} {
+		if hasCheck(checks, name) {
+			t.Fatalf("Codex doctor checks should not include %q", name)
+		}
+	}
+}
+
+func TestCheckCodexCLI_NotFound(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	c := checkCodexCLI()
+	if c.status != "✗" {
+		t.Errorf("checkCodexCLI absent: want status=✗, got %q", c.status)
+	}
+	if c.name != "codex CLI" {
+		t.Errorf("checkCodexCLI: want name='codex CLI', got %q", c.name)
+	}
+	if !strings.Contains(c.message, "not found") {
+		t.Errorf("checkCodexCLI absent: message should mention 'not found', got: %s", c.message)
+	}
+	guidanceText := strings.Join(c.guidance, "\n")
+	if !strings.Contains(guidanceText, "@openai/codex") {
+		t.Errorf("checkCodexCLI absent: guidance should include Codex install instructions, got: %s", guidanceText)
 	}
 }
 
@@ -497,6 +543,9 @@ func TestBuildChecks_IncludesNode(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Claude}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
 	var found bool
@@ -515,6 +564,9 @@ func TestBuildChecks_IncludesNpm(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Claude}); err != nil {
+		t.Fatalf("save active harness: %v", err)
+	}
 
 	checks := buildChecks("/nonexistent/settings.json", "/abs/vc statusline")
 	var found bool

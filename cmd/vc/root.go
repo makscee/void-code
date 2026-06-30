@@ -25,10 +25,10 @@ var brandStyle = lipgloss.NewStyle().
 // arguments it spawns the active harness with relay env (handled in main.go).
 var rootCmd = &cobra.Command{
 	Use:   "vc [flags] [-- harness-args...]",
-	Short: "void-code — relay harness for Claude Code and Pi",
+	Short: "void-code — relay harness for Claude Code, Codex, and Pi",
 	Long: fmt.Sprintf(`%s
 
-vc launches the selected coding harness (Claude Code or Pi) with void-relay authentication.
+vc launches the selected coding harness (Claude Code, OpenAI Codex, or Pi) with void-relay authentication.
 Running "vc" with no sub-command starts the active harness with relay env injected.
 
 Sub-commands:

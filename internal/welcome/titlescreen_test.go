@@ -47,6 +47,39 @@ func TestView_LoggedOutShowsLoginOnly(t *testing.T) {
 	}
 }
 
+func TestView_MainMenuShowsHarnessProviderMatrix(t *testing.T) {
+	m := newModel(AuthState{LoggedIn: true, Identity: "u@x.com"}, Callbacks{
+		ActiveHarness:       "codex",
+		ActiveProvider:      "prov:chatgpt-sub",
+		ActiveProviderLabel: "ChatGPT relay",
+		GrantedProviders: []ProviderRowInfo{
+			{ID: "chatgpt-sub", Name: "ChatGPT"},
+		},
+		ClaudeInstalled: true,
+		CodexInstalled:  true,
+		PiInstalled:     true,
+	})
+	plain := stripANSIInternal(m.View())
+
+	for _, want := range []string{
+		"◆  Harness",
+		"○  Claude Code",
+		"◉  OpenAI Codex",
+		"○  Pi",
+		"◆  Providers",
+		"○  DeepSeek relay",
+		"◉  ChatGPT relay",
+		"◆  What now?",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("main menu View() missing %q without submenu navigation:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "enter select · esc back") {
+		t.Fatalf("main menu View() rendered a submenu hint:\n%s", plain)
+	}
+}
+
 // stripANSIInternal is the same ANSI-strip helper as in screenshot_test.go,
 // duplicated here to avoid a package-level name collision.
 func stripANSIInternal(s string) string {
