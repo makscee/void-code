@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/makscee/void-code/internal/harnesschoice"
+	"github.com/makscee/void-code/internal/provider"
 )
 
 // statusTestServer creates a fake auth server for status tests.
@@ -82,6 +83,33 @@ func TestStatusPrintsActiveHarness(t *testing.T) {
 	}
 	if !strings.Contains(out, "harness:") || !strings.Contains(out, "Pi") {
 		t.Fatalf("status output missing active Pi harness:\n%s", out)
+	}
+}
+
+func TestStatusPrintsFriendlyProviderLabelAndMatrix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := provider.Save(provider.Provider{Kind: provider.RelayProvider, ID: "plat-chatgpt"}); err != nil {
+		t.Fatalf("save active provider: %v", err)
+	}
+	if err := provider.SaveLabel("ChatGPT relay"); err != nil {
+		t.Fatalf("save active provider label: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error { return runStatus(nil, nil) })
+	if err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	if !strings.Contains(out, "provider:") || !strings.Contains(out, "ChatGPT relay") {
+		t.Fatalf("status output missing friendly provider label:\n%s", out)
+	}
+	if strings.Contains(out, "plat-chatgpt") {
+		t.Fatalf("status output used raw provider id instead of friendly label:\n%s", out)
+	}
+	wantMatrix := "Claude=DeepSeek/ChatGPT, Codex=ChatGPT, Pi=DeepSeek/ChatGPT"
+	if !strings.Contains(out, wantMatrix) {
+		t.Fatalf("status output missing compatibility matrix %q:\n%s", wantMatrix, out)
 	}
 }
 

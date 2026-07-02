@@ -44,11 +44,10 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	// Print version and relay unconditionally.
 	fmt.Printf("%s %s\n", labelStyle.Render("version:"), valueStyle.Render(version.Version))
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
-	active := provider.Load()
-	fmt.Printf("%s %s\n", labelStyle.Render("provider:"), valueStyle.Render(active.Label()))
+	fmt.Printf("%s %s\n", labelStyle.Render("provider:"), valueStyle.Render(provider.LoadLabel()))
 	activeHarness := harnesschoice.Load()
 	fmt.Printf("%s %s\n", labelStyle.Render("harness:"), valueStyle.Render(activeHarness.Label()))
-	fmt.Printf("%s %s\n", labelStyle.Render("matrix: "), valueStyle.Render("Claude=DeepSeek, Codex=ChatGPT, Pi=DeepSeek/ChatGPT"))
+	fmt.Printf("%s %s\n", labelStyle.Render("matrix: "), valueStyle.Render("Claude=DeepSeek/ChatGPT, Codex=ChatGPT, Pi=DeepSeek/ChatGPT"))
 
 	// Load token with legacy cv fallback and silent migration.
 	token, migrated, loadErr := auth.Load()
