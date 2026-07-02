@@ -84,6 +84,8 @@ function streamVoidCodex(
 		};
 
 		let textIndex = -1;
+		const toolSlots = new Map<string, number>();
+		const toolArgumentBuffers = new Map<string, string>();
 		try {
 			stream.push({ type: "start", partial: output });
 			const relayURL = requiredEnv("VC_RELAY_URL").replace(/\/+$/, "") + "/codex/responses";
@@ -121,7 +123,60 @@ function streamVoidCodex(
 					if (block.type === "text") block.text += event.delta;
 					stream.push({ type: "text_delta", contentIndex: textIndex, delta: event.delta, partial: output });
 				}
-				if (event.type === "response.output_item.done" && textIndex < 0) {
+				if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
+					const key = outputItemKey(event);
+					if (!toolSlots.has(key)) startToolCall(output, stream, event.item, key, toolSlots, toolArgumentBuffers);
+				}
+				if (event.type === "response.function_call_arguments.delta" && typeof event.delta === "string") {
+					const key = outputItemKey(event);
+					const contentIndex = toolSlots.get(key);
+					if (contentIndex !== undefined) {
+						const nextArguments = (toolArgumentBuffers.get(key) || "") + event.delta;
+						toolArgumentBuffers.set(key, nextArguments);
+						const block = output.content[contentIndex];
+						if (block.type === "toolCall") block.arguments = parseJsonObject(nextArguments);
+						stream.push({ type: "toolcall_delta", contentIndex, delta: event.delta, partial: output });
+					}
+				}
+				if (event.type === "response.function_call_arguments.done" && typeof event.arguments === "string") {
+					const key = outputItemKey(event);
+					const contentIndex = toolSlots.get(key);
+					if (contentIndex !== undefined) {
+						const previousArguments = toolArgumentBuffers.get(key) || "";
+						toolArgumentBuffers.set(key, event.arguments);
+						const block = output.content[contentIndex];
+						if (block.type === "toolCall") block.arguments = parseJsonObject(event.arguments);
+						if (event.arguments.startsWith(previousArguments)) {
+							const delta = event.arguments.slice(previousArguments.length);
+							if (delta) stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
+						}
+					}
+				}
+				if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
+					const key = outputItemKey(event);
+					if (!toolSlots.has(key)) startToolCall(output, stream, event.item, key, toolSlots, toolArgumentBuffers);
+					const contentIndex = toolSlots.get(key);
+					if (contentIndex !== undefined) {
+						const previousArguments = toolArgumentBuffers.get(key) || "";
+						const finalArguments = typeof event.item.arguments === "string" ? event.item.arguments : (previousArguments || "{}");
+						toolArgumentBuffers.set(key, finalArguments);
+						const block = output.content[contentIndex];
+						if (block.type === "toolCall") {
+							if (finalArguments.startsWith(previousArguments)) {
+								const delta = finalArguments.slice(previousArguments.length);
+								if (delta) stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
+							}
+							block.id = buildToolCallID(event.item);
+							block.name = event.item.name || block.name;
+							block.arguments = parseJsonObject(finalArguments);
+							output.stopReason = "toolUse";
+							stream.push({ type: "toolcall_end", contentIndex, toolCall: block, partial: output });
+						}
+						toolSlots.delete(key);
+						toolArgumentBuffers.delete(key);
+					}
+				}
+				if (event.type === "response.output_item.done" && event.item?.type !== "function_call" && textIndex < 0) {
 					const text = extractDoneText(event.item);
 					if (text) {
 						textIndex = startText(output, stream);
@@ -144,7 +199,7 @@ function streamVoidCodex(
 					partial: output,
 				});
 			}
-			stream.push({ type: "done", reason: output.stopReason as "stop", message: output });
+			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 			stream.end();
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
@@ -169,7 +224,7 @@ function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStr
 		store: false,
 		stream: true,
 		instructions: context.systemPrompt || "You are a helpful coding assistant.",
-		input: context.messages.map(toCodexInput),
+		input: context.messages.flatMap(toCodexInput),
 		text: { verbosity: "low" },
 		include: ["reasoning.encrypted_content"],
 		tool_choice: "auto",
@@ -188,26 +243,47 @@ function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStr
 	return body;
 }
 
-function toCodexInput(message: any): Record<string, unknown> {
+function toCodexInput(message: any): Array<Record<string, unknown>> {
 	if (message.role === "assistant") {
-		return {
-			type: "message",
-			role: "assistant",
-			content: (message.content || []).filter((c: any) => c.type === "text").map((c: any) => ({ type: "output_text", text: c.text || "" })),
+		const items: Array<Record<string, unknown>> = [];
+		let textContent: Array<Record<string, string>> = [];
+		const flushText = () => {
+			if (!textContent.length) return;
+			items.push({ type: "message", role: "assistant", content: textContent });
+			textContent = [];
 		};
+		for (const block of message.content || []) {
+			if (block.type === "text") {
+				textContent.push({ type: "output_text", text: block.text || "" });
+			} else if (block.type === "toolCall") {
+				flushText();
+				const [callID, itemID] = splitToolCallID(block.id);
+				const item: Record<string, unknown> = {
+					type: "function_call",
+					call_id: callID,
+					name: block.name,
+					arguments: JSON.stringify(block.arguments || {}),
+				};
+				if (itemID) item.id = itemID;
+				items.push(item);
+			}
+		}
+		flushText();
+		return items;
 	}
 	if (message.role === "toolResult") {
-		return {
+		const [callID] = splitToolCallID(message.toolCallId);
+		return [{
 			type: "function_call_output",
-			call_id: message.toolCallId,
+			call_id: callID,
 			output: stringifyContent(message.content),
-		};
+		}];
 	}
-	return {
+	return [{
 		type: "message",
 		role: "user",
 		content: normalizeUserContent(message.content),
-	};
+	}];
 }
 
 function normalizeUserContent(content: any): Array<Record<string, string>> {
@@ -230,6 +306,59 @@ function startText(output: AssistantMessage, stream: AssistantMessageEventStream
 	const contentIndex = output.content.length - 1;
 	stream.push({ type: "text_start", contentIndex, partial: output });
 	return contentIndex;
+}
+
+function startToolCall(
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+	item: any,
+	key: string,
+	toolSlots: Map<string, number>,
+	toolArgumentBuffers: Map<string, string>,
+): number {
+	const initialArguments = typeof item?.arguments === "string" ? item.arguments : "";
+	output.content.push({
+		type: "toolCall",
+		id: buildToolCallID(item),
+		name: item?.name || "",
+		arguments: parseJsonObject(initialArguments),
+	});
+	const contentIndex = output.content.length - 1;
+	toolSlots.set(key, contentIndex);
+	toolArgumentBuffers.set(key, initialArguments);
+	stream.push({ type: "toolcall_start", contentIndex, partial: output });
+	if (initialArguments) stream.push({ type: "toolcall_delta", contentIndex, delta: initialArguments, partial: output });
+	return contentIndex;
+}
+
+function outputItemKey(event: any): string {
+	if (event.output_index !== undefined && event.output_index !== null) return "index:" + event.output_index;
+	if (event.item_id) return "item:" + event.item_id;
+	if (event.item?.id) return "item:" + event.item.id;
+	if (event.item?.call_id) return "call:" + event.item.call_id;
+	return "unknown";
+}
+
+function buildToolCallID(item: any): string {
+	const callID = String(item?.call_id || item?.id || "call");
+	const itemID = item?.id ? String(item.id) : "";
+	return itemID && itemID !== callID ? callID + "|" + itemID : callID;
+}
+
+function splitToolCallID(id: any): [string, string | undefined] {
+	const raw = String(id || "");
+	const separator = raw.indexOf("|");
+	if (separator < 0) return [raw, undefined];
+	return [raw.slice(0, separator), raw.slice(separator + 1) || undefined];
+}
+
+function parseJsonObject(text: string): Record<string, any> {
+	if (!text) return {};
+	try {
+		const parsed = JSON.parse(text);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+	} catch {}
+	return {};
 }
 
 function extractDoneText(item: any): string {
