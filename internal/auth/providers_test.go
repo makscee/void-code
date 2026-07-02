@@ -29,6 +29,9 @@ func TestFetchProvidersHappyPath(t *testing.T) {
 	if got[0].Name != "DeepSeek" || got[1].Name != "Platform 2" {
 		t.Fatalf("fields = %+v", got)
 	}
+	if got[0].Type != "universal" || got[1].Type != "anthropic-oauth" {
+		t.Fatalf("types = %+v", got)
+	}
 }
 
 func TestFetchProvidersEmptyDegradesToEmpty(t *testing.T) {

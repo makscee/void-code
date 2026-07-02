@@ -129,7 +129,7 @@ func main() {
 					cfg := config.OSResolve()
 					if infos, gErr := auth.FetchProviders(cfg.AuthHost, tok, &http.Client{Timeout: 10 * time.Second}); gErr == nil {
 						for _, pi := range infos {
-							grantedRows = append(grantedRows, welcome.ProviderRowInfo{ID: pi.ID, Name: pi.Name})
+							grantedRows = append(grantedRows, welcome.ProviderRowInfo{ID: pi.ID, Name: pi.Name, Type: pi.Type})
 						}
 						fetchOK = true
 					} else {
@@ -146,7 +146,7 @@ func main() {
 					compatGrants := make([]compat.Grant, len(grantedRows))
 					for i, r := range grantedRows {
 						granted[i] = provider.GrantedEntry{ID: r.ID, Name: r.Name}
-						compatGrants[i] = compat.Grant{ID: r.ID, Name: r.Name}
+						compatGrants[i] = compat.Grant{ID: r.ID, Name: r.Name, Type: r.Type}
 					}
 					_ = provider.ReconcileLabel(granted)
 					activeLabel = provider.LoadLabel()
@@ -355,7 +355,7 @@ func fetchCompatGrants(authHost, token string) []compat.Grant {
 	}
 	grants := make([]compat.Grant, 0, len(infos))
 	for _, pi := range infos {
-		grants = append(grants, compat.Grant{ID: pi.ID, Name: pi.Name})
+		grants = append(grants, compat.Grant{ID: pi.ID, Name: pi.Name, Type: pi.Type})
 	}
 	return grants
 }

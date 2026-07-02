@@ -26,6 +26,7 @@ type providersModel struct {
 type ProviderRowInfo struct {
 	ID   string
 	Name string
+	Type string
 }
 
 // buildProviderRows assembles the provider selector: always the bare DeepSeek
@@ -46,6 +47,12 @@ func buildProviderRows(keyNames []string, granted []ProviderRowInfo) []providerR
 }
 
 func supportedRelayProviderName(g ProviderRowInfo) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(g.Type)) {
+	case "deepseek":
+		return "DeepSeek", true
+	case "openai-codex-oauth":
+		return "ChatGPT", true
+	}
 	for _, v := range []string{g.Name, g.ID} {
 		v = strings.ToLower(strings.TrimSpace(v))
 		switch {

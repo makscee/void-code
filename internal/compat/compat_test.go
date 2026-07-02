@@ -8,7 +8,12 @@ import (
 )
 
 func TestClassifyProvider(t *testing.T) {
-	grants := []Grant{{ID: "opaque-1", Name: "OpenAI seats"}, {ID: "deepseek-sub", Name: "DeepSeek"}}
+	grants := []Grant{
+		{ID: "opaque-1", Name: "OpenAI seats"},
+		{ID: "opaque-type-chat", Name: "Enterprise", Type: "openai-codex-oauth"},
+		{ID: "opaque-type-deep", Name: "Enterprise", Type: "deepseek"},
+		{ID: "deepseek-sub", Name: "DeepSeek"},
+	}
 	cases := []struct {
 		name  string
 		p     provider.Provider
@@ -19,6 +24,8 @@ func TestClassifyProvider(t *testing.T) {
 		{"chatgpt id", provider.Provider{Kind: provider.RelayProvider, ID: "chatgpt-sub"}, "", ProviderChatGPT},
 		{"openai grant name", provider.Provider{Kind: provider.RelayProvider, ID: "opaque-1"}, "", ProviderChatGPT},
 		{"codex label", provider.Provider{Kind: provider.RelayProvider, ID: "opaque-2"}, "Codex relay", ProviderChatGPT},
+		{"chatgpt type", provider.Provider{Kind: provider.RelayProvider, ID: "opaque-type-chat"}, "", ProviderChatGPT},
+		{"deepseek type", provider.Provider{Kind: provider.RelayProvider, ID: "opaque-type-deep"}, "", ProviderDeepSeek},
 		{"deepseek id", provider.Provider{Kind: provider.RelayProvider, ID: "deepseek-sub"}, "", ProviderDeepSeek},
 		{"plain invalid", provider.Provider{Kind: provider.Plain}, "Plain", ProviderInvalid},
 		{"key invalid", provider.Provider{Kind: provider.NamedKey, Name: "work"}, "key: work", ProviderInvalid},
@@ -33,7 +40,7 @@ func TestClassifyProvider(t *testing.T) {
 }
 
 func TestReconcileMatrix(t *testing.T) {
-	chatGrant := []Grant{{ID: "opaque", Name: "OpenAI"}}
+	chatGrant := []Grant{{ID: "opaque", Name: "Enterprise", Type: "openai-codex-oauth"}}
 	chat := provider.Provider{Kind: provider.RelayProvider, ID: "opaque"}
 	deep := provider.Provider{Kind: provider.Relay}
 
@@ -47,7 +54,7 @@ func TestReconcileMatrix(t *testing.T) {
 		wantProv    string
 	}{
 		{"claude chatgpt to deepseek", harnesschoice.Choice{Kind: harnesschoice.Claude}, chat, "ChatGPT relay", chatGrant, harnesschoice.Claude, "relay"},
-		{"pi chatgpt stays", harnesschoice.Choice{Kind: harnesschoice.Pi}, chat, "ChatGPT relay", chatGrant, harnesschoice.Pi, "prov:opaque"},
+		{"pi chatgpt stays", harnesschoice.Choice{Kind: harnesschoice.Pi}, chat, "", chatGrant, harnesschoice.Pi, "prov:opaque"},
 		{"pi deepseek stays", harnesschoice.Choice{Kind: harnesschoice.Pi}, deep, "", nil, harnesschoice.Pi, "relay"},
 		{"codex deepseek to chatgpt grant", harnesschoice.Choice{Kind: harnesschoice.Codex}, deep, "", chatGrant, harnesschoice.Codex, "prov:opaque"},
 		{"codex deepseek no grant to pi", harnesschoice.Choice{Kind: harnesschoice.Codex}, deep, "", nil, harnesschoice.Pi, "relay"},

@@ -21,6 +21,7 @@ const (
 type Grant struct {
 	ID    string
 	Name  string
+	Type  string
 	Label string
 }
 
@@ -35,7 +36,8 @@ type Decision struct {
 
 // ClassifyProvider maps provider selections to the only matrix classes.
 // Relay is the built-in DeepSeek row. RelayProvider is classified by safe
-// id/name/label substrings; Plain and NamedKey are not valid matrix rows.
+// provider type first, then legacy id/name/label substrings; Plain and NamedKey
+// are not valid matrix rows.
 func ClassifyProvider(p provider.Provider, label string, grants []Grant) ProviderClass {
 	switch p.Kind {
 	case provider.Relay:
@@ -44,12 +46,26 @@ func ClassifyProvider(p provider.Provider, label string, grants []Grant) Provide
 		fields := []string{p.ID, label}
 		for _, g := range grants {
 			if g.ID == p.ID {
+				if class, ok := classifyType(g.Type); ok {
+					return class
+				}
 				fields = append(fields, g.ID, g.Name, g.Label)
 			}
 		}
 		return classifyFields(fields)
 	default:
 		return ProviderInvalid
+	}
+}
+
+func classifyType(t string) (ProviderClass, bool) {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "openai-codex-oauth":
+		return ProviderChatGPT, true
+	case "deepseek":
+		return ProviderDeepSeek, true
+	default:
+		return ProviderInvalid, false
 	}
 }
 

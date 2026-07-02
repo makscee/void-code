@@ -572,7 +572,7 @@ func (m model) updateAddKey(s string) (tea.Model, tea.Cmd) {
 func (m *model) applyReconciledSelection(h harnesschoice.Choice, p provider.Provider, label string) {
 	grants := make([]compat.Grant, len(m.cb.GrantedProviders))
 	for i, g := range m.cb.GrantedProviders {
-		grants[i] = compat.Grant{ID: g.ID, Name: g.Name}
+		grants[i] = compat.Grant{ID: g.ID, Name: g.Name, Type: g.Type}
 	}
 	d := compat.Reconcile(h, p, label, grants)
 	if m.cb.OnSelectHarness != nil {

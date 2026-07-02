@@ -48,6 +48,23 @@ func TestBuildProviderRowsUsesSupportedIDFallback(t *testing.T) {
 	}
 }
 
+func TestBuildProviderRowsUsesProviderType(t *testing.T) {
+	granted := []ProviderRowInfo{
+		{ID: "opaque-deep", Name: "Enterprise", Type: "deepseek"},
+		{ID: "opaque-chat", Name: "Enterprise", Type: "openai-codex-oauth"},
+	}
+	rows := buildProviderRows(nil, granted)
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2: %+v", len(rows), rows)
+	}
+	if rows[0].label != "DeepSeek relay" || rows[0].prov.Kind != provider.Relay {
+		t.Fatalf("row0 = %+v, want baseline DeepSeek", rows[0])
+	}
+	if rows[1].label != "ChatGPT relay" || rows[1].prov.Kind != provider.RelayProvider || rows[1].prov.ID != "opaque-chat" {
+		t.Fatalf("row1 = %+v, want opaque ChatGPT relay", rows[1])
+	}
+}
+
 func TestBuildProviderRowsNoGrantedIsBaseline(t *testing.T) {
 	// ungranted user: empty granted list → bare DeepSeek relay only.
 	rows := buildProviderRows(nil, nil)
