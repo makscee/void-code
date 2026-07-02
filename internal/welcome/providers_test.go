@@ -107,6 +107,40 @@ func TestProvidersModel_RowsWithGranted(t *testing.T) {
 	}
 }
 
+func TestProviderSelectionClaudeChatGPTPersistsRelayProvider(t *testing.T) {
+	var selectedProvider, selectedLabel string
+	granted := []ProviderRowInfo{{ID: "opaque-chat", Name: "Enterprise", Type: "openai-codex-oauth"}}
+	m := newModel(AuthState{LoggedIn: true}, Callbacks{
+		ActiveHarness:    "claude",
+		ActiveProvider:   "relay",
+		GrantedProviders: granted,
+		OnSelect: func(p provider.Provider) error {
+			selectedProvider = p.String()
+			return nil
+		},
+		OnSelectLabel: func(label string) error {
+			selectedLabel = label
+			return nil
+		},
+	})
+	m.providers = newProvidersModel(nil, granted, "relay")
+	m.view = providersView
+	m.providers.cursor = 1
+
+	next, _ := m.updateProviders("enter")
+	got := next.(model)
+
+	if got.cb.ActiveHarness != "claude" {
+		t.Fatalf("ActiveHarness = %q, want claude", got.cb.ActiveHarness)
+	}
+	if got.cb.ActiveProvider != "prov:opaque-chat" || selectedProvider != "prov:opaque-chat" {
+		t.Fatalf("selected active provider = %q callback=%q, want prov:opaque-chat", got.cb.ActiveProvider, selectedProvider)
+	}
+	if got.cb.ActiveProviderLabel != "ChatGPT relay" || selectedLabel != "ChatGPT relay" {
+		t.Fatalf("selected label = %q callback=%q, want ChatGPT relay", got.cb.ActiveProviderLabel, selectedLabel)
+	}
+}
+
 func TestProvidersModel_SelectMarksActive(t *testing.T) {
 	m := NewProvidersModelForTest([]string{"work"}, "relay")
 	if !m.RowIsActive(0) {

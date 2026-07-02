@@ -53,12 +53,15 @@ func TestReconcileMatrix(t *testing.T) {
 		wantHarness harnesschoice.Kind
 		wantProv    string
 	}{
-		{"claude chatgpt to deepseek", harnesschoice.Choice{Kind: harnesschoice.Claude}, chat, "ChatGPT relay", chatGrant, harnesschoice.Claude, "relay"},
+		{"claude chatgpt stays", harnesschoice.Choice{Kind: harnesschoice.Claude}, chat, "ChatGPT relay", chatGrant, harnesschoice.Claude, "prov:opaque"},
+		{"claude deepseek stays", harnesschoice.Choice{Kind: harnesschoice.Claude}, deep, "", nil, harnesschoice.Claude, "relay"},
+		{"claude plain invalid to relay", harnesschoice.Choice{Kind: harnesschoice.Claude}, provider.Provider{Kind: provider.Plain}, "Plain harness run", nil, harnesschoice.Claude, "relay"},
 		{"pi chatgpt stays", harnesschoice.Choice{Kind: harnesschoice.Pi}, chat, "", chatGrant, harnesschoice.Pi, "prov:opaque"},
 		{"pi deepseek stays", harnesschoice.Choice{Kind: harnesschoice.Pi}, deep, "", nil, harnesschoice.Pi, "relay"},
+		{"pi named-key invalid to relay", harnesschoice.Choice{Kind: harnesschoice.Pi}, provider.Provider{Kind: provider.NamedKey, Name: "work"}, "key: work", nil, harnesschoice.Pi, "relay"},
 		{"codex deepseek to chatgpt grant", harnesschoice.Choice{Kind: harnesschoice.Codex}, deep, "", chatGrant, harnesschoice.Codex, "prov:opaque"},
 		{"codex deepseek no grant to pi", harnesschoice.Choice{Kind: harnesschoice.Codex}, deep, "", nil, harnesschoice.Pi, "relay"},
-		{"plain invalid to relay", harnesschoice.Choice{Kind: harnesschoice.Pi}, provider.Provider{Kind: provider.Plain}, "Plain harness run", nil, harnesschoice.Pi, "relay"},
+		{"codex named-key to chatgpt grant", harnesschoice.Choice{Kind: harnesschoice.Codex}, provider.Provider{Kind: provider.NamedKey, Name: "work"}, "key: work", chatGrant, harnesschoice.Codex, "prov:opaque"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

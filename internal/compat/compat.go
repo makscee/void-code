@@ -96,7 +96,7 @@ func FirstChatGPT(grants []Grant) (provider.Provider, string, bool) {
 }
 
 // Reconcile returns a safe supported matrix row, preserving compatible choices.
-// Matrix: Claude=DeepSeek, Codex=ChatGPT, Pi=DeepSeek/ChatGPT.
+// Matrix: Claude=DeepSeek/ChatGPT, Codex=ChatGPT, Pi=DeepSeek/ChatGPT.
 func Reconcile(h harnesschoice.Choice, p provider.Provider, label string, grants []Grant) Decision {
 	class := ClassifyProvider(p, label, grants)
 	if label == "" {
@@ -110,10 +110,10 @@ func Reconcile(h harnesschoice.Choice, p provider.Provider, label string, grants
 
 	switch h.Kind {
 	case harnesschoice.Claude:
-		if class == ProviderDeepSeek {
+		if class == ProviderDeepSeek || class == ProviderChatGPT {
 			return out
 		}
-		return set(h, provider.Provider{Kind: provider.Relay}, provider.Provider{Kind: provider.Relay}.Label(), "Claude Code supports DeepSeek only; switched provider to DeepSeek relay.")
+		return set(h, provider.Provider{Kind: provider.Relay}, provider.Provider{Kind: provider.Relay}.Label(), "Claude Code supports DeepSeek and ChatGPT relay providers only; switched provider to DeepSeek relay.")
 	case harnesschoice.Codex:
 		if class == ProviderChatGPT {
 			return out
