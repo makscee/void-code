@@ -24,6 +24,20 @@ func TestPiVoidCodexExtensionSourceHandlesResponsesFunctionCalls(t *testing.T) {
 	}
 }
 
+func TestPiVoidCodexExtensionSourceSendsSessionCacheKeyAndAttributionHeader(t *testing.T) {
+	required := []string{
+		`function promptCacheKey(sessionId?: string): string | undefined`,
+		`return sessionId.slice(0, 64);`,
+		`body.prompt_cache_key = cacheKey`,
+		`headers["x-pi-session-id"] = options.sessionId`,
+	}
+	for _, want := range required {
+		if !strings.Contains(piVoidCodexExtensionSource, want) {
+			t.Fatalf("Pi Codex extension source missing %q", want)
+		}
+	}
+}
+
 func TestPiVoidCodexExtensionSourceMapsAssistantToolCallsWithFlatMap(t *testing.T) {
 	required := []string{
 		`input: context.messages.flatMap(toCodexInput)`,

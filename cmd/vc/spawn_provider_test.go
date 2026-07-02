@@ -224,7 +224,7 @@ func TestBuildPiVoidCodexArgsKeepsUserProviderModel(t *testing.T) {
 
 func TestBuildPiVoidDeepSeekArgsInjectsExtensionProviderModel(t *testing.T) {
 	got := buildPiVoidDeepSeekArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
-	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-deepseek", "--model", "claude-sonnet-4-6", "-p", "hello"}
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-deepseek", "--model", "deepseek/deepseek-v4-pro", "-p", "hello"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
@@ -257,12 +257,12 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.5 via Void relay", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "claude-sonnet-4-6", "authHeader: true", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.5 via Void relay", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"Void Codex relay", "GPT-5.4 via Void relay", "chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
+	for _, forbidden := range []string{"Void Codex relay", "chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("extension contains forbidden client secret/account material %q", forbidden)
 		}

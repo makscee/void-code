@@ -51,7 +51,7 @@ func TestPiVoidDeepSeekExtensionSmoke(t *testing.T) {
 			Body:          body,
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_smoke\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-6\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_smoke\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"deepseek/deepseek-v4-pro\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
 		_, _ = io.WriteString(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
 		_, _ = io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"deepseek smoke ok\"}}\n\n")
 		_, _ = io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
@@ -65,7 +65,7 @@ func TestPiVoidDeepSeekExtensionSmoke(t *testing.T) {
 	cmd := exec.CommandContext(ctx, piBin,
 		"--no-extensions", "-e", extPath,
 		"--provider", "void-deepseek",
-		"--model", "claude-sonnet-4-6",
+		"--model", "deepseek/deepseek-v4-pro",
 		"--no-context-files",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -108,7 +108,7 @@ func TestPiVoidDeepSeekExtensionSmoke(t *testing.T) {
 		if seen.Provider != "deepseek" {
 			t.Fatalf("x-void-provider = %q", seen.Provider)
 		}
-		if seen.Body["model"] != "claude-sonnet-4-6" || seen.Body["stream"] != true {
+		if seen.Body["model"] != "deepseek/deepseek-v4-pro" || seen.Body["stream"] != true {
 			t.Fatalf("unexpected anthropic body: %#v", seen.Body)
 		}
 	case <-time.After(time.Second):

@@ -639,7 +639,7 @@ const (
 	piVoidCodexProvider    = "void-codex"
 	piVoidCodexModel       = "gpt-5.5"
 	piVoidDeepSeekProvider = "void-deepseek"
-	piVoidDeepSeekModel    = "claude-sonnet-4-6"
+	piVoidDeepSeekModel    = "deepseek/deepseek-v4-pro"
 )
 
 func buildPiVoidCodexArgs(args []string, extensionPath string) []string {

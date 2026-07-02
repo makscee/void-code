@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const CODEX_PROVIDER_ID = "void-codex";
 const CODEX_MODEL_ID = "gpt-5.5";
 const DEEPSEEK_PROVIDER_ID = "void-deepseek";
-const DEEPSEEK_MODEL_ID = "claude-sonnet-4-6";
+const DEEPSEEK_MODEL_ID = "deepseek/deepseek-v4-pro";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider(CODEX_PROVIDER_ID, {
@@ -22,16 +22,10 @@ export default function (pi: ExtensionAPI) {
 		apiKey: "$VC_AUTH_TOKEN",
 		api: "void-codex-sse",
 		models: [
-			{
-				id: CODEX_MODEL_ID,
-				name: "GPT-5.5 via Void relay",
-				reasoning: true,
-				thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
-				input: ["text", "image"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 272000,
-				maxTokens: 128000,
-			},
+			codexModel("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark via Void relay"),
+			codexModel("gpt-5.4", "GPT-5.4 via Void relay"),
+			codexModel("gpt-5.4-mini", "GPT-5.4 Mini via Void relay"),
+			codexModel(CODEX_MODEL_ID, "GPT-5.5 via Void relay"),
 		],
 		streamSimple: streamVoidCodex,
 	});
@@ -44,17 +38,35 @@ export default function (pi: ExtensionAPI) {
 		api: "anthropic-messages",
 		headers: { "x-void-provider": "$VC_RELAY_PROVIDER_ID" },
 		models: [
-			{
-				id: DEEPSEEK_MODEL_ID,
-				name: "Claude Sonnet 4.6 via Void DeepSeek relay",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 200000,
-				maxTokens: 64000,
-			},
+			deepseekModel(DEEPSEEK_MODEL_ID, "DeepSeek V4 Pro via Void relay", 200000, 64000),
+			deepseekModel("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash via Void relay", 200000, 64000),
 		],
 	});
+}
+
+function codexModel(id: string, name: string): Model<any> {
+	return {
+		id,
+		name,
+		reasoning: true,
+		thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
+		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 272000,
+		maxTokens: 128000,
+	};
+}
+
+function deepseekModel(id: string, name: string, contextWindow: number, maxTokens: number): Model<any> {
+	return {
+		id,
+		name,
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow,
+		maxTokens,
+	};
 }
 
 function streamVoidCodex(
@@ -92,15 +104,17 @@ function streamVoidCodex(
 			const token = requiredEnv("VC_AUTH_TOKEN");
 			const providerID = requiredEnv("VC_RELAY_PROVIDER_ID");
 			const body = JSON.stringify(buildCodexBody(model, context, options));
+			const headers: Record<string, string> = {
+				"accept": "text/event-stream",
+				"content-type": "application/json",
+				"authorization": "Bearer " + token,
+				"x-void-provider": providerID,
+			};
+			if (options?.sessionId) headers["x-pi-session-id"] = options.sessionId;
 
 			const response = await fetch(relayURL, {
 				method: "POST",
-				headers: {
-					"accept": "text/event-stream",
-					"content-type": "application/json",
-					"authorization": "Bearer " + token,
-					"x-void-provider": providerID,
-				},
+				headers,
 				body,
 				signal: options?.signal,
 			});
@@ -218,6 +232,11 @@ function requiredEnv(name: string): string {
 	return value;
 }
 
+function promptCacheKey(sessionId?: string): string | undefined {
+	if (!sessionId) return undefined;
+	return sessionId.slice(0, 64);
+}
+
 function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): Record<string, unknown> {
 	const body: Record<string, unknown> = {
 		model: model.id,
@@ -240,6 +259,8 @@ function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStr
 		}));
 	}
 	if (options?.maxTokens) body.max_output_tokens = options.maxTokens;
+	const cacheKey = promptCacheKey(options?.sessionId);
+	if (cacheKey) body.prompt_cache_key = cacheKey;
 	return body;
 }
 
