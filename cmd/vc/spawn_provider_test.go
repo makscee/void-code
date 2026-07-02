@@ -127,7 +127,7 @@ func TestBuildCodexArgsInjectsConfigBeforeUserArgs(t *testing.T) {
 		"model_providers.void.wire_api=responses",
 		"model_providers.void.env_key=VC_AUTH_TOKEN",
 		"model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
-		"model=gpt-5.4",
+		"model=gpt-5.5",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Codex args missing %q: %#v", want, got)
@@ -205,7 +205,7 @@ func TestBuildPiSpawnEnvBareRelayUsesDeepSeekSentinel(t *testing.T) {
 
 func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
 	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
-	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.4", "-p", "hello"}
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.5", "-p", "hello"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
@@ -257,12 +257,12 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "claude-sonnet-4-6", "authHeader: true", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.5 via Void relay", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "claude-sonnet-4-6", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
+	for _, forbidden := range []string{"Void Codex relay", "GPT-5.4 via Void relay", "chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("extension contains forbidden client secret/account material %q", forbidden)
 		}

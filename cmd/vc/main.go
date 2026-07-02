@@ -637,7 +637,7 @@ func runInstallCodex(out io.Writer) {
 
 const (
 	piVoidCodexProvider    = "void-codex"
-	piVoidCodexModel       = "gpt-5.4"
+	piVoidCodexModel       = "gpt-5.5"
 	piVoidDeepSeekProvider = "void-deepseek"
 	piVoidDeepSeekModel    = "claude-sonnet-4-6"
 )
@@ -729,7 +729,7 @@ func buildCodexArgs(args []string, relayScheme, relayHost string) []string {
 		"-c", "model_providers.void.wire_api=responses",
 		"-c", "model_providers.void.env_key=VC_AUTH_TOKEN",
 		"-c", "model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
-		"-c", "model=gpt-5.4",
+		"-c", "model=gpt-5.5",
 	}
 	out := make([]string, 0, len(prefix)+len(args))
 	out = append(out, prefix...)

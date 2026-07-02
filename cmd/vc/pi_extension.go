@@ -11,20 +11,20 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CODEX_PROVIDER_ID = "void-codex";
-const CODEX_MODEL_ID = "gpt-5.4";
+const CODEX_MODEL_ID = "gpt-5.5";
 const DEEPSEEK_PROVIDER_ID = "void-deepseek";
 const DEEPSEEK_MODEL_ID = "claude-sonnet-4-6";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider(CODEX_PROVIDER_ID, {
-		name: "Void Codex relay",
+		name: "Void ChatGPT relay",
 		baseUrl: "$VC_RELAY_URL",
 		apiKey: "$VC_AUTH_TOKEN",
 		api: "void-codex-sse",
 		models: [
 			{
 				id: CODEX_MODEL_ID,
-				name: "GPT-5.4 via Void relay",
+				name: "GPT-5.5 via Void relay",
 				reasoning: true,
 				thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
 				input: ["text", "image"],
