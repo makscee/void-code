@@ -102,6 +102,7 @@ function streamVoidCodex(
 			let requestBody = await buildCodexBody(model, context, options);
 			const nextBody = await options?.onPayload?.(requestBody, model);
 			if (nextBody !== undefined) requestBody = nextBody as Record<string, unknown>;
+			requestBody = sanitizeCodexBody(requestBody);
 			const body = JSON.stringify(requestBody);
 			const headers: Record<string, string> = {
 				"accept": "text/event-stream",
@@ -126,6 +127,7 @@ function streamVoidCodex(
 			stream.push({ type: "start", partial: output });
 			const { processResponsesStream } = await openAIResponsesShared();
 			await processResponsesStream(parseSSE(response, options?.signal), output, stream, model);
+			normalizeUsage(output);
 			if (options?.signal?.aborted) throw new Error("Request was aborted");
 			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 			stream.end();
@@ -150,6 +152,19 @@ function requiredEnv(name: string): string {
 function promptCacheKey(sessionId?: string): string | undefined {
 	if (!sessionId) return undefined;
 	return sessionId.slice(0, 64);
+}
+
+function sanitizeCodexBody(body: Record<string, unknown>): Record<string, unknown> {
+	const out = { ...body };
+	// Pi compaction/summarization may add the standard OpenAI Responses cap, but
+	// ChatGPT Codex backend rejects it with "Unsupported parameter: max_output_tokens".
+	delete out.max_output_tokens;
+	return out;
+}
+
+function normalizeUsage(output: AssistantMessage) {
+	const usage = output.usage;
+	usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 
 async function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): Promise<Record<string, unknown>> {

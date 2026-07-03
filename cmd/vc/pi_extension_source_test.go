@@ -50,3 +50,17 @@ func TestPiVoidCodexExtensionSourceMatchesNativeCodexRequestShape(t *testing.T) 
 		}
 	}
 }
+
+func TestPiVoidCodexExtensionSourceSanitizesPiCompactionPayload(t *testing.T) {
+	required := []string{
+		`requestBody = sanitizeCodexBody(requestBody)`,
+		`delete out.max_output_tokens`,
+		`normalizeUsage(output)`,
+		`usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite`,
+	}
+	for _, want := range required {
+		if !strings.Contains(piVoidCodexExtensionSource, want) {
+			t.Fatalf("Pi Codex extension source missing %q", want)
+		}
+	}
+}
