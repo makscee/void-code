@@ -5,16 +5,13 @@ import (
 	"testing"
 )
 
-func TestPiVoidCodexExtensionSourceHandlesResponsesFunctionCalls(t *testing.T) {
+func TestPiVoidCodexExtensionSourceDelegatesResponsesParsingToPiNativeHelper(t *testing.T) {
 	required := []string{
-		`response.output_item.added`,
-		`event.item?.type === "function_call"`,
-		`response.function_call_arguments.delta`,
-		`response.function_call_arguments.done`,
-		`type: "toolcall_start"`,
-		`type: "toolcall_delta"`,
-		`type: "toolcall_end"`,
-		`output.stopReason = "toolUse"`,
+		`convertResponsesMessages`,
+		`convertResponsesTools`,
+		`processResponsesStream`,
+		`const { processResponsesStream } = await openAIResponsesShared()`,
+		`await processResponsesStream(parseSSE(response, options?.signal), output, stream, model)`,
 		`reason: output.stopReason as "stop" | "length" | "toolUse"`,
 	}
 	for _, want := range required {
@@ -28,7 +25,7 @@ func TestPiVoidCodexExtensionSourceSendsSessionCacheKeyAndAttributionHeader(t *t
 	required := []string{
 		`function promptCacheKey(sessionId?: string): string | undefined`,
 		`return sessionId.slice(0, 64);`,
-		`body.prompt_cache_key = cacheKey`,
+		`prompt_cache_key: promptCacheKey(options?.sessionId)`,
 		`headers["x-pi-session-id"] = options.sessionId`,
 	}
 	for _, want := range required {
@@ -38,15 +35,14 @@ func TestPiVoidCodexExtensionSourceSendsSessionCacheKeyAndAttributionHeader(t *t
 	}
 }
 
-func TestPiVoidCodexExtensionSourceMapsAssistantToolCallsWithFlatMap(t *testing.T) {
+func TestPiVoidCodexExtensionSourceMatchesNativeCodexRequestShape(t *testing.T) {
 	required := []string{
-		`input: context.messages.flatMap(toCodexInput)`,
-		`function toCodexInput(message: any): Array<Record<string, unknown>>`,
-		`block.type === "toolCall"`,
-		`type: "function_call"`,
-		`call_id: callID`,
-		`arguments: JSON.stringify(block.arguments || {})`,
-		`splitToolCallID(message.toolCallId)`,
+		`instructions: context.systemPrompt || "You are a helpful assistant."`,
+		`input: convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false })`,
+		`text: { verbosity: (options as any)?.textVerbosity || "low" }`,
+		`prompt_cache_key: promptCacheKey(options?.sessionId)`,
+		`body.tools = convertResponsesTools(context.tools, { strict: null })`,
+		`body.reasoning = { effort, summary: (options as any)?.reasoningSummary ?? "auto" }`,
 	}
 	for _, want := range required {
 		if !strings.Contains(piVoidCodexExtensionSource, want) {

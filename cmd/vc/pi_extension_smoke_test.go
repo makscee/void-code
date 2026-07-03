@@ -155,8 +155,10 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 			Body:          body,
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"void smoke ok\"}\n\n")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":3}}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_smoke\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"void smoke ok\"}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_smoke\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"void smoke ok\"}]}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer relay.Close()
@@ -214,6 +216,12 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		}
 		if seen.Body["model"] != "gpt-5.5" || seen.Body["stream"] != true {
 			t.Fatalf("unexpected codex body: %#v", seen.Body)
+		}
+		if instructions, ok := seen.Body["instructions"].(string); !ok || !strings.Contains(instructions, "expert coding assistant operating inside pi") {
+			t.Fatalf("instructions do not include Pi system prompt: %#v", seen.Body["instructions"])
+		}
+		if _, ok := seen.Body["reasoning"]; !ok {
+			t.Fatalf("codex body missing native reasoning block: %#v", seen.Body)
 		}
 		if _, ok := seen.Body["chatgpt-account-id"]; ok {
 			t.Fatalf("body leaked chatgpt-account-id: %#v", seen.Body)
