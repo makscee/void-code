@@ -102,7 +102,7 @@ function streamVoidCodex(
 			let requestBody = await buildCodexBody(model, context, options);
 			const nextBody = await options?.onPayload?.(requestBody, model);
 			if (nextBody !== undefined) requestBody = nextBody as Record<string, unknown>;
-			requestBody = sanitizeCodexBody(requestBody);
+			requestBody = await sanitizeCodexBody(requestBody);
 			const body = JSON.stringify(requestBody);
 			const headers: Record<string, string> = {
 				"accept": "text/event-stream",
@@ -154,12 +154,77 @@ function promptCacheKey(sessionId?: string): string | undefined {
 	return sessionId.slice(0, 64);
 }
 
-function sanitizeCodexBody(body: Record<string, unknown>): Record<string, unknown> {
+const CODEX_IMAGE_MAX_BASE64_BYTES = 1.5 * 1024 * 1024;
+
+async function sanitizeCodexBody(body: Record<string, unknown>): Promise<Record<string, unknown>> {
 	const out = { ...body };
 	// Pi compaction/summarization may add the standard OpenAI Responses cap, but
 	// ChatGPT Codex backend rejects it with "Unsupported parameter: max_output_tokens".
 	delete out.max_output_tokens;
+	await shrinkCodexImages(out);
 	return out;
+}
+
+async function shrinkCodexImages(node: unknown): Promise<void> {
+	if (Array.isArray(node)) {
+		let previousText: Record<string, unknown> | undefined;
+		for (const item of node) {
+			if (item && typeof item === "object") {
+				const record = item as Record<string, unknown>;
+				if (record.type === "input_text") previousText = record;
+				if (record.type === "input_image" && typeof record.image_url === "string") {
+					const resized = await shrinkDataImageUrl(record.image_url);
+					record.image_url = resized.url;
+					if (resized.wasShrunk && previousText && typeof previousText.text === "string") {
+						previousText.text = updateImageDeliveryNote(previousText.text, resized);
+					}
+				}
+			}
+			await shrinkCodexImages(item);
+		}
+		return;
+	}
+	if (!node || typeof node !== "object") return;
+	for (const value of Object.values(node as Record<string, unknown>)) await shrinkCodexImages(value);
+}
+
+interface ShrinkResult {
+	url: string;
+	mimeType: string;
+	width: number;
+	height: number;
+	wasShrunk: boolean;
+}
+
+async function shrinkDataImageUrl(url: string): Promise<ShrinkResult> {
+	const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(url);
+	if (!match) return { url, mimeType: "image/unknown", width: 0, height: 0, wasShrunk: false };
+	const mimeType = match[1];
+	const data = match[2];
+	if (Buffer.byteLength(data, "utf8") <= CODEX_IMAGE_MAX_BASE64_BYTES) {
+		return { url, mimeType, width: 0, height: 0, wasShrunk: false };
+	}
+	const { resizeImage } = await import("@earendil-works/pi-coding-agent");
+	const bytes = Uint8Array.from(Buffer.from(data, "base64"));
+	const resized = await resizeImage(bytes, mimeType, { maxBytes: CODEX_IMAGE_MAX_BASE64_BYTES });
+	if (!resized) {
+		throw new Error("Image could not be resized below the Void Codex image guard; run sips -Z 1600 --setProperty format jpeg --setProperty formatOptions 70 INPUT --out OUTPUT.jpg and read OUTPUT.jpg.");
+	}
+	return {
+		url: "data:" + resized.mimeType + ";base64," + resized.data,
+		mimeType: resized.mimeType,
+		width: resized.width,
+		height: resized.height,
+		wasShrunk: true,
+	};
+}
+
+function updateImageDeliveryNote(text: string, resized: ShrinkResult): string {
+	const note = /\[Image: original (\d+)x(\d+), displayed at \d+x\d+\. Multiply coordinates by [0-9.]+ to map to original image\.\]/;
+	return text.replace(note, (_match, originalWidth: string, originalHeight: string) => {
+		const scale = Number(originalWidth) / resized.width;
+		return "[Image: original " + originalWidth + "x" + originalHeight + ", delivered " + resized.width + "x" + resized.height + " " + resized.mimeType + ". Multiply coordinates by " + scale.toFixed(2) + " to map to original image.]";
+	});
 }
 
 function normalizeUsage(output: AssistantMessage) {

@@ -3,12 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +120,171 @@ func TestPiVoidDeepSeekExtensionSmoke(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("relay did not receive request")
+	}
+}
+
+func TestPiVoidCodexExtensionShrinksLargeImagePayload(t *testing.T) {
+	piBin, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("pi CLI not installed")
+	}
+
+	imgPath := filepath.Join(t.TempDir(), "large.png")
+	writeNoisyPNG(t, imgPath, 2600, 1800)
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	extPath, err := ensurePiVoidCodexExtension()
+	if err != nil {
+		t.Fatalf("ensure extension: %v", err)
+	}
+
+	seenCh := make(chan map[string]any, 1)
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(bodyBytes, &body); err != nil {
+			t.Fatalf("relay body JSON: %v; raw prefix=%s", err, string(bodyBytes[:min(len(bodyBytes), 200)]))
+		}
+		seenCh <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_image\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"image smoke ok\"}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_image\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"image smoke ok\"}]}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":3}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer relay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, piBin,
+		"--no-extensions", "-e", extPath,
+		"--provider", "void-codex",
+		"--model", "gpt-5.5",
+		"--no-context-files",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-themes",
+		"--no-tools",
+		"--no-session",
+		"--no-approve",
+		"-p", "@"+imgPath, "Reply exactly: image smoke",
+	)
+	cmd.Env = append(os.Environ(),
+		"HOME="+tmp,
+		"USERPROFILE="+tmp,
+		"VC_RELAY_URL="+relay.URL,
+		"VC_AUTH_TOKEN=smoke-token",
+		"VC_RELAY_PROVIDER_ID=prov-smoke",
+		"PI_SKIP_VERSION_CHECK=1",
+		"PI_TELEMETRY=0",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("pi image smoke failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+
+	select {
+	case body := <-seenCh:
+		var urls []string
+		collectImageURLs(body, &urls)
+		if len(urls) == 0 {
+			t.Fatalf("request body had no image_url: %#v", body)
+		}
+		var deliveredWidth, deliveredHeight int
+		var deliveredFormat string
+		for _, url := range urls {
+			prefix := "base64,"
+			idx := strings.Index(url, prefix)
+			if idx < 0 {
+				t.Fatalf("image_url is not a base64 data URL: %.80s", url)
+			}
+			got := len(url[idx+len(prefix):])
+			if got > int(1.5*1024*1024) {
+				t.Fatalf("image base64 size = %d, want <= 1.5MiB", got)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(url[idx+len(prefix):])
+			if err != nil {
+				t.Fatalf("decode image: %v", err)
+			}
+			cfg, format, err := image.DecodeConfig(bytes.NewReader(decoded))
+			if err != nil {
+				t.Fatalf("decode image config: %v", err)
+			}
+			deliveredWidth, deliveredHeight, deliveredFormat = cfg.Width, cfg.Height, "image/"+format
+		}
+		var texts []string
+		collectInputTexts(body, &texts)
+		joinedText := strings.Join(texts, "\n")
+		wantNote := fmt.Sprintf("delivered %dx%d %s", deliveredWidth, deliveredHeight, deliveredFormat)
+		if !strings.Contains(joinedText, wantNote) {
+			t.Fatalf("image note missing delivered dimensions/format %q in %q", wantNote, joinedText)
+		}
+		if strings.Contains(joinedText, "displayed at 2000x1385") {
+			t.Fatalf("image note kept stale Pi dimensions after second resize: %q", joinedText)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("relay did not receive image request")
+	}
+}
+
+func writeNoisyPNG(t *testing.T, path string, width int, height int) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	rng := rand.New(rand.NewSource(11))
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i+0] = byte(rng.Intn(256))
+		img.Pix[i+1] = byte(rng.Intn(256))
+		img.Pix[i+2] = byte(rng.Intn(256))
+		img.Pix[i+3] = 255
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create png: %v", err)
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+}
+
+func collectImageURLs(value any, out *[]string) {
+	switch v := value.(type) {
+	case map[string]any:
+		if v["type"] == "input_image" {
+			if url, ok := v["image_url"].(string); ok {
+				*out = append(*out, url)
+			}
+		}
+		for _, child := range v {
+			collectImageURLs(child, out)
+		}
+	case []any:
+		for _, child := range v {
+			collectImageURLs(child, out)
+		}
+	}
+}
+
+func collectInputTexts(value any, out *[]string) {
+	switch v := value.(type) {
+	case map[string]any:
+		if v["type"] == "input_text" {
+			if text, ok := v["text"].(string); ok {
+				*out = append(*out, text)
+			}
+		}
+		for _, child := range v {
+			collectInputTexts(child, out)
+		}
+	case []any:
+		for _, child := range v {
+			collectInputTexts(child, out)
+		}
 	}
 }
 

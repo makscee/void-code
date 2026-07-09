@@ -53,8 +53,13 @@ func TestPiVoidCodexExtensionSourceMatchesNativeCodexRequestShape(t *testing.T) 
 
 func TestPiVoidCodexExtensionSourceSanitizesPiCompactionPayload(t *testing.T) {
 	required := []string{
-		`requestBody = sanitizeCodexBody(requestBody)`,
+		`requestBody = await sanitizeCodexBody(requestBody)`,
 		`delete out.max_output_tokens`,
+		`CODEX_IMAGE_MAX_BASE64_BYTES`,
+		`await shrinkCodexImages(out)`,
+		`resizeImage(bytes, mimeType, { maxBytes: CODEX_IMAGE_MAX_BASE64_BYTES })`,
+		`updateImageDeliveryNote`,
+		`delivered " + resized.width + "x" + resized.height + " " + resized.mimeType`,
 		`normalizeUsage(output)`,
 		`usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite`,
 	}
