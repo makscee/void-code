@@ -162,7 +162,7 @@ func TestPiVoidCodexExtensionShrinksLargeImagePayload(t *testing.T) {
 	cmd := exec.CommandContext(ctx, piBin,
 		"--no-extensions", "-e", extPath,
 		"--provider", "void-codex",
-		"--model", "gpt-5.5",
+		"--model", "gpt-5.6-sol",
 		"--no-context-files",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -340,7 +340,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	cmd := exec.CommandContext(ctx, piBin,
 		"--no-extensions", "-e", extPath,
 		"--provider", "void-codex",
-		"--model", "gpt-5.5",
+		"--model", "gpt-5.6-sol",
 		"--no-context-files",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -386,7 +386,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		if seen.ChatGPTAcct != "" {
 			t.Fatalf("chatgpt-account-id header leaked: %q", seen.ChatGPTAcct)
 		}
-		if seen.Body["model"] != "gpt-5.5" || seen.Body["stream"] != true {
+		if seen.Body["model"] != "gpt-5.6-sol" || seen.Body["stream"] != true {
 			t.Fatalf("unexpected codex body: %#v", seen.Body)
 		}
 		if instructions, ok := seen.Body["instructions"].(string); !ok || !strings.Contains(instructions, "expert coding assistant operating inside pi") {

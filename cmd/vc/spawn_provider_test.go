@@ -127,7 +127,7 @@ func TestBuildCodexArgsInjectsConfigBeforeUserArgs(t *testing.T) {
 		"model_providers.void.wire_api=responses",
 		"model_providers.void.env_key=VC_AUTH_TOKEN",
 		"model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
-		"model=gpt-5.5",
+		"model=gpt-5.6-sol",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Codex args missing %q: %#v", want, got)
@@ -135,6 +135,14 @@ func TestBuildCodexArgsInjectsConfigBeforeUserArgs(t *testing.T) {
 	}
 	if got[len(got)-2] != "--ask-for-approval" || got[len(got)-1] != "never" {
 		t.Fatalf("user args not preserved at end: %#v", got)
+	}
+}
+
+func TestBuildCodexArgsPreservesUserModelOverride(t *testing.T) {
+	got := buildCodexArgs([]string{"--model", "user-choice", "-p", "hello"}, "https", "relay.example:443")
+	wantSuffix := []string{"--model", "user-choice", "-p", "hello"}
+	if strings.Join(got[len(got)-len(wantSuffix):], "\x00") != strings.Join(wantSuffix, "\x00") {
+		t.Fatalf("user model override not preserved: %#v", got)
 	}
 }
 
@@ -205,7 +213,7 @@ func TestBuildPiSpawnEnvBareRelayUsesDeepSeekSentinel(t *testing.T) {
 
 func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
 	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
-	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.5", "-p", "hello"}
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-sol", "-p", "hello"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
@@ -257,15 +265,34 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.5 via Void relay", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "GPT-5.6 Luna via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "contextWindow: 1050000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"Void Codex relay", "chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
+	for _, forbidden := range []string{"Void Codex relay", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark", "chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("extension contains forbidden client secret/account material %q", forbidden)
 		}
+	}
+}
+
+func TestPiVoidCodexPickerOffersOnlyGPT56Models(t *testing.T) {
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !strings.Contains(piVoidCodexExtensionSource, modelID) {
+			t.Fatalf("picker missing supported model %q", modelID)
+		}
+	}
+	for _, unsupported := range []string{"gpt-5.6\"", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"} {
+		if strings.Contains(piVoidCodexExtensionSource, unsupported) {
+			t.Fatalf("picker exposes unsupported model %q", unsupported)
+		}
+	}
+	if piVoidCodexModel != "gpt-5.6-sol" {
+		t.Fatalf("Pi default = %q, want gpt-5.6-sol", piVoidCodexModel)
+	}
+	if got := strings.Join(buildCodexArgs(nil, "https", "relay.example:443"), "\x00"); !strings.Contains(got, "model=gpt-5.6-sol") {
+		t.Fatalf("Codex default missing gpt-5.6-sol: %q", got)
 	}
 }
 

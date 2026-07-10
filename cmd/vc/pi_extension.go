@@ -11,7 +11,7 @@ import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CODEX_PROVIDER_ID = "void-codex";
-const CODEX_MODEL_ID = "gpt-5.5";
+const CODEX_MODEL_ID = "gpt-5.6-sol";
 const DEEPSEEK_PROVIDER_ID = "void-deepseek";
 const DEEPSEEK_MODEL_ID = "deepseek/deepseek-v4-pro";
 
@@ -22,10 +22,9 @@ export default function (pi: ExtensionAPI) {
 		apiKey: "$VC_AUTH_TOKEN",
 		api: "void-codex-sse",
 		models: [
-			codexModel("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark via Void relay"),
-			codexModel("gpt-5.4", "GPT-5.4 via Void relay"),
-			codexModel("gpt-5.4-mini", "GPT-5.4 Mini via Void relay"),
-			codexModel(CODEX_MODEL_ID, "GPT-5.5 via Void relay"),
+			codexModel(CODEX_MODEL_ID, "GPT-5.6 Sol via Void relay"),
+			codexModel("gpt-5.6-terra", "GPT-5.6 Terra via Void relay"),
+			codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay"),
 		],
 		streamSimple: streamVoidCodex,
 	});
@@ -52,7 +51,7 @@ function codexModel(id: string, name: string): Model<any> {
 		thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
 		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 272000,
+		contextWindow: 1050000,
 		maxTokens: 128000,
 	};
 }
