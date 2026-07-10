@@ -286,6 +286,17 @@ func TestPiVoidCodexPickerOffersOnlyGPT56Models(t *testing.T) {
 	if !strings.Contains(piVoidCodexExtensionSource, `const LUNA_PICKER_ENABLED = false;`) {
 		t.Fatal("Luna picker must be disabled by default")
 	}
+	for _, prerequisite := range []string{
+		"LUNA_LIVE_OAUTH_SMOKE_PREREQUISITE",
+		`VC_RELAY_URL="$VC_RELAY_URL" VC_AUTH_TOKEN="$VC_AUTH_TOKEN" VC_RELAY_PROVIDER_ID="$VC_RELAY_PROVIDER_ID"`,
+		`--provider void-codex --model gpt-5.6-luna`,
+		`-p 'Reply exactly: luna smoke ok'`,
+		"Require HTTP success and the exact response from the live OAuth relay.",
+	} {
+		if !strings.Contains(piVoidCodexExtensionSource, prerequisite) {
+			t.Fatalf("Luna default-off gate requires live OAuth smoke prerequisite %q", prerequisite)
+		}
+	}
 	lunaGate := `...(LUNA_PICKER_ENABLED ? [codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay")] : []),`
 	if !strings.Contains(piVoidCodexExtensionSource, lunaGate) {
 		t.Fatal("Luna picker must remain behind the explicit dormant gate")
