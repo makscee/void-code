@@ -637,7 +637,7 @@ func runInstallCodex(out io.Writer) {
 
 const (
 	piVoidCodexProvider    = "void-codex"
-	piVoidCodexModel       = "gpt-5.6-sol"
+	piVoidCodexModel       = "gpt-5.6-terra"
 	piVoidDeepSeekProvider = "void-deepseek"
 	piVoidDeepSeekModel    = "deepseek/deepseek-v4-pro"
 )

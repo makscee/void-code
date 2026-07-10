@@ -11,7 +11,7 @@ import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CODEX_PROVIDER_ID = "void-codex";
-const CODEX_MODEL_ID = "gpt-5.6-sol";
+const CODEX_MODEL_ID = "gpt-5.6-terra";
 // Set true only after the documented live Luna smoke passes.
 const LUNA_PICKER_ENABLED = false;
 const DEEPSEEK_PROVIDER_ID = "void-deepseek";
@@ -24,8 +24,8 @@ export default function (pi: ExtensionAPI) {
 		apiKey: "$VC_AUTH_TOKEN",
 		api: "void-codex-sse",
 		models: [
-			codexModel(CODEX_MODEL_ID, "GPT-5.6 Sol via Void relay"),
-			codexModel("gpt-5.6-terra", "GPT-5.6 Terra via Void relay"),
+			codexModel(CODEX_MODEL_ID, "GPT-5.6 Terra via Void relay"),
+			codexModel("gpt-5.6-sol", "GPT-5.6 Sol via Void relay"),
 			...(LUNA_PICKER_ENABLED ? [codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay")] : []),
 		],
 		streamSimple: streamVoidCodex,

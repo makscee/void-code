@@ -127,7 +127,7 @@ func TestBuildCodexArgsInjectsConfigBeforeUserArgs(t *testing.T) {
 		"model_providers.void.wire_api=responses",
 		"model_providers.void.env_key=VC_AUTH_TOKEN",
 		"model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
-		"model=gpt-5.6-sol",
+		"model=gpt-5.6-terra",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Codex args missing %q: %#v", want, got)
@@ -213,7 +213,7 @@ func TestBuildPiSpawnEnvBareRelayUsesDeepSeekSentinel(t *testing.T) {
 
 func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
 	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
-	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-sol", "-p", "hello"}
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-terra", "-p", "hello"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
@@ -295,11 +295,14 @@ func TestPiVoidCodexPickerOffersOnlyGPT56Models(t *testing.T) {
 			t.Fatalf("picker exposes unsupported model %q", unsupported)
 		}
 	}
-	if piVoidCodexModel != "gpt-5.6-sol" {
-		t.Fatalf("Pi default = %q, want gpt-5.6-sol", piVoidCodexModel)
+	if piVoidCodexModel != "gpt-5.6-terra" {
+		t.Fatalf("Pi default = %q, want gpt-5.6-terra", piVoidCodexModel)
 	}
-	if got := strings.Join(buildCodexArgs(nil, "https", "relay.example:443"), "\x00"); !strings.Contains(got, "model=gpt-5.6-sol") {
-		t.Fatalf("Codex default missing gpt-5.6-sol: %q", got)
+	if !strings.Contains(piVoidCodexExtensionSource, `const CODEX_MODEL_ID = "gpt-5.6-terra";`) {
+		t.Fatal("Pi extension default must be gpt-5.6-terra")
+	}
+	if got := strings.Join(buildCodexArgs(nil, "https", "relay.example:443"), "\x00"); !strings.Contains(got, "model=gpt-5.6-terra") {
+		t.Fatalf("Codex default missing gpt-5.6-terra: %q", got)
 	}
 }
 
