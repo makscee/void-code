@@ -265,7 +265,7 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "GPT-5.6 Luna via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "contextWindow: 1050000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "contextWindow: 1050000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}
@@ -278,10 +278,17 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 }
 
 func TestPiVoidCodexPickerOffersOnlyGPT56Models(t *testing.T) {
-	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra"} {
 		if !strings.Contains(piVoidCodexExtensionSource, modelID) {
 			t.Fatalf("picker missing supported model %q", modelID)
 		}
+	}
+	if !strings.Contains(piVoidCodexExtensionSource, `const LUNA_PICKER_ENABLED = false;`) {
+		t.Fatal("Luna picker must be disabled by default")
+	}
+	lunaGate := `...(LUNA_PICKER_ENABLED ? [codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay")] : []),`
+	if !strings.Contains(piVoidCodexExtensionSource, lunaGate) {
+		t.Fatal("Luna picker must remain behind the explicit dormant gate")
 	}
 	for _, unsupported := range []string{"gpt-5.6\"", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"} {
 		if strings.Contains(piVoidCodexExtensionSource, unsupported) {
