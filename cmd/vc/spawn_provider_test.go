@@ -267,7 +267,7 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "contextWindow: 1050000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "GPT-5.6 Luna via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "contextWindow: 1050000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}
@@ -279,10 +279,25 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 	}
 }
 
-// TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth covers the actual Pi
-// process boundary: --provider selects a model but does not hide providers Pi
-// discovers from its global auth registry. vc must use its own Pi config root.
-func TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth(t *testing.T) {
+// TestPiLaunchDoesNotIsolateCanonicalConfig is a must-fail-before-v0.2.31
+// regression: vc must not create an owned Pi root, rewrite auth, or set
+// PI_CODING_AGENT_DIR when launching a relay-backed Pi session.
+func TestPiLaunchDoesNotIsolateCanonicalConfig(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"isolatePiRelayConfig", "PI_CODING_AGENT_DIR"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("Pi launch still isolates canonical configuration with %q", forbidden)
+		}
+	}
+}
+
+// TestPiRelayListModelsUsesCanonicalPiResources covers the actual Pi process
+// boundary. The native OAuth fixture must remain discoverable alongside the
+// vc-injected relay extension; no credential is live or recorded.
+func TestPiRelayListModelsUsesCanonicalPiResources(t *testing.T) {
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("pi CLI not installed")
@@ -291,7 +306,9 @@ func TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("HERDR_PI_AUTO_NAME", "0")
 	standaloneDir := filepath.Join(tmp, ".pi", "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", standaloneDir)
 	if err := os.MkdirAll(standaloneDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -306,9 +323,8 @@ func TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth(t *testing.T) {
 		t.Fatalf("ensure extension: %v", err)
 	}
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "chatgpt-sub"}, os.Environ(), "https", "relay.example:443", "smoke-token", "/tmp/ca.pem")
-	env, err = isolatePiRelayConfig(env, extPath)
-	if err != nil {
-		t.Fatalf("isolate Pi relay config: %v", err)
+	if got, ok := findEnv(env, "PI_CODING_AGENT_DIR"); ok && got != standaloneDir {
+		t.Fatalf("Pi config root = %q, want canonical %q", got, standaloneDir)
 	}
 	args := buildPiVoidCodexArgs([]string{"--no-extensions", "--list-models"}, extPath)
 	cmd := exec.Command(piBin, args...)
@@ -320,44 +336,23 @@ func TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth(t *testing.T) {
 	}
 	list := stdout.String()
 	for _, want := range []string{
+		"openai-codex   gpt-5.6-terra",
 		"void-codex     gpt-5.6-sol",
 		"void-codex     gpt-5.6-terra",
+		"void-codex     gpt-5.6-luna",
 		"void-deepseek  deepseek/deepseek-v4-pro",
 	} {
 		if !strings.Contains(list, want) {
-			t.Fatalf("Pi list missing managed row %q:\n%s", want, list)
-		}
-	}
-	for _, forbidden := range []string{"openai-codex", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6-luna"} {
-		if strings.Contains(list, forbidden) {
-			t.Fatalf("Pi list inherited forbidden native model/provider %q:\n%s", forbidden, list)
+			t.Fatalf("Pi list missing canonical or managed row %q:\n%s", want, list)
 		}
 	}
 }
 
-func TestPiVoidCodexPickerOffersOnlyGPT56Models(t *testing.T) {
-	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra"} {
+func TestPiVoidCodexPickerOffersGPT56ModelsIncludingLuna(t *testing.T) {
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
 		if !strings.Contains(piVoidCodexExtensionSource, modelID) {
 			t.Fatalf("picker missing supported model %q", modelID)
 		}
-	}
-	if !strings.Contains(piVoidCodexExtensionSource, `const LUNA_PICKER_ENABLED = false;`) {
-		t.Fatal("Luna picker must be disabled by default")
-	}
-	for _, prerequisite := range []string{
-		"LUNA_LIVE_OAUTH_SMOKE_PREREQUISITE",
-		`VC_RELAY_URL="$VC_RELAY_URL" VC_AUTH_TOKEN="$VC_AUTH_TOKEN" VC_RELAY_PROVIDER_ID="$VC_RELAY_PROVIDER_ID"`,
-		`--provider void-codex --model gpt-5.6-luna`,
-		`-p 'Reply exactly: luna smoke ok'`,
-		"Require HTTP success and the exact response from the live OAuth relay.",
-	} {
-		if !strings.Contains(piVoidCodexExtensionSource, prerequisite) {
-			t.Fatalf("Luna default-off gate requires live OAuth smoke prerequisite %q", prerequisite)
-		}
-	}
-	lunaGate := `...(LUNA_PICKER_ENABLED ? [codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay")] : []),`
-	if !strings.Contains(piVoidCodexExtensionSource, lunaGate) {
-		t.Fatal("Luna picker must remain behind the explicit dormant gate")
 	}
 	for _, unsupported := range []string{"gpt-5.6\"", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"} {
 		if strings.Contains(piVoidCodexExtensionSource, unsupported) {

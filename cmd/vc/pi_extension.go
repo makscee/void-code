@@ -12,10 +12,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CODEX_PROVIDER_ID = "void-codex";
 const CODEX_MODEL_ID = "gpt-5.6-terra";
-// LUNA_LIVE_OAUTH_SMOKE_PREREQUISITE: Before changing this gate, run:
-// VC_RELAY_URL="$VC_RELAY_URL" VC_AUTH_TOKEN="$VC_AUTH_TOKEN" VC_RELAY_PROVIDER_ID="$VC_RELAY_PROVIDER_ID" pi --no-extensions -e "$HOME/.void-code/pi-void-codex/index.ts" --provider void-codex --model gpt-5.6-luna --no-context-files --no-skills --no-prompt-templates --no-themes --no-tools --no-session --no-approve -p 'Reply exactly: luna smoke ok'
-// Require HTTP success and the exact response from the live OAuth relay.
-const LUNA_PICKER_ENABLED = false;
 const DEEPSEEK_PROVIDER_ID = "void-deepseek";
 const DEEPSEEK_MODEL_ID = "deepseek/deepseek-v4-pro";
 
@@ -28,7 +24,7 @@ export default function (pi: ExtensionAPI) {
 		models: [
 			codexModel(CODEX_MODEL_ID, "GPT-5.6 Terra via Void relay"),
 			codexModel("gpt-5.6-sol", "GPT-5.6 Sol via Void relay"),
-			...(LUNA_PICKER_ENABLED ? [codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay")] : []),
+			codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay"),
 		],
 		streamSimple: streamVoidCodex,
 	});
