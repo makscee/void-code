@@ -435,11 +435,19 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("cannot write Pi relay extension: %w", err)
 			}
+			env, err = isolatePiRelayConfig(env, extPath)
+			if err != nil {
+				return fmt.Errorf("cannot isolate Pi relay config: %w", err)
+			}
 			args = buildPiVoidCodexArgs(args, extPath)
 		case compat.ProviderDeepSeek:
 			extPath, err := ensurePiVoidCodexExtension()
 			if err != nil {
 				return fmt.Errorf("cannot write Pi relay extension: %w", err)
+			}
+			env, err = isolatePiRelayConfig(env, extPath)
+			if err != nil {
+				return fmt.Errorf("cannot isolate Pi relay config: %w", err)
 			}
 			args = buildPiVoidDeepSeekArgs(args, extPath)
 		}
@@ -671,6 +679,30 @@ func hasPiFlag(args []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// isolatePiRelayConfig prevents Pi from loading standalone Pi auth/config. In
+// particular, a user's native openai-codex OAuth record makes Pi register its
+// entire built-in Codex catalog even when vc passes --provider void-codex.
+// The relay owns this directory and uses only vc-injected credentials.
+func isolatePiRelayConfig(env []string, extensionPath string) ([]string, error) {
+	dir := filepath.Join(filepath.Dir(extensionPath), "agent")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	// Always remove native auth from the vc-owned root. Pi creates this file on
+	// first use; rewriting it makes this boundary durable across prior launches.
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte("{}\n"), 0600); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "PI_CODING_AGENT_DIR" {
+			out = append(out, entry)
+		}
+	}
+	return append(out, "PI_CODING_AGENT_DIR="+dir), nil
 }
 
 func ensurePiVoidCodexExtension() (string, error) {

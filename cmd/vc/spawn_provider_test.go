@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -273,6 +275,62 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 	for _, forbidden := range []string{"Void Codex relay", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark", "chatgpt-account-id", "OPENAI_API_KEY", "CHATGPT_ACCOUNT_ID"} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("extension contains forbidden client secret/account material %q", forbidden)
+		}
+	}
+}
+
+// TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth covers the actual Pi
+// process boundary: --provider selects a model but does not hide providers Pi
+// discovers from its global auth registry. vc must use its own Pi config root.
+func TestPiRelayListModelsDoesNotInheritStandaloneCodexAuth(t *testing.T) {
+	piBin, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("pi CLI not installed")
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	standaloneDir := filepath.Join(tmp, ".pi", "agent")
+	if err := os.MkdirAll(standaloneDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A structurally valid native Codex OAuth record is enough for Pi to expose
+	// its built-in openai-codex registry; no live credential is used here.
+	if err := os.WriteFile(filepath.Join(standaloneDir, "auth.json"), []byte(`{"openai-codex":{"type":"oauth","access":"test","refresh":"test","expires":4102444800000,"accountId":"test"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	extPath, err := ensurePiVoidCodexExtension()
+	if err != nil {
+		t.Fatalf("ensure extension: %v", err)
+	}
+	env := buildPiSpawnEnv(provider.Provider{Kind: provider.RelayProvider, ID: "chatgpt-sub"}, os.Environ(), "https", "relay.example:443", "smoke-token", "/tmp/ca.pem")
+	env, err = isolatePiRelayConfig(env, extPath)
+	if err != nil {
+		t.Fatalf("isolate Pi relay config: %v", err)
+	}
+	args := buildPiVoidCodexArgs([]string{"--no-extensions", "--list-models"}, extPath)
+	cmd := exec.Command(piBin, args...)
+	cmd.Env = append(env, "PI_OFFLINE=1", "PI_TELEMETRY=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Pi list-models failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	list := stdout.String()
+	for _, want := range []string{
+		"void-codex     gpt-5.6-sol",
+		"void-codex     gpt-5.6-terra",
+		"void-deepseek  deepseek/deepseek-v4-pro",
+	} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("Pi list missing managed row %q:\n%s", want, list)
+		}
+	}
+	for _, forbidden := range []string{"openai-codex", "gpt-5.3", "gpt-5.4", "gpt-5.5", "gpt-5.6-luna"} {
+		if strings.Contains(list, forbidden) {
+			t.Fatalf("Pi list inherited forbidden native model/provider %q:\n%s", forbidden, list)
 		}
 	}
 }
