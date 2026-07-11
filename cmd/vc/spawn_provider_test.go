@@ -317,7 +317,7 @@ func TestEnsurePiVoidCodexExtensionWritesOwnedProvider(t *testing.T) {
 		t.Fatalf("read extension: %v", err)
 	}
 	src := string(data)
-	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "GPT-5.6 Luna via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "contextWindow: 1050000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
+	for _, want := range []string{"pi.registerProvider(CODEX_PROVIDER_ID", "void-codex", "Void ChatGPT relay", "GPT-5.6 Sol via Void relay", "GPT-5.6 Terra via Void relay", "GPT-5.6 Luna via Void relay", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "contextWindow: 272000", "maxTokens: 128000", "/codex/responses", "authorization\": \"Bearer ", "pi.registerProvider(DEEPSEEK_PROVIDER_ID", "void-deepseek", "anthropic-messages", "deepseek/deepseek-v4-pro", "authHeader: true", "x-void-provider"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("extension missing %q", want)
 		}

@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -286,6 +287,198 @@ func collectInputTexts(value any, out *[]string) {
 			collectInputTexts(child, out)
 		}
 	}
+}
+
+func TestPiVoidCodexNestedSSEErrorPreservesCodeAndMessage(t *testing.T) {
+	piBin, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("pi CLI not installed")
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	extPath, err := ensurePiVoidCodexExtension()
+	if err != nil {
+		t.Fatalf("ensure extension: %v", err)
+	}
+
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"error\",\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"Private backend context window exceeded\"}}\n\n")
+	}))
+	defer relay.Close()
+
+	stdout, stderr, runErr := runPiCodexFixture(t, piBin, extPath, tmp, relay.URL, "", "nested-error")
+	if runErr != nil {
+		t.Fatalf("pi nested error fixture failed: %v\nstdout:\n%s\nstderr:\n%s", runErr, stdout, stderr)
+	}
+	output := stdout + "\n" + stderr
+	for _, want := range []string{"context_length_exceeded", "Private backend context window exceeded"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Pi output missing nested SSE error field %q; output=%q", want, output)
+		}
+	}
+	if strings.Contains(output, "undefined: undefined") {
+		t.Fatalf("Pi discarded nested SSE error fields: %q", output)
+	}
+}
+
+func TestPiVoidCodexExistingOversizedSessionCompactsBeforeContinuation(t *testing.T) {
+	piBin, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("pi CLI not installed")
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	settingsDir := filepath.Join(tmp, ".pi", "agent")
+	if err := os.MkdirAll(settingsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"compaction":{"enabled":false}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	extPath, err := ensurePiVoidCodexExtension()
+	if err != nil {
+		t.Fatalf("ensure extension: %v", err)
+	}
+
+	var mu sync.Mutex
+	requestKinds := make([]string, 0, 5)
+	seedRequests := 0
+	summarySeen := false
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Errorf("read relay body: %v", readErr)
+			return
+		}
+		isSummary := bytes.Contains(body, []byte("conversation to summarize"))
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if isSummary {
+			requestKinds = append(requestKinds, "summary")
+			summarySeen = true
+			writeCodexSuccessSSE(w, "summary", "VC4 durable summary", 1000)
+			return
+		}
+		if seedRequests < 3 {
+			seedRequests++
+			requestKinds = append(requestKinds, fmt.Sprintf("seed-%d", seedRequests))
+			usage := 100
+			if seedRequests == 3 {
+				usage = 260000
+			}
+			writeCodexSuccessSSE(w, fmt.Sprintf("seed-%d", seedRequests), "seed ok", usage)
+			return
+		}
+		requestKinds = append(requestKinds, "continuation")
+		if !summarySeen {
+			_, _ = io.WriteString(w, "data: {\"type\":\"error\",\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"oversized continuation reached backend before compaction\"}}\n\n")
+			return
+		}
+		writeCodexSuccessSSE(w, "continuation", "VC4_CONTINUATION_OK", 1200)
+	}))
+	defer relay.Close()
+
+	sessionPath := filepath.Join(tmp, "oversized-session.jsonl")
+	seedPrompts := []string{"seed one", strings.Repeat("oversized-history ", 5000), "seed three"}
+	if len(seedPrompts[1]) <= 80000 {
+		t.Fatalf("large seed prompt is only %d chars", len(seedPrompts[1]))
+	}
+	for i, prompt := range seedPrompts {
+		stdout, stderr, runErr := runPiCodexFixture(t, piBin, extPath, tmp, relay.URL, sessionPath, prompt)
+		if runErr != nil {
+			t.Fatalf("seed turn %d failed: %v\nstdout:\n%s\nstderr:\n%s", i+1, runErr, stdout, stderr)
+		}
+	}
+
+	if err := os.WriteFile(settingsPath, []byte(`{"compaction":{"enabled":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, runErr := runPiCodexFixture(t, piBin, extPath, tmp, relay.URL, sessionPath, "continue after oversized history")
+	if runErr != nil {
+		t.Fatalf("continuation failed: %v\nstdout:\n%s\nstderr:\n%s", runErr, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "VC4_CONTINUATION_OK") {
+		t.Fatalf("continuation did not return marker; stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	mu.Lock()
+	gotKinds := append([]string(nil), requestKinds...)
+	mu.Unlock()
+	wantKinds := []string{"seed-1", "seed-2", "seed-3", "summary", "continuation"}
+	if strings.Join(gotKinds, ",") != strings.Join(wantKinds, ",") {
+		t.Fatalf("relay request order = %v, want %v", gotKinds, wantKinds)
+	}
+	sessionData, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read durable session: %v", err)
+	}
+	if !bytes.Contains(sessionData, []byte(`"type":"compaction"`)) || !bytes.Contains(sessionData, []byte("VC4 durable summary")) {
+		t.Fatalf("session lacks durable compaction entry; tail=%q", tailString(string(sessionData), 2000))
+	}
+}
+
+func runPiCodexFixture(t *testing.T, piBin, extPath, home, relayURL, sessionPath, prompt string) (string, string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	args := []string{
+		"--no-extensions", "-e", extPath,
+		"--provider", "void-codex",
+		"--model", "gpt-5.6-sol",
+		"--no-context-files",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-themes",
+		"--no-tools",
+		"--no-approve",
+		"--mode", "json",
+	}
+	if sessionPath == "" {
+		args = append(args, "--no-session")
+	} else {
+		args = append(args, "--session", sessionPath)
+	}
+	args = append(args, "-p", prompt)
+	cmd := exec.CommandContext(ctx, piBin, args...)
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"VC_RELAY_URL="+relayURL,
+		"VC_AUTH_TOKEN=fixture-token",
+		"VC_RELAY_PROVIDER_ID=fixture-provider",
+		"HERDR_PI_AUTO_NAME=0",
+		"PI_SKIP_VERSION_CHECK=1",
+		"PI_TELEMETRY=0",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return stdout.String(), stderr.String(), fmt.Errorf("pi fixture timed out: %w", ctx.Err())
+	}
+	return stdout.String(), stderr.String(), runErr
+}
+
+func writeCodexSuccessSSE(w io.Writer, id, text string, inputTokens int) {
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":%q,\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n", id)
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":%q}\n\n", text)
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":%q,\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":%q}]}}\n\n", id, text)
+	_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":%d,\"output_tokens\":3}}}\n\n", inputTokens)
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+}
+
+func tailString(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[len(value)-max:]
 }
 
 func TestPiVoidCodexExtensionSmoke(t *testing.T) {

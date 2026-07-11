@@ -21,6 +21,22 @@ func TestPiVoidCodexExtensionSourceDelegatesResponsesParsingToPiNativeHelper(t *
 	}
 }
 
+func TestPiVoidCodexExtensionSourceUsesPrivateBackendWindowAndNormalizesNestedErrors(t *testing.T) {
+	required := []string{
+		`public API's 1.05M claim`,
+		`default 16,384-token reserve compacts at 255,616 tokens`,
+		`contextWindow: 272000`,
+		`yield normalizeSSEError(JSON.parse(data))`,
+		`code: event.code ?? event.error.code`,
+		`message: event.message ?? event.error.message`,
+	}
+	for _, want := range required {
+		if !strings.Contains(piVoidCodexExtensionSource, want) {
+			t.Fatalf("Pi Codex extension source missing %q", want)
+		}
+	}
+}
+
 func TestPiVoidCodexExtensionSourceSendsSessionCacheKeyAndAttributionHeader(t *testing.T) {
 	required := []string{
 		`function promptCacheKey(sessionId?: string): string | undefined`,

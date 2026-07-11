@@ -51,7 +51,10 @@ function codexModel(id: string, name: string): Model<any> {
 		thinkingLevelMap: { xhigh: "xhigh", minimal: "low" },
 		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 1050000,
+		// This private ChatGPT backend rejects around 385k tokens despite the
+		// public API's 1.05M claim. Keep Pi's effective window conservative so
+		// its default 16,384-token reserve compacts at 255,616 tokens.
+		contextWindow: 272000,
 		maxTokens: 128000,
 	};
 }
@@ -279,13 +282,22 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
 				const chunk = buffer.slice(0, idx);
 				buffer = buffer.slice(idx + 2);
 				const data = chunk.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n").trim();
-				if (data && data !== "[DONE]") yield JSON.parse(data);
+				if (data && data !== "[DONE]") yield normalizeSSEError(JSON.parse(data));
 				idx = buffer.indexOf("\n\n");
 			}
 		}
 	} finally {
 		try { reader.releaseLock(); } catch {}
 	}
+}
+
+function normalizeSSEError(event: any): any {
+	if (event?.type !== "error" || !event.error || typeof event.error !== "object") return event;
+	return {
+		...event,
+		code: event.code ?? event.error.code,
+		message: event.message ?? event.error.message,
+	};
 }
 
 function headersToRecord(headers: Headers): Record<string, string> {
