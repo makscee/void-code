@@ -636,22 +636,37 @@ func runInstallCodex(out io.Writer) {
 }
 
 const (
-	piVoidCodexProvider    = "void-codex"
-	piVoidCodexModel       = "gpt-5.6-terra"
-	piVoidDeepSeekProvider = "void-deepseek"
-	piVoidDeepSeekModel    = "deepseek/deepseek-v4-pro"
+	piVoidCodexProvider        = "void-codex"
+	piVoidCodexDefaultModel    = "gpt-5.6-terra"
+	piVoidDeepSeekProvider     = "void-deepseek"
+	piVoidDeepSeekDefaultModel = "deepseek/deepseek-v4-pro"
+	codexDefaultModel          = "gpt-5.6-terra"
+)
+
+var (
+	piVoidCodexModels = []string{
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+	}
+	piVoidDeepSeekModels = []string{
+		"deepseek/deepseek-v4-pro",
+		"deepseek/deepseek-v4-flash",
+	}
 )
 
 func buildPiVoidCodexArgs(args []string, extensionPath string) []string {
-	return buildPiRelayArgs(args, extensionPath, piVoidCodexProvider, piVoidCodexModel)
+	model := resolvePiManagedModel(piVoidCodexDefaultModel, piVoidCodexModels)
+	return buildPiRelayArgs(args, extensionPath, piVoidCodexProvider, model)
 }
 
 func buildPiVoidDeepSeekArgs(args []string, extensionPath string) []string {
-	return buildPiRelayArgs(args, extensionPath, piVoidDeepSeekProvider, piVoidDeepSeekModel)
+	model := resolvePiManagedModel(piVoidDeepSeekDefaultModel, piVoidDeepSeekModels)
+	return buildPiRelayArgs(args, extensionPath, piVoidDeepSeekProvider, model)
 }
 
 func buildPiRelayArgs(args []string, extensionPath, providerID, modelID string) []string {
-	out := make([]string, 0, len(args)+5)
+	out := make([]string, 0, len(args)+6)
 	out = append(out, "-e", extensionPath)
 	if !hasPiFlag(args, "--provider") {
 		out = append(out, "--provider", providerID)
@@ -729,7 +744,7 @@ func buildCodexArgs(args []string, relayScheme, relayHost string) []string {
 		"-c", "model_providers.void.wire_api=responses",
 		"-c", "model_providers.void.env_key=VC_AUTH_TOKEN",
 		"-c", "model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
-		"-c", "model=" + piVoidCodexModel,
+		"-c", "model=" + codexDefaultModel,
 	}
 	out := make([]string, 0, len(prefix)+len(args))
 	out = append(out, prefix...)

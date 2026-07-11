@@ -213,41 +213,91 @@ func TestBuildPiSpawnEnvBareRelayUsesDeepSeekSentinel(t *testing.T) {
 	}
 }
 
-func TestBuildPiVoidCodexArgsInjectsExtensionProviderModel(t *testing.T) {
-	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
-	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-terra", "-p", "hello"}
+func writePiSettings(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", dir)
+	if content != "" {
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestBuildPiVoidCodexArgsMapsSavedSolFromNativeOrManagedProvider(t *testing.T) {
+	for _, savedProvider := range []string{"openai-codex", "void-codex"} {
+		t.Run(savedProvider, func(t *testing.T) {
+			writePiSettings(t, `{"defaultProvider":"`+savedProvider+`","defaultModel":"gpt-5.6-sol"}`)
+			got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
+			want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-sol", "-p", "hello"}
+			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("args = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestBuildPiVoidCodexArgsUnrelatedSavedProviderWithUnsupportedModelFallsBackTerra(t *testing.T) {
+	writePiSettings(t, `{"defaultProvider":"anthropic","defaultModel":"claude-opus-4-8"}`)
+	got := buildPiVoidCodexArgs(nil, "/tmp/vc-pi/index.ts")
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-terra"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }
 
-func TestBuildPiVoidCodexArgsKeepsUserProviderModel(t *testing.T) {
-	got := buildPiVoidCodexArgs([]string{"--provider=other", "--model", "other-model", "-p", "hello"}, "/tmp/vc-pi/index.ts")
-	joined := strings.Join(got, " ")
-	if strings.Count(joined, "--provider") != 1 || strings.Count(joined, "--model") != 1 {
-		t.Fatalf("provider/model flags duplicated: %#v", got)
-	}
-	if !strings.HasPrefix(joined, "-e /tmp/vc-pi/index.ts --provider=other --model other-model") {
-		t.Fatalf("user provider/model order not preserved after extension: %#v", got)
+func TestBuildPiVoidCodexArgsMatchingLookingUnsupportedModelFallsBackTerra(t *testing.T) {
+	writePiSettings(t, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-sol-preview"}`)
+	got := buildPiVoidCodexArgs(nil, "/tmp/vc-pi/index.ts")
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-codex", "--model", "gpt-5.6-terra"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }
 
-func TestBuildPiVoidDeepSeekArgsInjectsExtensionProviderModel(t *testing.T) {
+func TestBuildPiVoidCodexArgsMissingMalformedOrUnreadableSettingsFallsBack(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*testing.T)
+	}{
+		{name: "missing", prepare: func(t *testing.T) { writePiSettings(t, "") }},
+		{name: "malformed", prepare: func(t *testing.T) { writePiSettings(t, "not-json") }},
+		{name: "empty model", prepare: func(t *testing.T) {
+			writePiSettings(t, `{"defaultProvider":"void-codex","defaultModel":"  "}`)
+		}},
+		{name: "unreadable", prepare: func(t *testing.T) {
+			dir := writePiSettings(t, "")
+			if err := os.Mkdir(filepath.Join(dir, "settings.json"), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.prepare(t)
+			got := buildPiVoidCodexArgs(nil, "/tmp/vc-pi/index.ts")
+			if joined := strings.Join(got, "\x00"); !strings.Contains(joined, "--model\x00gpt-5.6-terra") {
+				t.Fatalf("args = %#v, want Terra fallback", got)
+			}
+		})
+	}
+}
+
+func TestBuildPiVoidDeepSeekArgsMapsNativeSavedFlashToManagedProvider(t *testing.T) {
+	writePiSettings(t, `{"defaultProvider":"deepseek","defaultModel":"deepseek/deepseek-v4-flash"}`)
 	got := buildPiVoidDeepSeekArgs([]string{"-p", "hello"}, "/tmp/vc-pi/index.ts")
-	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-deepseek", "--model", "deepseek/deepseek-v4-pro", "-p", "hello"}
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider", "void-deepseek", "--model", "deepseek/deepseek-v4-flash", "-p", "hello"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }
 
-func TestBuildPiVoidDeepSeekArgsKeepsUserProviderModel(t *testing.T) {
-	got := buildPiVoidDeepSeekArgs([]string{"--provider=other", "--model", "other-model", "-p", "hello"}, "/tmp/vc-pi/index.ts")
-	joined := strings.Join(got, " ")
-	if strings.Count(joined, "--provider") != 1 || strings.Count(joined, "--model") != 1 {
-		t.Fatalf("provider/model flags duplicated: %#v", got)
-	}
-	if !strings.HasPrefix(joined, "-e /tmp/vc-pi/index.ts --provider=other --model other-model") {
-		t.Fatalf("user provider/model order not preserved after extension: %#v", got)
+func TestBuildPiRelayArgsExplicitCLIOverridesWinWithoutDuplication(t *testing.T) {
+	writePiSettings(t, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-sol"}`)
+	got := buildPiVoidCodexArgs([]string{"--provider=other", "--model", "other-model", "-p", "hello"}, "/tmp/vc-pi/index.ts")
+	want := []string{"-e", "/tmp/vc-pi/index.ts", "--provider=other", "--model", "other-model", "-p", "hello"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }
 
@@ -359,11 +409,11 @@ func TestPiVoidCodexPickerOffersGPT56ModelsIncludingLuna(t *testing.T) {
 			t.Fatalf("picker exposes unsupported model %q", unsupported)
 		}
 	}
-	if piVoidCodexModel != "gpt-5.6-terra" {
-		t.Fatalf("Pi default = %q, want gpt-5.6-terra", piVoidCodexModel)
-	}
 	if !strings.Contains(piVoidCodexExtensionSource, `const CODEX_MODEL_ID = "gpt-5.6-terra";`) {
-		t.Fatal("Pi extension default must be gpt-5.6-terra")
+		t.Fatal("Pi extension first model ID must be gpt-5.6-terra")
+	}
+	if !strings.Contains(piVoidCodexExtensionSource, "models: [\n\t\t\tcodexModel(CODEX_MODEL_ID") {
+		t.Fatal("Pi extension must keep Terra as its first managed Codex model")
 	}
 	if got := strings.Join(buildCodexArgs(nil, "https", "relay.example:443"), "\x00"); !strings.Contains(got, "model=gpt-5.6-terra") {
 		t.Fatalf("Codex default missing gpt-5.6-terra: %q", got)
