@@ -59,6 +59,48 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	}
 }
 
+func TestCurrentPiBootstrapRejectsExplicitlyIncompatibleCurrentGrant(t *testing.T) {
+	cases := []struct {
+		name  string
+		id    string
+		grant string
+		label string
+	}{
+		{name: "chatgpt id", id: "chatgpt-incompatible", grant: "Enterprise"},
+		{name: "codex grant name", id: "opaque-name", grant: "Codex subscription"},
+		{name: "chatgpt saved label", id: "opaque-label", grant: "Enterprise", label: "ChatGPT relay"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+					{"id": tc.id, "name": tc.grant, "type": "anthropic-api-key"},
+				}})
+			}))
+			defer server.Close()
+			t.Setenv("VC_AUTH_HOST", server.URL)
+			if err := auth.Save("protected-token"); err != nil {
+				t.Fatal(err)
+			}
+			if err := provider.Save(provider.Provider{Kind: provider.RelayProvider, ID: tc.id}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.label != "" {
+				if err := provider.SaveLabel(tc.label); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if got, err := currentPiBootstrap(); err == nil {
+				t.Fatalf("explicitly incompatible grant yielded bootstrap: %#v", got.Providers)
+			}
+		})
+	}
+}
+
 func TestCurrentPiBootstrapRejectsRevokedActiveGrant(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

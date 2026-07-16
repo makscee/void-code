@@ -69,8 +69,11 @@ func currentPiBootstrap() (piBootstrap, error) {
 	switch class {
 	case compat.ProviderChatGPT:
 		// RelayProvider must still be present in the current grant response.
+		// An explicit type is authoritative; only typeless legacy grants use
+		// ClassifyProvider's id/name/label compatibility fallback.
 		for _, grant := range grants {
-			if active.Kind == provider.RelayProvider && grant.ID == active.ID {
+			grantType := strings.ToLower(strings.TrimSpace(grant.Type))
+			if active.Kind == provider.RelayProvider && grant.ID == active.ID && (grantType == "" || grantType == "openai-codex-oauth") {
 				out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: active.ID, Models: append([]string(nil), piVoidCodexModels...)})
 				break
 			}
