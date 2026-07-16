@@ -385,14 +385,14 @@ func TestPiRelayListModelsUsesCanonicalPiResources(t *testing.T) {
 		t.Fatalf("Pi list-models failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 	list := stdout.String()
+	normalized := strings.Join(strings.Fields(list), " ")
 	for _, want := range []string{
-		"openai-codex   gpt-5.6-terra",
-		"void-codex     gpt-5.6-sol",
-		"void-codex     gpt-5.6-terra",
-		"void-codex     gpt-5.6-luna",
-		"void-deepseek  deepseek/deepseek-v4-pro",
+		"openai-codex gpt-5.6-terra",
+		"void-codex gpt-5.6-sol",
+		"void-codex gpt-5.6-terra",
+		"void-codex gpt-5.6-luna",
 	} {
-		if !strings.Contains(list, want) {
+		if !strings.Contains(normalized, want) {
 			t.Fatalf("Pi list missing canonical or managed row %q:\n%s", want, list)
 		}
 	}
@@ -412,8 +412,8 @@ func TestPiVoidCodexPickerOffersGPT56ModelsIncludingLuna(t *testing.T) {
 	if !strings.Contains(piVoidCodexExtensionSource, `const CODEX_MODEL_ID = "gpt-5.6-terra";`) {
 		t.Fatal("Pi extension first model ID must be gpt-5.6-terra")
 	}
-	if !strings.Contains(piVoidCodexExtensionSource, "models: [\n\t\t\tcodexModel(CODEX_MODEL_ID") {
-		t.Fatal("Pi extension must keep Terra as its first managed Codex model")
+	if !strings.Contains(piVoidCodexExtensionSource, `const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna"]);`) {
+		t.Fatal("Pi extension must keep Terra first in its allowed managed Codex models")
 	}
 	if got := strings.Join(buildCodexArgs(nil, "https", "relay.example:443"), "\x00"); !strings.Contains(got, "model=gpt-5.6-terra") {
 		t.Fatalf("Codex default missing gpt-5.6-terra: %q", got)

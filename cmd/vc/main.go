@@ -88,7 +88,7 @@ func main() {
 	// Any keypress → logged-in: spawn active harness; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
 	// Skipped when --raw is set (jump straight to spawn, no TUI).
-	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true}
+	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd && !hasRaw {
 		state := resolveAuthState()
@@ -405,6 +405,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	managedPiPath, managedPiErr := reconcileManagedPiExtension()
+	if managedPiErr != nil {
+		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", managedPiErr)
+	}
+
 	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(127)
@@ -429,18 +434,25 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	var env []string
 	if activeHarness.Kind == harnesschoice.Pi {
 		env = buildPiSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+		extPath := ""
+		if managedPiPath != "" && hasPiFlag(args, "--no-extensions") {
+			// Explicitly requested extension isolation still keeps vc's provider,
+			// matching the historical vc --raw contract.
+			extPath = managedPiPath
+		}
+		if managedPiPath == "" {
+			// Opt-out, conflict, or permissions failure must not break wrapped vc.
+			extPath, err = ensurePiVoidCodexExtension()
+			if err != nil {
+				return fmt.Errorf("cannot write Pi relay extension: %w", err)
+			}
+		}
 		switch compat.ClassifyProvider(active, activeLabel, compatGrants) {
 		case compat.ProviderChatGPT:
-			extPath, err := ensurePiVoidCodexExtension()
-			if err != nil {
-				return fmt.Errorf("cannot write Pi relay extension: %w", err)
-			}
+			env = append(env, "VC_PI_PROVIDER_KIND=codex")
 			args = buildPiVoidCodexArgs(args, extPath)
 		case compat.ProviderDeepSeek:
-			extPath, err := ensurePiVoidCodexExtension()
-			if err != nil {
-				return fmt.Errorf("cannot write Pi relay extension: %w", err)
-			}
+			env = append(env, "VC_PI_PROVIDER_KIND=deepseek")
 			args = buildPiVoidDeepSeekArgs(args, extPath)
 		}
 		return spawnSelectedHarness(activeHarness, args, env)
@@ -667,7 +679,9 @@ func buildPiVoidDeepSeekArgs(args []string, extensionPath string) []string {
 
 func buildPiRelayArgs(args []string, extensionPath, providerID, modelID string) []string {
 	out := make([]string, 0, len(args)+6)
-	out = append(out, "-e", extensionPath)
+	if extensionPath != "" {
+		out = append(out, "-e", extensionPath)
+	}
 	if !hasPiFlag(args, "--provider") {
 		out = append(out, "--provider", providerID)
 	}

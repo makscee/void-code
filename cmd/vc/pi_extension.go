@@ -1,6 +1,8 @@
 package main
 
-const piVoidCodexExtensionSource = `import type {
+const piVoidCodexExtensionSource = `// void-code-managed-pi-extension:v1
+import { execFileSync } from "node:child_process";
+import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
 	Context,
@@ -15,32 +17,87 @@ const CODEX_MODEL_ID = "gpt-5.6-terra";
 const DEEPSEEK_PROVIDER_ID = "void-deepseek";
 const DEEPSEEK_MODEL_ID = "deepseek/deepseek-v4-pro";
 
-export default function (pi: ExtensionAPI) {
-	pi.registerProvider(CODEX_PROVIDER_ID, {
-		name: "Void ChatGPT relay",
-		baseUrl: "$VC_RELAY_URL",
-		apiKey: "$VC_AUTH_TOKEN",
-		api: "void-codex-sse",
-		models: [
-			codexModel(CODEX_MODEL_ID, "GPT-5.6 Terra via Void relay"),
-			codexModel("gpt-5.6-sol", "GPT-5.6 Sol via Void relay"),
-			codexModel("gpt-5.6-luna", "GPT-5.6 Luna via Void relay"),
-		],
-		streamSimple: streamVoidCodex,
-	});
+interface BootstrapProvider {
+	kind: "codex" | "deepseek";
+	relayProviderId: string;
+	models: string[];
+}
+interface Bootstrap {
+	version: number;
+	relayUrl: string;
+	authToken: string;
+	providers: BootstrapProvider[];
+}
+let activeBootstrap: Bootstrap | undefined;
 
-	pi.registerProvider(DEEPSEEK_PROVIDER_ID, {
-		name: "Void DeepSeek relay",
-		baseUrl: requiredEnv("VC_RELAY_URL"),
-		apiKey: "$VC_AUTH_TOKEN",
-		authHeader: true,
-		api: "anthropic-messages",
-		headers: { "x-void-provider": "$VC_RELAY_PROVIDER_ID" },
-		models: [
-			deepseekModel(DEEPSEEK_MODEL_ID, "DeepSeek V4 Pro via Void relay", 200000, 64000),
-			deepseekModel("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash via Void relay", 200000, 64000),
-		],
-	});
+export default function (pi: ExtensionAPI) {
+	const bootstrap = loadBootstrap();
+	if (!bootstrap) return;
+	activeBootstrap = bootstrap;
+	for (const provider of bootstrap.providers) {
+		if (provider.kind === "codex") {
+			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna"]);
+			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
+			if (models.length === 0) continue;
+			pi.registerProvider(CODEX_PROVIDER_ID, {
+				name: "Void ChatGPT relay",
+				baseUrl: bootstrap.relayUrl,
+				apiKey: bootstrap.authToken,
+				api: "void-codex-sse",
+				models,
+				streamSimple: streamVoidCodex,
+			});
+		}
+		if (provider.kind === "deepseek") {
+			const allowed = new Set([DEEPSEEK_MODEL_ID, "deepseek/deepseek-v4-flash"]);
+			const models = provider.models.filter((id) => allowed.has(id)).map((id) => deepseekModel(id, deepseekName(id), 200000, 64000));
+			if (models.length === 0) continue;
+			pi.registerProvider(DEEPSEEK_PROVIDER_ID, {
+				name: "Void DeepSeek relay",
+				baseUrl: bootstrap.relayUrl,
+				apiKey: bootstrap.authToken,
+				authHeader: true,
+				api: "anthropic-messages",
+				headers: { "x-void-provider": provider.relayProviderId },
+				models,
+			});
+		}
+	}
+}
+
+function loadBootstrap(): Bootstrap | undefined {
+	try {
+		const kind = process.env.VC_PI_PROVIDER_KIND || (process.env.VC_RELAY_PROVIDER_ID === "deepseek" ? "deepseek" : "codex");
+		if (process.env.VC_RELAY_URL && process.env.VC_AUTH_TOKEN && process.env.VC_RELAY_PROVIDER_ID && (kind === "codex" || kind === "deepseek")) {
+			return {
+				version: 1,
+				relayUrl: process.env.VC_RELAY_URL,
+				authToken: process.env.VC_AUTH_TOKEN,
+				providers: [{
+					kind,
+					relayProviderId: process.env.VC_RELAY_PROVIDER_ID,
+					models: kind === "codex" ? [CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna"] : [DEEPSEEK_MODEL_ID, "deepseek/deepseek-v4-flash"],
+				}],
+			};
+		}
+		const raw = execFileSync("vc", ["pi-bootstrap"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
+		const value = JSON.parse(raw) as Bootstrap;
+		if (value.version !== 1 || !value.relayUrl || !value.authToken || !Array.isArray(value.providers)) throw new Error("invalid bootstrap response");
+		return value;
+	} catch (error) {
+		console.error("void-code: managed Pi provider unavailable; run vc login, then vc (" + (error instanceof Error ? error.message : String(error)) + ")");
+		return undefined;
+	}
+}
+
+function codexName(id: string): string {
+	if (id === "gpt-5.6-sol") return "GPT-5.6 Sol via Void relay";
+	if (id === "gpt-5.6-luna") return "GPT-5.6 Luna via Void relay";
+	return "GPT-5.6 Terra via Void relay";
+}
+
+function deepseekName(id: string): string {
+	return id.endsWith("flash") ? "DeepSeek V4 Flash via Void relay" : "DeepSeek V4 Pro via Void relay";
 }
 
 function codexModel(id: string, name: string): Model<any> {
@@ -98,9 +155,11 @@ function streamVoidCodex(
 		};
 
 		try {
-			const relayURL = requiredEnv("VC_RELAY_URL").replace(/\/+$/, "") + "/codex/responses";
-			const token = requiredEnv("VC_AUTH_TOKEN");
-			const providerID = requiredEnv("VC_RELAY_PROVIDER_ID");
+			if (!activeBootstrap) throw new Error("Void provider bootstrap is unavailable");
+			const relayURL = activeBootstrap.relayUrl.replace(/\/+$/, "") + "/codex/responses";
+			const token = activeBootstrap.authToken;
+			const providerID = activeBootstrap.providers.find((provider) => provider.kind === "codex")?.relayProviderId;
+			if (!providerID) throw new Error("Void Codex provider grant is unavailable");
 			let requestBody = await buildCodexBody(model, context, options);
 			const nextBody = await options?.onPayload?.(requestBody, model);
 			if (nextBody !== undefined) requestBody = nextBody as Record<string, unknown>;
@@ -143,12 +202,6 @@ function streamVoidCodex(
 	})();
 
 	return stream;
-}
-
-function requiredEnv(name: string): string {
-	const value = process.env[name];
-	if (!value) throw new Error(name + " is required for Pi void relay");
-	return value;
 }
 
 function promptCacheKey(sessionId?: string): string | undefined {
