@@ -3,126 +3,137 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
-// DeviceStartResult holds the response from POST /v1/auth/device/start.
+const PublicDeviceClientID = "vc"
+
 type DeviceStartResult struct {
-	DeviceCode              string
-	UserCode                string
-	VerificationURIComplete string
-	ExpiresIn               int
-	Interval                int
+	DeviceCode       string
+	UserCode         string
+	VerificationPath string
+	ExpiresIn        int
+	Interval         int
 }
 
-// DevicePollResult holds the credentials returned by a successful device poll.
 type DevicePollResult struct {
-	Token  string
-	UserID string
+	Token     string
+	Audience  string
+	ExpiresAt int64
 }
 
-// DeviceStart begins the device-authorization flow by calling
-// POST <authHost>/v1/auth/device/start.
-func DeviceStart(authHost string, httpClient *http.Client) (DeviceStartResult, error) {
+func deviceEndpoint(authHost, action string) (string, error) {
+	base, err := url.Parse(strings.TrimRight(authHost, "/"))
+	if err != nil || base.Scheme == "" || base.Host == "" || base.RawQuery != "" || base.Fragment != "" {
+		return "", errors.New("invalid identity service URL")
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/identity-stage/api/device/" + action
+	return base.String(), nil
+}
+
+func postDevice(authHost, action string, body any, httpClient *http.Client) (*http.Response, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
-
-	// Body is optional; send empty object.
-	req, err := http.NewRequest(http.MethodPost,
-		authHost+"/v1/auth/device/start",
-		bytes.NewReader([]byte("{}")))
+	endpoint, err := deviceEndpoint(authHost, action)
 	if err != nil {
-		return DeviceStartResult{}, fmt.Errorf("building request: %w", err)
+		return nil, err
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, errors.New("cannot encode device request")
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, errors.New("cannot build device request")
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return DeviceStartResult{}, fmt.Errorf("POST device/start: %w", err)
+		return nil, errors.New("identity service is unavailable")
+	}
+	return resp, nil
+}
+
+func DeviceStart(authHost, deviceLabel string, httpClient *http.Client) (DeviceStartResult, error) {
+	resp, err := postDevice(authHost, "start", map[string]string{"client_id": PublicDeviceClientID, "device_label": deviceLabel}, httpClient)
+	if err != nil {
+		return DeviceStartResult{}, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return DeviceStartResult{}, fmt.Errorf("device/start returned status %d", resp.StatusCode)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return DeviceStartResult{}, ErrDeviceRateLimited
 	}
-
+	if resp.StatusCode != http.StatusCreated {
+		return DeviceStartResult{}, fmt.Errorf("device authorization start failed (status %d)", resp.StatusCode)
+	}
 	var r struct {
-		DeviceCode              string `json:"device_code"`
-		UserCode                string `json:"user_code"`
-		VerificationURIComplete string `json:"verification_uri_complete"`
-		ExpiresIn               int    `json:"expires_in"`
-		Interval                int    `json:"interval"`
+		DeviceCode       string `json:"deviceCode"`
+		UserCode         string `json:"userCode"`
+		VerificationPath string `json:"verificationPath"`
+		IntervalSeconds  int    `json:"intervalSeconds"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return DeviceStartResult{}, fmt.Errorf("decoding device/start response: %w", err)
+	if err := decodeOne(resp.Body, &r); err != nil || r.DeviceCode == "" || r.UserCode == "" || r.VerificationPath != "/device" || r.IntervalSeconds < 1 {
+		return DeviceStartResult{}, ErrDeviceMalformed
 	}
-	return DeviceStartResult{
-		DeviceCode:              r.DeviceCode,
-		UserCode:                r.UserCode,
-		VerificationURIComplete: r.VerificationURIComplete,
-		ExpiresIn:               r.ExpiresIn,
-		Interval:                r.Interval,
-	}, nil
+	return DeviceStartResult{DeviceCode: r.DeviceCode, UserCode: r.UserCode, VerificationPath: r.VerificationPath, ExpiresIn: 600, Interval: r.IntervalSeconds}, nil
 }
 
-// DevicePoll calls POST <authHost>/v1/auth/device/poll once.
-//
-// Possible errors:
-//   - ErrAuthPending     — still waiting (keep polling)
-//   - ErrDeviceExpired   — code expired; stop polling
-//   - ErrDeviceDenied    — user denied; stop polling
-//   - other error        — stop polling
 func DevicePoll(authHost, deviceCode string, httpClient *http.Client) (DevicePollResult, error) {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 15 * time.Second}
-	}
-
-	body, _ := json.Marshal(map[string]string{"device_code": deviceCode})
-	req, err := http.NewRequest(http.MethodPost,
-		authHost+"/v1/auth/device/poll",
-		bytes.NewReader(body))
+	resp, err := postDevice(authHost, "poll", map[string]string{"client_id": PublicDeviceClientID, "device_code": deviceCode}, httpClient)
 	if err != nil {
-		return DevicePollResult{}, fmt.Errorf("building request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return DevicePollResult{}, fmt.Errorf("POST device/poll: %w", err)
+		return DevicePollResult{}, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode == http.StatusOK {
 		var r struct {
-			SessionToken string `json:"session_token"`
-			UserID       string `json:"user_id"`
+			Token     string `json:"token"`
+			Audience  string `json:"audience"`
+			ExpiresAt int64  `json:"expiresAt"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-			return DevicePollResult{}, fmt.Errorf("decoding device/poll response: %w", err)
+		if err := decodeOne(resp.Body, &r); err != nil || r.Token == "" || r.Audience != "vc" || r.ExpiresAt <= 0 {
+			return DevicePollResult{}, ErrDeviceMalformed
 		}
-		return DevicePollResult{Token: r.SessionToken, UserID: r.UserID}, nil
+		return DevicePollResult{Token: r.Token, Audience: r.Audience, ExpiresAt: r.ExpiresAt}, nil
 	}
-
-	// Non-200: decode error body.
-	var errBody struct {
-		Error string `json:"error"`
+	var body struct {
+		Status string `json:"status"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&errBody)
-
-	switch errBody.Error {
-	case "authorization_pending":
+	if decodeOne(resp.Body, &body) != nil {
+		return DevicePollResult{}, ErrDeviceMalformed
+	}
+	switch body.Status {
+	case "pending":
 		return DevicePollResult{}, ErrAuthPending
-	case "expired_token":
-		return DevicePollResult{}, ErrDeviceExpired
-	case "access_denied":
-		return DevicePollResult{}, ErrDeviceDenied
 	case "slow_down":
-		// Treat slow_down as pending — caller should increase interval.
-		return DevicePollResult{}, ErrAuthPending
+		return DevicePollResult{}, ErrDeviceSlowDown
+	case "expired":
+		return DevicePollResult{}, ErrDeviceExpired
+	case "denied":
+		return DevicePollResult{}, ErrDeviceDenied
+	case "consumed":
+		return DevicePollResult{}, ErrDeviceConsumed
+	case "invalid":
+		return DevicePollResult{}, ErrDeviceInvalid
 	default:
-		return DevicePollResult{}, fmt.Errorf("device/poll error: %s (status %d)", errBody.Error, resp.StatusCode)
+		return DevicePollResult{}, ErrDeviceMalformed
 	}
+}
+
+func decodeOne(r io.Reader, target any) error {
+	decoder := json.NewDecoder(io.LimitReader(r, 64<<10))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("unexpected response data")
+	}
+	return nil
 }

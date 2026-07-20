@@ -2,173 +2,93 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func TestDeviceStart_HappyPath(t *testing.T) {
+func TestPublicDeviceStartAndPollContract(t *testing.T) {
+	secret := "device-poll-secret-value"
+	token := "opaque-vc-audience-token"
+	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
+		if r.Header.Get("Authorization") != "" {
+			t.Error("distributed client sent authorization secret")
 		}
-		if r.URL.Path != "/v1/auth/device/start" {
-			t.Errorf("path = %s, want /v1/auth/device/start", r.URL.Path)
+		if strings.Contains(r.URL.RawQuery, secret) {
+			t.Error("device code leaked in URL")
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"device_code":               "dev-code-abc",
-			"user_code":                 "ABCD-EFGH",
-			"verification_uri":          "https://auth.makscee.ru/device",
-			"verification_uri_complete": "https://auth.makscee.ru/device?code=ABCD-EFGH",
-			"expires_in":                600,
-			"interval":                  5,
-		})
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["client_id"] != "vc" {
+			t.Errorf("client_id=%q", body["client_id"])
+		}
+		switch r.URL.Path {
+		case "/identity-stage/api/device/start":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"deviceCode": secret, "userCode": "ABC12345", "verificationPath": "/device", "intervalSeconds": 1})
+		case "/identity-stage/api/device/poll":
+			if body["device_code"] != secret {
+				t.Error("poll secret missing from body")
+			}
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]string{"status": "pending"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"status": "redeemed", "token": token, "audience": "vc", "expiresAt": int64(2_000_000_000_000)})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
 	}))
 	defer srv.Close()
-
-	res, err := DeviceStart(srv.URL, srv.Client())
+	start, err := DeviceStart(srv.URL, "Laptop", srv.Client())
 	if err != nil {
-		t.Fatalf("DeviceStart: %v", err)
+		t.Fatal(err)
 	}
-	if res.DeviceCode != "dev-code-abc" {
-		t.Errorf("DeviceCode = %q", res.DeviceCode)
+	if start.DeviceCode != secret || start.UserCode == "" || start.Interval != 1 {
+		t.Fatal("malformed start result")
 	}
-	if res.UserCode != "ABCD-EFGH" {
-		t.Errorf("UserCode = %q", res.UserCode)
+	if _, err := DevicePoll(srv.URL, secret, srv.Client()); !errors.Is(err, ErrAuthPending) {
+		t.Fatalf("pending=%v", err)
 	}
-	if res.Interval != 5 {
-		t.Errorf("Interval = %d, want 5", res.Interval)
-	}
-	if res.ExpiresIn != 600 {
-		t.Errorf("ExpiresIn = %d, want 600", res.ExpiresIn)
+	result, err := DevicePoll(srv.URL, secret, srv.Client())
+	if err != nil || result.Token != token || result.Audience != "vc" {
+		t.Fatalf("redeem=%v", err)
 	}
 }
 
-func TestDevicePoll_HappyPath(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/auth/device/poll" {
-			t.Errorf("path = %s, want /v1/auth/device/poll", r.URL.Path)
-		}
-		var body struct {
-			DeviceCode string `json:"device_code"`
-		}
-		json.NewDecoder(r.Body).Decode(&body)
-		if body.DeviceCode != "dev-code-abc" {
-			t.Errorf("device_code = %q", body.DeviceCode)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"session_token": "session-tok-xyz",
-			"user_id":       "user-42",
+func TestDevicePollTruthfulTerminalStates(t *testing.T) {
+	cases := map[string]error{"slow_down": ErrDeviceSlowDown, "expired": ErrDeviceExpired, "denied": ErrDeviceDenied, "consumed": ErrDeviceConsumed, "invalid": ErrDeviceInvalid}
+	for status, want := range cases {
+		t.Run(status, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"status": status})
+			}))
+			defer srv.Close()
+			_, err := DevicePoll(srv.URL, "poll-secret", srv.Client())
+			if !errors.Is(err, want) {
+				t.Fatalf("got %v want %v", err, want)
+			}
 		})
-	}))
-	defer srv.Close()
-
-	res, err := DevicePoll(srv.URL, "dev-code-abc", srv.Client())
-	if err != nil {
-		t.Fatalf("DevicePoll: %v", err)
-	}
-	if res.Token != "session-tok-xyz" {
-		t.Errorf("Token = %q, want session-tok-xyz", res.Token)
-	}
-	if res.UserID != "user-42" {
-		t.Errorf("UserID = %q, want user-42", res.UserID)
 	}
 }
 
-func TestDevicePoll_AuthorizationPending(t *testing.T) {
+func TestDeviceRejectsMalformedAndWrongAudienceWithoutEcho(t *testing.T) {
+	material := "sensitive-material"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending"})
+		json.NewEncoder(w).Encode(map[string]any{"token": material, "audience": "arena", "expiresAt": int64(1)})
 	}))
 	defer srv.Close()
-
-	_, err := DevicePoll(srv.URL, "dev-code", srv.Client())
-	if err != ErrAuthPending {
-		t.Fatalf("expected ErrAuthPending, got %v", err)
+	_, err := DevicePoll(srv.URL, material, srv.Client())
+	if !errors.Is(err, ErrDeviceMalformed) {
+		t.Fatalf("got %v", err)
 	}
-}
-
-func TestDevicePoll_ExpiredToken(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "expired_token"})
-	}))
-	defer srv.Close()
-
-	_, err := DevicePoll(srv.URL, "dev-code", srv.Client())
-	if err != ErrDeviceExpired {
-		t.Fatalf("expected ErrDeviceExpired, got %v", err)
-	}
-}
-
-func TestDevicePoll_AccessDenied(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "access_denied"})
-	}))
-	defer srv.Close()
-
-	_, err := DevicePoll(srv.URL, "dev-code", srv.Client())
-	if err != ErrDeviceDenied {
-		t.Fatalf("expected ErrDeviceDenied, got %v", err)
-	}
-}
-
-func TestDevicePoll_SlowDown(t *testing.T) {
-	// slow_down is treated as pending — caller backs off.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(429)
-		json.NewEncoder(w).Encode(map[string]string{"error": "slow_down"})
-	}))
-	defer srv.Close()
-
-	_, err := DevicePoll(srv.URL, "dev-code", srv.Client())
-	if err != ErrAuthPending {
-		t.Fatalf("expected ErrAuthPending for slow_down, got %v", err)
-	}
-}
-
-// TestDevicePoll_PollLoop simulates the authorization_pending loop:
-// first two polls return pending, third returns success.
-func TestDevicePoll_PollLoop(t *testing.T) {
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		w.Header().Set("Content-Type", "application/json")
-		if callCount < 3 {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending"})
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{
-			"session_token": "tok-final",
-			"user_id":       "user-loop",
-		})
-	}))
-	defer srv.Close()
-
-	var result DevicePollResult
-	for i := 0; i < 5; i++ {
-		r, err := DevicePoll(srv.URL, "dev-code", srv.Client())
-		if err == ErrAuthPending {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("poll %d unexpected error: %v", i+1, err)
-		}
-		result = r
-		break
-	}
-	if result.Token != "tok-final" {
-		t.Errorf("Token = %q, want tok-final", result.Token)
-	}
-	if callCount != 3 {
-		t.Errorf("callCount = %d, want 3", callCount)
+	if strings.Contains(err.Error(), material) {
+		t.Fatal("sensitive material leaked in error")
 	}
 }

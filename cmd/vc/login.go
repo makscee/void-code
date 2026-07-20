@@ -11,86 +11,27 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/spf13/cobra"
 )
 
-var (
-	loginDeviceFlag bool
-	loginEmailFlag  bool
-	loginCodeFlag   string
-)
+var openLoginURL = func(value string) { _ = browser.OpenURL(value, os.Stderr) }
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate with void-code (email OTP or pairing code)",
-	Long: `Authenticate with void-code.
+	Short: "Authenticate through Void Identity device authorization",
+	Long: `Authenticate through the central Void Identity device flow.
 
-Default: shows a picker — choose email OTP or pairing code.
-  vc login
-
-Email OTP (--email): send a 6-digit code to your email address.
-  vc login --email
-
-Pairing code (--device): opens a browser URL + polls until approved.
-  vc login --device
-
-Operator code (--code AAAA-BBBB): redeem a one-shot code minted by operator.
-  vc login --code AAAA-BBBB
-
-Credentials are written to ~/.void-code/token (mode 0600).`,
+VC opens the staged identity login, displays the device approval URL and code,
+and polls at the server-prescribed cadence. Credentials are atomically written
+to ~/.void-code/token with mode 0600.`,
 	RunE: runLogin,
 }
 
-func init() {
-	loginCmd.Flags().BoolVar(&loginDeviceFlag, "device", false, "Use pairing-code flow instead of picker")
-	loginCmd.Flags().BoolVar(&loginEmailFlag, "email", false, "Use email OTP flow instead of picker")
-	loginCmd.Flags().StringVar(&loginCodeFlag, "code", "", "Redeem an operator-issued access code (format AAAA-BBBB)")
-	rootCmd.AddCommand(loginCmd)
-}
+func init() { rootCmd.AddCommand(loginCmd) }
 
-func runLogin(_ *cobra.Command, _ []string) error {
-	cfg := config.OSResolve()
-
-	if loginCodeFlag != "" {
-		return runCodeExchange(cfg, loginCodeFlag)
-	}
-	// Non-interactive: an operator code supplied via $VC_CODE redeems without a
-	// prompt. This is the supported automation path (the --code flag is the
-	// interactive equivalent).
-	if code := strings.TrimSpace(os.Getenv(config.EnvCode)); code != "" {
-		return runCodeExchange(cfg, code)
-	}
-	if loginDeviceFlag {
-		return runDeviceFlow(cfg)
-	}
-	if loginEmailFlag {
-		return runEmailFlow(cfg)
-	}
-
-	// No flag and no code: the picker needs a TTY. In non-interactive mode we
-	// cannot open it — fail fast with guidance instead of hanging on a prompt
-	// that a non-TTY stdin can never satisfy.
-	if nonInteractive() {
-		return errNonInteractiveLogin()
-	}
-
-	// No flag: show picker menu.
-	choice, err := runLoginPicker()
-	if err != nil {
-		return err
-	}
-	switch choice {
-	case pickerEmail:
-		return runEmailFlow(cfg)
-	case pickerDevice:
-		return runDeviceFlow(cfg)
-	case pickerCodeExch:
-		return runCodeExchangePrompt(cfg)
-	default:
-		return fmt.Errorf("login cancelled")
-	}
-}
+func runLogin(_ *cobra.Command, _ []string) error { return runDeviceFlow(config.OSResolve()) }
 
 // runLoginInteractive is called from main.go when the banner detects logged-out
 // state on any-key.  It runs the picker and completes login, or returns error.
@@ -102,8 +43,7 @@ func runLoginInteractive() error {
 // interactive input but vc is running non-interactively. It tells the caller how
 // to supply credentials without a prompt.
 func errNonInteractiveLogin() error {
-	fmt.Fprintln(os.Stderr, "vc login: non-interactive — no code to redeem.\n  supply an operator code via $VC_CODE (or `vc login --code AAAA-BBBB`),\n  or run `vc login --device` from an interactive terminal.")
-	return fmt.Errorf("login requires input but vc is non-interactive")
+	return fmt.Errorf("direct email and access-code login are unavailable; use the device authorization flow")
 }
 
 // otpExhaustedError returns the error shown after all OTP attempts are exhausted.
@@ -468,13 +408,15 @@ func runCodeExchange(cfg config.Config, code string) error {
 func runDeviceFlow(cfg config.Config) error {
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 
-	start, err := auth.DeviceStart(cfg.AuthHost, httpClient)
+	start, err := auth.DeviceStart(cfg.AuthHost, "VC on this device", httpClient)
 	if err != nil {
 		return fmt.Errorf("starting pairing-code flow: %w", err)
 	}
 
-	fmt.Printf("\nOpen this URL in your browser to authorize:\n\n  %s\n\n", start.VerificationURIComplete)
-	fmt.Printf("Your pairing code: %s\n\nWaiting for authorization", start.UserCode)
+	stageURL := strings.TrimRight(cfg.AuthHost, "/") + "/identity-stage"
+	verificationURL := strings.TrimRight(cfg.AuthHost, "/") + start.VerificationPath
+	fmt.Printf("\nSign in through the staged identity page, then open the device approval URL:\n\n  %s\n\nDevice approval URL: %s\nDevice code: %s\n\nWaiting for authorization", stageURL, verificationURL, start.UserCode)
+	openLoginURL(stageURL)
 
 	interval := start.Interval
 	if interval <= 0 {
@@ -491,6 +433,10 @@ func runDeviceFlow(cfg config.Config) error {
 			if errors.Is(err, auth.ErrAuthPending) {
 				continue
 			}
+			if errors.Is(err, auth.ErrDeviceSlowDown) {
+				interval += 5
+				continue
+			}
 			if errors.Is(err, auth.ErrDeviceExpired) {
 				fmt.Println()
 				return fmt.Errorf("pairing code expired — run vc login again")
@@ -499,8 +445,16 @@ func runDeviceFlow(cfg config.Config) error {
 				fmt.Println()
 				return fmt.Errorf("authorization denied")
 			}
+			if errors.Is(err, auth.ErrDeviceConsumed) {
+				fmt.Println()
+				return fmt.Errorf("authorization was already consumed — run vc login again")
+			}
+			if errors.Is(err, auth.ErrDeviceInvalid) {
+				fmt.Println()
+				return fmt.Errorf("authorization is invalid — run vc login again")
+			}
 			fmt.Println()
-			return fmt.Errorf("pairing poll failed: %w", err)
+			return fmt.Errorf("device authorization failed: %w", err)
 		}
 
 		// Approved.
@@ -508,7 +462,7 @@ func runDeviceFlow(cfg config.Config) error {
 		if err := auth.Save(res.Token); err != nil {
 			return fmt.Errorf("saving token: %w", err)
 		}
-		fmt.Printf("Logged in as %s\n", res.UserID)
+		fmt.Printf("Logged in successfully.\n")
 		return nil
 	}
 

@@ -1,75 +1,12 @@
 package main
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-// TestLoginCodeFlag verifies that the --code flag is registered on loginCmd
-// and accepts a value in AAAA-BBBB format without flag-parse errors.
-func TestLoginCodeFlag(t *testing.T) {
-	// Reset flag state between calls (cobra flag sets are stateful).
-	loginCodeFlag = ""
-
-	if err := loginCmd.Flags().Set("code", "ABCD-EFG2"); err != nil {
-		t.Fatalf("setting --code flag: %v", err)
+func TestLoginExposesOnlyDeviceAuthorization(t *testing.T) {
+	if loginCmd.Flags().Lookup("email") != nil || loginCmd.Flags().Lookup("code") != nil || loginCmd.Flags().Lookup("device") != nil {
+		t.Fatal("legacy login flags must not be exposed")
 	}
-	if loginCodeFlag != "ABCD-EFG2" {
-		t.Errorf("loginCodeFlag = %q, want ABCD-EFG2", loginCodeFlag)
-	}
-}
-
-// TestLoginCodeFlagEmpty verifies that loginCodeFlag defaults to empty string.
-func TestLoginCodeFlagDefault(t *testing.T) {
-	// Reset to default.
-	loginCodeFlag = ""
-	got := loginCmd.Flags().Lookup("code")
-	if got == nil {
-		t.Fatal("--code flag not registered on loginCmd")
-	}
-	if got.DefValue != "" {
-		t.Errorf("--code default = %q, want empty string", got.DefValue)
-	}
-}
-
-// TestPickerCodeExchConst verifies the picker constant for the operator-code
-// option is distinct from the other picker choices.
-func TestPickerCodeExchConst(t *testing.T) {
-	if pickerCodeExch == pickerNone {
-		t.Error("pickerCodeExch must not equal pickerNone")
-	}
-	if pickerCodeExch == pickerEmail {
-		t.Error("pickerCodeExch must not equal pickerEmail")
-	}
-	if pickerCodeExch == pickerDevice {
-		t.Error("pickerCodeExch must not equal pickerDevice")
-	}
-}
-
-// TestNewPickerModelHasThreeChoices verifies the picker presents all three login methods.
-func TestNewPickerModelHasThreeChoices(t *testing.T) {
-	m := newPickerModel()
-	if len(m.choices) != 3 {
-		t.Errorf("picker choices = %d, want 3", len(m.choices))
-	}
-}
-
-// TestEmailOTPExhaustedMessageContainsHint verifies that after all 3 OTP attempts
-// fail, the error includes a hint about the email possibly not being registered.
-// This exercises path (b) from the server-side notes: vc-side messaging improvement.
-func TestEmailOTPExhaustedMessageContainsHint(t *testing.T) {
-	err := otpExhaustedError()
-	if err == nil {
-		t.Fatal("otpExhaustedError() returned nil")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "may not be registered") {
-		t.Errorf("error = %q, want it to contain 'may not be registered'", msg)
-	}
-	if !strings.Contains(msg, "contact the operator") {
-		t.Errorf("error = %q, want it to contain 'contact the operator'", msg)
-	}
-	if !strings.Contains(msg, "vc login") {
-		t.Errorf("error = %q, want it to mention 'vc login'", msg)
+	if loginCmd.Short == "" {
+		t.Fatal("login help is empty")
 	}
 }

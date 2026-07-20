@@ -21,4 +21,10 @@ var (
 
 	// ErrDeviceDenied is returned by DevicePoll when the device flow was denied.
 	ErrDeviceDenied = errors.New("device flow denied")
+
+	ErrDeviceSlowDown    = errors.New("device polling too quickly")
+	ErrDeviceConsumed    = errors.New("device authorization already consumed")
+	ErrDeviceInvalid     = errors.New("invalid device authorization")
+	ErrDeviceMalformed   = errors.New("malformed identity response")
+	ErrDeviceRateLimited = errors.New("device authorization rate limited")
 )
