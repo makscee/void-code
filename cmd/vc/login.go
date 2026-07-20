@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -31,7 +32,18 @@ to ~/.void-code/token with mode 0600.`,
 
 func init() { rootCmd.AddCommand(loginCmd) }
 
-func runLogin(_ *cobra.Command, _ []string) error { return runDeviceFlow(config.OSResolve()) }
+const legacyMigrationInstruction = "Legacy VC credential detected. Contact the operator for migration, then complete the normal device login."
+
+func printLegacyMigrationInstruction(writer io.Writer) {
+	if auth.LegacyTokenExists() {
+		fmt.Fprintln(writer, legacyMigrationInstruction)
+	}
+}
+
+func runLogin(_ *cobra.Command, _ []string) error {
+	printLegacyMigrationInstruction(os.Stderr)
+	return runDeviceFlow(config.OSResolve())
+}
 
 // runLoginInteractive is called from main.go when the banner detects logged-out
 // state on any-key.  It runs the picker and completes login, or returns error.

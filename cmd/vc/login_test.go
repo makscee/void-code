@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestLoginExposesOnlyDeviceAuthorization(t *testing.T) {
 	if loginCmd.Flags().Lookup("email") != nil || loginCmd.Flags().Lookup("code") != nil || loginCmd.Flags().Lookup("device") != nil {
@@ -8,5 +13,31 @@ func TestLoginExposesOnlyDeviceAuthorization(t *testing.T) {
 	}
 	if loginCmd.Short == "" {
 		t.Fatal("login help is empty")
+	}
+}
+
+func TestLegacyCredentialPrintsValueFreeMigrationInstruction(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	legacyDir := filepath.Join(home, ".claudev")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(legacyDir, "token")
+	legacyValue := "legacy-secret-must-not-appear"
+	if err := os.WriteFile(legacyPath, []byte(legacyValue), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	printLegacyMigrationInstruction(&output)
+	if got := output.String(); got != legacyMigrationInstruction+"\n" {
+		t.Fatalf("instruction = %q", got)
+	}
+	if bytes.Contains(output.Bytes(), []byte(legacyValue)) {
+		t.Fatal("instruction exposed the legacy credential")
+	}
+	if got, err := os.ReadFile(legacyPath); err != nil || string(got) != legacyValue {
+		t.Fatalf("legacy credential changed: value=%q err=%v", got, err)
 	}
 }
