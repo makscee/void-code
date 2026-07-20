@@ -33,7 +33,7 @@ func deviceEndpoint(authHost, action string) (string, error) {
 	if err != nil || base.Scheme == "" || base.Host == "" || base.RawQuery != "" || base.Fragment != "" {
 		return "", errors.New("invalid identity service URL")
 	}
-	base.Path = strings.TrimRight(base.Path, "/") + "/identity-stage/api/device/" + action
+	base.Path = strings.TrimRight(base.Path, "/") + "/v1/public/device/" + action
 	return base.String(), nil
 }
 

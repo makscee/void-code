@@ -27,10 +27,10 @@ func TestPublicDeviceStartAndPollContract(t *testing.T) {
 			t.Errorf("client_id=%q", body["client_id"])
 		}
 		switch r.URL.Path {
-		case "/identity-stage/api/device/start":
+		case "/v1/public/device/start":
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"deviceCode": secret, "userCode": "ABC12345", "verificationPath": "/device", "intervalSeconds": 1})
-		case "/identity-stage/api/device/poll":
+		case "/v1/public/device/poll":
 			if body["device_code"] != secret {
 				t.Error("poll secret missing from body")
 			}
