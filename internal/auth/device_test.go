@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicDeviceStartAndPollContract(t *testing.T) {
@@ -73,6 +74,26 @@ func TestDevicePollTruthfulTerminalStates(t *testing.T) {
 			_, err := DevicePoll(srv.URL, "poll-secret", srv.Client())
 			if !errors.Is(err, want) {
 				t.Fatalf("got %v want %v", err, want)
+			}
+		})
+	}
+}
+
+func TestDeviceRejectsMissingMalformedAndStaleExpiryWithoutInstallingValue(t *testing.T) {
+	now := time.UnixMilli(2_000_000_000_000)
+	cases := []string{
+		`{"token":"opaque","audience":"vc"}`,
+		`{"token":"opaque","audience":"vc","expiresAt":"later"}`,
+		`{"token":"opaque","audience":"vc","expiresAt":2000000000000}`,
+		`{"token":"opaque","audience":"vc","expiresAt":1999999999999}`,
+	}
+	for _, payload := range cases {
+		t.Run(payload, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(payload)) }))
+			defer srv.Close()
+			result, err := devicePollAt(srv.URL, "poll-secret", srv.Client(), func() time.Time { return now })
+			if !errors.Is(err, ErrDeviceMalformed) || result.Token != "" || strings.Contains(err.Error(), "opaque") {
+				t.Fatalf("result=%+v err=%v", result, err)
 			}
 		})
 	}

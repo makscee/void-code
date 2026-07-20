@@ -86,6 +86,10 @@ func DeviceStart(authHost, deviceLabel string, httpClient *http.Client) (DeviceS
 }
 
 func DevicePoll(authHost, deviceCode string, httpClient *http.Client) (DevicePollResult, error) {
+	return devicePollAt(authHost, deviceCode, httpClient, time.Now)
+}
+
+func devicePollAt(authHost, deviceCode string, httpClient *http.Client, now func() time.Time) (DevicePollResult, error) {
 	resp, err := postDevice(authHost, "poll", map[string]string{"client_id": PublicDeviceClientID, "device_code": deviceCode}, httpClient)
 	if err != nil {
 		return DevicePollResult{}, err
@@ -97,7 +101,7 @@ func DevicePoll(authHost, deviceCode string, httpClient *http.Client) (DevicePol
 			Audience  string `json:"audience"`
 			ExpiresAt int64  `json:"expiresAt"`
 		}
-		if err := decodeOne(resp.Body, &r); err != nil || r.Token == "" || r.Audience != "vc" || r.ExpiresAt <= 0 {
+		if err := decodeOne(resp.Body, &r); err != nil || r.Token == "" || r.Audience != "vc" || r.ExpiresAt <= now().UnixMilli() {
 			return DevicePollResult{}, ErrDeviceMalformed
 		}
 		return DevicePollResult{Token: r.Token, Audience: r.Audience, ExpiresAt: r.ExpiresAt}, nil
