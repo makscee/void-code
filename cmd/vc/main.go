@@ -916,6 +916,15 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return me, true, nil
 	}
 	if err == auth.ErrNotLoggedIn {
+		// Identity device credentials are opaque <session>.<secret> values. During
+		// VI-12, /v1/vc/me remains a legacy-auth budget endpoint and cannot
+		// validate them; the relay performs authoritative identity introspection
+		// before serving any request. Do not reject a valid identity credential at
+		// this obsolete preflight. Legacy credentials remain fail-closed here.
+		separator := strings.IndexByte(token, '.')
+		if separator > 0 && separator < len(token)-1 && strings.Count(token, ".") == 1 {
+			return auth.MeResult{}, false, nil
+		}
 		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
 	}
 	// Network / server error — don't block; transient blip.

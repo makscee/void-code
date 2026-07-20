@@ -58,6 +58,34 @@ func TestAuthGate_RejectedToken(t *testing.T) {
 	}
 }
 
+func TestAuthGate_IdentityTokenIgnoresLegacyMeRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, reached, err := authGate("session-secret.verifier-secret", srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("identity token must reach authoritative relay introspection: %v", err)
+	}
+	if reached {
+		t.Fatal("legacy me endpoint must not be reported as authoritative for identity token")
+	}
+}
+
+func TestAuthGate_MalformedDottedTokenStillFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	for _, token := range []string{".secret", "session.", "one.two.three"} {
+		if _, _, err := authGate(token, srv.URL, srv.Client()); err == nil {
+			t.Fatalf("malformed token %q did not fail closed", token)
+		}
+	}
+}
+
 // TestAuthGate_NetworkError verifies that a network error does NOT block spawn —
 // transient auth-server blips must not lock the user out.
 func TestAuthGate_NetworkError(t *testing.T) {
