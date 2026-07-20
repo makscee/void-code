@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -416,23 +417,30 @@ func runCodeExchange(cfg config.Config, code string) error {
 	return nil
 }
 
-func deviceBrowserURLs(authHost, verificationPath string) (string, string) {
-	base := strings.TrimRight(authHost, "/")
-	return base + "/login", base + verificationPath
+func deviceBrowserURL(authHost, verificationPath string) string {
+	return strings.TrimRight(authHost, "/") + verificationPath
+}
+
+func voidCodeDeviceLabel(goos string) string {
+	platform := map[string]string{"darwin": "macOS", "windows": "Windows", "linux": "Linux"}[goos]
+	if platform == "" {
+		platform = "this platform"
+	}
+	return "Void Code on " + platform
 }
 
 // runDeviceFlow performs Flow 1b: pairing-code (device-authorization) flow.
 func runDeviceFlow(cfg config.Config) error {
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 
-	start, err := auth.DeviceStart(cfg.AuthHost, "VC on this device", httpClient)
+	start, err := auth.DeviceStart(cfg.AuthHost, voidCodeDeviceLabel(runtime.GOOS), httpClient)
 	if err != nil {
 		return fmt.Errorf("starting pairing-code flow: %w", err)
 	}
 
-	loginURL, verificationURL := deviceBrowserURLs(cfg.AuthHost, start.VerificationPath)
-	fmt.Printf("\nSign in through central identity, then open the device approval URL:\n\n  %s\n\nDevice approval URL: %s\nDevice code: %s\n\nWaiting for authorization", loginURL, verificationURL, start.UserCode)
-	openLoginURL(loginURL)
+	verificationURL := deviceBrowserURL(cfg.AuthHost, start.VerificationPath)
+	fmt.Printf("\nApprove this device in your browser:\n\n  %s\n\nDevice code: %s\n\nWaiting for authorization", verificationURL, start.UserCode)
+	openLoginURL(verificationURL)
 
 	interval := start.Interval
 	if interval <= 0 {

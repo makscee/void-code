@@ -17,13 +17,22 @@ func TestLoginExposesOnlyDeviceAuthorization(t *testing.T) {
 	}
 }
 
-func TestReleasedDeviceFlowUsesPublicIdentityBrowserRoutes(t *testing.T) {
-	loginURL, verificationURL := deviceBrowserURLs("https://auth.makscee.ru/", "/device")
-	if loginURL != "https://auth.makscee.ru/login" || verificationURL != "https://auth.makscee.ru/device" {
-		t.Fatalf("login=%q verification=%q", loginURL, verificationURL)
+func TestReleasedDeviceFlowOpensPublicDeviceDeepLink(t *testing.T) {
+	verificationURL := deviceBrowserURL("https://auth.makscee.ru/", "/device")
+	if verificationURL != "https://auth.makscee.ru/device" {
+		t.Fatalf("verification=%q", verificationURL)
 	}
-	if strings.Contains(loginURL, "/identity-stage") || strings.Contains(verificationURL, "/identity-stage") {
-		t.Fatal("released device flow must not expose staging routes")
+	if strings.Contains(verificationURL, "/identity-stage") || strings.Contains(verificationURL, "/login") {
+		t.Fatal("released device flow must open the standard device deep link directly")
+	}
+}
+
+func TestVoidCodeDeviceLabelsArePlatformAwareAndValueFree(t *testing.T) {
+	cases := map[string]string{"darwin": "Void Code on macOS", "windows": "Void Code on Windows", "linux": "Void Code on Linux", "plan9": "Void Code on this platform"}
+	for goos, want := range cases {
+		if got := voidCodeDeviceLabel(goos); got != want {
+			t.Fatalf("label(%q)=%q want %q", goos, got, want)
+		}
 	}
 }
 
