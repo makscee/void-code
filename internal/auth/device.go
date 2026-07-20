@@ -89,6 +89,32 @@ func DevicePoll(authHost, deviceCode string, httpClient *http.Client) (DevicePol
 	return devicePollAt(authHost, deviceCode, httpClient, time.Now)
 }
 
+// RevokeSession revokes only the VC authorization represented by token.
+func RevokeSession(authHost, token string, httpClient *http.Client) error {
+	base, err := url.Parse(strings.TrimRight(authHost, "/"))
+	if err != nil || base.Scheme == "" || base.Host == "" || base.RawQuery != "" || base.Fragment != "" {
+		return errors.New("invalid identity service URL")
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/v1/public/session/revoke"
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	req, err := http.NewRequest(http.MethodPost, base.String(), nil)
+	if err != nil {
+		return errors.New("cannot build session cleanup request")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return errors.New("identity service is unavailable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("session cleanup failed (status %d)", resp.StatusCode)
+	}
+	return nil
+}
+
 func devicePollAt(authHost, deviceCode string, httpClient *http.Client, now func() time.Time) (DevicePollResult, error) {
 	resp, err := postDevice(authHost, "poll", map[string]string{"client_id": PublicDeviceClientID, "device_code": deviceCode}, httpClient)
 	if err != nil {

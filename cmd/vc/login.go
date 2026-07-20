@@ -429,6 +429,31 @@ func voidCodeDeviceLabel(goos string) string {
 	return "Void Code on " + platform
 }
 
+const priorSessionCleanupWarning = "Warning: the new login was saved, but the previous Void Code session could not be revoked. Revoke the older Void Code entry manually in Identity Devices."
+
+func replaceDeviceCredential(token string, warnings io.Writer, load func() (string, bool, error), save func(string) error, revoke func(string) error) error {
+	previous, _, err := load()
+	if err != nil && !errors.Is(err, auth.ErrNotLoggedIn) {
+		return err
+	}
+	if err := save(token); err != nil {
+		return err
+	}
+	if previous == "" || previous == token {
+		return nil
+	}
+	if err := revoke(previous); err != nil {
+		fmt.Fprintln(warnings, priorSessionCleanupWarning)
+	}
+	return nil
+}
+
+func installDeviceCredential(authHost, token string, httpClient *http.Client, warnings io.Writer) error {
+	return replaceDeviceCredential(token, warnings, auth.Load, auth.Save, func(previous string) error {
+		return auth.RevokeSession(authHost, previous, httpClient)
+	})
+}
+
 // runDeviceFlow performs Flow 1b: pairing-code (device-authorization) flow.
 func runDeviceFlow(cfg config.Config) error {
 	httpClient := &http.Client{Timeout: 15 * time.Second}
@@ -483,7 +508,7 @@ func runDeviceFlow(cfg config.Config) error {
 
 		// Approved.
 		fmt.Println()
-		if err := auth.Save(res.Token); err != nil {
+		if err := installDeviceCredential(cfg.AuthHost, res.Token, httpClient, os.Stderr); err != nil {
 			return fmt.Errorf("saving token: %w", err)
 		}
 		fmt.Printf("Logged in successfully.\n")
