@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -13,6 +14,16 @@ func TestLoginExposesOnlyDeviceAuthorization(t *testing.T) {
 	}
 	if loginCmd.Short == "" {
 		t.Fatal("login help is empty")
+	}
+}
+
+func TestReleasedDeviceFlowUsesPublicIdentityBrowserRoutes(t *testing.T) {
+	loginURL, verificationURL := deviceBrowserURLs("https://auth.makscee.ru/", "/device")
+	if loginURL != "https://auth.makscee.ru/login" || verificationURL != "https://auth.makscee.ru/device" {
+		t.Fatalf("login=%q verification=%q", loginURL, verificationURL)
+	}
+	if strings.Contains(loginURL, "/identity-stage") || strings.Contains(verificationURL, "/identity-stage") {
+		t.Fatal("released device flow must not expose staging routes")
 	}
 }
 

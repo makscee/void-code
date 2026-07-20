@@ -24,7 +24,7 @@ var loginCmd = &cobra.Command{
 	Short: "Authenticate through Void Identity device authorization",
 	Long: `Authenticate through the central Void Identity device flow.
 
-VC opens the staged identity login, displays the device approval URL and code,
+VC opens the central identity login, displays the device approval URL and code,
 and polls at the server-prescribed cadence. Credentials are atomically written
 to ~/.void-code/token with mode 0600.`,
 	RunE: runLogin,
@@ -416,6 +416,11 @@ func runCodeExchange(cfg config.Config, code string) error {
 	return nil
 }
 
+func deviceBrowserURLs(authHost, verificationPath string) (string, string) {
+	base := strings.TrimRight(authHost, "/")
+	return base + "/login", base + verificationPath
+}
+
 // runDeviceFlow performs Flow 1b: pairing-code (device-authorization) flow.
 func runDeviceFlow(cfg config.Config) error {
 	httpClient := &http.Client{Timeout: 15 * time.Second}
@@ -425,10 +430,9 @@ func runDeviceFlow(cfg config.Config) error {
 		return fmt.Errorf("starting pairing-code flow: %w", err)
 	}
 
-	stageURL := strings.TrimRight(cfg.AuthHost, "/") + "/identity-stage"
-	verificationURL := strings.TrimRight(cfg.AuthHost, "/") + start.VerificationPath
-	fmt.Printf("\nSign in through the staged identity page, then open the device approval URL:\n\n  %s\n\nDevice approval URL: %s\nDevice code: %s\n\nWaiting for authorization", stageURL, verificationURL, start.UserCode)
-	openLoginURL(stageURL)
+	loginURL, verificationURL := deviceBrowserURLs(cfg.AuthHost, start.VerificationPath)
+	fmt.Printf("\nSign in through central identity, then open the device approval URL:\n\n  %s\n\nDevice approval URL: %s\nDevice code: %s\n\nWaiting for authorization", loginURL, verificationURL, start.UserCode)
+	openLoginURL(loginURL)
 
 	interval := start.Interval
 	if interval <= 0 {
