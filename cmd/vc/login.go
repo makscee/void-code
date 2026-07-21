@@ -42,8 +42,118 @@ func printLegacyMigrationInstruction(writer io.Writer) {
 }
 
 func runLogin(_ *cobra.Command, _ []string) error {
-	printLegacyMigrationInstruction(os.Stderr)
-	return runDeviceFlow(config.OSResolve())
+	cfg := config.OSResolve()
+	return runGradualLogin(cfg, defaultMigrationDeps(cfg))
+}
+
+type migrationDeps struct {
+	loadCurrent func() (string, bool, error)
+	loadLegacy  func() (string, error)
+	legacyMe    func(string) (auth.MeResult, error)
+	start       func(string) (auth.MigrationStartResult, error)
+	promptOTP   func() (string, error)
+	complete    func(string, string, string) (auth.MigrationCompleteResult, error)
+	relayMe     func(string) (string, error)
+	save        func(string) error
+	device      func() error
+	out         io.Writer
+}
+
+func relayBaseURL(cfg config.Config) string { return cfg.RelayScheme + "://" + cfg.RelayHost }
+
+func defaultMigrationDeps(cfg config.Config) migrationDeps {
+	client := &http.Client{Timeout: 15 * time.Second}
+	return migrationDeps{
+		loadCurrent: auth.Load, loadLegacy: auth.LoadLegacyToken,
+		legacyMe: func(token string) (auth.MeResult, error) { return auth.FetchMe(cfg.AuthHost, token, client) },
+		start: func(token string) (auth.MigrationStartResult, error) {
+			return auth.MigrationStart(cfg.AuthHost, token, client)
+		},
+		promptOTP: promptMigrationOTP,
+		complete: func(exchange, token, code string) (auth.MigrationCompleteResult, error) {
+			return auth.MigrationComplete(cfg.AuthHost, exchange, token, code, client)
+		},
+		relayMe: func(token string) (string, error) { return auth.FetchRelayMe(relayBaseURL(cfg), token, client) },
+		save:    auth.Save, device: func() error { return runDeviceFlow(cfg) }, out: os.Stderr,
+	}
+}
+
+func runGradualLogin(_ config.Config, deps migrationDeps) error {
+	candidate, _, loadErr := deps.loadCurrent()
+	if loadErr != nil && !errors.Is(loadErr, auth.ErrNotLoggedIn) {
+		return auth.RedactedMigrationError(auth.ErrMigrationSource)
+	}
+	me, meErr := auth.MeResult{}, auth.ErrNotLoggedIn
+	if loadErr == nil && strings.TrimSpace(candidate) != "" {
+		me, meErr = deps.legacyMe(candidate)
+	}
+	if errors.Is(meErr, auth.ErrNotLoggedIn) {
+		legacy, err := deps.loadLegacy()
+		if err == nil && strings.TrimSpace(legacy) != "" {
+			candidate, me, meErr = legacy, auth.MeResult{}, nil
+			me, meErr = deps.legacyMe(candidate)
+		}
+		if errors.Is(err, auth.ErrNotLoggedIn) && errors.Is(meErr, auth.ErrNotLoggedIn) {
+			return deps.device()
+		}
+		if err != nil && !errors.Is(err, auth.ErrNotLoggedIn) {
+			return auth.RedactedMigrationError(auth.ErrMigrationSource)
+		}
+	}
+	if meErr != nil {
+		return auth.RedactedMigrationError(auth.ErrMigrationSource)
+	}
+	if me.UserID == "" {
+		return auth.RedactedMigrationError(auth.ErrMigrationUnavailable)
+	}
+	if me.SubDaysLeft == nil || *me.SubDaysLeft <= 0 {
+		return auth.RedactedMigrationError(auth.ErrEntitlementDenied)
+	}
+
+	started, err := deps.start(candidate)
+	if err != nil {
+		return auth.RedactedMigrationError(err)
+	}
+	fmt.Fprintln(deps.out, "A one-time code was sent to your prepared email.")
+	code, err := deps.promptOTP()
+	if err != nil {
+		return fmt.Errorf("login cancelled; your existing login is unchanged")
+	}
+	completed, err := deps.complete(started.Exchange, candidate, code)
+	if err != nil {
+		return auth.RedactedMigrationError(err)
+	}
+	if completed.SubjectID != me.UserID {
+		return auth.RedactedMigrationError(auth.ErrMigrationConflict)
+	}
+	relaySubject, err := deps.relayMe(completed.Token)
+	if err != nil {
+		return auth.RedactedMigrationError(err)
+	}
+	if relaySubject != me.UserID || relaySubject != completed.SubjectID {
+		return auth.RedactedMigrationError(auth.ErrMigrationConflict)
+	}
+	if err := deps.save(completed.Token); err != nil {
+		return fmt.Errorf("Could not save the new login. Your existing login is unchanged.")
+	}
+	fmt.Fprintln(deps.out, "Logged in successfully.")
+	return nil
+}
+
+func promptMigrationOTP() (string, error) {
+	if nonInteractive() {
+		return "", errNonInteractiveLogin()
+	}
+	m := newOTPInputModel()
+	result, err := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr)).Run()
+	if err != nil {
+		return "", fmt.Errorf("reading code")
+	}
+	final, ok := result.(otpInputModel)
+	if !ok || final.cancelled {
+		return "", fmt.Errorf("login cancelled")
+	}
+	return final.value, nil
 }
 
 // runLoginInteractive is called from main.go when the banner detects logged-out
@@ -383,7 +493,7 @@ func (m otpInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m otpInputModel) View() string {
 	var sb strings.Builder
 	sb.WriteString(inputLabelStyle.Render("6-digit code: "))
-	sb.WriteString(inputValueStyle.Render(m.value))
+	sb.WriteString(inputValueStyle.Render(strings.Repeat("•", len(m.value))))
 	if len(m.value) < 6 {
 		sb.WriteString(inputCursorStyle.Render("█"))
 	}

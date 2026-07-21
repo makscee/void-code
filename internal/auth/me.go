@@ -14,6 +14,8 @@ import (
 type MeResult struct {
 	UserID string
 	Email  string
+	// SubDaysLeft is used only by the authoritative legacy migration preflight.
+	SubDaysLeft *int
 
 	// VCD-49 budget fields — nil when the server does not return budget data
 	// (older void-auth or budget not configured). Never block on nil values.
@@ -57,7 +59,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	var r struct {
 		UserID      string   `json:"userId"`
 		Email       string   `json:"email"`
-		// subDaysLeft intentionally ignored — VCD-65: sentinel from server, no gate.
+		SubDaysLeft *int     `json:"subDaysLeft"`
 		Pct         *float64 `json:"pct"`
 		ResetAt     string   `json:"resetAt"`
 		BalanceUsd  *float64 `json:"balanceUsd"`
@@ -66,10 +68,11 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
 	}
 	return MeResult{
-		UserID:     r.UserID,
-		Email:      r.Email,
-		Pct:        r.Pct,
-		ResetAt:    r.ResetAt,
-		BalanceUsd: r.BalanceUsd,
+		UserID:      r.UserID,
+		Email:       r.Email,
+		SubDaysLeft: r.SubDaysLeft,
+		Pct:         r.Pct,
+		ResetAt:     r.ResetAt,
+		BalanceUsd:  r.BalanceUsd,
 	}, nil
 }
