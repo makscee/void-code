@@ -8,11 +8,26 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 const PublicDeviceClientID = "vc"
+
+func publicDeviceClientID() string {
+	if value := strings.TrimSpace(os.Getenv("VC_IDENTITY_CLIENT_ID")); value != "" {
+		return value
+	}
+	return PublicDeviceClientID
+}
+
+func publicDeviceAudience() string {
+	if value := strings.TrimSpace(os.Getenv("VC_IDENTITY_AUDIENCE")); value != "" {
+		return value
+	}
+	return "vc"
+}
 
 type DeviceStartResult struct {
 	DeviceCode       string
@@ -62,7 +77,7 @@ func postDevice(authHost, action string, body any, httpClient *http.Client) (*ht
 }
 
 func DeviceStart(authHost, deviceLabel string, httpClient *http.Client) (DeviceStartResult, error) {
-	resp, err := postDevice(authHost, "start", map[string]string{"client_id": PublicDeviceClientID, "device_label": deviceLabel}, httpClient)
+	resp, err := postDevice(authHost, "start", map[string]string{"client_id": publicDeviceClientID(), "device_label": deviceLabel}, httpClient)
 	if err != nil {
 		return DeviceStartResult{}, err
 	}
@@ -116,7 +131,7 @@ func RevokeSession(authHost, token string, httpClient *http.Client) error {
 }
 
 func devicePollAt(authHost, deviceCode string, httpClient *http.Client, now func() time.Time) (DevicePollResult, error) {
-	resp, err := postDevice(authHost, "poll", map[string]string{"client_id": PublicDeviceClientID, "device_code": deviceCode}, httpClient)
+	resp, err := postDevice(authHost, "poll", map[string]string{"client_id": publicDeviceClientID(), "device_code": deviceCode}, httpClient)
 	if err != nil {
 		return DevicePollResult{}, err
 	}
@@ -127,7 +142,7 @@ func devicePollAt(authHost, deviceCode string, httpClient *http.Client, now func
 			Audience  string `json:"audience"`
 			ExpiresAt int64  `json:"expiresAt"`
 		}
-		if err := decodeOne(resp.Body, &r); err != nil || r.Token == "" || r.Audience != "vc" || r.ExpiresAt <= now().UnixMilli() {
+		if err := decodeOne(resp.Body, &r); err != nil || r.Token == "" || r.Audience != publicDeviceAudience() || r.ExpiresAt <= now().UnixMilli() {
 			return DevicePollResult{}, ErrDeviceMalformed
 		}
 		return DevicePollResult{Token: r.Token, Audience: r.Audience, ExpiresAt: r.ExpiresAt}, nil

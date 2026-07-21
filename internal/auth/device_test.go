@@ -62,6 +62,32 @@ func TestPublicDeviceStartAndPollContract(t *testing.T) {
 	}
 }
 
+func TestCanaryDeviceClientAndAudienceAreExplicitlyIsolated(t *testing.T) {
+	t.Setenv("VC_IDENTITY_CLIENT_ID", "vc-canary")
+	t.Setenv("VC_IDENTITY_AUDIENCE", "vc-canary")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["client_id"] != "vc-canary" {
+			t.Fatalf("client_id=%q", body["client_id"])
+		}
+		if strings.HasSuffix(r.URL.Path, "/start") {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"deviceCode": "poll", "userCode": "ABC12345", "verificationPath": "/device", "intervalSeconds": 1})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "session.secret", "audience": "vc-canary", "expiresAt": int64(2_000_000_000_000)})
+	}))
+	defer srv.Close()
+	if _, err := DeviceStart(srv.URL, "Void Code canary", srv.Client()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := DevicePoll(srv.URL, "poll", srv.Client())
+	if err != nil || result.Audience != "vc-canary" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestDevicePollTruthfulTerminalStates(t *testing.T) {
 	cases := map[string]error{"slow_down": ErrDeviceSlowDown, "expired": ErrDeviceExpired, "denied": ErrDeviceDenied, "consumed": ErrDeviceConsumed, "invalid": ErrDeviceInvalid}
 	for status, want := range cases {
