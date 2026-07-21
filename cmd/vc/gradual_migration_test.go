@@ -64,6 +64,27 @@ func TestGradualIdentityMigration(t *testing.T) {
 		}
 	})
 
+	t.Run("notice starts with the masked migration prompt", func(t *testing.T) {
+		_, out, deps := base()
+		deps.promptOTP = func() (string, error) {
+			if out.Len() != 0 {
+				t.Fatalf("output preceded OTP prompt ownership: %q", out.String())
+			}
+			view := newMigrationOTPInputModel().View()
+			notice := "A one-time code was sent to your prepared email."
+			if !strings.Contains(view, notice) || !strings.Contains(view, "6-digit code:") {
+				t.Fatalf("migration prompt missing notice or masked input: %q", view)
+			}
+			if strings.Contains(view, "246810") || strings.Contains(view, "@canary.invalid") {
+				t.Fatalf("migration prompt leaked input or email: %q", view)
+			}
+			return "246810", nil
+		}
+		if err := runGradualLogin(config.Config{}, deps); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	failures := []struct {
 		name  string
 		alter func(*migrationDeps)
