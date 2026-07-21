@@ -106,8 +106,15 @@ func runGradualLogin(_ config.Config, deps migrationDeps) error {
 	if me.UserID == "" {
 		return auth.RedactedMigrationError(auth.ErrMigrationUnavailable)
 	}
-	if me.SubDaysLeft == nil || *me.SubDaysLeft <= 0 {
-		return auth.RedactedMigrationError(auth.ErrEntitlementDenied)
+	legacySubject, err := deps.relayMe(candidate)
+	if errors.Is(err, auth.ErrEntitlementDenied) {
+		return deps.device()
+	}
+	if err != nil {
+		return auth.RedactedMigrationError(err)
+	}
+	if legacySubject != me.UserID {
+		return auth.RedactedMigrationError(auth.ErrMigrationConflict)
 	}
 
 	started, err := deps.start(candidate)

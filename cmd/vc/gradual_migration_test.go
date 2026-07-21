@@ -15,7 +15,6 @@ func TestGradualIdentityMigration(t *testing.T) {
 	legacy := "legacy-secret-byte-exact\n"
 	identity := "identity-session.identity-secret"
 	subject := "88888888-8888-4888-8888-888888888888"
-	active := 30
 	base := func() (*string, *bytes.Buffer, migrationDeps) {
 		stored := legacy
 		out := &bytes.Buffer{}
@@ -26,7 +25,7 @@ func TestGradualIdentityMigration(t *testing.T) {
 				if got != legacy {
 					t.Fatal("wrong legacy proof")
 				}
-				return auth.MeResult{UserID: subject, SubDaysLeft: &active}, nil
+				return auth.MeResult{UserID: subject}, nil
 			},
 			start: func(string) (auth.MigrationStartResult, error) {
 				return auth.MigrationStartResult{Exchange: "opaque-exchange"}, nil
@@ -39,7 +38,7 @@ func TestGradualIdentityMigration(t *testing.T) {
 				return auth.MigrationCompleteResult{Token: identity, SubjectID: subject, Audience: "vc"}, nil
 			},
 			relayMe: func(got string) (string, error) {
-				if got != identity {
+				if got != legacy && got != identity {
 					t.Fatal("wrong relay bearer")
 				}
 				return subject, nil
@@ -98,11 +97,28 @@ func TestGradualIdentityMigration(t *testing.T) {
 			}
 		}, "Contact Maks"},
 		{"relay denial", func(d *migrationDeps) {
-			d.relayMe = func(string) (string, error) { return "", auth.ErrMigrationSource }
+			d.relayMe = func(token string) (string, error) {
+				if token == legacy {
+					return subject, nil
+				}
+				return "", auth.ErrMigrationSource
+			}
 		}, "temporarily unavailable"},
-		{"relay subject mismatch", func(d *migrationDeps) { d.relayMe = func(string) (string, error) { return "other-subject", nil } }, "Contact Maks"},
+		{"relay subject mismatch", func(d *migrationDeps) {
+			d.relayMe = func(token string) (string, error) {
+				if token == legacy {
+					return subject, nil
+				}
+				return "other-subject", nil
+			}
+		}, "Contact Maks"},
 		{"entitlement denial", func(d *migrationDeps) {
-			d.relayMe = func(string) (string, error) { return "", auth.ErrEntitlementDenied }
+			d.relayMe = func(token string) (string, error) {
+				if token == legacy {
+					return subject, nil
+				}
+				return "", auth.ErrEntitlementDenied
+			}
 		}, "active VC subscription"},
 		{"persistence failure", func(d *migrationDeps) { d.save = func(string) error { return os.ErrPermission } }, "Could not save"},
 	}
@@ -126,18 +142,16 @@ func TestGradualIdentityMigration(t *testing.T) {
 		})
 	}
 
-	t.Run("inactive legacy subscription", func(t *testing.T) {
+	t.Run("inactive legacy subscription uses ordinary registration", func(t *testing.T) {
 		stored, _, deps := base()
-		inactive := 0
-		deps.legacyMe = func(string) (auth.MeResult, error) {
-			return auth.MeResult{UserID: subject, SubDaysLeft: &inactive}, nil
-		}
-		err := runGradualLogin(config.Config{}, deps)
-		if err == nil || !strings.Contains(err.Error(), "active VC subscription") {
-			t.Fatal(err)
+		called := false
+		deps.relayMe = func(string) (string, error) { return "", auth.ErrEntitlementDenied }
+		deps.device = func() error { called = true; return nil }
+		if err := runGradualLogin(config.Config{}, deps); err != nil || !called {
+			t.Fatalf("err=%v called=%v", err, called)
 		}
 		if *stored != legacy {
-			t.Fatal("changed")
+			t.Fatal("changed before ordinary registration completed")
 		}
 	})
 	t.Run("no legacy uses device flow", func(t *testing.T) {
