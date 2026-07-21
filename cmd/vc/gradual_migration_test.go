@@ -142,16 +142,17 @@ func TestGradualIdentityMigration(t *testing.T) {
 		})
 	}
 
-	t.Run("inactive legacy subscription uses ordinary registration", func(t *testing.T) {
+	t.Run("inactive legacy subscription preserves credential", func(t *testing.T) {
 		stored, _, deps := base()
 		called := false
 		deps.relayMe = func(string) (string, error) { return "", auth.ErrEntitlementDenied }
 		deps.device = func() error { called = true; return nil }
-		if err := runGradualLogin(config.Config{}, deps); err != nil || !called {
+		err := runGradualLogin(config.Config{}, deps)
+		if err == nil || !strings.Contains(err.Error(), "active VC subscription") || called {
 			t.Fatalf("err=%v called=%v", err, called)
 		}
 		if *stored != legacy {
-			t.Fatal("changed before ordinary registration completed")
+			t.Fatal("credential changed")
 		}
 	})
 	t.Run("no legacy uses device flow", func(t *testing.T) {

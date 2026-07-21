@@ -107,9 +107,6 @@ func runGradualLogin(_ config.Config, deps migrationDeps) error {
 		return auth.RedactedMigrationError(auth.ErrMigrationUnavailable)
 	}
 	legacySubject, err := deps.relayMe(candidate)
-	if errors.Is(err, auth.ErrEntitlementDenied) {
-		return deps.device()
-	}
 	if err != nil {
 		return auth.RedactedMigrationError(err)
 	}
