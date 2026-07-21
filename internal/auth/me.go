@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -64,7 +63,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		ResetAt     string   `json:"resetAt"`
 		BalanceUsd  *float64 `json:"balanceUsd"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := decodeOne(resp.Body, &r); err != nil {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
 	}
 	return MeResult{

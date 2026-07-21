@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -148,7 +147,7 @@ func FetchRelayMe(relayURL, token string, client *http.Client) (string, error) {
 	var body struct {
 		SubjectID string `json:"subject_id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body); err != nil || body.SubjectID == "" {
+	if err := decodeOne(resp.Body, &body); err != nil || body.SubjectID == "" {
 		return "", ErrMigrationSource
 	}
 	return body.SubjectID, nil

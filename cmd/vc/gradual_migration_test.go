@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -138,6 +140,34 @@ func TestGradualIdentityMigration(t *testing.T) {
 				if strings.Contains(combined, secret) {
 					t.Fatalf("output leaked secret: %q", combined)
 				}
+			}
+		})
+	}
+
+	for _, payload := range []struct {
+		name string
+		body string
+	}{
+		{"relay trailing garbage", `{"subject_id":"` + subject + `"}garbage`},
+		{"relay second JSON object", `{"subject_id":"` + subject + `"}{"subject_id":"` + subject + `"}`},
+	} {
+		t.Run(payload.name+" preserves credential", func(t *testing.T) {
+			stored, _, deps := base()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(payload.body))
+			}))
+			defer server.Close()
+			deps.relayMe = func(token string) (string, error) {
+				if token == legacy {
+					return subject, nil
+				}
+				return auth.FetchRelayMe(server.URL, token, server.Client())
+			}
+			if err := runGradualLogin(config.Config{}, deps); err == nil {
+				t.Fatal("malformed relay response accepted")
+			}
+			if *stored != legacy {
+				t.Fatalf("credential changed: %q", *stored)
 			}
 		})
 	}
