@@ -12,7 +12,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/config"
@@ -148,27 +147,8 @@ func promptMigrationOTP() (string, error) {
 	if nonInteractive() {
 		return "", errNonInteractiveLogin()
 	}
-	return promptMigrationOTPInteractive(
-		func() (*term.State, error) { return term.MakeRaw(os.Stdin.Fd()) },
-		func(state *term.State) error { return term.Restore(os.Stdin.Fd(), state) },
-		func(model tea.Model) (tea.Model, error) {
-			return tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr)).Run()
-		},
-	)
-}
-
-func promptMigrationOTPInteractive(
-	makeRaw func() (*term.State, error),
-	restore func(*term.State) error,
-	run func(tea.Model) (tea.Model, error),
-) (string, error) {
-	state, err := makeRaw()
-	if err != nil {
-		return "", fmt.Errorf("reading code")
-	}
-	defer func() { _ = restore(state) }()
-
-	result, err := run(newMigrationOTPInputModel())
+	m := newMigrationOTPInputModel()
+	result, err := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr)).Run()
 	if err != nil {
 		return "", fmt.Errorf("reading code")
 	}

@@ -9,58 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
 )
-
-func TestMigrationPromptOwnsTerminalBeforeRenderingAndRestores(t *testing.T) {
-	tests := []struct {
-		name    string
-		result  otpInputModel
-		runErr  error
-		want    string
-		wantErr string
-	}{
-		{name: "success", result: otpInputModel{value: "246810"}, want: "246810"},
-		{name: "program error", runErr: os.ErrClosed, wantErr: "reading code"},
-		{name: "cancel", result: otpInputModel{cancelled: true}, wantErr: "login cancelled"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			events := []string{}
-			state := &term.State{}
-			got, err := promptMigrationOTPInteractive(
-				func() (*term.State, error) {
-					events = append(events, "raw")
-					return state, nil
-				},
-				func(got *term.State) error {
-					if got != state {
-						t.Fatal("restore did not receive the exact saved terminal state")
-					}
-					events = append(events, "restore")
-					return nil
-				},
-				func(model tea.Model) (tea.Model, error) {
-					events = append(events, "render")
-					view := model.View()
-					if !strings.Contains(view, "A one-time code was sent to your prepared email.") || !strings.Contains(view, "6-digit code:") {
-						t.Fatalf("wrong migration prompt: %q", view)
-					}
-					return tc.result, tc.runErr
-				},
-			)
-			if strings.Join(events, ",") != "raw,render,restore" {
-				t.Fatalf("terminal ordering = %v", events)
-			}
-			if got != tc.want || (tc.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.wantErr)) {
-				t.Fatalf("got=%q err=%v", got, err)
-			}
-		})
-	}
-}
 
 func TestGradualIdentityMigration(t *testing.T) {
 	legacy := "legacy-secret-byte-exact\n"
