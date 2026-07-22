@@ -8,6 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/makscee/void-code/internal/compat"
+	"github.com/makscee/void-code/internal/provider"
 )
 
 type managedWebSearchState string
@@ -232,6 +235,9 @@ func checkManagedWebSearch() checkResult {
 		return checkResult{name: "web search", status: "!", message: "web search: unavailable (opted out)"}
 	}
 	current, foreign, err := inspectManagedWebSearchPackage(managedWebSearchPackagePath())
+	if !current && err == nil && !foreign && compat.ClassifyProvider(provider.Load(), provider.LoadLabel(), nil) != compat.ProviderChatGPT {
+		return checkResult{name: "web search", status: "!", message: "web search: unavailable (managed ChatGPT provider not selected)"}
+	}
 	if err != nil || foreign || !current {
 		return checkResult{name: "web search", status: "✗", message: "web search: broken or not installed", guidance: []string{"run `vc doctor --fix` to safely reconcile the void-code-owned package"}, fix: func() error { _, err := reconcileManagedWebSearch(true); return err }}
 	}
