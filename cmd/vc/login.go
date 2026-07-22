@@ -118,6 +118,7 @@ func runGradualLogin(_ config.Config, deps migrationDeps) error {
 	if err != nil {
 		return auth.RedactedMigrationError(err)
 	}
+	fmt.Fprintln(deps.out, "A one-time code was sent to your prepared email.")
 	code, err := deps.promptOTP()
 	if err != nil {
 		return fmt.Errorf("login cancelled; your existing login is unchanged")
@@ -147,7 +148,7 @@ func promptMigrationOTP() (string, error) {
 	if nonInteractive() {
 		return "", errNonInteractiveLogin()
 	}
-	m := newMigrationOTPInputModel()
+	m := newOTPInputModel()
 	result, err := tea.NewProgram(m, tea.WithInput(os.Stdin), tea.WithOutput(os.Stderr)).Run()
 	if err != nil {
 		return "", fmt.Errorf("reading code")
@@ -459,14 +460,9 @@ func (m emailInputModel) View() string {
 type otpInputModel struct {
 	value     string
 	cancelled bool
-	notice    string
 }
 
 func newOTPInputModel() otpInputModel { return otpInputModel{} }
-
-func newMigrationOTPInputModel() otpInputModel {
-	return otpInputModel{notice: "A one-time code was sent to your prepared email."}
-}
 
 func (m otpInputModel) Init() tea.Cmd { return nil }
 
@@ -500,10 +496,6 @@ func (m otpInputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m otpInputModel) View() string {
 	var sb strings.Builder
-	if m.notice != "" {
-		sb.WriteString(m.notice)
-		sb.WriteString("\n")
-	}
 	sb.WriteString(inputLabelStyle.Render("6-digit code: "))
 	sb.WriteString(inputValueStyle.Render(strings.Repeat("•", len(m.value))))
 	if len(m.value) < 6 {
