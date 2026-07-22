@@ -488,18 +488,13 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		t.Skip("pi CLI not installed")
 	}
 
+	hostHome := os.Getenv("HOME")
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(tmp, ".pi", "agent"))
 	t.Setenv("VC_PI_MANAGED_PROVIDER", "1")
 	t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "1")
-	if _, err := reconcileManagedPiExtension(); err != nil {
-		t.Fatalf("ensure extension: %v", err)
-	}
-	if state, err := reconcileManagedWebSearch(true); err != nil || state != managedWebSearchReady {
-		t.Fatalf("ensure web search: state=%s err=%v", state, err)
-	}
 
 	type seenRequest struct {
 		Path          string
@@ -508,10 +503,22 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		ChatGPTAcct   string
 		Body          map[string]any
 	}
-	seenCh := make(chan seenRequest, 1)
+	seenCh := make(chan seenRequest, 2)
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/codex/responses" {
-			t.Fatalf("unexpected relay path: %s", r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/vc/me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"userId":"smoke-user","email":"smoke@example.com"}`)
+			return
+		case "/v1/vc/providers":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"providers":[{"id":"prov-smoke","name":"ChatGPT","type":"openai-codex-oauth"}]}`)
+			return
+		case "/codex/responses":
+		default:
+			t.Errorf("unexpected relay path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 		bodyBytes, _ := io.ReadAll(r.Body)
 		var body map[string]any
@@ -534,26 +541,38 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	}))
 	defer relay.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, piBin,
-		"--provider", "void-codex",
-		"--model", "gpt-5.6-sol",
-		"--no-context-files",
-		"--no-skills",
-		"--no-prompt-templates",
-		"--no-themes",
-		"--tools", "web_search,fetch_content,get_search_content",
-		"--no-session",
-		"--no-approve",
-		"-p", "Say exactly: smoke",
+	vcBin := filepath.Join(tmp, "vc")
+	build := exec.CommandContext(ctx, "go", "build", "-o", vcBin, ".")
+	build.Dir = "."
+	build.Env = append(os.Environ(), "HOME="+hostHome)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fresh vc: %v\n%s", err, out)
+	}
+	vcDir := filepath.Join(tmp, ".void-code")
+	if err := os.MkdirAll(vcDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vcDir, "token"), []byte("smoke-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vcDir, "config"), []byte("active_harness=pi\nactive_provider=prov:prov-smoke\nactive_provider_label=ChatGPT relay\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, vcBin, "--",
+		"--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes",
+		"--tools", "web_search,fetch_content,get_search_content", "--no-session", "--no-approve", "-p", "Say exactly: smoke",
 	)
 	cmd.Env = append(os.Environ(),
 		"HOME="+tmp,
 		"USERPROFILE="+tmp,
-		"VC_RELAY_URL="+relay.URL,
-		"VC_AUTH_TOKEN=smoke-token",
-		"VC_RELAY_PROVIDER_ID=prov-smoke",
+		"PI_CODING_AGENT_DIR="+filepath.Join(tmp, ".pi", "agent"),
+		"VC_AUTH_HOST="+relay.URL,
+		"VC_RELAY_HOST="+relay.URL,
+		"VC_PI_MANAGED_PROVIDER=1",
+		"VC_PI_MANAGED_WEB_SEARCH=1",
+		"VC_DISABLE_UPDATE_CHECK=1",
 		"PI_SKIP_VERSION_CHECK=1",
 		"PI_TELEMETRY=0",
 	)
@@ -584,15 +603,14 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		if seen.ChatGPTAcct != "" {
 			t.Fatalf("chatgpt-account-id header leaked: %q", seen.ChatGPTAcct)
 		}
-		if seen.Body["model"] != "gpt-5.6-sol" || seen.Body["stream"] != true {
+		if seen.Body["stream"] != true {
 			t.Fatalf("unexpected codex body: %#v", seen.Body)
 		}
 		instructions, ok := seen.Body["instructions"].(string)
 		if !ok || !strings.Contains(instructions, "expert coding assistant operating inside pi") || !strings.Contains(instructions, "multiple queries") || !strings.Contains(instructions, "primary sources") || !strings.Contains(instructions, "cite links") {
 			t.Fatalf("instructions do not include Pi and managed web-search guidance: %#v", seen.Body["instructions"])
 		}
-		tools, ok := seen.Body["tools"].([]any)
-		if !ok || len(tools) != 3 {
+		if !hasExactManagedWebTools(seen.Body["tools"]) {
 			t.Fatalf("managed web tools missing from request: %#v", seen.Body["tools"])
 		}
 		if _, ok := seen.Body["reasoning"]; !ok {
@@ -629,7 +647,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		}
 		select {
 		case seen := <-seenCh:
-			if tools, ok := seen.Body["tools"].([]any); !ok || len(tools) != 3 {
+			if !hasExactManagedWebTools(seen.Body["tools"]) {
 				t.Fatalf("direct Pi tools = %#v", seen.Body["tools"])
 			}
 			if instructions, _ := seen.Body["instructions"].(string); !strings.Contains(instructions, "primary sources") {
@@ -639,4 +657,21 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 			t.Fatal("direct Pi did not reach relay")
 		}
 	}
+}
+
+func hasExactManagedWebTools(raw any) bool {
+	tools, ok := raw.([]any)
+	if !ok || len(tools) != 3 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			return false
+		}
+		name, _ := tool["name"].(string)
+		seen[name] = true
+	}
+	return seen["web_search"] && seen["fetch_content"] && seen["get_search_content"]
 }

@@ -32,6 +32,8 @@ var installManagedWebSearchDependencies = func(dir string) error {
 	return nil
 }
 
+var renameManagedWebSearchPath = os.Rename
+
 func managedWebSearchPackagePath() string {
 	return filepath.Join(piAgentDir(), "void-code", "pi-web-access-0.13.0-void.1")
 }
@@ -139,11 +141,30 @@ func installManagedWebSearchPackage(path string) error {
 	} else if foreign {
 		return fmt.Errorf("managed web-search path %s is not owned by void-code", path)
 	}
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("replace managed web-search package: %w", err)
+	backup := ""
+	if _, err := os.Stat(path); err == nil {
+		backupDir, err := os.MkdirTemp(parent, ".pi-web-access-backup-*")
+		if err != nil {
+			return fmt.Errorf("prepare managed web-search rollback: %w", err)
+		}
+		if err := os.Remove(backupDir); err != nil {
+			return fmt.Errorf("prepare managed web-search rollback: %w", err)
+		}
+		backup = backupDir
+		if err := renameManagedWebSearchPath(path, backup); err != nil {
+			return fmt.Errorf("stage prior managed web-search package: %w", err)
+		}
 	}
-	if err := os.Rename(stage, path); err != nil {
+	if err := renameManagedWebSearchPath(stage, path); err != nil {
+		if backup != "" {
+			if rollbackErr := renameManagedWebSearchPath(backup, path); rollbackErr != nil {
+				return fmt.Errorf("publish managed web-search package: %w (rollback failed: %v)", err, rollbackErr)
+			}
+		}
 		return fmt.Errorf("publish managed web-search package: %w", err)
+	}
+	if backup != "" {
+		_ = os.RemoveAll(backup)
 	}
 	return nil
 }
@@ -184,23 +205,23 @@ func reconcileManagedPackageSetting(packagePath string, present bool) error {
 		}
 	}
 	out := make([]any, 0, len(packages)+1)
-	found := false
+	matches := 0
 	for _, item := range packages {
 		if source, ok := item.(string); ok && source == packagePath {
-			found = true
-			if !present {
+			matches++
+			if !present || matches > 1 {
 				continue
 			}
 		}
 		out = append(out, item)
 	}
-	if present && !found {
+	if present && matches == 0 {
 		out = append(out, packagePath)
 	}
 	if !present && !exists {
 		return nil
 	}
-	if found == present {
+	if (present && matches == 1) || (!present && matches == 0) {
 		return nil
 	}
 	settings["packages"] = out
@@ -230,16 +251,54 @@ func reconcileManagedPackageSetting(packagePath string, present bool) error {
 	return os.Rename(tmpName, path)
 }
 
+func inspectManagedPackageSetting(packagePath string) (bool, error) {
+	data, err := os.ReadFile(piSettingsPath())
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read Pi settings: %w", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false, fmt.Errorf("parse Pi settings: %w", err)
+	}
+	raw, ok := settings["packages"]
+	if !ok {
+		return false, nil
+	}
+	packages, ok := raw.([]any)
+	if !ok {
+		return false, fmt.Errorf("Pi settings packages is not an array")
+	}
+	matches := 0
+	for _, item := range packages {
+		if source, ok := item.(string); ok && source == packagePath {
+			matches++
+		}
+	}
+	return matches == 1, nil
+}
+
 func checkManagedWebSearch() checkResult {
 	if isFalse(os.Getenv("VC_PI_MANAGED_WEB_SEARCH")) {
 		return checkResult{name: "web search", status: "!", message: "web search: unavailable (opted out)"}
 	}
-	current, foreign, err := inspectManagedWebSearchPackage(managedWebSearchPackagePath())
-	if !current && err == nil && !foreign && compat.ClassifyProvider(provider.Load(), provider.LoadLabel(), nil) != compat.ProviderChatGPT {
-		return checkResult{name: "web search", status: "!", message: "web search: unavailable (managed ChatGPT provider not selected)"}
+	eligible := compat.ClassifyProvider(provider.Load(), provider.LoadLabel(), nil) == compat.ProviderChatGPT
+	path := managedWebSearchPackagePath()
+	current, foreign, packageErr := inspectManagedWebSearchPackage(path)
+	registered, settingsErr := inspectManagedPackageSetting(path)
+	broken := packageErr != nil || settingsErr != nil || foreign || (current && !registered) || (!current && registered)
+	if broken || (eligible && !current) {
+		result := checkResult{name: "web search", status: "✗", message: "web search: broken or not installed"}
+		if eligible {
+			result.guidance = []string{"run `vc doctor --fix` to safely reconcile the void-code-owned package and exact Pi settings registration"}
+			result.fix = func() error { _, err := reconcileManagedWebSearch(true); return err }
+		}
+		return result
 	}
-	if err != nil || foreign || !current {
-		return checkResult{name: "web search", status: "✗", message: "web search: broken or not installed", guidance: []string{"run `vc doctor --fix` to safely reconcile the void-code-owned package"}, fix: func() error { _, err := reconcileManagedWebSearch(true); return err }}
+	if !eligible {
+		return checkResult{name: "web search", status: "!", message: "web search: unavailable (managed ChatGPT provider not selected)"}
 	}
 	return checkResult{name: "web search", status: "✓", message: "web search: installed (web_search, fetch_content, get_search_content)"}
 }
