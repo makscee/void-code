@@ -29,11 +29,13 @@ interface Bootstrap {
 	providers: BootstrapProvider[];
 }
 let activeBootstrap: Bootstrap | undefined;
+const MANAGED_WEB_SEARCH_INSTRUCTION = "For current or externally verifiable facts, use web_search. Use multiple queries for research, inspect primary sources with fetch_content, and cite links. Use get_search_content to revisit stored results.";
 
 export default function (pi: ExtensionAPI) {
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
 	activeBootstrap = bootstrap;
+	let managedSearchAvailable = false;
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
 			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna"]);
@@ -44,9 +46,11 @@ export default function (pi: ExtensionAPI) {
 				baseUrl: bootstrap.relayUrl,
 				apiKey: bootstrap.authToken,
 				api: "void-codex-sse",
+				headers: { "x-void-provider": provider.relayProviderId },
 				models,
 				streamSimple: streamVoidCodex,
 			});
+			managedSearchAvailable = true;
 		}
 		if (provider.kind === "deepseek") {
 			const allowed = new Set([DEEPSEEK_MODEL_ID, "deepseek/deepseek-v4-flash"]);
@@ -62,6 +66,11 @@ export default function (pi: ExtensionAPI) {
 				models,
 			});
 		}
+	}
+	if (managedSearchAvailable) {
+		pi.on("before_agent_start", async (event) => ({
+			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
+		}));
 	}
 }
 

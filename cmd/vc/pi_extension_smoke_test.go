@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -490,9 +491,14 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
-	extPath, err := ensurePiVoidCodexExtension()
-	if err != nil {
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(tmp, ".pi", "agent"))
+	t.Setenv("VC_PI_MANAGED_PROVIDER", "1")
+	t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "1")
+	if _, err := reconcileManagedPiExtension(); err != nil {
 		t.Fatalf("ensure extension: %v", err)
+	}
+	if state, err := reconcileManagedWebSearch(true); err != nil || state != managedWebSearchReady {
+		t.Fatalf("ensure web search: state=%s err=%v", state, err)
 	}
 
 	type seenRequest struct {
@@ -528,17 +534,16 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	}))
 	defer relay.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, piBin,
-		"--no-extensions", "-e", extPath,
 		"--provider", "void-codex",
 		"--model", "gpt-5.6-sol",
 		"--no-context-files",
 		"--no-skills",
 		"--no-prompt-templates",
 		"--no-themes",
-		"--no-tools",
+		"--tools", "web_search,fetch_content,get_search_content",
 		"--no-session",
 		"--no-approve",
 		"-p", "Say exactly: smoke",
@@ -582,8 +587,13 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		if seen.Body["model"] != "gpt-5.6-sol" || seen.Body["stream"] != true {
 			t.Fatalf("unexpected codex body: %#v", seen.Body)
 		}
-		if instructions, ok := seen.Body["instructions"].(string); !ok || !strings.Contains(instructions, "expert coding assistant operating inside pi") {
-			t.Fatalf("instructions do not include Pi system prompt: %#v", seen.Body["instructions"])
+		instructions, ok := seen.Body["instructions"].(string)
+		if !ok || !strings.Contains(instructions, "expert coding assistant operating inside pi") || !strings.Contains(instructions, "multiple queries") || !strings.Contains(instructions, "primary sources") || !strings.Contains(instructions, "cite links") {
+			t.Fatalf("instructions do not include Pi and managed web-search guidance: %#v", seen.Body["instructions"])
+		}
+		tools, ok := seen.Body["tools"].([]any)
+		if !ok || len(tools) != 3 {
+			t.Fatalf("managed web tools missing from request: %#v", seen.Body["tools"])
 		}
 		if _, ok := seen.Body["reasoning"]; !ok {
 			t.Fatalf("codex body missing native reasoning block: %#v", seen.Body)
@@ -593,5 +603,40 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("relay did not receive request")
+	}
+
+	// A later literal Pi process loads the same user package and provider.
+	if runtime.GOOS != "windows" {
+		binDir := filepath.Join(tmp, "bin")
+		if err := os.MkdirAll(binDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		fakeVC := filepath.Join(binDir, "vc")
+		fixture := "#!/bin/sh\nprintf '%s\\n' '" + fmt.Sprintf(`{"version":1,"relayUrl":%q,"authToken":"smoke-token","providers":[{"kind":"codex","relayProviderId":"prov-smoke","models":["gpt-5.6-sol"]}]}`, relay.URL) + "'\n"
+		if err := os.WriteFile(fakeVC, []byte(fixture), 0700); err != nil {
+			t.Fatal(err)
+		}
+		direct := exec.CommandContext(ctx, piBin,
+			"--provider", "void-codex", "--model", "gpt-5.6-sol",
+			"--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes",
+			"--tools", "web_search,fetch_content,get_search_content", "--no-session", "--no-approve", "-p", "Say exactly: smoke",
+		)
+		direct.Env = append(withoutVCEnv(os.Environ()), "HOME="+tmp, "USERPROFILE="+tmp, "PI_CODING_AGENT_DIR="+filepath.Join(tmp, ".pi", "agent"), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0")
+		var directOut, directErr bytes.Buffer
+		direct.Stdout, direct.Stderr = &directOut, &directErr
+		if err := direct.Run(); err != nil || !strings.Contains(directOut.String(), "void smoke ok") {
+			t.Fatalf("direct Pi managed web smoke failed: %v\nstdout=%s\nstderr=%s", err, directOut.String(), directErr.String())
+		}
+		select {
+		case seen := <-seenCh:
+			if tools, ok := seen.Body["tools"].([]any); !ok || len(tools) != 3 {
+				t.Fatalf("direct Pi tools = %#v", seen.Body["tools"])
+			}
+			if instructions, _ := seen.Body["instructions"].(string); !strings.Contains(instructions, "primary sources") {
+				t.Fatalf("direct Pi instructions = %q", instructions)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("direct Pi did not reach relay")
+		}
 	}
 }

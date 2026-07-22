@@ -682,6 +682,7 @@ func buildChecksForHarness(settingsPath, slCmd string, activeHarness harnesschoi
 		checks = append(checks,
 			checkPiCLI(),
 			checkActiveProvider(),
+			checkManagedWebSearch(),
 		)
 	}
 	if runtime.GOOS == "darwin" {

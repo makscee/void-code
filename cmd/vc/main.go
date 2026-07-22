@@ -409,6 +409,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if managedPiErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", managedPiErr)
 	}
+	_, _, hasManagedChatGPT := compat.FirstChatGPT(compatGrants)
+	webEligible := activeHarness.Kind == harnesschoice.Pi && hasManagedChatGPT
+	if _, webErr := reconcileManagedWebSearch(webEligible); webErr != nil {
+		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
+	}
 
 	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
