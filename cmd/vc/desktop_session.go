@@ -177,23 +177,20 @@ var desktopPiArgs = map[string]bool{
 func validateDesktopPiArgs(args []string) error {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		name, value, hasValue := strings.Cut(arg, "=")
+		name, _, hasEquals := strings.Cut(arg, "=")
 		needsValue, allowed := desktopPiArgs[name]
 		if !allowed {
 			return fmt.Errorf("Pi argument %q is not allowed; desktop-session accepts only session lifecycle flags", name)
 		}
 		if needsValue {
-			if hasValue {
-				if value == "" {
-					return fmt.Errorf("Pi argument %q requires a value", name)
-				}
-				continue
+			if hasEquals {
+				return fmt.Errorf("Pi argument %q requires a separate value argument", name)
 			}
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 				return fmt.Errorf("Pi argument %q requires a value", name)
 			}
 			i++
-		} else if hasValue {
+		} else if hasEquals {
 			return fmt.Errorf("Pi argument %q does not take a value", name)
 		}
 	}

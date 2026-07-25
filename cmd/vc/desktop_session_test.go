@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -133,9 +134,24 @@ func TestDesktopSessionRejectsAuthorityChangingAndUnknownPiArgs(t *testing.T) {
 }
 
 func TestDesktopSessionAllowsExactSessionLifecycleArgs(t *testing.T) {
-	args := []string{"--session-id", "id", "--session=resume", "--continue", "--resume", "--fork", "source", "--no-session", "--name", "display"}
+	args := []string{"--session-id", "id", "--session", "resume", "--continue", "--resume", "--fork", "source", "--no-session", "--name", "display", "-n", "short display"}
 	if err := validateDesktopPiArgs(args); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDesktopSessionRejectsEqualsLifecycleArgsLikeRealPiParser(t *testing.T) {
+	for _, flag := range []string{"--session", "--session-id", "--fork", "--name", "-n"} {
+		t.Run(flag, func(t *testing.T) {
+			err := validateDesktopPiArgs([]string{flag + "=value-must-not-appear"})
+			want := fmt.Sprintf("Pi argument %q requires a separate value argument", flag)
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if strings.Contains(err.Error(), "value-must-not-appear") {
+				t.Fatalf("rejected argument value leaked in error: %v", err)
+			}
+		})
 	}
 }
 
