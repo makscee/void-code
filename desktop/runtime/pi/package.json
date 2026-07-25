@@ -1,0 +1,8 @@
+{
+  "name": "void-code-private-pi-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1"
+  }
+}

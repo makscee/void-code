@@ -1,0 +1,59 @@
+{
+  "name": "void-code-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Bounded Void Code Electron packaging prototype",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "clean": "rm -rf dist release resources/staged smoke-output.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "lint": "eslint src tests scripts",
+    "test": "vitest run",
+    "assemble": "node scripts/assemble-resources.mjs",
+    "verify-resources": "node scripts/verify-resources.mjs resources/staged/manifest.json resources/staged",
+    "package:mac": "npm run build && npm run assemble && electron-builder --dir --mac --arm64",
+    "smoke:packaged": "node scripts/packaged-smoke.mjs",
+    "check": "npm run clean && npm run lint && npm run test && npm run package:mac && npm run smoke:packaged"
+  },
+  "dependencies": {
+    "@xterm/xterm": "6.0.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "24.10.1",
+    "electron": "39.2.6",
+    "electron-builder": "26.0.12",
+    "eslint": "9.39.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.48.0",
+    "vitest": "4.0.15"
+  },
+  "build": {
+    "directories": { "output": "release" },
+    "appId": "works.voidcode.desktop.prototype",
+    "afterPack": "scripts/after-pack.cjs",
+    "productName": "Void Code Prototype",
+    "asar": true,
+    "npmRebuild": false,
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "node_modules/node-pty/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/staged",
+        "to": "private-runtime"
+      }
+    ],
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    }
+  }
+}

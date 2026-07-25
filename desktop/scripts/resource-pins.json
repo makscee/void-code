@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "platform": "darwin-arm64",
+  "node": {
+    "version": "v22.23.1",
+    "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-darwin-arm64.tar.gz",
+    "sourceArchiveSha256": "ef28d8fab2c0e4314522d4bb1b7173270aa3937e93b92cb7de79c112ac1fa953",
+    "executableSha256": "2e3f1286a7eb3736346ed1803e458a0ff909e2b2d5bc746144dcb76970e9b99d"
+  },
+  "pi": {
+    "version": "0.82.1",
+    "packageJsonSha256": "a70ae8eb320d35c26fc8c25c6ef697579a4304d9e69736ba1deb981321473804",
+    "packageLockSha256": "f1ad56630b78af85103d2926f09d9cd04a38eb69ee8a46a95c960134119c3360",
+    "packageIntegrity": "sha512-zbkAhoIuDPMF3pKuja0ajZabrMWU29FUMV9A/XMXT/XC1yXs5xt6t6t13GogQFsDrDqbFP4DkZQO1w8rWRAzYA==",
+    "treeSha256": "044217f44d11e4a124e405426f5b0919ef39542e2eaaabbbded48a91e4648d9c"
+  }
+}
