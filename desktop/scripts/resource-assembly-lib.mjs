@@ -49,7 +49,10 @@ export async function extractPinnedNodeArchive(archivePath, destination, pin) {
   if (executableCount !== 1) throw new Error(`unexpected private Node archive layout: executable count ${executableCount}`);
 
   await mkdir(destination, { recursive: true });
-  execFileSync('tar', ['-xzf', archivePath, '-C', destination, executableMember]);
+  // The authenticated Node distribution is also the source of the private npm
+  // needed by vc's managed extension reconciliation. Extract only after every
+  // archive member has passed the traversal check above.
+  execFileSync('tar', ['-xzf', archivePath, '-C', destination]);
   const executable = path.join(destination, executableMember);
   const metadata = await lstat(executable);
   if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('unexpected private Node archive executable type');

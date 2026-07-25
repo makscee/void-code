@@ -1,5 +1,6 @@
 import { cp, mkdir } from 'node:fs/promises';
 
 await mkdir('dist/renderer', { recursive: true });
-await cp('src/renderer/index.html', 'dist/renderer/index.html');
-await cp('src/renderer/smoke.html', 'dist/renderer/smoke.html');
+for (const name of ['index.html', 'index.css', 'smoke.html']) await cp(`src/renderer/${name}`, `dist/renderer/${name}`);
+await cp('node_modules/@xterm/xterm/lib/xterm.js', 'dist/renderer/xterm.js');
+await cp('node_modules/@xterm/xterm/css/xterm.css', 'dist/renderer/xterm.css');

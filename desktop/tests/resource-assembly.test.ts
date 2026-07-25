@@ -17,10 +17,12 @@ afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) =>
 const archive = path.resolve('runtime/cache/node', expectedNodeArchive(pins.node).archiveName);
 
 describe('resource source pins', () => {
-  it('extracts and authenticates Node only from the exact pinned official archive', async () => {
+  it('extracts authenticated Node and its private npm from the exact pinned official archive', async () => {
     const destination = await temp();
     const executable = await extractPinnedNodeArchive(archive, destination, pins.node);
     await expect(assertNodePin(executable, pins.node)).resolves.toBeUndefined();
+    const npm = path.join(path.dirname(executable), 'npm');
+    expect(execFileSync(npm, ['--version'], { encoding: 'utf8', env: { PATH: `${path.dirname(executable)}:/usr/bin:/bin` } }).trim()).toBe('10.9.8');
 
     const changed = path.join(await temp(), 'node');
     await cp(executable, changed);

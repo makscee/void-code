@@ -11,6 +11,14 @@ describe('allowlisted renderer contract validation', () => {
       { sessionId: '../escape', fixture: 'roundTrip' },
     ]) expect(() => startRequest(request)).toThrow();
   });
+  it('accepts only UUID-scoped real create/resume requests with an absolute cwd', () => {
+    const valid = { sessionId: '123e4567-e89b-42d3-a456-426614174000', cwd: '/tmp/space Юникод', mode: 'create' };
+    expect(startRequest(valid)).toEqual(valid);
+    expect(startRequest({ ...valid, mode: 'resume' })).toMatchObject({ mode: 'resume' });
+    expect(() => startRequest({ ...valid, cwd: 'relative' })).toThrow('invalid cwd');
+    expect(() => startRequest({ ...valid, command: '/bin/sh' })).toThrow('unknown');
+    expect(() => startRequest({ ...valid, sessionId: 'not-a-uuid' })).toThrow('invalid sessionId');
+  });
   it('rejects malformed, oversized, and unknown input fields', () => {
     expect(() => inputRequest({ sessionId: 'x', data: 'a'.repeat(65_537) })).toThrow('invalid input');
     expect(() => inputRequest({ sessionId: 'x', data: 'ok', shell: true })).toThrow('unknown');

@@ -4,7 +4,7 @@ import type { ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionK
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
 function subscribe<T extends OutputEvent | ExitEvent>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
-  const validId = sessionId(id);
+  const validId = sessionId(id, true);
   if (typeof listener !== 'function') throw new Error('listener must be a function');
   const subscriptionId = crypto.randomUUID();
   const request: SubscribeRequest = { sessionId: validId, kind, subscriptionId };
@@ -13,9 +13,12 @@ function subscribe<T extends OutputEvent | ExitEvent>(kind: SubscriptionKind, id
     const event = payload as T;
     if (event?.sessionId === validId) listener(event);
   };
-  const reply = ipcRenderer.sendSync(IPC.subscribe, request) as { ok: boolean; error?: string };
-  if (!reply.ok) throw new Error(reply.error ?? 'subscription rejected');
   ipcRenderer.on(channel, wrapped);
+  const reply = ipcRenderer.sendSync(IPC.subscribe, request) as { ok: boolean; error?: string };
+  if (!reply.ok) {
+    ipcRenderer.removeListener(channel, wrapped);
+    throw new Error(reply.error ?? 'subscription rejected');
+  }
   active.set(subscriptionId, { channel, listener: wrapped, request });
   return () => {
     const existing = active.get(subscriptionId);
@@ -41,6 +44,8 @@ const api: TerminalApi = {
   resize: (request) => ipcRenderer.invoke(IPC.resize, request),
   stop: (request) => ipcRenderer.invoke(IPC.stop, request),
   status: (request) => ipcRenderer.invoke(IPC.status, request),
+  chooseFolder: () => ipcRenderer.invoke(IPC.chooseFolder),
+  openLink: (url) => ipcRenderer.invoke(IPC.openLink, { url }),
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),
   teardown,

@@ -15,12 +15,13 @@ class FakeProcess implements TerminalProcess {
   emitExit(code: number): void { for (const listener of this.exits) listener({ exitCode: code }); }
 }
 const subscription = (sessionId: string, kind: 'output' | 'exit', id: string) => ({ sessionId, kind, subscriptionId: id });
+const start = (sessionId: string) => ({ sessionId, fixture: 'roundTrip' as const });
 
 describe('renderer-owned terminal sessions', () => {
   it('routes owned input, resize, status, output and exit', () => {
     const process = new FakeProcess(); const delivered: unknown[] = [];
     const manager = new SessionManager(() => process, (_owner, channel, payload) => delivered.push([channel, payload]));
-    expect(manager.start(1, 'one')).toBe('running');
+    expect(manager.start(1, start('one'))).toBe('running');
     manager.subscribe(1, subscription('one', 'output', 'a'));
     manager.subscribe(1, subscription('one', 'exit', 'b'));
     manager.input(1, 'one', 'hello'); manager.resize(1, 'one', 90, 20);
@@ -31,8 +32,8 @@ describe('renderer-owned terminal sessions', () => {
   });
   it('rejects cross-renderer access, unknown sessions and duplicate ownership', () => {
     const manager = new SessionManager(() => new FakeProcess(), () => undefined);
-    manager.start(1, 'one');
-    expect(() => manager.start(2, 'one')).toThrow('already owned');
+    manager.start(1, start('one'));
+    expect(() => manager.start(2, start('one'))).toThrow('already owned');
     expect(() => manager.input(2, 'one', 'steal')).toThrow('unknown session');
     expect(() => manager.resize(2, 'one', 80, 24)).toThrow('unknown session');
     expect(() => manager.stop(2, 'one')).toThrow('unknown session');
@@ -41,7 +42,7 @@ describe('renderer-owned terminal sessions', () => {
   });
   it('rejects duplicate and stale subscriptions', () => {
     const manager = new SessionManager(() => new FakeProcess(), () => undefined);
-    manager.start(1, 'one'); const sub = subscription('one', 'output', 'same');
+    manager.start(1, start('one')); const sub = subscription('one', 'output', 'same');
     manager.subscribe(1, sub);
     expect(() => manager.subscribe(1, sub)).toThrow('already exists');
     expect(() => manager.unsubscribe(2, sub)).toThrow('unknown subscription');
@@ -51,7 +52,7 @@ describe('renderer-owned terminal sessions', () => {
   it('kills owned processes and prevents delivery after teardown', () => {
     const process = new FakeProcess(); const delivered: unknown[] = [];
     const manager = new SessionManager(() => process, (...args) => delivered.push(args));
-    manager.start(1, 'one'); manager.subscribe(1, subscription('one', 'output', 'x'));
+    manager.start(1, start('one')); manager.subscribe(1, subscription('one', 'output', 'x'));
     manager.teardownOwner(1); process.emitData('stale'); process.emitExit(9);
     expect(process.killed).toBe(true); expect(delivered).toEqual([]);
     expect(() => manager.input(1, 'one', 'stale')).toThrow('unknown session');
@@ -59,9 +60,30 @@ describe('renderer-owned terminal sessions', () => {
   it('stop tears down subscriptions and makes later messages stale', () => {
     const process = new FakeProcess(); const delivered: unknown[] = [];
     const manager = new SessionManager(() => process, (...args) => delivered.push(args));
-    manager.start(1, 'one'); manager.subscribe(1, subscription('one', 'exit', 'x'));
+    manager.start(1, start('one')); manager.subscribe(1, subscription('one', 'exit', 'x'));
     manager.stop(1, 'one'); process.emitExit(0);
     expect(process.killed).toBe(true); expect(delivered).toEqual([]);
     expect(() => manager.status(1, 'one')).toThrow('unknown session');
+  });
+  it('buffers startup output and exit until renderer subscriptions are attached', () => {
+    const process = new FakeProcess(); const delivered: unknown[] = [];
+    const manager = new SessionManager(() => process, (...args) => delivered.push(args));
+    manager.start(1, start('one')); process.emitData('early'); process.emitExit(7);
+    manager.subscribe(1, subscription('one', 'output', 'output'));
+    manager.subscribe(1, subscription('one', 'exit', 'exit'));
+    expect(delivered).toEqual([
+      [1, 'terminal:output', { sessionId: 'one', data: 'early' }],
+      [1, 'terminal:exit', { sessionId: 'one', exitCode: 7 }],
+    ]);
+    expect(() => manager.unsubscribe(1, subscription('one', 'output', 'output'))).toThrow('unknown subscription');
+  });
+  it('tears down every owner on app quit without touching unrelated managers', () => {
+    const ownedOne = new FakeProcess(); const ownedTwo = new FakeProcess(); const unrelated = new FakeProcess();
+    const processes = [ownedOne, ownedTwo];
+    const manager = new SessionManager(() => processes.shift()!, () => undefined);
+    const baseline = new SessionManager(() => unrelated, () => undefined);
+    manager.start(1, start('one')); manager.start(2, start('two')); baseline.start(3, start('baseline'));
+    manager.teardownAll();
+    expect([ownedOne.killed, ownedTwo.killed, unrelated.killed]).toEqual([true, true, false]);
   });
 });

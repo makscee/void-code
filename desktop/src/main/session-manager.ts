@@ -1,5 +1,5 @@
 import type { IPty } from 'node-pty';
-import type { ExitEvent, OutputEvent, SessionStatus, SubscribeRequest } from '../shared/contract';
+import type { ExitEvent, OutputEvent, SessionStatus, StartRequest, SubscribeRequest } from '../shared/contract';
 
 export interface TerminalProcess {
   write(data: string): void;
@@ -8,13 +8,14 @@ export interface TerminalProcess {
   onData(listener: (data: string) => void): { dispose(): void };
   onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
 }
-export type ProcessFactory = () => TerminalProcess;
+export type ProcessFactory = (request: StartRequest) => TerminalProcess;
 export type Deliver = (ownerId: number, channel: string, payload: OutputEvent | ExitEvent) => void;
 interface OwnedSession {
   ownerId: number;
   process: TerminalProcess;
   status: SessionStatus;
   disposables: Array<{ dispose(): void }>;
+  pending: { output: OutputEvent[]; exit: ExitEvent[] };
 }
 interface Subscription extends SubscribeRequest { ownerId: number }
 
@@ -23,10 +24,11 @@ export class SessionManager {
   private readonly subscriptions = new Map<string, Subscription>();
   constructor(private readonly createProcess: ProcessFactory, private readonly deliver: Deliver) {}
 
-  start(ownerId: number, sessionId: string): SessionStatus {
+  start(ownerId: number, request: StartRequest): SessionStatus {
+    const { sessionId } = request;
     if (this.sessions.has(sessionId)) throw new Error('session already owned');
-    const process = this.createProcess();
-    const session: OwnedSession = { ownerId, process, status: 'running', disposables: [] };
+    const process = this.createProcess(request);
+    const session: OwnedSession = { ownerId, process, status: 'running', disposables: [], pending: { output: [], exit: [] } };
     this.sessions.set(sessionId, session);
     session.disposables.push(process.onData((data) => this.emit(ownerId, sessionId, 'output', { sessionId, data })));
     session.disposables.push(process.onExit((event) => {
@@ -47,9 +49,11 @@ export class SessionManager {
     this.destroySession(sessionId, session);
   }
   subscribe(ownerId: number, request: SubscribeRequest): void {
-    this.owned(ownerId, request.sessionId);
+    const session = this.owned(ownerId, request.sessionId);
     if (this.subscriptions.has(request.subscriptionId)) throw new Error('subscription already exists');
     this.subscriptions.set(request.subscriptionId, { ...request, ownerId });
+    for (const payload of session.pending[request.kind].splice(0)) this.deliver(ownerId, request.kind === 'output' ? 'terminal:output' : 'terminal:exit', payload);
+    if (request.kind === 'exit' && session.status === 'exited') this.removeSubscriptions(ownerId, request.sessionId);
   }
   unsubscribe(ownerId: number, request: SubscribeRequest): void {
     const existing = this.subscriptions.get(request.subscriptionId);
@@ -65,6 +69,9 @@ export class SessionManager {
     }
     for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId) this.subscriptions.delete(id);
   }
+  teardownAll(): void {
+    for (const session of [...this.sessions.values()]) this.teardownOwner(session.ownerId);
+  }
   private owned(ownerId: number, sessionId: string): OwnedSession {
     const session = this.sessions.get(sessionId);
     if (!session || session.ownerId !== ownerId) throw new Error('unknown session');
@@ -73,7 +80,10 @@ export class SessionManager {
   private emit(ownerId: number, sessionId: string, kind: 'output' | 'exit', payload: OutputEvent | ExitEvent): void {
     if ([...this.subscriptions.values()].some((subscription) => subscription.ownerId === ownerId && subscription.sessionId === sessionId && subscription.kind === kind)) {
       this.deliver(ownerId, kind === 'output' ? 'terminal:output' : 'terminal:exit', payload);
+      return;
     }
+    const session = this.sessions.get(sessionId);
+    if (session?.ownerId === ownerId) session.pending[kind].push(payload as OutputEvent & ExitEvent);
   }
   private removeSubscriptions(ownerId: number, sessionId: string): void {
     for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId && subscription.sessionId === sessionId) this.subscriptions.delete(id);
@@ -86,4 +96,22 @@ export class SessionManager {
   }
 }
 
-export function wrapPty(process: IPty): TerminalProcess { return process; }
+export function wrapPty(process: IPty): TerminalProcess {
+  let stopping = false;
+  const stopGroup = (): void => {
+    if (stopping) return;
+    stopping = true;
+    // node-pty makes the child a process-group leader. Addressing that group
+    // reaps vc and its private Node/Pi descendants without name-based kills.
+    try { globalThis.process.kill(-process.pid, 'SIGTERM'); } catch { try { process.kill(); } catch { /* already exited */ } }
+    const timer = setTimeout(() => { try { globalThis.process.kill(-process.pid, 'SIGKILL'); } catch { /* group exited */ } }, 1000);
+    timer.unref();
+  };
+  return {
+    write: (data) => process.write(data),
+    resize: (cols, rows) => process.resize(cols, rows),
+    onData: (listener) => process.onData(listener),
+    onExit: (listener) => process.onExit((event) => { stopGroup(); listener(event); }),
+    kill: stopGroup,
+  };
+}

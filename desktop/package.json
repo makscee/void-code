@@ -13,7 +13,8 @@
     "verify-resources": "node scripts/verify-resources.mjs resources/staged/manifest.json resources/staged",
     "package:mac": "npm run build && npm run assemble && electron-builder --dir --mac --arm64",
     "smoke:packaged": "node scripts/packaged-smoke.mjs",
-    "check": "npm run clean && npm run lint && npm run test && npm run package:mac && npm run smoke:packaged"
+    "check": "npm run clean && npm run lint && npm run test && npm run package:mac && npm run smoke:packaged",
+    "check:mac-pty": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/mac-pty-check.mjs"
   },
   "dependencies": {
     "@xterm/xterm": "6.0.0",

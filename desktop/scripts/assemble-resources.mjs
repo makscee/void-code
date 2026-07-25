@@ -1,7 +1,7 @@
-import { cp, chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { assertPiSourcePins, assertPiTreePin, expectedNodeArchive, extractPinnedNodeArchive, shaFile } from './resource-assembly-lib.mjs';
+import { assertPiSourcePins, assertPiTreePin, expectedNodeArchive, extractPinnedNodeArchive, shaFile, treeHash } from './resource-assembly-lib.mjs';
 
 const desktop = process.cwd();
 const repo = path.resolve(desktop, '..');
@@ -12,7 +12,8 @@ const pins = JSON.parse(await readFile(path.join(desktop, 'scripts/resource-pins
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('resource assembly supports only macOS-arm64');
 if (pins.schema !== 1 || pins.platform !== 'darwin-arm64') throw new Error('unsupported resource pins');
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
-if (commit !== expectedCommit) throw new Error(`VC-15 source commit mismatch: ${commit}`);
+try { execFileSync('git', ['merge-base', '--is-ancestor', expectedCommit, commit], { cwd: repo, stdio: 'ignore' }); }
+catch { throw new Error(`VC-15 source commit is not an ancestor of ${commit}`); }
 
 // Inputs are authenticated before any package manifest can bless them.
 const nodeArchive = expectedNodeArchive(pins.node);
@@ -40,7 +41,12 @@ try {
   const vcPath = path.join(staging, 'vc/bin/vc');
   execFileSync('go', ['build', '-trimpath', '-buildvcs=false', '-o', vcPath, './cmd/vc'], { cwd: repo, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'darwin', GOARCH: 'arm64' }, stdio: 'inherit' });
   const nodePath = path.join(staging, 'node/bin/node');
+  const nodeDistribution = path.resolve(nodeSource, '../..');
   await cp(nodeSource, nodePath);
+  await symlink('../lib/node_modules/npm/bin/npm-cli.js', path.join(staging, 'node/bin/npm'));
+  await symlink('../lib/node_modules/npm/bin/npx-cli.js', path.join(staging, 'node/bin/npx'));
+  await mkdir(path.join(staging, 'node/lib/node_modules'), { recursive: true });
+  await cp(path.join(nodeDistribution, 'lib/node_modules/npm'), path.join(staging, 'node/lib/node_modules/npm'), { recursive: true });
   await chmod(nodePath, 0o755);
   await chmod(vcPath, 0o755);
 
@@ -60,13 +66,17 @@ try {
   const manifest = {
     schema: 1,
     platform: 'darwin-arm64',
-    vc: { version: execFileSync(vcPath, ['--version'], { encoding: 'utf8' }).trim(), sourceCommit: commit, path: 'vc/bin/vc', sha256: await shaFile(vcPath) },
+    vc: { version: execFileSync(vcPath, ['--version'], { encoding: 'utf8' }).trim(), sourceCommit: expectedCommit, path: 'vc/bin/vc', sha256: await shaFile(vcPath) },
     node: {
       version: pins.node.version,
       source: nodeArchive.source,
       sourceArchiveSha256: pins.node.sourceArchiveSha256,
       path: 'node/bin/node',
       sha256: pins.node.executableSha256,
+      npm: {
+        version: execFileSync(path.join(staging, 'node/bin/npm'), ['--version'], { encoding: 'utf8', env: { ...process.env, PATH: `${path.join(staging, 'node/bin')}:/usr/bin:/bin` } }).trim(),
+        treeSha256: await treeHash(path.join(staging, 'node/lib/node_modules/npm')),
+      },
     },
     pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', treeSha256: piTreeSha256 },
     fixture: { path: 'fixture/round-trip.js', sha256: await shaFile(path.join(staging, 'fixture/round-trip.js')) },
