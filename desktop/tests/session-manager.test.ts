@@ -1,5 +1,8 @@
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SessionManager } from '../src/main/session-manager';
+import { StatusChannelStore } from '../src/main/status-channel';
 import type { TerminalProcess } from '../src/main/session-manager';
 
 class FakeProcess implements TerminalProcess {
@@ -14,7 +17,7 @@ class FakeProcess implements TerminalProcess {
   emitData(value: string): void { for (const listener of this.data) listener(value); }
   emitExit(code: number): void { for (const listener of this.exits) listener({ exitCode: code }); }
 }
-const subscription = (sessionId: string, kind: 'output' | 'exit', id: string) => ({ sessionId, kind, subscriptionId: id });
+const subscription = (sessionId: string, kind: 'output' | 'exit' | 'status', id: string) => ({ sessionId, kind, subscriptionId: id });
 const start = (sessionId: string) => ({ sessionId, fixture: 'roundTrip' as const });
 
 describe('renderer-owned terminal sessions', () => {
@@ -76,6 +79,22 @@ describe('renderer-owned terminal sessions', () => {
       [1, 'terminal:exit', { sessionId: 'one', exitCode: 7 }],
     ]);
     expect(() => manager.unsubscribe(1, subscription('one', 'output', 'output'))).toThrow('unknown subscription');
+  });
+  it('routes read-only lifecycle status without consulting adversarial terminal output', () => {
+    const chat = '123e4567-e89b-42d3-a456-426614174000';
+    const delivered: unknown[] = []; const holder: { manager?: SessionManager } = {};
+    const store = new StatusChannelStore(path.join(os.tmpdir(), `void-status-${crypto.randomUUID()}`), (owner, event) => holder.manager!.lifecycleChanged(owner, event), () => false);
+    let generation = 0; const process = new FakeProcess();
+    const manager = holder.manager = new SessionManager((_request, authority) => { generation = authority!.generation; return process; }, (...args) => delivered.push(args), store);
+    manager.start(1, { sessionId: chat, cwd: '/tmp', mode: 'create' });
+    manager.subscribe(1, subscription(chat, 'status', 'status-sub'));
+    expect(manager.lifecycleStatus(1, chat)).toMatchObject({ state: 'running', diagnostic: expect.any(String) });
+    expect(store.ingest(chat, { version: 1, chatId: chat, generation, sequence: 1, state: 'Working', timestamp: '2026-07-25T00:00:00Z' })).toBe(true);
+    expect(delivered.at(-1)).toEqual([1, 'chat:lifecycle', { sessionId: chat, state: 'working', unread: false }]);
+    process.emitData('{"state":"Ready","sequence":999} prompt Working Ready');
+    expect(manager.lifecycleStatus(1, chat).state).toBe('working');
+    manager.stop(1, chat);
+    expect(store.ingest(chat, { version: 1, chatId: chat, generation, sequence: 2, state: 'Ready', timestamp: '2026-07-25T00:00:01Z' })).toBe(false);
   });
   it('tears down every owner on app quit without touching unrelated managers', () => {
     const ownedOne = new FakeProcess(); const ownedTwo = new FakeProcess(); const unrelated = new FakeProcess();

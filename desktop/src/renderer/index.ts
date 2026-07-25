@@ -17,8 +17,9 @@ const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
 
-type Runtime = { terminal: InstanceType<typeof Terminal>; container: HTMLDivElement; offOutput: () => void; offExit: () => void; exited: boolean };
+type Runtime = { terminal: InstanceType<typeof Terminal>; container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean };
 const runtimes = new Map<string, Runtime>();
+const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
@@ -27,7 +28,7 @@ function dimensions(container: HTMLElement): { cols: number; rows: number } {
 }
 function dispose(id: string): void {
   const runtime = runtimes.get(id); if (!runtime) return;
-  runtime.offOutput(); runtime.offExit(); runtime.terminal.dispose(); runtime.container.remove(); runtimes.delete(id);
+  runtime.offOutput(); runtime.offExit(); runtime.offStatus(); runtime.terminal.dispose(); runtime.container.remove(); runtimes.delete(id); chatStatuses.delete(id);
 }
 async function stop(id: string): Promise<void> { try { await window.voidTerminal.stop({ sessionId: id }); } catch { /* sleeping or exited */ } dispose(id); }
 function selectedTab(): RendererTabRecord | undefined { return view.workspace?.tabs.find((tab) => tab.id === view.workspace?.selectedId); }
@@ -37,8 +38,8 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const container = document.createElement('div'); container.className = 'terminal'; container.hidden = tab.id !== workspace.selectedId; terminalsElement.append(container);
   const terminal = new Terminal({ cursorBlink: true, scrollback: 10_000, fontSize: 14, fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace', theme: { background: '#101216', foreground: '#e8eaed', cursor: '#d3d7de', selectionBackground: '#41506a' }, linkHandler: { activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } } });
   terminal.open(container); terminal.onData((data: string) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
-  let offOutput = (): void => undefined; let offExit = (): void => undefined;
-  const runtime: Runtime = { terminal, container, offOutput, offExit, exited: false }; runtimes.set(tab.id, runtime);
+  let offOutput = (): void => undefined; let offExit = (): void => undefined; let offStatus = (): void => undefined;
+  const runtime: Runtime = { terminal, container, offOutput, offExit, offStatus, exited: false }; runtimes.set(tab.id, runtime);
   try {
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
@@ -48,6 +49,9 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
       if (view.workspace?.selectedId === tab.id) { endedElement.hidden = false; container.hidden = true; endedDetail.textContent = `The Pi process ended (${signal === undefined ? `exit ${exitCode}` : `signal ${signal}`}). Restart resumes this chat; no shell was opened.`; }
     });
     runtime.offOutput = offOutput; runtime.offExit = offExit;
+    chatStatuses.set(tab.id, (await window.voidTerminal.lifecycleStatus({ sessionId: tab.id })).status);
+    offStatus = window.voidTerminal.onStatus(tab.id, (status) => { chatStatuses.set(tab.id, status); render(); });
+    runtime.offStatus = offStatus;
     const size = dimensions(container); terminal.resize(size.cols, size.rows); await window.voidTerminal.resize({ sessionId: tab.id, ...size });
     if (!container.hidden) terminal.focus();
   } catch (error) {
@@ -69,7 +73,9 @@ function render(): void {
   const active = workspace.tabs.filter((tab) => tab.location === 'active'); const recent = workspace.tabs.filter((tab) => tab.location === 'recent');
   for (const tab of active) {
     const item = document.createElement('div'); item.className = `tab${tab.id === workspace.selectedId ? ' selected' : ''}`;
-    const select = document.createElement('button'); select.textContent = tab.title; select.title = runtimes.has(tab.id) ? 'Chat process active' : 'Sleeping — select to resume';
+    const status = chatStatuses.get(tab.id);
+    const badge = status ? `${status.state === 'running' ? 'Running' : status.state === 'working' ? 'Working' : 'Ready'}${status.unread ? ' •' : ''}` : (runtimes.has(tab.id) ? 'Running' : 'Sleeping');
+    const select = document.createElement('button'); select.textContent = `${tab.title}  ${badge}`; select.title = status?.diagnostic ?? (runtimes.has(tab.id) ? 'Chat process active' : 'Sleeping — select to resume');
     select.addEventListener('click', () => { void selectChat(tab.id); });
     const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', `Close ${tab.title}`); close.addEventListener('click', () => { void closeChat(tab.id); });
     item.append(select, close); tabsElement.append(item);
@@ -81,7 +87,7 @@ function render(): void {
   recentElement.hidden = recent.length === 0;
   for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; const title = document.createElement('span'); title.textContent = tab.title; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
 }
-async function selectChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.select(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); render(); }
+async function selectChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.select(id); const status = chatStatuses.get(id); if (status) chatStatuses.set(id, { ...status, unread: false }); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); else if (tab) chatStatuses.set(id, (await window.voidTerminal.lifecycleStatus({ sessionId: id })).status); render(); }
 async function closeChat(id: string): Promise<void> { await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
 async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); }
 async function chooseFolder(): Promise<void> {

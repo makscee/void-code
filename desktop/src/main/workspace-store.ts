@@ -62,6 +62,7 @@ export class WorkspaceStore {
     this.save(); return this.view();
   }
   select(id: string): WorkspaceView { const workspace = this.available(); this.tab(workspace, id, 'active'); workspace.selectedId = id; this.save(); return this.view(); }
+  assertClose(id: string): void { this.tab(this.available(), id, 'active'); }
   close(id: string): WorkspaceView {
     const workspace = this.available(); const tab = this.tab(workspace, id, 'active'); tab.location = 'recent';
     if (workspace.selectedId === id) workspace.selectedId = workspace.tabs.find((candidate) => candidate.location === 'active')?.id ?? null;

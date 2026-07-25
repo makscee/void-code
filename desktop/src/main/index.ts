@@ -10,6 +10,9 @@ import { resolvePrivateRuntime } from './resources';
 import { sessionLifecycleArgs } from './session-files';
 import type { PrivateRuntime } from './resources';
 import { SessionManager, wrapPty } from './session-manager';
+import { StatusChannelStore } from './status-channel';
+import type { StatusWriteAuthority } from './status-channel';
+import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
@@ -18,7 +21,7 @@ const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 let manager: SessionManager;
 let workspace: WorkspaceStore;
 
-function spawnRequest(runtime: PrivateRuntime, request: StartRequest) {
+function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   if ('fixture' in request) return wrapPty(pty.spawn(runtime.node, [runtime.fixture], {
     name: 'xterm-256color', cols: 80, rows: 24, cwd: runtime.root, env: { PATH: '/usr/bin:/bin', VOID_FIXTURE: 'owned' },
   }));
@@ -29,7 +32,10 @@ function spawnRequest(runtime: PrivateRuntime, request: StartRequest) {
   const args = ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle];
   return wrapPty(pty.spawn(runtime.vc, args, {
     name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd,
-    env: { ...process.env, PATH: `${path.dirname(runtime.node)}:/usr/bin:/bin`, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+    env: {
+      ...process.env, PATH: `${path.dirname(runtime.node)}:/usr/bin:/bin`, TERM: 'xterm-256color', COLORTERM: 'truecolor',
+      ...(authority ? { VC_DESKTOP_STATUS_PATH: authority.path, VC_DESKTOP_CHAT_ID: authority.chatId, VC_DESKTOP_STATUS_GENERATION: String(authority.generation) } : {}),
+    },
   }));
 }
 
@@ -43,6 +49,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.resize, (event, raw: unknown) => { const request = resizeRequest(raw); manager.resize(event.sender.id, request.sessionId, request.cols, request.rows); });
   ipcMain.handle(IPC.stop, (event, raw: unknown) => { const request = sessionRequest(raw); manager.stop(event.sender.id, request.sessionId); });
   ipcMain.handle(IPC.status, (event, raw: unknown) => { const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.status(event.sender.id, request.sessionId) }; });
+  ipcMain.handle(IPC.lifecycleStatus, (event, raw: unknown) => { const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.lifecycleStatus(event.sender.id, request.sessionId) }; });
   ipcMain.handle(IPC.chooseFolder, async () => { const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? null : result.filePaths[0]; });
   ipcMain.handle(IPC.workspaceLoad, () => workspace.view());
   ipcMain.handle(IPC.workspaceChoose, async () => {
@@ -53,8 +60,13 @@ function registerIpc(): void {
   });
   ipcMain.handle(IPC.workspaceRemove, () => workspace.removeWorkspace());
   ipcMain.handle(IPC.workspaceNewChat, () => ({ view: workspace.newChat(randomUUID()) }));
-  ipcMain.handle(IPC.workspaceSelect, (_event, raw: unknown) => workspace.select(chatRequest(raw).sessionId));
-  ipcMain.handle(IPC.workspaceClose, (_event, raw: unknown) => workspace.close(chatRequest(raw).sessionId));
+  ipcMain.handle(IPC.workspaceSelect, (event, raw: unknown) => {
+    const selected = chatRequest(raw).sessionId;
+    const view = workspace.select(selected);
+    try { manager.clearUnread(event.sender.id, selected); } catch { /* sleeping chat has no live status channel */ }
+    return view;
+  });
+  ipcMain.handle(IPC.workspaceClose, (event, raw: unknown) => closeWorkspaceChat(manager, workspace, event.sender.id, raw));
   ipcMain.handle(IPC.workspaceResume, (_event, raw: unknown) => workspace.resume(chatRequest(raw).sessionId));
   ipcMain.handle(IPC.openLink, async (_event, raw: unknown) => shell.openExternal(linkRequest(raw)));
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
@@ -83,7 +95,12 @@ async function createWindow(): Promise<void> {
 void app.whenReady().then(async () => {
   const runtime = resolvePrivateRuntime(runtimeRoot);
   workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
-  manager = new SessionManager((request) => spawnRequest(runtime, request), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload));
+  const statusChannels = new StatusChannelStore(
+    path.join(app.getPath('userData'), 'status-channels'),
+    (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
+    (chatId) => workspace.view().workspace?.selectedId === chatId,
+  );
+  manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
   registerIpc(); await createWindow();
 });
 app.on('before-quit', () => manager?.teardownAll());

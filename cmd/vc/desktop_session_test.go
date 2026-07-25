@@ -155,6 +155,23 @@ func TestDesktopSessionRejectsEqualsLifecycleArgsLikeRealPiParser(t *testing.T) 
 	}
 }
 
+func TestDesktopSessionPassesPrivateLifecycleAuthorityOnlyWhenElectronProvidedIt(t *testing.T) {
+	node, pi := desktopRuntimeFiles(t)
+	for _, pair := range [][2]string{{"VC_DESKTOP_STATUS_PATH", filepath.Join(t.TempDir(), "status.json")}, {"VC_DESKTOP_CHAT_ID", "123e4567-e89b-42d3-a456-426614174000"}, {"VC_DESKTOP_STATUS_GENERATION", "7"}} {
+		t.Setenv(pair[0], pair[1])
+	}
+	plan, err := prepareDesktopSession(node, pi, []string{"--session-id", "id"}, desktopTestDeps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan.env, "\n")
+	for _, want := range []string{"VC_DESKTOP_STATUS_PATH=", "VC_DESKTOP_CHAT_ID=123e4567-e89b-42d3-a456-426614174000", "VC_DESKTOP_STATUS_GENERATION=7"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("desktop authority %q missing", want)
+		}
+	}
+}
+
 func TestDesktopSessionOwnsPiVersionCheckSuppression(t *testing.T) {
 	node, pi := desktopRuntimeFiles(t)
 	t.Setenv("PI_SKIP_VERSION_CHECK", "caller-value-must-be-replaced")

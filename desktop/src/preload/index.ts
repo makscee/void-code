@@ -1,14 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, sessionId } from '../shared/contract';
-import type { ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
+import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
-function subscribe<T extends OutputEvent | ExitEvent>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
+function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
   const validId = sessionId(id, true);
   if (typeof listener !== 'function') throw new Error('listener must be a function');
   const subscriptionId = crypto.randomUUID();
   const request: SubscribeRequest = { sessionId: validId, kind, subscriptionId };
-  const channel = kind === 'output' ? IPC.output : IPC.exit;
+  const channel = kind === 'output' ? IPC.output : kind === 'exit' ? IPC.exit : IPC.lifecycle;
   const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
     const event = payload as T;
     if (event?.sessionId === validId) listener(event);
@@ -44,10 +44,12 @@ const api: TerminalApi = {
   resize: (request) => ipcRenderer.invoke(IPC.resize, request),
   stop: (request) => ipcRenderer.invoke(IPC.stop, request),
   status: (request) => ipcRenderer.invoke(IPC.status, request),
+  lifecycleStatus: (request) => ipcRenderer.invoke(IPC.lifecycleStatus, request),
   chooseFolder: () => ipcRenderer.invoke(IPC.chooseFolder),
   openLink: (url) => ipcRenderer.invoke(IPC.openLink, { url }),
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),
+  onStatus: (id, listener) => subscribe('status', id, listener),
   teardown,
   workspace: Object.freeze({
     load: () => ipcRenderer.invoke(IPC.workspaceLoad),

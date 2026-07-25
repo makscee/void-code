@@ -1,5 +1,6 @@
 import type { IPty } from 'node-pty';
-import type { ExitEvent, OutputEvent, SessionStatus, StartRequest, SubscribeRequest } from '../shared/contract';
+import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionStatus, StartRequest, SubscribeRequest } from '../shared/contract';
+import type { StatusChannelStore, StatusWriteAuthority } from './status-channel';
 
 export interface TerminalProcess {
   write(data: string): void;
@@ -8,8 +9,8 @@ export interface TerminalProcess {
   onData(listener: (data: string) => void): { dispose(): void };
   onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
 }
-export type ProcessFactory = (request: StartRequest) => TerminalProcess;
-export type Deliver = (ownerId: number, channel: string, payload: OutputEvent | ExitEvent) => void;
+export type ProcessFactory = (request: StartRequest, authority?: StatusWriteAuthority) => TerminalProcess;
+export type Deliver = (ownerId: number, channel: string, payload: OutputEvent | ExitEvent | ChatSemanticStatus) => void;
 export interface StartResult { status: SessionStatus; showSharedFilesWarning: boolean }
 interface OwnedSession {
   ownerId: number;
@@ -17,7 +18,7 @@ interface OwnedSession {
   status: SessionStatus;
   real: boolean;
   disposables: Array<{ dispose(): void }>;
-  pending: { output: OutputEvent[]; exit: ExitEvent[] };
+  pending: { output: OutputEvent[]; exit: ExitEvent[]; status: ChatSemanticStatus[] };
 }
 interface Subscription extends SubscribeRequest { ownerId: number }
 
@@ -25,15 +26,17 @@ export class SessionManager {
   private readonly sessions = new Map<string, OwnedSession>();
   private readonly subscriptions = new Map<string, Subscription>();
   private readonly disclosedOwners = new Set<number>();
-  constructor(private readonly createProcess: ProcessFactory, private readonly deliver: Deliver) {}
+  constructor(private readonly createProcess: ProcessFactory, private readonly deliver: Deliver, private readonly statusChannels?: StatusChannelStore) {}
 
   start(ownerId: number, request: StartRequest): StartResult {
     const { sessionId } = request;
     if (this.sessions.has(sessionId)) throw new Error('session already owned');
     const liveBefore = this.liveRuntimeCount(ownerId);
-    const process = this.createProcess(request);
     const real = !('fixture' in request);
-    const session: OwnedSession = { ownerId, process, status: 'running', real, disposables: [], pending: { output: [], exit: [] } };
+    const authority = real ? this.statusChannels?.create(ownerId, sessionId) : undefined;
+    let process: TerminalProcess;
+    try { process = this.createProcess(request, authority); } catch (error) { if (authority) this.statusChannels?.close(ownerId, sessionId); throw error; }
+    const session: OwnedSession = { ownerId, process, status: 'running', real, disposables: [], pending: { output: [], exit: [], status: [] } };
     this.sessions.set(sessionId, session);
     session.disposables.push(process.onData((data) => this.emit(ownerId, sessionId, 'output', { sessionId, data })));
     session.disposables.push(process.onExit((event) => {
@@ -50,16 +53,34 @@ export class SessionManager {
   input(ownerId: number, sessionId: string, data: string): void { this.owned(ownerId, sessionId).process.write(data); }
   resize(ownerId: number, sessionId: string, cols: number, rows: number): void { this.owned(ownerId, sessionId).process.resize(cols, rows); }
   status(ownerId: number, sessionId: string): SessionStatus { return this.owned(ownerId, sessionId).status; }
+  lifecycleStatus(ownerId: number, sessionId: string): ChatSemanticStatus {
+    this.owned(ownerId, sessionId);
+    return this.statusChannels?.status(ownerId, sessionId) ?? { sessionId, state: 'running', unread: false, diagnostic: 'status channel unavailable' };
+  }
+  clearUnread(ownerId: number, sessionId: string): ChatSemanticStatus {
+    this.owned(ownerId, sessionId);
+    return this.statusChannels?.clearUnread(ownerId, sessionId) ?? { sessionId, state: 'running', unread: false, diagnostic: 'status channel unavailable' };
+  }
+  lifecycleChanged(ownerId: number, event: ChatSemanticStatus): void {
+    const session = this.sessions.get(event.sessionId);
+    if (!session || session.ownerId !== ownerId) return;
+    this.emit(ownerId, event.sessionId, 'status', event);
+  }
   stop(ownerId: number, sessionId: string): void {
     const session = this.owned(ownerId, sessionId);
     session.process.kill();
     this.destroySession(sessionId, session);
   }
+  stopIfOwned(ownerId: number, sessionId: string): boolean {
+    if (!this.sessions.has(sessionId)) return false;
+    this.stop(ownerId, sessionId);
+    return true;
+  }
   subscribe(ownerId: number, request: SubscribeRequest): void {
     const session = this.owned(ownerId, request.sessionId);
     if (this.subscriptions.has(request.subscriptionId)) throw new Error('subscription already exists');
     this.subscriptions.set(request.subscriptionId, { ...request, ownerId });
-    for (const payload of session.pending[request.kind].splice(0)) this.deliver(ownerId, request.kind === 'output' ? 'terminal:output' : 'terminal:exit', payload);
+    for (const payload of session.pending[request.kind].splice(0)) this.deliver(ownerId, request.kind === 'output' ? 'terminal:output' : request.kind === 'exit' ? 'terminal:exit' : 'chat:lifecycle', payload);
     if (request.kind === 'exit' && session.status === 'exited') this.removeSubscriptions(ownerId, request.sessionId);
   }
   unsubscribe(ownerId: number, request: SubscribeRequest): void {
@@ -76,9 +97,11 @@ export class SessionManager {
     }
     for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId) this.subscriptions.delete(id);
     this.disclosedOwners.delete(ownerId);
+    this.statusChannels?.closeOwner(ownerId);
   }
   teardownAll(): void {
     for (const session of [...this.sessions.values()]) this.teardownOwner(session.ownerId);
+    this.statusChannels?.closeAll();
   }
   private liveRuntimeCount(ownerId: number): number {
     return [...this.sessions.values()].filter((session) => session.ownerId === ownerId && session.real && session.status === 'running').length;
@@ -88,13 +111,16 @@ export class SessionManager {
     if (!session || session.ownerId !== ownerId) throw new Error('unknown session');
     return session;
   }
-  private emit(ownerId: number, sessionId: string, kind: 'output' | 'exit', payload: OutputEvent | ExitEvent): void {
+  private emit(ownerId: number, sessionId: string, kind: 'output' | 'exit' | 'status', payload: OutputEvent | ExitEvent | ChatSemanticStatus): void {
     if ([...this.subscriptions.values()].some((subscription) => subscription.ownerId === ownerId && subscription.sessionId === sessionId && subscription.kind === kind)) {
-      this.deliver(ownerId, kind === 'output' ? 'terminal:output' : 'terminal:exit', payload);
+      this.deliver(ownerId, kind === 'output' ? 'terminal:output' : kind === 'exit' ? 'terminal:exit' : 'chat:lifecycle', payload);
       return;
     }
     const session = this.sessions.get(sessionId);
-    if (session?.ownerId === ownerId) session.pending[kind].push(payload as OutputEvent & ExitEvent);
+    if (session?.ownerId === ownerId) {
+      if (kind === 'status') session.pending.status.splice(0);
+      session.pending[kind].push(payload as OutputEvent & ExitEvent & ChatSemanticStatus);
+    }
   }
   private removeSubscriptions(ownerId: number, sessionId: string): void {
     for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId && subscription.sessionId === sessionId) this.subscriptions.delete(id);
@@ -102,6 +128,7 @@ export class SessionManager {
   private destroySession(sessionId: string, session: OwnedSession): void {
     if (this.sessions.get(sessionId) !== session) return;
     this.sessions.delete(sessionId);
+    this.statusChannels?.close(session.ownerId, sessionId);
     this.removeSubscriptions(session.ownerId, sessionId);
     for (const disposable of session.disposables) disposable.dispose();
   }

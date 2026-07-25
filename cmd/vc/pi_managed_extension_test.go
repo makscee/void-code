@@ -64,6 +64,22 @@ func TestReconcileManagedPiExtensionIsAtomicIdempotentAndOwnershipSafe(t *testin
 	}
 }
 
+func TestManagedPiExtensionDesktopLifecycleContractIsValueFreeAndOptional(t *testing.T) {
+	for _, required := range []string{`pi.on("before_agent_start"`, `pi.on("agent_end"`, `state: "Working" | "Ready"`, `version: 1`, `chatId`, `generation`, `sequence`, `timestamp`, `renameSync`, `JSON.stringify(message) + "\n"`} {
+		if !strings.Contains(piVoidCodexExtensionSource, required) {
+			t.Fatalf("managed extension lifecycle missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{`message = { prompt`, `message = { output`, `message = { filename`, `message = { model`, `message = { credential`, `message = { payload`, `message = { tool`} {
+		if strings.Contains(piVoidCodexExtensionSource, forbidden) {
+			t.Fatalf("lifecycle message contains forbidden field %q", forbidden)
+		}
+	}
+	if !strings.Contains(piVoidCodexExtensionSource, `if (!statusPath && !chatId && !process.env.VC_DESKTOP_STATUS_GENERATION) return;`) {
+		t.Fatal("direct Pi lifecycle must remain inert without desktop authority")
+	}
+}
+
 func TestManagedPiExtensionOptOutRemovesOnlyOwnedMaterial(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", dir)

@@ -2,6 +2,8 @@ package main
 
 const piVoidCodexExtensionSource = `// void-code-managed-pi-extension:v1
 import { execFileSync } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type {
 	AssistantMessage,
 	AssistantMessageEventStream,
@@ -32,6 +34,7 @@ let activeBootstrap: Bootstrap | undefined;
 const MANAGED_WEB_SEARCH_INSTRUCTION = "For current or externally verifiable facts, use web_search. Use multiple queries for research, inspect primary sources with fetch_content, and cite links. Use get_search_content to revisit stored results.";
 
 export default function (pi: ExtensionAPI) {
+	registerDesktopLifecycle(pi);
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
 	activeBootstrap = bootstrap;
@@ -72,6 +75,31 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
 		}));
 	}
+}
+
+function registerDesktopLifecycle(pi: ExtensionAPI): void {
+	const statusPath = process.env.VC_DESKTOP_STATUS_PATH;
+	const chatId = process.env.VC_DESKTOP_CHAT_ID;
+	const generation = Number(process.env.VC_DESKTOP_STATUS_GENERATION);
+	if (!statusPath && !chatId && !process.env.VC_DESKTOP_STATUS_GENERATION) return;
+	if (!statusPath || !path.isAbsolute(statusPath) || !chatId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(chatId) || !Number.isSafeInteger(generation) || generation < 1) {
+		console.error("void-code: desktop lifecycle channel unavailable");
+		return;
+	}
+	let sequence = 0;
+	const emit = (state: "Working" | "Ready"): void => {
+		sequence += 1;
+		const message = { version: 1, chatId, generation, sequence, state, timestamp: new Date().toISOString() };
+		const temporary = statusPath + ".tmp-" + process.pid;
+		try {
+			writeFileSync(temporary, JSON.stringify(message) + "\n", { mode: 0o600 });
+			renameSync(temporary, statusPath);
+		} catch {
+			console.error("void-code: desktop lifecycle channel unavailable");
+		}
+	};
+	pi.on("before_agent_start", async () => { emit("Working"); });
+	pi.on("agent_end", async () => { emit("Ready"); });
 }
 
 function loadBootstrap(): Bootstrap | undefined {
