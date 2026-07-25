@@ -35,7 +35,8 @@ Sub-commands:
   login    Authenticate with an access code or device flow
   logout   Wipe cached credentials
   status   Show current auth / relay / version status
-  update   Fetch the latest vc release and swap the binary
+  update           Fetch the latest vc release and swap the binary
+  desktop-session  Launch a caller-supplied private Node/Pi runtime
 
 Non-interactive mode (--non-interactive, or automatically when stdin is not a
 TTY) never opens a prompt: vc prints guidance and picks safe defaults so it
@@ -81,6 +82,9 @@ func init() {
 // Execute is the single entry-point called from main().
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		if exitErr, ok := err.(interface{ ExitCode() int }); ok && exitErr.ExitCode() >= 0 {
+			os.Exit(exitErr.ExitCode())
+		}
 		// Cobra already prints the error; exit with code 1.
 		os.Exit(1)
 	}

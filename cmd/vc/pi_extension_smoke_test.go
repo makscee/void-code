@@ -84,7 +84,7 @@ func TestPiVoidDeepSeekExtensionSmoke(t *testing.T) {
 		"--no-approve",
 		"-p", "Say exactly: smoke",
 	)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(withoutVCEnv(os.Environ()),
 		"HOME="+tmp,
 		"USERPROFILE="+tmp,
 		"VC_RELAY_URL="+relay.URL,
@@ -506,6 +506,10 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	seenCh := make(chan seenRequest, 2)
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/vc/relay-ca.pem":
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			_, _ = w.Write(relayCA)
+			return
 		case "/v1/vc/me":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"userId":"smoke-user","email":"smoke@example.com"}`)
@@ -564,7 +568,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		"--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes",
 		"--tools", "web_search,fetch_content,get_search_content", "--no-session", "--no-approve", "-p", "Say exactly: smoke",
 	)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(withoutVCEnv(os.Environ()),
 		"HOME="+tmp,
 		"USERPROFILE="+tmp,
 		"PI_CODING_AGENT_DIR="+filepath.Join(tmp, ".pi", "agent"),
