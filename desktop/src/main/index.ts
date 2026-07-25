@@ -1,19 +1,22 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, webContents } from 'electron';
 import { statSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest } from '../shared/contract';
+import { IPC, chatRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest } from '../shared/contract';
 import type { RealStartRequest, StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { sessionLifecycleArgs } from './session-files';
 import type { PrivateRuntime } from './resources';
 import { SessionManager, wrapPty } from './session-manager';
+import { WorkspaceStore } from './workspace-store';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
 const smokeOutput = smokeArgument?.slice('--void-smoke-output='.length);
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 let manager: SessionManager;
+let workspace: WorkspaceStore;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest) {
   if ('fixture' in request) return wrapPty(pty.spawn(runtime.node, [runtime.fixture], {
@@ -31,12 +34,28 @@ function spawnRequest(runtime: PrivateRuntime, request: StartRequest) {
 }
 
 function registerIpc(): void {
-  ipcMain.handle(IPC.start, (event, raw: unknown) => { const request = startRequest(raw); return { sessionId: request.sessionId, status: manager.start(event.sender.id, request) }; });
+  ipcMain.handle(IPC.start, (event, raw: unknown) => {
+    const request = startRequest(raw);
+    if (!('fixture' in request)) workspace.assertLaunch(request.sessionId, request.cwd);
+    return { sessionId: request.sessionId, ...manager.start(event.sender.id, request) };
+  });
   ipcMain.handle(IPC.input, (event, raw: unknown) => { const request = inputRequest(raw); manager.input(event.sender.id, request.sessionId, request.data); });
   ipcMain.handle(IPC.resize, (event, raw: unknown) => { const request = resizeRequest(raw); manager.resize(event.sender.id, request.sessionId, request.cols, request.rows); });
   ipcMain.handle(IPC.stop, (event, raw: unknown) => { const request = sessionRequest(raw); manager.stop(event.sender.id, request.sessionId); });
   ipcMain.handle(IPC.status, (event, raw: unknown) => { const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.status(event.sender.id, request.sessionId) }; });
   ipcMain.handle(IPC.chooseFolder, async () => { const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? null : result.filePaths[0]; });
+  ipcMain.handle(IPC.workspaceLoad, () => workspace.view());
+  ipcMain.handle(IPC.workspaceChoose, async () => {
+    const current = workspace.view();
+    if (current.workspace && !current.recoveryPath) throw new Error('this window already owns a folder');
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] });
+    return result.canceled ? null : workspace.setFolder(result.filePaths[0]);
+  });
+  ipcMain.handle(IPC.workspaceRemove, () => workspace.removeWorkspace());
+  ipcMain.handle(IPC.workspaceNewChat, () => ({ view: workspace.newChat(randomUUID()) }));
+  ipcMain.handle(IPC.workspaceSelect, (_event, raw: unknown) => workspace.select(chatRequest(raw).sessionId));
+  ipcMain.handle(IPC.workspaceClose, (_event, raw: unknown) => workspace.close(chatRequest(raw).sessionId));
+  ipcMain.handle(IPC.workspaceResume, (_event, raw: unknown) => workspace.resume(chatRequest(raw).sessionId));
   ipcMain.handle(IPC.openLink, async (_event, raw: unknown) => shell.openExternal(linkRequest(raw)));
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
   ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
@@ -63,6 +82,7 @@ async function createWindow(): Promise<void> {
 
 void app.whenReady().then(async () => {
   const runtime = resolvePrivateRuntime(runtimeRoot);
+  workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
   manager = new SessionManager((request) => spawnRequest(runtime, request), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload));
   registerIpc(); await createWindow();
 });

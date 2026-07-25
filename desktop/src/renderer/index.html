@@ -1,3 +1,15 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="xterm.css"><link rel="stylesheet" href="index.css"><title>Void Code Prototype</title></head>
-<body><header><strong>Void Code</strong><span id="folder">Choose a folder to start one chat</span><button id="choose">Choose Folder</button></header><main><div id="terminal" hidden></div><section id="empty"><h1>One private Pi chat</h1><p>The selected folder becomes the chat working directory.</p></section><section id="ended" hidden><h2 id="ended-title">Pi exited</h2><p id="ended-detail">The terminal is closed. It did not fall through to a shell.</p><button id="restart">Restart</button><button id="close">Close</button></section></main><script src="xterm.js"></script><script src="index.js"></script></body></html>
+<body>
+<header><strong>Void Code</strong><span id="folder">No folder selected</span><button id="new-chat" hidden>New Chat</button><button id="choose">Choose Folder</button></header>
+<div id="notice" role="status" hidden></div>
+<nav id="tabs" aria-label="Open chats" hidden></nav>
+<main>
+  <section id="empty"><h1>Choose one trusted folder</h1><p>Each chat in this window works directly in that folder using your existing VC authentication.</p><button id="empty-choose">Choose Folder</button></section>
+  <section id="recovery" hidden><h2>Workspace unavailable</h2><p id="recovery-path"></p><p>Locate the moved folder or remove this saved workspace. No fallback working directory will be used.</p><button id="locate">Locate Folder</button><button id="remove-workspace">Remove</button></section>
+  <div id="terminals"></div>
+  <section id="ended" hidden><h2>Pi exited</h2><p id="ended-detail">No shell was opened.</p><button id="restart">Restart</button><button id="close-ended">Close</button></section>
+</main>
+<aside id="recent" hidden><h2>Recent Chats</h2><div id="recent-list"></div></aside>
+<script src="xterm.js"></script><script src="index.js"></script>
+</body></html>

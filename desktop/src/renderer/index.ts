@@ -1,73 +1,99 @@
-const terminalElement = document.querySelector<HTMLDivElement>('#terminal')!;
-const emptyElement = document.querySelector<HTMLElement>('#empty')!;
-const endedElement = document.querySelector<HTMLElement>('#ended')!;
-const endedTitle = document.querySelector<HTMLElement>('#ended-title')!;
-const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
+const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
+const newChatButton = document.querySelector<HTMLButtonElement>('#new-chat')!;
+const tabsElement = document.querySelector<HTMLElement>('#tabs')!;
+const terminalsElement = document.querySelector<HTMLElement>('#terminals')!;
+const emptyElement = document.querySelector<HTMLElement>('#empty')!;
+const recoveryElement = document.querySelector<HTMLElement>('#recovery')!;
+const recoveryPathElement = document.querySelector<HTMLElement>('#recovery-path')!;
+const locateButton = document.querySelector<HTMLButtonElement>('#locate')!;
+const removeWorkspaceButton = document.querySelector<HTMLButtonElement>('#remove-workspace')!;
+const noticeElement = document.querySelector<HTMLElement>('#notice')!;
+const recentElement = document.querySelector<HTMLElement>('#recent')!;
+const recentListElement = document.querySelector<HTMLElement>('#recent-list')!;
+const endedElement = document.querySelector<HTMLElement>('#ended')!;
+const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
-const closeButton = document.querySelector<HTMLButtonElement>('#close')!;
+const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
 
-const terminal = new Terminal({
-  cursorBlink: true, convertEol: false, scrollback: 10_000, fontSize: 14,
-  fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-  theme: { background: '#101216', foreground: '#e8eaed', cursor: '#d3d7de', selectionBackground: '#41506a' },
-  linkHandler: { activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } },
-});
-terminal.open(terminalElement);
-const stateKey = 'void-code-active-chat-v1';
-let session: { id: string; cwd: string } | undefined;
-let offOutput: (() => void) | undefined;
-let offExit: (() => void) | undefined;
+type Runtime = { terminal: InstanceType<typeof Terminal>; container: HTMLDivElement; offOutput: () => void; offExit: () => void; exited: boolean };
+const runtimes = new Map<string, Runtime>();
+let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 
-function subscriptionsOff(): void { offOutput?.(); offExit?.(); offOutput = undefined; offExit = undefined; }
-function dimensions(): { cols: number; rows: number } {
-  return { cols: Math.max(2, Math.floor((terminalElement.clientWidth - 18) / 8.45)), rows: Math.max(1, Math.floor((terminalElement.clientHeight - 18) / 17)) };
+function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
+function dimensions(container: HTMLElement): { cols: number; rows: number } {
+  return { cols: Math.max(2, Math.floor((container.clientWidth - 18) / 8.45)), rows: Math.max(1, Math.floor((container.clientHeight - 18) / 17)) };
 }
-async function resize(): Promise<void> {
-  if (!session || terminalElement.hidden) return;
-  const size = dimensions(); terminal.resize(size.cols, size.rows); await window.voidTerminal.resize({ sessionId: session.id, ...size });
+function dispose(id: string): void {
+  const runtime = runtimes.get(id); if (!runtime) return;
+  runtime.offOutput(); runtime.offExit(); runtime.terminal.dispose(); runtime.container.remove(); runtimes.delete(id);
 }
-async function launch(mode: 'create' | 'resume'): Promise<void> {
-  if (!session) return;
-  subscriptionsOff(); terminal.reset(); emptyElement.hidden = true; endedElement.hidden = true; terminalElement.hidden = false;
+async function stop(id: string): Promise<void> { try { await window.voidTerminal.stop({ sessionId: id }); } catch { /* sleeping or exited */ } dispose(id); }
+function selectedTab(): RendererTabRecord | undefined { return view.workspace?.tabs.find((tab) => tab.id === view.workspace?.selectedId); }
+
+async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promise<void> {
+  const workspace = view.workspace; if (!workspace || view.recoveryPath || runtimes.has(tab.id)) return;
+  const container = document.createElement('div'); container.className = 'terminal'; container.hidden = tab.id !== workspace.selectedId; terminalsElement.append(container);
+  const terminal = new Terminal({ cursorBlink: true, scrollback: 10_000, fontSize: 14, fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace', theme: { background: '#101216', foreground: '#e8eaed', cursor: '#d3d7de', selectionBackground: '#41506a' }, linkHandler: { activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } } });
+  terminal.open(container); terminal.onData((data: string) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
+  let offOutput = (): void => undefined; let offExit = (): void => undefined;
+  const runtime: Runtime = { terminal, container, offOutput, offExit, exited: false }; runtimes.set(tab.id, runtime);
   try {
-    await window.voidTerminal.start({ sessionId: session.id, cwd: session.cwd, mode });
-    offOutput = window.voidTerminal.onOutput(session.id, ({ data }) => terminal.write(data));
-    offExit = window.voidTerminal.onExit(session.id, ({ exitCode, signal }) => {
-      subscriptionsOff(); terminalElement.hidden = true; endedElement.hidden = false;
-      endedTitle.textContent = exitCode === 0 ? 'Pi exited' : 'Pi stopped';
-      endedDetail.textContent = `The Pi process ended (${signal === undefined ? `exit ${exitCode}` : `signal ${signal}`}). Restart resumes this chat; no shell was opened.`;
+    const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
+    if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
+    offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
+    offExit = window.voidTerminal.onExit(tab.id, ({ exitCode, signal }) => {
+      runtime.exited = true;
+      if (view.workspace?.selectedId === tab.id) { endedElement.hidden = false; container.hidden = true; endedDetail.textContent = `The Pi process ended (${signal === undefined ? `exit ${exitCode}` : `signal ${signal}`}). Restart resumes this chat; no shell was opened.`; }
     });
-    await resize(); terminal.focus();
+    runtime.offOutput = offOutput; runtime.offExit = offExit;
+    const size = dimensions(container); terminal.resize(size.cols, size.rows); await window.voidTerminal.resize({ sessionId: tab.id, ...size });
+    if (!container.hidden) terminal.focus();
   } catch (error) {
-    subscriptionsOff(); terminalElement.hidden = true; endedElement.hidden = false;
+    runtime.exited = true; container.hidden = true; endedElement.hidden = false;
     const message = error instanceof Error ? error.message : String(error);
-    endedTitle.textContent = message.includes('SESSION_MISSING') ? 'Saved chat missing' : 'Pi could not start';
-    endedDetail.textContent = message.includes('SESSION_MISSING') ? 'The persisted Pi session is unavailable. Close this chat and start a new one.' : message;
+    endedDetail.textContent = message.includes('SESSION_MISSING') ? 'The saved Pi session is unavailable. Close it and start a new chat.' : message;
     restartButton.hidden = message.includes('SESSION_MISSING');
   }
 }
-chooseButton.addEventListener('click', async () => {
-  const cwd = await window.voidTerminal.chooseFolder(); if (!cwd) return;
-  session = { id: crypto.randomUUID(), cwd }; localStorage.setItem(stateKey, JSON.stringify(session));
-  folderElement.textContent = cwd; restartButton.hidden = false; await launch('create');
-});
-restartButton.addEventListener('click', async () => {
-  if (!session) return;
-  try { await window.voidTerminal.stop({ sessionId: session.id }); } catch { /* an exited process may already be gone */ }
-  await launch('resume');
-});
-closeButton.addEventListener('click', async () => {
-  if (session) { try { await window.voidTerminal.stop({ sessionId: session.id }); } catch { /* already gone */ } }
-  subscriptionsOff(); session = undefined; localStorage.removeItem(stateKey); terminal.reset(); terminalElement.hidden = true; endedElement.hidden = true; emptyElement.hidden = false; folderElement.textContent = 'Choose a folder to start one chat';
-});
-terminal.onData((data: string) => { if (session) void window.voidTerminal.input({ sessionId: session.id, data }); });
-new ResizeObserver(() => { void resize(); }).observe(terminalElement);
-try {
-  const saved = JSON.parse(localStorage.getItem(stateKey) ?? 'null') as unknown;
-  if (typeof saved === 'object' && saved !== null && Object.keys(saved).length === 2 && typeof (saved as Record<string, unknown>).id === 'string' && typeof (saved as Record<string, unknown>).cwd === 'string') {
-    session = { id: (saved as { id: string }).id, cwd: (saved as { cwd: string }).cwd };
-    folderElement.textContent = session.cwd; restartButton.hidden = false; void launch('resume');
+
+function render(): void {
+  const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
+  folderElement.textContent = workspace?.path ?? 'No folder selected';
+  chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
+  emptyElement.hidden = Boolean(workspace); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
+  recoveryPathElement.textContent = view.recoveryPath ?? '';
+  tabsElement.replaceChildren(); recentListElement.replaceChildren();
+  if (!workspace || recovering) { recentElement.hidden = true; endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; return; }
+  const active = workspace.tabs.filter((tab) => tab.location === 'active'); const recent = workspace.tabs.filter((tab) => tab.location === 'recent');
+  for (const tab of active) {
+    const item = document.createElement('div'); item.className = `tab${tab.id === workspace.selectedId ? ' selected' : ''}`;
+    const select = document.createElement('button'); select.textContent = tab.title; select.title = runtimes.has(tab.id) ? 'Chat process active' : 'Sleeping — select to resume';
+    select.addEventListener('click', () => { void selectChat(tab.id); });
+    const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', `Close ${tab.title}`); close.addEventListener('click', () => { void closeChat(tab.id); });
+    item.append(select, close); tabsElement.append(item);
   }
-} catch { localStorage.removeItem(stateKey); }
+  for (const runtime of runtimes.values()) runtime.container.hidden = true;
+  const selected = workspace.selectedId ? runtimes.get(workspace.selectedId) : undefined;
+  if (selected && !selected.exited) { selected.container.hidden = false; selected.terminal.focus(); endedElement.hidden = true; }
+  else endedElement.hidden = !workspace.selectedId;
+  recentElement.hidden = recent.length === 0;
+  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; const title = document.createElement('span'); title.textContent = tab.title; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
+}
+async function selectChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.select(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); render(); }
+async function closeChat(id: string): Promise<void> { await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
+async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); }
+async function chooseFolder(): Promise<void> {
+  const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
+  announce('Trusted-folder prototype: Pi can read and change files in this folder using your operating-system permissions. Existing VC authentication is used.'); render();
+}
+
+chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
+removeWorkspaceButton.addEventListener('click', async () => { for (const id of [...runtimes.keys()]) await stop(id); view = await window.voidTerminal.workspace.remove(); render(); });
+newChatButton.addEventListener('click', async () => { const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
+restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
+closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
+new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; const size = dimensions(runtime.container); runtime.terminal.resize(size.cols, size.rows); void window.voidTerminal.resize({ sessionId: tab!.id, ...size }); }).observe(terminalsElement);
+
+void window.voidTerminal.workspace.load().then(async (loaded) => { view = loaded; render(); const tab = selectedTab(); if (tab && !view.recoveryPath) await launch(tab, 'resume'); render(); });

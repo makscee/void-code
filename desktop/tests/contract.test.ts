@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inputRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest } from '../src/shared/contract';
+import { chatRequest, inputRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest } from '../src/shared/contract';
 
 describe('allowlisted renderer contract validation', () => {
   it('accepts only the owned harmless fixture', () => {
@@ -24,6 +24,12 @@ describe('allowlisted renderer contract validation', () => {
     expect(() => inputRequest({ sessionId: 'x', data: 'ok', shell: true })).toThrow('unknown');
     expect(() => sessionRequest({ sessionId: '' })).toThrow('invalid sessionId');
     expect(() => sessionRequest({ sessionId: 'x', command: 'whoami' })).toThrow('unknown');
+  });
+  it('allows workspace lifecycle operations only for strict chat UUIDs', () => {
+    const valid = { sessionId: '123e4567-e89b-42d3-a456-426614174000' };
+    expect(chatRequest(valid)).toEqual(valid);
+    expect(() => chatRequest({ sessionId: 'fixture-id' })).toThrow('invalid sessionId');
+    expect(() => chatRequest({ ...valid, cwd: '/tmp' })).toThrow('unknown');
   });
   it('bounds every resize argument', () => {
     expect(resizeRequest({ sessionId: 'x', cols: 80, rows: 24 })).toMatchObject({ cols: 80, rows: 24 });

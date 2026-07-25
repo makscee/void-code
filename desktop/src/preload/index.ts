@@ -49,6 +49,15 @@ const api: TerminalApi = {
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),
   teardown,
+  workspace: Object.freeze({
+    load: () => ipcRenderer.invoke(IPC.workspaceLoad),
+    choose: () => ipcRenderer.invoke(IPC.workspaceChoose),
+    remove: () => ipcRenderer.invoke(IPC.workspaceRemove),
+    newChat: () => ipcRenderer.invoke(IPC.workspaceNewChat),
+    select: (id) => ipcRenderer.invoke(IPC.workspaceSelect, { sessionId: id }),
+    close: (id) => ipcRenderer.invoke(IPC.workspaceClose, { sessionId: id }),
+    resume: (id) => ipcRenderer.invoke(IPC.workspaceResume, { sessionId: id }),
+  }),
 };
 Object.freeze(api);
 window.addEventListener('beforeunload', teardown, { once: true });

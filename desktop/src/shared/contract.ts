@@ -2,6 +2,8 @@ export const IPC = {
   start: 'terminal:start', input: 'terminal:input', resize: 'terminal:resize', stop: 'terminal:stop', status: 'terminal:status',
   chooseFolder: 'terminal:choose-folder', openLink: 'terminal:open-link', subscribe: 'terminal:subscribe', unsubscribe: 'terminal:unsubscribe',
   output: 'terminal:output', exit: 'terminal:exit',
+  workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
+  workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
 } as const;
 
 export type SessionId = string;
@@ -17,10 +19,15 @@ export interface SubscribeRequest extends SessionRequest { kind: SubscriptionKin
 export interface OutputEvent { sessionId: SessionId; data: string }
 export interface ExitEvent { sessionId: SessionId; exitCode: number; signal?: number }
 export interface StatusReply { sessionId: SessionId; status: SessionStatus }
+export interface StartReply extends StatusReply { showSharedFilesWarning: boolean }
 export type Unsubscribe = () => void;
+export interface TabRecord { id: string; title: string; location: 'active' | 'recent' }
+export interface WorkspaceRecord { path: string; tabs: TabRecord[]; selectedId: string | null }
+export interface WorkspaceView { workspace: WorkspaceRecord | null; recoveryPath: string | null }
+export interface NewChatReply { view: WorkspaceView }
 
 export interface TerminalApi {
-  start(request: StartRequest): Promise<StatusReply>;
+  start(request: StartRequest): Promise<StartReply>;
   input(request: InputRequest): Promise<void>;
   resize(request: ResizeRequest): Promise<void>;
   stop(request: SessionRequest): Promise<void>;
@@ -30,6 +37,15 @@ export interface TerminalApi {
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;
   teardown(): void;
+  workspace: {
+    load(): Promise<WorkspaceView>;
+    choose(): Promise<WorkspaceView | null>;
+    remove(): Promise<WorkspaceView>;
+    newChat(): Promise<NewChatReply>;
+    select(sessionId: SessionId): Promise<WorkspaceView>;
+    close(sessionId: SessionId): Promise<WorkspaceView>;
+    resume(sessionId: SessionId): Promise<WorkspaceView>;
+  };
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -58,6 +74,7 @@ export function startRequest(value: unknown): StartRequest {
   return { sessionId: sessionId(object.sessionId), cwd: object.cwd, mode: object.mode };
 }
 export function sessionRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId, true) }; }
+export function chatRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId) }; }
 export function inputRequest(value: unknown): InputRequest {
   const object = ownedObject(value, ['sessionId', 'data']);
   if (typeof object.data !== 'string' || Buffer.byteLength(object.data, 'utf8') > 65_536) throw new Error('invalid input data');

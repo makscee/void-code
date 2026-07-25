@@ -10,10 +10,12 @@ export interface TerminalProcess {
 }
 export type ProcessFactory = (request: StartRequest) => TerminalProcess;
 export type Deliver = (ownerId: number, channel: string, payload: OutputEvent | ExitEvent) => void;
+export interface StartResult { status: SessionStatus; showSharedFilesWarning: boolean }
 interface OwnedSession {
   ownerId: number;
   process: TerminalProcess;
   status: SessionStatus;
+  real: boolean;
   disposables: Array<{ dispose(): void }>;
   pending: { output: OutputEvent[]; exit: ExitEvent[] };
 }
@@ -22,13 +24,16 @@ interface Subscription extends SubscribeRequest { ownerId: number }
 export class SessionManager {
   private readonly sessions = new Map<string, OwnedSession>();
   private readonly subscriptions = new Map<string, Subscription>();
+  private readonly disclosedOwners = new Set<number>();
   constructor(private readonly createProcess: ProcessFactory, private readonly deliver: Deliver) {}
 
-  start(ownerId: number, request: StartRequest): SessionStatus {
+  start(ownerId: number, request: StartRequest): StartResult {
     const { sessionId } = request;
     if (this.sessions.has(sessionId)) throw new Error('session already owned');
+    const liveBefore = this.liveRuntimeCount(ownerId);
     const process = this.createProcess(request);
-    const session: OwnedSession = { ownerId, process, status: 'running', disposables: [], pending: { output: [], exit: [] } };
+    const real = !('fixture' in request);
+    const session: OwnedSession = { ownerId, process, status: 'running', real, disposables: [], pending: { output: [], exit: [] } };
     this.sessions.set(sessionId, session);
     session.disposables.push(process.onData((data) => this.emit(ownerId, sessionId, 'output', { sessionId, data })));
     session.disposables.push(process.onExit((event) => {
@@ -37,7 +42,9 @@ export class SessionManager {
       this.emit(ownerId, sessionId, 'exit', { sessionId, ...event });
       this.removeSubscriptions(ownerId, sessionId);
     }));
-    return session.status;
+    const showSharedFilesWarning = real && request.mode === 'create' && liveBefore === 1 && this.liveRuntimeCount(ownerId) === 2 && !this.disclosedOwners.has(ownerId);
+    if (showSharedFilesWarning) this.disclosedOwners.add(ownerId);
+    return { status: session.status, showSharedFilesWarning };
   }
 
   input(ownerId: number, sessionId: string, data: string): void { this.owned(ownerId, sessionId).process.write(data); }
@@ -68,9 +75,13 @@ export class SessionManager {
       }
     }
     for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId) this.subscriptions.delete(id);
+    this.disclosedOwners.delete(ownerId);
   }
   teardownAll(): void {
     for (const session of [...this.sessions.values()]) this.teardownOwner(session.ownerId);
+  }
+  private liveRuntimeCount(ownerId: number): number {
+    return [...this.sessions.values()].filter((session) => session.ownerId === ownerId && session.real && session.status === 'running').length;
   }
   private owned(ownerId: number, sessionId: string): OwnedSession {
     const session = this.sessions.get(sessionId);

@@ -21,7 +21,7 @@ describe('renderer-owned terminal sessions', () => {
   it('routes owned input, resize, status, output and exit', () => {
     const process = new FakeProcess(); const delivered: unknown[] = [];
     const manager = new SessionManager(() => process, (_owner, channel, payload) => delivered.push([channel, payload]));
-    expect(manager.start(1, start('one'))).toBe('running');
+    expect(manager.start(1, start('one'))).toEqual({ status: 'running', showSharedFilesWarning: false });
     manager.subscribe(1, subscription('one', 'output', 'a'));
     manager.subscribe(1, subscription('one', 'exit', 'b'));
     manager.input(1, 'one', 'hello'); manager.resize(1, 'one', 90, 20);
