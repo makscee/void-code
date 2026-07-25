@@ -13,6 +13,64 @@ import (
 	"github.com/makscee/void-code/internal/config"
 )
 
+func TestVI29FrontDoorChainReachesOTPWithoutMail(t *testing.T) {
+	const legacy = "fixture-legacy-proof"
+	const subject = "88888888-8888-4888-8888-888888888888"
+	var calls []string
+
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vc/me":
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"userId":"` + subject + `","email":"fixture@example.test","subDaysLeft":1}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/public/migration/start":
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ok":true,"exchange":"fixture-exchange"}`))
+		default:
+			t.Fatalf("unexpected Auth request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer authServer.Close()
+	relayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" relay"+r.URL.Path)
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/vc/me" {
+			t.Fatalf("unexpected Relay request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"subject_id":"` + subject + `"}`))
+	}))
+	defer relayServer.Close()
+
+	client := authServer.Client()
+	otpBoundary := errors.New("fixture OTP boundary")
+	deps := migrationDeps{
+		loadCurrent: func() (string, bool, error) { return legacy, false, nil },
+		loadLegacy:  func() (string, error) { return "", auth.ErrNotLoggedIn },
+		legacyMe:    func(token string) (auth.MeResult, error) { return auth.FetchMe(authServer.URL, token, client) },
+		relayMe:     func(token string) (string, error) { return auth.FetchRelayMe(relayServer.URL, token, client) },
+		start: func(token string) (auth.MigrationStartResult, error) {
+			return auth.MigrationStart(authServer.URL, token, client)
+		},
+		promptOTP: func() (string, error) { return "", otpBoundary },
+		complete: func(string, string, string) (auth.MigrationCompleteResult, error) {
+			t.Fatal("completion crossed OTP boundary")
+			return auth.MigrationCompleteResult{}, nil
+		},
+		save:   func(string) error { t.Fatal("credential changed before OTP"); return nil },
+		device: func() error { t.Fatal("device flow entered"); return nil },
+		out:    &bytes.Buffer{},
+	}
+	if err := runGradualLogin(config.Config{}, deps); err == nil || !strings.Contains(err.Error(), "unchanged") {
+		t.Fatalf("expected fail-closed OTP boundary, got %v", err)
+	}
+	want := []string{"GET /v1/vc/me", "GET relay/v1/vc/me", "POST /v1/public/migration/start"}
+	if strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("front-door order = %v, want %v", calls, want)
+	}
+}
+
 func TestGradualIdentityMigration(t *testing.T) {
 	legacy := "legacy-secret-byte-exact\n"
 	identity := "identity-session.identity-secret"
