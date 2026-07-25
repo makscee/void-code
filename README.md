@@ -57,7 +57,7 @@ Any flag that the active harness accepts can be passed this way. Flags before `-
 
 ## Desktop private-runtime contract
 
-`desktop-session` is the non-persistent desktop launch seam. It requires absolute paths to a package-owned Node executable and Pi CLI entrypoint, launches Node directly (without a shell or `PATH` lookup), inherits stdio and the current working directory, and forwards Pi session arguments after `--`. It uses the existing vc credential, grant, relay, and managed Pi provider paths while leaving the selected harness/provider and update preferences unchanged. Desktop launches do not perform vc or harness self-update checks.
+`desktop-session` is the non-persistent desktop launch seam. It requires absolute paths to a package-owned Node executable and Pi CLI entrypoint, launches Node directly (without a shell or `PATH` lookup), and inherits stdio and the current working directory. After `--`, it accepts only Pi session lifecycle flags (`--session-id`, `--session`, `--continue`, `--resume`, `--fork`, `--no-session`, and `--name`, including documented short aliases). Provider, model, API-key, extension, and other Pi flags are rejected because vc owns the managed Void provider/relay authority. It uses the existing vc credential, grant, relay, and managed Pi provider paths while leaving the selected harness/provider and update preferences unchanged. Desktop launches suppress Pi version checks for the child and perform no vc self-update cleanup or check without saving either preference.
 
 ```bash
 vc desktop-session \

@@ -101,6 +101,66 @@ func TestDesktopSessionConstructsDirectPrivateNodeCommandWithExactArgs(t *testin
 	}
 }
 
+func TestDesktopSessionRejectsAuthorityChangingAndUnknownPiArgs(t *testing.T) {
+	node, pi := desktopRuntimeFiles(t)
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"provider", []string{"--provider", "google"}},
+		{"provider equals", []string{"--provider=google"}},
+		{"model", []string{"--model", "google/gemini"}},
+		{"api key", []string{"--api-key", "must-not-appear"}},
+		{"api key equals", []string{"--api-key=must-not-appear"}},
+		{"extension", []string{"--extension", "/tmp/foreign.js"}},
+		{"extension alias", []string{"-e", "/tmp/foreign.js"}},
+		{"disable extensions", []string{"--no-extensions"}},
+		{"model cycling", []string{"--models", "google/*"}},
+		{"unknown extension flag", []string{"--plan"}},
+		{"positional message", []string{"change provider settings"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := prepareDesktopSession(node, pi, tc.args, desktopTestDeps())
+			if err == nil || !strings.Contains(err.Error(), "accepts only session lifecycle flags") {
+				t.Fatalf("error = %v", err)
+			}
+			if strings.Contains(err.Error(), "must-not-appear") {
+				t.Fatalf("rejected argument value leaked in error: %v", err)
+			}
+		})
+	}
+}
+
+func TestDesktopSessionAllowsExactSessionLifecycleArgs(t *testing.T) {
+	args := []string{"--session-id", "id", "--session=resume", "--continue", "--resume", "--fork", "source", "--no-session", "--name", "display"}
+	if err := validateDesktopPiArgs(args); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDesktopSessionOwnsPiVersionCheckSuppression(t *testing.T) {
+	node, pi := desktopRuntimeFiles(t)
+	t.Setenv("PI_SKIP_VERSION_CHECK", "caller-value-must-be-replaced")
+	plan, err := prepareDesktopSession(node, pi, []string{"--session-id", "id"}, desktopTestDeps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range plan.env {
+		name, value, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(name, "PI_SKIP_VERSION_CHECK") {
+			count++
+			if value != "1" {
+				t.Fatalf("PI_SKIP_VERSION_CHECK = %q, want command-owned 1", value)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("PI_SKIP_VERSION_CHECK entries = %d, want 1", count)
+	}
+}
+
 func TestDesktopSessionRejectsRelativeMissingAndNonExecutableRuntime(t *testing.T) {
 	node, pi := desktopRuntimeFiles(t)
 	cases := []struct {
@@ -205,6 +265,17 @@ func TestDesktopSessionProcessPropagatesExitAndCancellation(t *testing.T) {
 	err = runDesktopSessionProcess(ctx, plan, nil, io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("canceled child returned success")
+	}
+}
+
+func TestDesktopSessionBypassesVCUpdateCleanup(t *testing.T) {
+	if shouldCleanOldBinary([]string{"vc", "desktop-session", "--node", "/private/node"}) {
+		t.Fatal("desktop-session must bypass vc update cleanup")
+	}
+	for _, args := range [][]string{{"vc"}, {"vc", "status"}, {"vc", "--raw"}} {
+		if !shouldCleanOldBinary(args) {
+			t.Fatalf("ordinary invocation unexpectedly bypassed cleanup: %#v", args)
+		}
 	}
 }
 

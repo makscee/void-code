@@ -57,8 +57,11 @@ var (
 )
 
 func main() {
-	// Clean up any leftover .old binary from a previous Windows self-update.
-	update.CleanOldBinary()
+	// Desktop owns a private runtime and performs no vc update work, including
+	// Windows cleanup left by an ordinary self-update.
+	if shouldCleanOldBinary(os.Args) {
+		update.CleanOldBinary()
+	}
 
 	// --version short-circuit before Cobra parses anything.
 	for _, a := range os.Args[1:] {
@@ -254,6 +257,10 @@ func main() {
 	}
 
 	Execute()
+}
+
+func shouldCleanOldBinary(args []string) bool {
+	return len(args) < 2 || args[1] != "desktop-session"
 }
 
 // gateDecision is the outcome of the bare-launch interactivity/auth gate.

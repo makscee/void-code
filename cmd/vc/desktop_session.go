@@ -93,6 +93,9 @@ func fetchDesktopGrants(authHost, token string) ([]compat.Grant, error) {
 }
 
 func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps desktopSessionDeps) (desktopSessionPlan, error) {
+	if err := validateDesktopPiArgs(piArgs); err != nil {
+		return desktopSessionPlan{}, err
+	}
 	if err := validateDesktopRuntime("Node executable", nodePath, true); err != nil {
 		return desktopSessionPlan{}, err
 	}
@@ -143,6 +146,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	}
 
 	env := buildPiSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+	env = setDesktopEnv(env, "PI_SKIP_VERSION_CHECK", "1")
 	args := append([]string{piEntry}, piArgs...)
 	switch class {
 	case compat.ProviderChatGPT:
@@ -153,6 +157,59 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 		args = append([]string{piEntry}, buildPiVoidDeepSeekArgs(piArgs, extensionPath)...)
 	}
 	return desktopSessionPlan{nodePath: nodePath, args: args, env: env}, nil
+}
+
+// Desktop accepts only session lifecycle controls. Provider, model, credential,
+// extension, and other Pi behavior remain owned by vc's managed launch contract.
+var desktopPiArgs = map[string]bool{
+	"--continue":   false,
+	"-c":           false,
+	"--resume":     false,
+	"-r":           false,
+	"--session":    true,
+	"--session-id": true,
+	"--fork":       true,
+	"--no-session": false,
+	"--name":       true,
+	"-n":           true,
+}
+
+func validateDesktopPiArgs(args []string) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name, value, hasValue := strings.Cut(arg, "=")
+		needsValue, allowed := desktopPiArgs[name]
+		if !allowed {
+			return fmt.Errorf("Pi argument %q is not allowed; desktop-session accepts only session lifecycle flags", name)
+		}
+		if needsValue {
+			if hasValue {
+				if value == "" {
+					return fmt.Errorf("Pi argument %q requires a value", name)
+				}
+				continue
+			}
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return fmt.Errorf("Pi argument %q requires a value", name)
+			}
+			i++
+		} else if hasValue {
+			return fmt.Errorf("Pi argument %q does not take a value", name)
+		}
+	}
+	return nil
+}
+
+func setDesktopEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, key) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, key+"="+value)
 }
 
 func validateDesktopRuntime(name, path string, executable bool) error {
