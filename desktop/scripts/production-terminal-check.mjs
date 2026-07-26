@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('production terminal check supports only macOS-arm64');
-const appBinary = path.resolve('release/mac-arm64/Void Code Prototype.app/Contents/MacOS/Void Code Prototype');
-const asar = path.resolve('release/mac-arm64/Void Code Prototype.app/Contents/Resources/app.asar');
+const appBinary = path.resolve('release/mac-arm64/Void Code.app/Contents/MacOS/Void Code');
+const asar = path.resolve('release/mac-arm64/Void Code.app/Contents/Resources/app.asar');
 const listing = execFileSync(path.resolve('node_modules/.bin/asar'), ['list', asar], { encoding: 'utf8' });
 for (const asset of ['/dist/renderer/index.html', '/dist/renderer/index.css', '/dist/renderer/index.js']) {
   if (!listing.includes(asset)) throw new Error(`packaged production renderer asset missing: ${asset}`);

@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 chmodSync(path.resolve('node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper'), 0o755);
 const pty = require('node-pty');
 const { wrapPty } = require('../dist/main/session-manager.js');
-const app = path.resolve('release/mac-arm64/Void Code Prototype.app');
+const app = path.resolve('release/mac-arm64/Void Code.app');
 const resources = path.join(app, 'Contents/Resources');
 const runtime = path.join(resources, 'private-runtime');
 const manifest = JSON.parse(await readFile(path.join(runtime, 'manifest.json'), 'utf8'));

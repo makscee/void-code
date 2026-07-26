@@ -1,8 +1,8 @@
 {
   "name": "void-code-desktop",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
-  "description": "Bounded Void Code Electron packaging prototype",
+  "description": "Guided Void Code desktop pilot",
   "main": "dist/main/index.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -44,9 +44,9 @@
     "directories": {
       "output": "release"
     },
-    "appId": "works.voidcode.desktop.prototype",
+    "appId": "works.voidcode.desktop",
     "afterPack": "scripts/after-pack.cjs",
-    "productName": "Void Code Prototype",
+    "productName": "Void Code",
     "asar": true,
     "npmRebuild": false,
     "files": [
@@ -75,7 +75,7 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "Void-Code-Prototype-${version}-windows-${arch}.${ext}"
+      "artifactName": "Void-Code-${version}-windows-${arch}.${ext}"
     }
   }
 }

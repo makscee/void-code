@@ -121,7 +121,7 @@ try {
     vc: execFileSync(path.join(runtime, manifest.vc.path), ['--version'], { encoding: 'utf8', env: { PATH: `${process.env.SystemRoot}\\System32` } }).trim(),
     pi: piIdentity,
   };
-  const installer = path.join(release, 'Void-Code-Prototype-0.0.1-windows-x64.exe');
+  const installer = path.join(release, 'Void-Code-0.1.0-windows-x64.exe');
   const nativePty = path.join(ptyRoot, 'prebuilds/win32-x64/pty.node');
   const result = {
     package: { electron: '39.2.6', xterm: '6.0.0', nodePty: '1.1.0' }, privateVersions,
