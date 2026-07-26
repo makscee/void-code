@@ -6,6 +6,7 @@ const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choo
 const newChatButton = document.querySelector<HTMLButtonElement>('#new-chat')!;
 const tabsElement = document.querySelector<HTMLElement>('#tabs')!;
 const terminalsElement = document.querySelector<HTMLElement>('#terminals')!;
+const mainElement = document.querySelector<HTMLElement>('main')!;
 const emptyElement = document.querySelector<HTMLElement>('#empty')!;
 const recoveryElement = document.querySelector<HTMLElement>('#recovery')!;
 const recoveryPathElement = document.querySelector<HTMLElement>('#recovery-path')!;
@@ -14,6 +15,8 @@ const removeWorkspaceButton = document.querySelector<HTMLButtonElement>('#remove
 const noticeElement = document.querySelector<HTMLElement>('#notice')!;
 const recentElement = document.querySelector<HTMLElement>('#recent')!;
 const recentListElement = document.querySelector<HTMLElement>('#recent-list')!;
+const recentToggleButton = document.querySelector<HTMLButtonElement>('#recent-toggle')!;
+const recentCloseButton = document.querySelector<HTMLButtonElement>('#recent-close')!;
 const endedElement = document.querySelector<HTMLElement>('#ended')!;
 const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
@@ -23,11 +26,29 @@ type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => v
 const runtimes = new Map<string, Runtime>();
 const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
+let recentOpen = false;
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
+function setRecentOpen(open: boolean, focusTarget = true): void {
+  const hasRecent = Boolean(view.workspace?.tabs.some((tab) => tab.location === 'recent'));
+  recentOpen = open && hasRecent;
+  document.body.classList.toggle('recent-open', recentOpen);
+  recentElement.hidden = !recentOpen;
+  recentToggleButton.setAttribute('aria-expanded', String(recentOpen));
+  fitAfterLayout();
+  if (focusTarget) requestAnimationFrame(() => (recentOpen ? recentCloseButton : recentToggleButton).focus());
+}
 async function fitRuntime(id: string, runtime: Runtime): Promise<void> {
   runtime.fit.fit();
   await window.voidTerminal.resize({ sessionId: id, cols: runtime.terminal.cols, rows: runtime.terminal.rows });
+}
+let pendingLayoutFit = 0;
+function fitAfterLayout(): void {
+  cancelAnimationFrame(pendingLayoutFit);
+  pendingLayoutFit = requestAnimationFrame(() => {
+    const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined;
+    if (tab && runtime && !runtime.container.hidden && !runtime.exited) void fitRuntime(tab.id, runtime);
+  });
 }
 function dispose(id: string): void {
   const runtime = runtimes.get(id); if (!runtime) return;
@@ -54,7 +75,7 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     });
     runtime.offOutput = offOutput; runtime.offExit = offExit;
     chatStatuses.set(tab.id, (await window.voidTerminal.lifecycleStatus({ sessionId: tab.id })).status);
-    offStatus = window.voidTerminal.onStatus(tab.id, (status) => { chatStatuses.set(tab.id, status); render(); });
+    offStatus = window.voidTerminal.onStatus(tab.id, (status) => { chatStatuses.set(tab.id, status); render(); window.__resolveProductionStatus?.(status.sessionId); });
     runtime.offStatus = offStatus;
     await fitRuntime(tab.id, runtime);
     if (!container.hidden) terminal.focus();
@@ -67,13 +88,15 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
 }
 
 function render(): void {
+  const focusedRecentControl = recentOpen && recentElement.contains(document.activeElement);
+  const focusedRecentChatId = document.activeElement instanceof HTMLButtonElement ? document.activeElement.closest<HTMLElement>('.recent-row')?.dataset.chatId : undefined;
   const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
   folderElement.textContent = workspace?.path ?? 'No folder selected';
   chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
   emptyElement.hidden = Boolean(workspace); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
   recoveryPathElement.textContent = view.recoveryPath ?? '';
   tabsElement.replaceChildren(); recentListElement.replaceChildren();
-  if (!workspace || recovering) { recentElement.hidden = true; endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; return; }
+  if (!workspace || recovering) { recentToggleButton.hidden = true; setRecentOpen(false, false); endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; fitAfterLayout(); return; }
   const active = workspace.tabs.filter((tab) => tab.location === 'active'); const recent = workspace.tabs.filter((tab) => tab.location === 'recent');
   for (const tab of active) {
     const item = document.createElement('div'); item.className = `tab${tab.id === workspace.selectedId ? ' selected' : ''}`;
@@ -86,25 +109,37 @@ function render(): void {
   }
   for (const runtime of runtimes.values()) runtime.container.hidden = true;
   const selected = workspace.selectedId ? runtimes.get(workspace.selectedId) : undefined;
-  if (selected && !selected.exited) { selected.container.hidden = false; selected.terminal.focus(); endedElement.hidden = true; }
+  if (selected && !selected.exited) { selected.container.hidden = false; if (!focusedRecentControl) selected.terminal.focus(); endedElement.hidden = true; }
   else endedElement.hidden = !workspace.selectedId;
-  recentElement.hidden = recent.length === 0;
-  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; const title = document.createElement('span'); title.textContent = tab.title; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
+  recentToggleButton.hidden = recent.length === 0;
+  recentToggleButton.disabled = recent.length === 0;
+  recentToggleButton.textContent = `Recent Chats (${recent.length})`;
+  recentToggleButton.setAttribute('aria-label', `Recent Chats, ${recent.length} chat${recent.length === 1 ? '' : 's'}`);
+  if (recent.length === 0) setRecentOpen(false, false); else recentElement.hidden = !recentOpen;
+  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; row.dataset.chatId = tab.id; const title = document.createElement('span'); title.textContent = tab.title; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.setAttribute('aria-label', `Resume ${tab.title}`); resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
+  if (focusedRecentChatId && recentOpen) {
+    const resume = [...recentListElement.querySelectorAll<HTMLButtonElement>('.recent-row button')].find((button) => button.closest<HTMLElement>('.recent-row')?.dataset.chatId === focusedRecentChatId);
+    resume?.focus({ preventScroll: true });
+  }
+  fitAfterLayout();
 }
 async function selectChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.select(id); const status = chatStatuses.get(id); if (status) chatStatuses.set(id, { ...status, unread: false }); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); else if (tab) { const runtime = runtimes.get(id); if (runtime) await fitRuntime(id, runtime); chatStatuses.set(id, (await window.voidTerminal.lifecycleStatus({ sessionId: id })).status); } render(); }
 async function closeChat(id: string): Promise<void> { await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
-async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); }
+async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {
   const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
   announce('Trusted-folder prototype: Pi can read and change files in this folder using your operating-system permissions. Existing VC authentication is used.'); render();
 }
 
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
+recentToggleButton.addEventListener('click', () => { setRecentOpen(!recentOpen); });
+recentCloseButton.addEventListener('click', () => { setRecentOpen(false); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && recentOpen) { event.preventDefault(); setRecentOpen(false); } });
 removeWorkspaceButton.addEventListener('click', async () => { for (const id of [...runtimes.keys()]) await stop(id); view = await window.voidTerminal.workspace.remove(); render(); });
 newChatButton.addEventListener('click', async () => { const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
 restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
-new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(terminalsElement);
+new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(mainElement);
 
 type ByteFacts = { bytes: number; chunks: number; escBytes: number };
 type VisibleColorFacts = { source: 'dom' | 'cdp-bitmap'; distinctVisibleRgb: number; contrastingPixels: number; maxContrast: number; chromaticHueBins: number; visibleRgb: string[] };
@@ -172,6 +207,119 @@ function integrationFacts(runtime: Runtime) {
     options: { fontSize: TERMINAL_OPTIONS.fontSize, fontWeight: TERMINAL_OPTIONS.fontWeight, fontWeightBold: TERMINAL_OPTIONS.fontWeightBold, drawBoldTextInBrightColors: TERMINAL_OPTIONS.drawBoldTextInBrightColors, scrollback: TERMINAL_OPTIONS.scrollback },
   };
 }
+function nextFrame(): Promise<void> { return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); }
+async function setProbeViewport(width: number, height: number): Promise<void> {
+  const requestId = crypto.randomUUID();
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => { delete window.__resolveProductionViewport; reject(new Error('production viewport probe timed out')); }, 5000);
+    window.__resolveProductionViewport = (reply) => { if (reply.requestId !== requestId) return; clearTimeout(timeout); delete window.__resolveProductionViewport; resolve(); };
+    document.title = `VOID_PRODUCTION_VIEWPORT_REQUEST:${JSON.stringify({ requestId, width, height })}`;
+  });
+  await nextFrame();
+}
+async function requestProductionStatus(sessionId: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => { delete window.__resolveProductionStatus; reject(new Error('production status probe timed out')); }, 5000);
+    window.__resolveProductionStatus = (observedId) => { if (observedId !== sessionId) return; clearTimeout(timeout); delete window.__resolveProductionStatus; resolve(); };
+    document.title = `VOID_PRODUCTION_STATUS_REQUEST:${JSON.stringify({ sessionId })}`;
+  });
+  await nextFrame();
+}
+function inside(inner: DOMRect, outer: DOMRect): boolean {
+  return inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1 && inner.left >= outer.left - 1 && inner.right <= outer.right + 1;
+}
+async function recentGeometryProbe(tab: RendererTabRecord, runtime: Runtime) {
+  await setProbeViewport(1100, 760); render(); await nextFrame();
+  const empty = {
+    panelWidth: recentElement.getBoundingClientRect().width,
+    toggleHidden: recentToggleButton.hidden,
+    bodyColumns: getComputedStyle(document.body).gridTemplateColumns,
+  };
+  const cases = [{ name: 'tall', width: 1100, height: 1000 }, { name: 'normal', width: 1100, height: 760 }, { name: 'short', width: 1100, height: 560 }, { name: 'narrow', width: 640, height: 760 }];
+  const fixtures: Array<Record<string, unknown>> = [];
+  for (const rowCount of [1, 8]) {
+    while (view.workspace!.tabs.filter((item) => item.location === 'recent').length < rowCount) {
+      const created = await window.voidTerminal.workspace.newChat(); view = created.view;
+      view = await window.voidTerminal.workspace.close(view.workspace!.selectedId!);
+    }
+    render(); await nextFrame();
+    for (const fixture of cases) {
+      await setProbeViewport(fixture.width, fixture.height); setRecentOpen(false, false); render(); await nextFrame(); await fitRuntime(tab.id, runtime);
+      const closedTerminal = runtime.container.getBoundingClientRect(); const closedFit = { cols: runtime.terminal.cols, rows: runtime.terminal.rows };
+      const closedPanelWidth = recentElement.getBoundingClientRect().width;
+      setRecentOpen(true, false); await nextFrame(); await fitRuntime(tab.id, runtime); await nextFrame();
+      const viewport = new DOMRect(0, 0, window.innerWidth, window.innerHeight); const main = mainElement.getBoundingClientRect();
+      const panel = recentElement.getBoundingClientRect(); const heading = recentElement.querySelector('h2')!.getBoundingClientRect(); const list = recentListElement.getBoundingClientRect();
+      const rows = [...recentListElement.querySelectorAll<HTMLElement>('.recent-row')]; const lastRow = rows.at(-1)!; const lastButton = lastRow.querySelector<HTMLButtonElement>('button')!;
+      lastButton.focus(); lastButton.scrollIntoView({ block: 'nearest' }); await nextFrame();
+      const focusedRow = lastRow.getBoundingClientRect(); const focusedButton = lastButton.getBoundingClientRect(); const proposed = runtime.fit.proposeDimensions();
+      const firstFit = { cols: runtime.terminal.cols, rows: runtime.terminal.rows }; await fitRuntime(tab.id, runtime);
+      const secondFit = { cols: runtime.terminal.cols, rows: runtime.terminal.rows }; const terminal = runtime.container.getBoundingClientRect();
+      const narrow = fixture.width <= 760;
+      const toggleContract = !recentToggleButton.hidden && recentToggleButton.getAttribute('aria-controls') === 'recent' && recentToggleButton.getAttribute('aria-expanded') === 'true' && recentToggleButton.getAttribute('aria-label')?.includes(String(rowCount)) === true;
+      const focusedControlVisible = document.activeElement === lastButton && inside(focusedRow, list) && inside(focusedButton, list);
+      const listGeometry = { clientHeight: recentListElement.clientHeight, scrollHeight: recentListElement.scrollHeight };
+      const internalScroll = getComputedStyle(recentListElement).overflowY === 'auto' && (rowCount === 1 || listGeometry.scrollHeight > listGeometry.clientHeight);
+      setRecentOpen(false, false); await nextFrame(); await fitRuntime(tab.id, runtime); const restoredFit = { cols: runtime.terminal.cols, rows: runtime.terminal.rows };
+      const assertions = {
+        toggleContract,
+        closedZeroWidth: closedPanelWidth === 0,
+        desktopWidthBound: narrow || (panel.width >= 240 && panel.width <= 320),
+        headingVisible: inside(heading, panel),
+        focusedControlVisible,
+        internalScroll,
+        terminalNonOverlap: narrow ? inside(terminal, main) : terminal.right <= panel.left + 1,
+        usefulTerminal: terminal.height >= 280 && terminal.width >= 280,
+        narrowOverlay: !narrow || (getComputedStyle(recentElement).position === 'fixed' && terminal.width === closedTerminal.width && secondFit.cols === closedFit.cols),
+        fitStable: firstFit.cols === secondFit.cols && firstFit.rows === secondFit.rows && proposed?.cols === secondFit.cols && proposed.rows === secondFit.rows,
+        closeRestoresFit: restoredFit.cols === closedFit.cols && restoredFit.rows === closedFit.rows,
+        panelInsideViewport: inside(panel, viewport),
+      };
+      fixtures.push({ ...fixture, viewport: { width: window.innerWidth, height: window.innerHeight }, rowCount, closed: { terminal: { width: closedTerminal.width, height: closedTerminal.height, ...closedFit }, panelWidth: closedPanelWidth }, open: { panel: { width: panel.width, height: panel.height }, list: listGeometry, terminal: { width: terminal.width, height: terminal.height, ...secondFit } }, assertions });
+    }
+  }
+  await setProbeViewport(1100, 760); setRecentOpen(true, false); render(); await nextFrame();
+  const focusedBeforeStatus = [...recentListElement.querySelectorAll<HTMLButtonElement>('.recent-row button')].at(-1)!;
+  const focusedChatId = focusedBeforeStatus.closest<HTMLElement>('.recent-row')!.dataset.chatId!;
+  focusedBeforeStatus.focus(); await requestProductionStatus(tab.id);
+  const focusedAfterStatus = document.activeElement as HTMLButtonElement;
+  const statusFocusPreserved = focusedAfterStatus !== focusedBeforeStatus && focusedAfterStatus.closest<HTMLElement>('.recent-row')?.dataset.chatId === focusedChatId;
+  recentCloseButton.click(); await nextFrame(); const closeFocusReturned = !recentOpen && document.activeElement === recentToggleButton;
+  recentToggleButton.click(); await nextFrame();
+  const escapeButton = [...recentListElement.querySelectorAll<HTMLButtonElement>('.recent-row button')].find((button) => button.closest<HTMLElement>('.recent-row')?.dataset.chatId === focusedChatId)!;
+  escapeButton.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await nextFrame();
+  const escapeFocusReturned = !recentOpen && document.activeElement === recentToggleButton;
+  await stop(tab.id); view = await window.voidTerminal.workspace.close(tab.id); render();
+  recentToggleButton.click(); await nextFrame();
+  const resumeButton = [...recentListElement.querySelectorAll<HTMLButtonElement>('.recent-row button')].find((button) => button.closest<HTMLElement>('.recent-row')?.dataset.chatId === tab.id)!;
+  resumeButton.click();
+  const resumeDeadline = Date.now() + 10_000;
+  while (Date.now() < resumeDeadline && (view.workspace?.selectedId !== tab.id || (!runtimes.get(tab.id)?.container.contains(document.activeElement) && !endedElement.contains(document.activeElement)))) await new Promise((resolve) => setTimeout(resolve, 50));
+  const resumedRuntime = runtimes.get(tab.id);
+  const resumeFocusTransferred = view.workspace?.selectedId === tab.id && (Boolean(resumedRuntime?.container.contains(document.activeElement)) || endedElement.contains(document.activeElement));
+  const assertions = {
+    emptyRecentClosed: empty.panelWidth === 0 && empty.toggleHidden && !empty.bodyColumns.includes(' 0px'),
+    allGeometry: fixtures.every((fixture) => Object.values(fixture.assertions as Record<string, boolean>).every(Boolean)),
+    statusFocusPreserved,
+    closeFocusReturned,
+    escapeFocusReturned,
+    resumeFocusTransferred,
+  };
+  return {
+    assertions, empty, focusBehavior: { focusedChatId, statusFocusPreserved, closeFocusReturned, escapeFocusReturned, resumeFocusTransferred },
+    fixtures: fixtures.map((fixture) => {
+      const closed = fixture.closed as { terminal: { width: number; cols: number; rows: number }; panelWidth: number };
+      const open = fixture.open as { panel: { width: number }; list: { clientHeight: number; scrollHeight: number }; terminal: { width: number; cols: number; rows: number } };
+      return {
+        id: `${String(fixture.name)}-${String(fixture.rowCount)}`,
+        closed: { panel: closed.panelWidth, width: closed.terminal.width, cols: closed.terminal.cols, rows: closed.terminal.rows },
+        open: { panel: open.panel.width, width: open.terminal.width, cols: open.terminal.cols, rows: open.terminal.rows, list: `${open.list.clientHeight}/${open.list.scrollHeight}` },
+        failed: Object.entries(fixture.assertions as Record<string, boolean>).filter(([, passed]) => !passed).map(([name]) => name),
+      };
+    }),
+  };
+}
+
 async function productionProbe(): Promise<void> {
   const tab = selectedTab(); const workspace = view.workspace; if (!tab || !workspace) throw new Error('probe workspace missing');
   const fixtureId = 'terminal-fidelity'; const container = document.createElement('div'); container.className = 'terminal'; terminalsElement.append(container);
@@ -188,15 +336,19 @@ async function productionProbe(): Promise<void> {
 
   await launch(tab, 'create'); const runtime = runtimes.get(tab.id)!; const realBytes = emptyByteFacts();
   const observe = window.voidTerminal.onOutput(tab.id, ({ data }) => addByteFacts(realBytes, data));
-  await new Promise((resolve) => setTimeout(resolve, 2500)); await new Promise<void>((resolve) => runtime.terminal.write('', resolve));
+  const outputDeadline = Date.now() + 10_000;
+  while (Date.now() < outputDeadline && renderedFacts(runtime).distinctForegrounds < 2) await new Promise((resolve) => setTimeout(resolve, 100));
+  await new Promise<void>((resolve) => runtime.terminal.write('', resolve));
   const realRendered = renderedFacts(runtime); const realVisible = await visibleColorFacts(runtime); observe();
+  const recentGeometry = await recentGeometryProbe(tab, runtime);
   const assertions = {
     officialXterm: integration.xterm.instance, bundledFontLoaded: integration.font.loaded,
     equalWidth: integration.font.equalWidth, fixtureAnsi: fixtureBytes.escBytes > 0 && fixtureRendered.styled > 0,
     realAnsi: realBytes.escBytes > 0,
     realVisibleColor: realVisible.distinctVisibleRgb > 1 && realVisible.chromaticHueBins > 1 && realVisible.contrastingPixels > 0 && realVisible.maxContrast >= 3,
+    recentGeometry: Object.values(recentGeometry.assertions).every(Boolean),
   };
-  const result = { ok: Object.values(assertions).every(Boolean), assertions, integration, fixture: { bytes: fixtureBytes, rendered: fixtureRendered }, realPi: { bytes: realBytes, rendered: realRendered, visible: realVisible } };
+  const result = { ok: Object.values(assertions).every(Boolean), assertions, integration, fixture: { bytes: fixtureBytes, rendered: fixtureRendered }, realPi: { bytes: realBytes, rendered: realRendered, visible: realVisible }, recentGeometry };
   document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify(result)}`;
 }
 

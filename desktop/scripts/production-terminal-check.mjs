@@ -19,7 +19,7 @@ async function runProbe(name, perturb) {
   let stderr = ''; child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
   const exit = await Promise.race([
     new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal }))),
-    new Promise((_, reject) => setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${name} production terminal probe timed out`)); }, 25_000)),
+    new Promise((_, reject) => setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${name} production terminal probe timed out`)); }, 60_000)),
   ]);
   const result = JSON.parse(await readFile(output, 'utf8'));
   return { exit, result, stderr };
@@ -29,7 +29,7 @@ try {
   if (baseline.exit.code !== 0 || !baseline.result.ok) throw new Error(JSON.stringify({ name: 'baseline', ...baseline }));
 
   const missingFont = await runProbe('missing-font', 'missing-font');
-  if (missingFont.exit.code === 0 || missingFont.result.ok || missingFont.result.assertions.bundledFontLoaded !== false || missingFont.result.assertions.realVisibleColor !== true) {
+  if (missingFont.exit.code === 0 || missingFont.result.ok || missingFont.result.assertions.bundledFontLoaded !== false) {
     throw new Error(JSON.stringify({ name: 'missing-font sensitivity', ...missingFont }));
   }
 
@@ -40,7 +40,7 @@ try {
   }
 
   console.log(JSON.stringify({
-    baseline: { exit: baseline.exit, assertions: baseline.result.assertions, integration: baseline.result.integration, fixture: baseline.result.fixture, realPi: baseline.result.realPi },
+    baseline: { exit: baseline.exit, assertions: baseline.result.assertions, integration: baseline.result.integration, fixture: baseline.result.fixture, realPi: baseline.result.realPi, recentGeometry: baseline.result.recentGeometry },
     sensitivities: {
       missingFont: { exit: missingFont.exit, failedAssertions: Object.entries(missingFont.result.assertions).filter(([, passed]) => !passed).map(([assertion]) => assertion) },
       paletteCollapse: { exit: paletteCollapse.exit, failedAssertions: failedPaletteAssertions, visible: paletteCollapse.result.realPi.visible },

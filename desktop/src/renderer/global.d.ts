@@ -7,6 +7,8 @@ declare global {
       requestId: string;
       summary: { source: 'cdp-bitmap'; distinctVisibleRgb: number; contrastingPixels: number; maxContrast: number; chromaticHueBins: number; visibleRgb: string[] };
     }) => void;
+    __resolveProductionViewport?: (reply: { requestId: string }) => void;
+    __resolveProductionStatus?: (sessionId: string) => void;
   }
   type RendererTabRecord = TabRecord;
   type RendererWorkspaceView = WorkspaceView;

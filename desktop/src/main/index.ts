@@ -131,6 +131,22 @@ async function createWindow(): Promise<void> {
         void captureVisibleColors(window, JSON.parse(title.slice(pixelPrefix.length))).then((reply) => window.webContents.executeJavaScript(`window.__resolveProductionPixelProbe?.(${JSON.stringify(reply)})`));
         return;
       }
+      const viewportPrefix = 'VOID_PRODUCTION_VIEWPORT_REQUEST:';
+      if (productionProbeOutput && title.startsWith(viewportPrefix)) {
+        event.preventDefault();
+        const request = JSON.parse(title.slice(viewportPrefix.length)) as { requestId?: unknown; width?: unknown; height?: unknown };
+        if (typeof request.requestId !== 'string' || !Number.isInteger(request.width) || !Number.isInteger(request.height) || Number(request.width) < 500 || Number(request.height) < 500) throw new Error('invalid production viewport request');
+        window.setContentSize(Number(request.width), Number(request.height));
+        window.webContents.executeJavaScript(`window.__resolveProductionViewport?.(${JSON.stringify({ requestId: request.requestId })})`);
+        return;
+      }
+      const statusPrefix = 'VOID_PRODUCTION_STATUS_REQUEST:';
+      if (productionProbeOutput && title.startsWith(statusPrefix)) {
+        event.preventDefault();
+        const request = sessionRequest(JSON.parse(title.slice(statusPrefix.length)));
+        window.webContents.send(IPC.lifecycle, { sessionId: request.sessionId, state: 'working', unread: false, diagnostic: 'production focus regression' });
+        return;
+      }
       if (!title.startsWith(headless.prefix)) return;
       event.preventDefault(); const result = JSON.parse(title.slice(headless.prefix.length)) as { ok: boolean };
       writeFileSync(headless.output, `${JSON.stringify(result, null, 2)}
