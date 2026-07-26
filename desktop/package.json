@@ -20,7 +20,9 @@
     "check:status": "npm run lint && vitest run tests/status-channel.test.ts tests/session-manager.test.ts tests/workspace-close-ipc.test.ts tests/contract.test.ts",
     "bundle:renderer": "esbuild src/renderer/index.ts --bundle --format=esm --platform=browser --target=chrome130 --loader:.woff2=file --loader:.woff=file --asset-names=assets/[name]-[hash] --outfile=dist/renderer/index.js",
     "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs",
-    "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs"
+    "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs",
+    "candidate:generate": "node scripts/candidate-manifest.mjs generate",
+    "candidate:check": "node scripts/candidate-manifest.mjs check"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.2.8",
