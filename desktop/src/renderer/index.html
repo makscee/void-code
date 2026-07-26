@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="xterm.css"><link rel="stylesheet" href="index.css"><title>Void Code Prototype</title></head>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="index.css"><title>Void Code Prototype</title></head>
 <body>
 <header><strong>Void Code</strong><span id="folder">No folder selected</span><button id="new-chat" hidden>New Chat</button><button id="choose">Choose Folder</button></header>
 <div id="notice" role="status" hidden></div>
@@ -11,5 +11,5 @@
   <section id="ended" hidden><h2>Pi exited</h2><p id="ended-detail">No shell was opened.</p><button id="restart">Restart</button><button id="close-ended">Close</button></section>
 </main>
 <aside id="recent" hidden><h2>Recent Chats</h2><div id="recent-list"></div></aside>
-<script src="xterm.js"></script><script src="index.js"></script>
+<script type="module" src="index.js"></script>
 </body></html>

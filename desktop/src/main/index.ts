@@ -1,5 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, webContents } from 'electron';
-import { statSync, writeFileSync } from 'node:fs';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, webContents } from 'electron';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,13 +17,20 @@ import { WorkspaceStore } from './workspace-store';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
 const smokeOutput = smokeArgument?.slice('--void-smoke-output='.length);
+const productionProbeArgument = process.argv.find((argument) => argument.startsWith('--void-production-terminal-output='));
+const productionProbeOutput = productionProbeArgument?.slice('--void-production-terminal-output='.length);
+const productionProbePerturb = productionProbeOutput ? process.argv.find((argument) => argument.startsWith('--void-production-terminal-perturb='))?.slice('--void-production-terminal-perturb='.length) : undefined;
+if (productionProbePerturb && !['missing-font', 'palette-collapse'].includes(productionProbePerturb)) throw new Error('unknown production terminal perturbation');
+const productionProbeRoot = productionProbeOutput ? mkdtempSync(path.join(os.tmpdir(), 'void-code-production-terminal-')) : undefined;
+if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 'user-data'));
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 let manager: SessionManager;
 let workspace: WorkspaceStore;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   if ('fixture' in request) return wrapPty(pty.spawn(runtime.node, [runtime.fixture], {
-    name: 'xterm-256color', cols: 80, rows: 24, cwd: runtime.root, env: { PATH: '/usr/bin:/bin', VOID_FIXTURE: 'owned' },
+    name: 'xterm-256color', cols: 80, rows: 24, cwd: runtime.root,
+    env: { PATH: '/usr/bin:/bin', TERM: 'xterm-256color', COLORTERM: 'truecolor', VOID_FIXTURE: 'owned' },
   }));
   const real = request as RealStartRequest;
   if (!statSync(real.cwd).isDirectory()) throw new Error('selected folder is unavailable');
@@ -73,28 +80,71 @@ function registerIpc(): void {
   ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
 }
 
+function pixelContrast(red: number, green: number, blue: number, background: number[]): number {
+  const luminance = (channels: number[]) => channels.map((value) => { const normalized = value / 255; return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4; }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const foreground = luminance([red, green, blue]); const backdrop = luminance(background);
+  return (Math.max(foreground, backdrop) + 0.05) / (Math.min(foreground, backdrop) + 0.05);
+}
+function hueBin(red: number, green: number, blue: number): number | undefined {
+  const values = [red / 255, green / 255, blue / 255]; const maximum = Math.max(...values); const minimum = Math.min(...values); const delta = maximum - minimum;
+  if (maximum === 0 || delta / maximum < 0.12) return undefined;
+  const hue = maximum === values[0] ? ((values[1] - values[2]) / delta) % 6 : maximum === values[1] ? (values[2] - values[0]) / delta + 2 : (values[0] - values[1]) / delta + 4;
+  return Math.floor((((hue * 60) + 360) % 360) / 30);
+}
+async function captureVisibleColors(window: BrowserWindow, raw: unknown) {
+  const request = raw as { requestId?: unknown; clip?: { x?: unknown; y?: unknown; width?: unknown; height?: unknown }; background?: unknown };
+  const coordinates = [request.clip?.x, request.clip?.y, request.clip?.width, request.clip?.height].map(Number);
+  if (typeof request.requestId !== 'string' || coordinates.some((value) => !Number.isFinite(value)) || coordinates[2] <= 0 || coordinates[3] <= 0 || typeof request.background !== 'string' || !/^#[0-9a-f]{6}$/i.test(request.background)) throw new Error('invalid production pixel request');
+  const backgroundHex = request.background as string;
+  const background = [1, 3, 5].map((offset) => Number.parseInt(backgroundHex.slice(offset, offset + 2), 16));
+  const debug = window.webContents.debugger; let attached = false;
+  try {
+    debug.attach('1.3'); attached = true;
+    const response = await debug.sendCommand('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false, clip: { x: coordinates[0], y: coordinates[1], width: coordinates[2], height: coordinates[3], scale: 1 } }) as { data: string };
+    const image = nativeImage.createFromBuffer(Buffer.from(response.data, 'base64')); const bitmap = image.toBitmap(); const colors = new Map<string, number>(); let contrastingPixels = 0; let maxContrast = 0;
+    for (let offset = 0; offset < bitmap.length; offset += 4) {
+      const blue = bitmap[offset]; const green = bitmap[offset + 1]; const red = bitmap[offset + 2]; const ratio = pixelContrast(red, green, blue, background);
+      if (ratio < 2) continue; contrastingPixels++; maxContrast = Math.max(maxContrast, ratio); const key = `${red},${green},${blue}`; colors.set(key, (colors.get(key) ?? 0) + 1);
+    }
+    const visible = [...colors.entries()].filter(([, count]) => count >= 2).sort((first, second) => second[1] - first[1]); const hueBins = new Set<number>();
+    for (const [color] of visible) { const values = color.split(',').map(Number); const bin = hueBin(values[0], values[1], values[2]); if (bin !== undefined) hueBins.add(bin); }
+    return { requestId: request.requestId, summary: { source: 'cdp-bitmap' as const, distinctVisibleRgb: visible.length, contrastingPixels, maxContrast, chromaticHueBins: hueBins.size, visibleRgb: visible.slice(0, 12).map(([color]) => color) } };
+  } finally { if (attached) debug.detach(); }
+}
+
 async function createWindow(): Promise<void> {
   const window = new BrowserWindow({
-    show: !smokeOutput, width: 1100, height: 760, backgroundColor: '#101216',
+    show: !smokeOutput && !productionProbeOutput, width: 1100, height: 760, backgroundColor: '#101216',
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   });
   const ownerId = window.webContents.id;
   window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
   window.webContents.on('render-process-gone', () => manager.teardownOwner(ownerId));
   window.webContents.on('destroyed', () => manager.teardownOwner(ownerId));
-  if (smokeOutput) {
+  const headless = smokeOutput ? { output: smokeOutput, prefix: 'VOID_SMOKE:', page: 'smoke.html', query: undefined }
+    : productionProbeOutput ? { output: productionProbeOutput, prefix: 'VOID_PRODUCTION_TERMINAL:', page: 'index.html', query: { productionTerminalProbe: '1' } } : undefined;
+  if (headless) {
     window.webContents.on('page-title-updated', (event, title) => {
-      if (!title.startsWith('VOID_SMOKE:')) return;
-      event.preventDefault(); const result = JSON.parse(title.slice('VOID_SMOKE:'.length)) as { ok: boolean };
-      writeFileSync(smokeOutput, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
+      const pixelPrefix = 'VOID_PRODUCTION_PIXEL_REQUEST:';
+      if (productionProbeOutput && title.startsWith(pixelPrefix)) {
+        event.preventDefault();
+        void captureVisibleColors(window, JSON.parse(title.slice(pixelPrefix.length))).then((reply) => window.webContents.executeJavaScript(`window.__resolveProductionPixelProbe?.(${JSON.stringify(reply)})`));
+        return;
+      }
+      if (!title.startsWith(headless.prefix)) return;
+      event.preventDefault(); const result = JSON.parse(title.slice(headless.prefix.length)) as { ok: boolean };
+      writeFileSync(headless.output, `${JSON.stringify(result, null, 2)}
+`, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
     });
-    await window.loadFile(path.join(__dirname, '../renderer/smoke.html'));
+    const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
+    await window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined);
   } else await window.loadFile(path.join(__dirname, '../renderer/index.html'));
 }
 
 void app.whenReady().then(async () => {
   const runtime = resolvePrivateRuntime(runtimeRoot);
   workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
+  if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
   const statusChannels = new StatusChannelStore(
     path.join(app.getPath('userData'), 'status-channels'),
     (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
@@ -103,5 +153,5 @@ void app.whenReady().then(async () => {
   manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
   registerIpc(); await createWindow();
 });
-app.on('before-quit', () => manager?.teardownAll());
+app.on('before-quit', () => { manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
 app.on('window-all-closed', () => app.quit());

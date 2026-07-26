@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { chatRequest, inputRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest } from '../src/shared/contract';
 
 describe('allowlisted renderer contract validation', () => {
-  it('accepts only the owned harmless fixture', () => {
+  it('accepts only the owned harmless fixtures', () => {
     expect(startRequest({ sessionId: 'owned-1', fixture: 'roundTrip' })).toEqual({ sessionId: 'owned-1', fixture: 'roundTrip' });
+    expect(startRequest({ sessionId: 'owned-2', fixture: 'terminalFidelity' })).toEqual({ sessionId: 'owned-2', fixture: 'terminalFidelity' });
     for (const request of [
       { sessionId: 'x', fixture: '/bin/sh' },
       { sessionId: 'x', fixture: 'roundTrip', command: '/bin/sh' },

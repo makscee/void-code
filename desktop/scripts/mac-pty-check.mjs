@@ -28,7 +28,7 @@ const inventory = () => execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,comma
 
 if (inventory().length) throw new Error(`stale app-owned process inventory count=${inventory().length}`);
 const asarList = execFileSync(path.resolve('node_modules/.bin/asar'), ['list', path.join(resources, 'app.asar')], { encoding: 'utf8' });
-if (!asarList.includes('/dist/main/session-manager.js') || !asarList.includes('/dist/renderer/xterm.js')) throw new Error('packaged consumer seam incomplete');
+if (!asarList.includes('/dist/main/session-manager.js') || !asarList.includes('/dist/renderer/index.js') || !asarList.includes('/dist/renderer/index.css') || !/\/dist\/renderer\/assets\/jetbrains-mono-[^/]+\.woff2/.test(asarList)) throw new Error('packaged consumer seam incomplete');
 if (asarList.includes('/private-runtime/')) throw new Error('private runtime unexpectedly entered asar');
 const native = path.join(resources, 'app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-arm64/pty.node');
 const privateNpm = path.join(runtime, 'node/bin/npm');

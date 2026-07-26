@@ -6,7 +6,7 @@
   "main": "dist/main/index.js",
   "scripts": {
     "clean": "rm -rf dist release resources/staged smoke-output.json",
-    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:renderer",
     "lint": "eslint src tests scripts",
     "test": "vitest run",
     "assemble": "node scripts/assemble-resources.mjs",
@@ -16,9 +16,14 @@
     "check": "npm run clean && npm run lint && npm run test && npm run package:mac && npm run smoke:packaged",
     "check:mac-pty": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/mac-pty-check.mjs",
     "check:mac-tabs": "npm run clean && npm run lint && npm run test && npm run package:mac",
-    "check:status": "npm run lint && vitest run tests/status-channel.test.ts tests/session-manager.test.ts tests/workspace-close-ipc.test.ts tests/contract.test.ts"
+    "check:status": "npm run lint && vitest run tests/status-channel.test.ts tests/session-manager.test.ts tests/workspace-close-ipc.test.ts tests/contract.test.ts",
+    "bundle:renderer": "esbuild src/renderer/index.ts --bundle --format=esm --platform=browser --target=chrome130 --loader:.woff2=file --loader:.woff=file --asset-names=assets/[name]-[hash] --outfile=dist/renderer/index.js",
+    "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs"
   },
   "dependencies": {
+    "@fontsource/jetbrains-mono": "5.2.8",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "6.0.0",
     "node-pty": "1.1.0"
   },
@@ -27,13 +32,16 @@
     "@types/node": "24.10.1",
     "electron": "39.2.6",
     "electron-builder": "26.0.12",
+    "esbuild": "0.25.8",
     "eslint": "9.39.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.48.0",
     "vitest": "4.0.15"
   },
   "build": {
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "appId": "works.voidcode.desktop.prototype",
     "afterPack": "scripts/after-pack.cjs",
     "productName": "Void Code Prototype",

@@ -15,7 +15,7 @@ export interface ChatSemanticStatus { sessionId: SessionId; state: ChatLifecycle
 export interface ChatStatusReply { sessionId: SessionId; status: ChatSemanticStatus }
 
 export interface RealStartRequest { sessionId: SessionId; cwd: string; mode: 'create' | 'resume' }
-export interface FixtureStartRequest { sessionId: SessionId; fixture: 'roundTrip' }
+export interface FixtureStartRequest { sessionId: SessionId; fixture: 'roundTrip' | 'terminalFidelity' }
 export type StartRequest = RealStartRequest | FixtureStartRequest;
 export interface InputRequest { sessionId: SessionId; data: string }
 export interface ResizeRequest { sessionId: SessionId; cols: number; rows: number }
@@ -72,7 +72,7 @@ export function sessionId(value: unknown, fixture = false): SessionId {
 export function startRequest(value: unknown): StartRequest {
   if (typeof value === 'object' && value !== null && 'fixture' in value) {
     const object = ownedObject(value, ['sessionId', 'fixture']);
-    if (object.fixture !== 'roundTrip') throw new Error('only the owned roundTrip fixture is allowed');
+    if (object.fixture !== 'roundTrip' && object.fixture !== 'terminalFidelity') throw new Error('only an owned fixture is allowed');
     return { sessionId: sessionId(object.sessionId, true), fixture: object.fixture };
   }
   const object = ownedObject(value, ['sessionId', 'cwd', 'mode']);
