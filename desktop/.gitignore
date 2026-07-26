@@ -4,4 +4,6 @@ release/
 resources/staged/
 runtime/pi/node_modules/
 runtime/cache/node/*.tar.gz
+runtime/cache/node/*.zip
+runtime/cache/vc/*.exe
 smoke-output.json

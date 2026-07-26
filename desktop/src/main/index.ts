@@ -28,9 +28,11 @@ let manager: SessionManager;
 let workspace: WorkspaceStore;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
+  const systemPath = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/usr/bin:/bin';
+  const conpty = process.platform === 'win32' ? { useConptyDll: true } : {};
   if ('fixture' in request) return wrapPty(pty.spawn(runtime.node, [runtime.fixture], {
-    name: 'xterm-256color', cols: 80, rows: 24, cwd: runtime.root,
-    env: { PATH: '/usr/bin:/bin', TERM: 'xterm-256color', COLORTERM: 'truecolor', VOID_FIXTURE: 'owned' },
+    name: 'xterm-256color', cols: 80, rows: 24, cwd: runtime.root, ...conpty,
+    env: { PATH: systemPath, TERM: 'xterm-256color', COLORTERM: 'truecolor', VOID_FIXTURE: 'owned' },
   }));
   const real = request as RealStartRequest;
   if (!statSync(real.cwd).isDirectory()) throw new Error('selected folder is unavailable');
@@ -38,9 +40,9 @@ function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?
   const lifecycle = sessionLifecycleArgs(sessionsRoot, real.sessionId, real.mode);
   const args = ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle];
   return wrapPty(pty.spawn(runtime.vc, args, {
-    name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd,
+    name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd, ...conpty,
     env: {
-      ...process.env, PATH: `${path.dirname(runtime.node)}:/usr/bin:/bin`, TERM: 'xterm-256color', COLORTERM: 'truecolor',
+      ...process.env, PATH: `${path.dirname(runtime.node)}${path.delimiter}${systemPath}`, TERM: 'xterm-256color', COLORTERM: 'truecolor',
       ...(authority ? { VC_DESKTOP_STATUS_PATH: authority.path, VC_DESKTOP_CHAT_ID: authority.chatId, VC_DESKTOP_STATUS_GENERATION: String(authority.generation) } : {}),
     },
   }));

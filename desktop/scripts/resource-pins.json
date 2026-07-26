@@ -7,6 +7,17 @@
     "sourceArchiveSha256": "ef28d8fab2c0e4314522d4bb1b7173270aa3937e93b92cb7de79c112ac1fa953",
     "executableSha256": "2e3f1286a7eb3736346ed1803e458a0ff909e2b2d5bc746144dcb76970e9b99d"
   },
+  "windows": {
+    "node": {
+      "version": "v22.23.1",
+      "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-win-x64.zip",
+      "sourceArchiveSha256": "7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29"
+    },
+    "vc": {
+      "sourceCommit": "d68c24b0af8f9bce3824bde4b0ab6077f40a40c1",
+      "sha256": "65253425f6605529267eb11b86aaa8e3116af0eccf3530656c235b2994ca09df"
+    }
+  },
   "pi": {
     "version": "0.82.1",
     "packageJsonSha256": "a70ae8eb320d35c26fc8c25c6ef697579a4304d9e69736ba1deb981321473804",

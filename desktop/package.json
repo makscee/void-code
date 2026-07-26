@@ -5,20 +5,22 @@
   "description": "Bounded Void Code Electron packaging prototype",
   "main": "dist/main/index.js",
   "scripts": {
-    "clean": "rm -rf dist release resources/staged smoke-output.json",
+    "clean": "node scripts/clean.mjs",
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:renderer",
     "lint": "eslint src tests scripts",
     "test": "vitest run",
     "assemble": "node scripts/assemble-resources.mjs",
     "verify-resources": "node scripts/verify-resources.mjs resources/staged/manifest.json resources/staged",
     "package:mac": "npm run build && npm run assemble && electron-builder --dir --mac --arm64",
+    "package:win": "npm run build && node scripts/assemble-windows-resources.mjs && electron-builder --win --x64",
     "smoke:packaged": "node scripts/packaged-smoke.mjs",
     "check": "npm run clean && npm run lint && npm run test && npm run package:mac && npm run smoke:packaged",
     "check:mac-pty": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/mac-pty-check.mjs",
     "check:mac-tabs": "npm run clean && npm run lint && npm run test && npm run package:mac",
     "check:status": "npm run lint && vitest run tests/status-channel.test.ts tests/session-manager.test.ts tests/workspace-close-ipc.test.ts tests/contract.test.ts",
     "bundle:renderer": "esbuild src/renderer/index.ts --bundle --format=esm --platform=browser --target=chrome130 --loader:.woff2=file --loader:.woff=file --asset-names=assets/[name]-[hash] --outfile=dist/renderer/index.js",
-    "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs"
+    "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs",
+    "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.2.8",
@@ -65,6 +67,15 @@
       "target": "dir",
       "category": "public.app-category.developer-tools",
       "identity": null
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Void-Code-Prototype-${version}-windows-${arch}.${ext}"
     }
   }
 }

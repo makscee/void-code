@@ -139,8 +139,13 @@ export function wrapPty(process: IPty): TerminalProcess {
   const stopGroup = (): void => {
     if (stopping) return;
     stopping = true;
-    // node-pty makes the child a process-group leader. Addressing that group
-    // reaps vc and its private Node/Pi descendants without name-based kills.
+    if (globalThis.process.platform === 'win32') {
+      // node-pty enumerates the owned ConPTY console process list before
+      // closing its handles, avoiding both name-based kills and orphaned children.
+      try { process.kill(); } catch { /* ConPTY already closed */ }
+      return;
+    }
+    // node-pty makes the Unix child a process-group leader.
     try { globalThis.process.kill(-process.pid, 'SIGTERM'); } catch { try { process.kill(); } catch { /* already exited */ } }
     const timer = setTimeout(() => { try { globalThis.process.kill(-process.pid, 'SIGKILL'); } catch { /* group exited */ } }, 1000);
     timer.unref();

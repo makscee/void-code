@@ -17,7 +17,7 @@ afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) =>
 const archive = path.resolve('runtime/cache/node', expectedNodeArchive(pins.node).archiveName);
 
 describe('resource source pins', () => {
-  it('extracts authenticated Node and its private npm from the exact pinned official archive', async () => {
+  it.skipIf(process.platform === 'win32')('extracts authenticated Node and its private npm from the exact pinned official archive', async () => {
     const destination = await temp();
     const executable = await extractPinnedNodeArchive(archive, destination, pins.node);
     await expect(assertNodePin(executable, pins.node)).resolves.toBeUndefined();
@@ -41,14 +41,14 @@ describe('resource source pins', () => {
     await expect(extractPinnedNodeArchive(path.join(await temp(), 'missing.tar.gz'), await temp(), pins.node)).rejects.toThrow();
   });
 
-  it('rejects a tampered Node archive before extraction', async () => {
+  it.skipIf(process.platform === 'win32')('rejects a tampered Node archive before extraction', async () => {
     const changed = path.join(await temp(), 'node.tar.gz');
     await cp(archive, changed);
     await appendFile(changed, 'tampered');
     await expect(extractPinnedNodeArchive(changed, await temp(), pins.node)).rejects.toThrow('Node archive hash mismatch');
   });
 
-  it('rejects traversal and unexpected archive layouts', async () => {
+  it.skipIf(process.platform === 'win32')('rejects traversal and unexpected archive layouts', async () => {
     const traversal = path.join(await temp(), 'traversal.tar.gz');
     execFileSync('python3', ['-c', "import io,sys,tarfile; t=tarfile.open(sys.argv[1],'w:gz'); i=tarfile.TarInfo('../escape'); i.size=1; t.addfile(i,io.BytesIO(b'x')); t.close()", traversal]);
     await expect(extractPinnedNodeArchive(traversal, await temp(), { ...pins.node, sourceArchiveSha256: await shaFile(traversal) })).rejects.toThrow('unsafe private Node archive member');

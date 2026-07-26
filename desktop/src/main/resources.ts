@@ -4,7 +4,7 @@ import path from 'node:path';
 
 export interface RuntimeManifest {
   schema: 1;
-  platform: 'darwin-arm64';
+  platform: 'darwin-arm64' | 'win32-x64';
   vc: { version: string; sourceCommit: string; path: string; sha256: string };
   node: { version: string; path: string; sha256: string };
   pi: { version: string; entry: string; treeSha256: string };
@@ -37,7 +37,8 @@ function safe(root: string, relative: string): string {
 export function resolvePrivateRuntime(root: string): PrivateRuntime {
   if (root.includes('app.asar')) throw new Error('private executables must be outside asar');
   const manifest = JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8')) as RuntimeManifest;
-  if (manifest.schema !== 1 || manifest.platform !== 'darwin-arm64') throw new Error('unsupported private runtime manifest');
+  const expectedPlatform = process.platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
+  if (manifest.schema !== 1 || manifest.platform !== expectedPlatform) throw new Error('unsupported private runtime manifest');
   const vc = safe(root, manifest.vc.path);
   const node = safe(root, manifest.node.path);
   const piEntry = safe(root, manifest.pi.entry);

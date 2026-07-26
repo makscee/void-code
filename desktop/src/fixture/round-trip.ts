@@ -1,9 +1,29 @@
+import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 
 process.title = 'void-code-owned-round-trip-fixture';
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-setTimeout(() => console.log('fixture:ready'), 100);
+const children = new Set<ReturnType<typeof spawn>>();
+const closeChildren = (): void => { for (const child of children) child.kill(); };
+process.on('exit', closeChildren);
+setTimeout(() => console.log(`fixture:ready:cwd=${process.cwd()}`), 100);
 input.on('line', (line) => {
+  if (line === 'size') {
+    if (process.platform === 'win32') {
+      const powershell = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+      const query = spawn(powershell, ['-NoProfile', '-NonInteractive', '-Command', '$s=$Host.UI.RawUI.WindowSize; Write-Output "fixture:size:$($s.Width)x$($s.Height)"'], { stdio: 'inherit' });
+      children.add(query);
+      query.once('exit', () => children.delete(query));
+    } else console.log(`fixture:size:${process.stdout.columns}x${process.stdout.rows}`);
+    return;
+  }
+  if (line === 'tree') {
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+    children.add(child);
+    child.once('exit', () => children.delete(child));
+    console.log(`fixture:pids:${process.pid}:${child.pid}`);
+    return;
+  }
   if (line === 'terminal-fidelity') {
     const ansi16 = [...Array(8).keys()].map((index) => `\x1b[${30 + index}mX`).join('') + [...Array(8).keys()].map((index) => `\x1b[${90 + index}mX`).join('');
     process.stdout.write(`\x1b[2J\x1b[H${ansi16}\x1b[0m\r\n`);
@@ -16,6 +36,7 @@ input.on('line', (line) => {
   }
   if (line === 'quit') {
     console.log('fixture:bye');
+    closeChildren();
     input.close();
     return;
   }
