@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export const IPC = {
   start: 'terminal:start', input: 'terminal:input', resize: 'terminal:resize', stop: 'terminal:stop', status: 'terminal:status',
   chooseFolder: 'terminal:choose-folder', openLink: 'terminal:open-link', subscribe: 'terminal:subscribe', unsubscribe: 'terminal:unsubscribe',
@@ -69,6 +71,11 @@ export function sessionId(value: unknown, fixture = false): SessionId {
   if (typeof value !== 'string' || !(fixture ? FIXTURE_ID : UUID).test(value)) throw new Error('invalid sessionId');
   return value;
 }
+function isAbsoluteWorkspacePath(value: string): boolean {
+  const windowsDrive = /^[A-Za-z]:[\\/]/.test(value);
+  const windowsShare = /^\\\\[^\\/]+\\[^\\/]+(?:\\|$)/.test(value);
+  return path.posix.isAbsolute(value) || windowsDrive || windowsShare;
+}
 export function startRequest(value: unknown): StartRequest {
   if (typeof value === 'object' && value !== null && 'fixture' in value) {
     const object = ownedObject(value, ['sessionId', 'fixture']);
@@ -77,7 +84,7 @@ export function startRequest(value: unknown): StartRequest {
   }
   const object = ownedObject(value, ['sessionId', 'cwd', 'mode']);
   if (object.mode !== 'create' && object.mode !== 'resume') throw new Error('invalid session mode');
-  if (typeof object.cwd !== 'string' || !object.cwd.startsWith('/') || Buffer.byteLength(object.cwd, 'utf8') > 4096) throw new Error('invalid cwd');
+  if (typeof object.cwd !== 'string' || !isAbsoluteWorkspacePath(object.cwd) || Buffer.byteLength(object.cwd, 'utf8') > 4096) throw new Error('invalid cwd');
   return { sessionId: sessionId(object.sessionId), cwd: object.cwd, mode: object.mode };
 }
 export function sessionRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId, true) }; }

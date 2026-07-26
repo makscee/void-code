@@ -12,11 +12,13 @@ describe('allowlisted renderer contract validation', () => {
       { sessionId: '../escape', fixture: 'roundTrip' },
     ]) expect(() => startRequest(request)).toThrow();
   });
-  it('accepts only UUID-scoped real create/resume requests with an absolute cwd', () => {
+  it('accepts UUID-scoped real requests with native POSIX, drive, and UNC absolute cwd values', () => {
     const valid = { sessionId: '123e4567-e89b-42d3-a456-426614174000', cwd: '/tmp/space Юникод', mode: 'create' };
     expect(startRequest(valid)).toEqual(valid);
     expect(startRequest({ ...valid, mode: 'resume' })).toMatchObject({ mode: 'resume' });
-    expect(() => startRequest({ ...valid, cwd: 'relative' })).toThrow('invalid cwd');
+    expect(startRequest({ ...valid, cwd: 'C:\\Users\\Accountant\\Void Code\\Клиент' })).toMatchObject({ cwd: 'C:\\Users\\Accountant\\Void Code\\Клиент' });
+    expect(startRequest({ ...valid, cwd: '\\\\server\\share\\Pilot Folder' })).toMatchObject({ cwd: '\\\\server\\share\\Pilot Folder' });
+    for (const cwd of ['relative', 'C:relative', '.\\relative', '\\root-relative', '\\\\server', `/${'a'.repeat(4097)}`]) expect(() => startRequest({ ...valid, cwd })).toThrow('invalid cwd');
     expect(() => startRequest({ ...valid, command: '/bin/sh' })).toThrow('unknown');
     expect(() => startRequest({ ...valid, sessionId: 'not-a-uuid' })).toThrow('invalid sessionId');
   });
