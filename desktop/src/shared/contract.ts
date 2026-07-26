@@ -6,6 +6,7 @@ export const IPC = {
   output: 'terminal:output', exit: 'terminal:exit', lifecycle: 'chat:lifecycle', lifecycleStatus: 'chat:lifecycle-status',
   workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
   workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
+  supportCopy: 'support:copy', supportSave: 'support:save',
 } as const;
 
 export type SessionId = string;
@@ -32,6 +33,10 @@ export interface TabRecord { id: string; title: string; location: 'active' | 're
 export interface WorkspaceRecord { path: string; tabs: TabRecord[]; selectedId: string | null }
 export interface WorkspaceView { workspace: WorkspaceRecord | null; recoveryPath: string | null }
 export interface NewChatReply { view: WorkspaceView }
+export type RuntimeSupportState = 'not_started' | 'running' | 'ended' | 'start_failed';
+export type RecoveryCode = 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'SESSION_START_FAILED' | 'RUNTIME_EXITED' | 'WORKSPACE_MISSING' | 'SESSION_MISSING';
+export interface SupportRequest { runtime: RuntimeSupportState; recoveryCode: RecoveryCode }
+export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
 
 export interface TerminalApi {
   start(request: StartRequest): Promise<StartReply>;
@@ -42,6 +47,10 @@ export interface TerminalApi {
   lifecycleStatus(request: SessionRequest): Promise<ChatStatusReply>;
   chooseFolder(): Promise<string | null>;
   openLink(url: string): Promise<void>;
+  support: {
+    copy(request: SupportRequest): Promise<SupportResult>;
+    save(request: SupportRequest): Promise<SupportResult>;
+  };
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;
   onStatus(sessionId: SessionId, listener: (event: ChatSemanticStatus) => void): Unsubscribe;
@@ -86,6 +95,13 @@ export function startRequest(value: unknown): StartRequest {
   if (object.mode !== 'create' && object.mode !== 'resume') throw new Error('invalid session mode');
   if (typeof object.cwd !== 'string' || !isAbsoluteWorkspacePath(object.cwd) || Buffer.byteLength(object.cwd, 'utf8') > 4096) throw new Error('invalid cwd');
   return { sessionId: sessionId(object.sessionId), cwd: object.cwd, mode: object.mode };
+}
+export function supportRequest(value: unknown): SupportRequest {
+  const object = ownedObject(value, ['runtime', 'recoveryCode']);
+  const runtimes: RuntimeSupportState[] = ['not_started', 'running', 'ended', 'start_failed'];
+  const recoveryCodes: RecoveryCode[] = ['NONE', 'AUTH_PREFLIGHT_REQUIRED', 'SESSION_START_FAILED', 'RUNTIME_EXITED', 'WORKSPACE_MISSING', 'SESSION_MISSING'];
+  if (!runtimes.includes(object.runtime as RuntimeSupportState) || !recoveryCodes.includes(object.recoveryCode as RecoveryCode)) throw new Error('invalid support context');
+  return { runtime: object.runtime as RuntimeSupportState, recoveryCode: object.recoveryCode as RecoveryCode };
 }
 export function sessionRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId, true) }; }
 export function chatRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId) }; }

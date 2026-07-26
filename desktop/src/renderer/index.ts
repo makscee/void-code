@@ -1,13 +1,21 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
+import { RECOVERY_GUIDANCE } from './recovery';
+import type { RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
 const newChatButton = document.querySelector<HTMLButtonElement>('#new-chat')!;
+const supportToggleButton = document.querySelector<HTMLButtonElement>('#support-toggle')!;
+const supportPanel = document.querySelector<HTMLElement>('#support-panel')!;
+const supportCopyButton = document.querySelector<HTMLButtonElement>('#support-copy')!;
+const supportSaveButton = document.querySelector<HTMLButtonElement>('#support-save')!;
+const supportCloseButton = document.querySelector<HTMLButtonElement>('#support-close')!;
 const tabsElement = document.querySelector<HTMLElement>('#tabs')!;
 const terminalsElement = document.querySelector<HTMLElement>('#terminals')!;
 const mainElement = document.querySelector<HTMLElement>('main')!;
 const emptyElement = document.querySelector<HTMLElement>('#empty')!;
+const preflightElement = document.querySelector<HTMLElement>('#preflight')!;
 const recoveryElement = document.querySelector<HTMLElement>('#recovery')!;
 const recoveryPathElement = document.querySelector<HTMLElement>('#recovery-path')!;
 const locateButton = document.querySelector<HTMLButtonElement>('#locate')!;
@@ -18,17 +26,35 @@ const recentListElement = document.querySelector<HTMLElement>('#recent-list')!;
 const recentToggleButton = document.querySelector<HTMLButtonElement>('#recent-toggle')!;
 const recentCloseButton = document.querySelector<HTMLButtonElement>('#recent-close')!;
 const endedElement = document.querySelector<HTMLElement>('#ended')!;
+const endedHeading = document.querySelector<HTMLElement>('#ended-heading')!;
 const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
 
-type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean };
+type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean; recoveryCode?: RecoveryCode };
 const runtimes = new Map<string, Runtime>();
 const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
+let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
+function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
+  currentRecovery = code; runtime.recoveryCode = code;
+  const guidance = RECOVERY_GUIDANCE[code];
+  endedHeading.textContent = guidance.heading; endedDetail.textContent = guidance.detail;
+  restartButton.hidden = !guidance.canRestart; endedElement.hidden = false;
+}
+function supportContext(): SupportRequest {
+  const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined;
+  const recoveryCode = runtime?.recoveryCode ?? currentRecovery;
+  const state: RuntimeSupportState = recoveryCode === 'SESSION_START_FAILED' ? 'start_failed' : runtime?.exited ? 'ended' : runtime ? 'running' : 'not_started';
+  return { runtime: state, recoveryCode };
+}
+function setSupportOpen(open: boolean): void {
+  supportPanel.hidden = !open; supportToggleButton.setAttribute('aria-expanded', String(open));
+  if (open) supportCopyButton.focus(); else supportToggleButton.focus();
+}
 function setRecentOpen(open: boolean, focusTarget = true): void {
   const hasRecent = Boolean(view.workspace?.tabs.some((tab) => tab.location === 'recent'));
   recentOpen = open && hasRecent;
@@ -64,14 +90,15 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const { terminal } = created;
   terminal.open(container); activateProductRenderer(created); terminal.onData((data: string) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
   let offOutput = (): void => undefined; let offExit = (): void => undefined; let offStatus = (): void => undefined;
-  const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false }) as Runtime; runtimes.set(tab.id, runtime);
+  const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false, recoveryCode: 'NONE' as RecoveryCode }) as Runtime; runtimes.set(tab.id, runtime);
   try {
+    currentRecovery = 'NONE';
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
-    offExit = window.voidTerminal.onExit(tab.id, ({ exitCode, signal }) => {
+    offExit = window.voidTerminal.onExit(tab.id, () => {
       runtime.exited = true;
-      if (view.workspace?.selectedId === tab.id) { endedElement.hidden = false; container.hidden = true; endedDetail.textContent = `The Pi process ended (${signal === undefined ? `exit ${exitCode}` : `signal ${signal}`}). Restart resumes this chat; no shell was opened.`; }
+      if (view.workspace?.selectedId === tab.id) { container.hidden = true; showEnded('RUNTIME_EXITED', runtime); }
     });
     runtime.offOutput = offOutput; runtime.offExit = offExit;
     chatStatuses.set(tab.id, (await window.voidTerminal.lifecycleStatus({ sessionId: tab.id })).status);
@@ -80,10 +107,9 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     await fitRuntime(tab.id, runtime);
     if (!container.hidden) terminal.focus();
   } catch (error) {
-    runtime.exited = true; container.hidden = true; endedElement.hidden = false;
-    const message = error instanceof Error ? error.message : String(error);
-    endedDetail.textContent = message.includes('SESSION_MISSING') ? 'The saved Pi session is unavailable. Close it and start a new chat.' : message;
-    restartButton.hidden = message.includes('SESSION_MISSING');
+    runtime.exited = true; container.hidden = true;
+    const code = error instanceof Error && error.message.includes('SESSION_MISSING') ? 'SESSION_MISSING' : 'SESSION_START_FAILED';
+    showEnded(code, runtime);
   }
 }
 
@@ -91,12 +117,12 @@ function render(): void {
   const focusedRecentControl = recentOpen && recentElement.contains(document.activeElement);
   const focusedRecentChatId = document.activeElement instanceof HTMLButtonElement ? document.activeElement.closest<HTMLElement>('.recent-row')?.dataset.chatId : undefined;
   const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
-  folderElement.textContent = workspace?.path ?? 'No folder selected';
+  folderElement.textContent = recovering ? 'Workspace unavailable' : workspace?.path ?? 'No folder selected';
   chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
-  emptyElement.hidden = Boolean(workspace); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
-  recoveryPathElement.textContent = view.recoveryPath ?? '';
+  emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || Boolean(workspace.selectedId); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
+  recoveryPathElement.textContent = recovering ? 'The previously selected folder cannot be found.' : '';
   tabsElement.replaceChildren(); recentListElement.replaceChildren();
-  if (!workspace || recovering) { recentToggleButton.hidden = true; setRecentOpen(false, false); endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; fitAfterLayout(); return; }
+  if (!workspace || recovering) { currentRecovery = recovering ? 'WORKSPACE_MISSING' : 'AUTH_PREFLIGHT_REQUIRED'; recentToggleButton.hidden = true; setRecentOpen(false, false); endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; fitAfterLayout(); return; }
   const active = workspace.tabs.filter((tab) => tab.location === 'active'); const recent = workspace.tabs.filter((tab) => tab.location === 'recent');
   for (const tab of active) {
     const item = document.createElement('div'); item.className = `tab${tab.id === workspace.selectedId ? ' selected' : ''}`;
@@ -109,8 +135,11 @@ function render(): void {
   }
   for (const runtime of runtimes.values()) runtime.container.hidden = true;
   const selected = workspace.selectedId ? runtimes.get(workspace.selectedId) : undefined;
-  if (selected && !selected.exited) { selected.container.hidden = false; if (!focusedRecentControl) selected.terminal.focus(); endedElement.hidden = true; }
-  else endedElement.hidden = !workspace.selectedId;
+  if (selected && !selected.exited) { currentRecovery = 'NONE'; selected.container.hidden = false; if (!focusedRecentControl) selected.terminal.focus(); endedElement.hidden = true; }
+  else if (selected?.exited) {
+    const code = selected.recoveryCode;
+    showEnded(code === 'SESSION_START_FAILED' || code === 'SESSION_MISSING' || code === 'RUNTIME_EXITED' ? code : 'RUNTIME_EXITED', selected);
+  } else { endedElement.hidden = !workspace.selectedId; currentRecovery = workspace.selectedId ? 'NONE' : 'AUTH_PREFLIGHT_REQUIRED'; }
   recentToggleButton.hidden = recent.length === 0;
   recentToggleButton.disabled = recent.length === 0;
   recentToggleButton.textContent = `Recent Chats (${recent.length})`;
@@ -128,10 +157,14 @@ async function closeChat(id: string): Promise<void> { await stop(id); view = awa
 async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {
   const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
-  announce('Trusted-folder prototype: Pi can read and change files in this folder using your operating-system permissions. Existing VC authentication is used.'); render();
+  announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions. Before the first chat, ask your operator to confirm existing VC sign-in and network access.'); render();
 }
 
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
+supportToggleButton.addEventListener('click', () => { setSupportOpen(supportPanel.hidden); });
+supportCloseButton.addEventListener('click', () => { setSupportOpen(false); });
+supportCopyButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.copy(supportContext()); announce(result.action === 'copied' ? 'Support Report copied. Review it before sharing.' : 'Support Report was not copied.'); });
+supportSaveButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.save(supportContext()); announce(result.action === 'saved' ? 'Support Report saved. Review it before sharing.' : 'Support Report save cancelled.'); });
 recentToggleButton.addEventListener('click', () => { setRecentOpen(!recentOpen); });
 recentCloseButton.addEventListener('click', () => { setRecentOpen(false); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && recentOpen) { event.preventDefault(); setRecentOpen(false); } });
@@ -356,4 +389,4 @@ void window.voidTerminal.workspace.load().then(async (loaded) => {
   view = loaded; render();
   if (new URLSearchParams(location.search).get('productionTerminalProbe') === '1') await productionProbe();
   else { const tab = selectedTab(); if (tab && !view.recoveryPath) await launch(tab, 'resume'); render(); }
-}).catch((error: unknown) => { document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}`; });
+}).catch(() => { document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify({ ok: false, errorCode: 'WORKSPACE_LOAD_FAILED' })}`; });

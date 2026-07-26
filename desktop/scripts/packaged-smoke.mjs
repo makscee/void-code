@@ -33,7 +33,7 @@ await new Promise((resolve) => setTimeout(resolve, 500));
 const result = JSON.parse(await readFile(output, 'utf8'));
 const after = inventory();
 const manifest = JSON.parse(await readFile(path.join(resources, 'manifest.json'), 'utf8'));
-const expectedApi = ['chooseFolder', 'input', 'lifecycleStatus', 'onExit', 'onOutput', 'onStatus', 'openLink', 'resize', 'start', 'status', 'stop', 'teardown', 'workspace'];
+const expectedApi = ['chooseFolder', 'input', 'lifecycleStatus', 'onExit', 'onOutput', 'onStatus', 'openLink', 'resize', 'start', 'status', 'stop', 'support', 'teardown', 'workspace'];
 if (exit.code !== 0 || !result.ok || result.rendererAuthority?.process !== 'undefined' || result.rendererAuthority?.require !== 'undefined' || JSON.stringify(result.apiKeys) !== JSON.stringify(expectedApi) || after.length) throw new Error(JSON.stringify({ exit, result, before, after, stderr }));
 console.log(JSON.stringify({ exit, result, identity, processInventory: { before, after }, environment: { PATH: '/usr/bin:/bin', globalNodePiAbsent: globalLookupAbsent, electronRunAsNode: false }, manifest }));
 await rm(temporary, { recursive: true, force: true });

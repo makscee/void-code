@@ -1,16 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, webContents } from 'electron';
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, chatRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest } from '../shared/contract';
+import { IPC, chatRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { RealStartRequest, StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { sessionLifecycleArgs } from './session-files';
 import type { PrivateRuntime } from './resources';
 import { SessionManager, wrapPty } from './session-manager';
 import { StatusChannelStore } from './status-channel';
+import { buildSupportReport, copySupportReport, saveSupportReport } from './support-report';
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
@@ -48,6 +49,16 @@ function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?
   }));
 }
 
+function supportReport(raw: unknown) {
+  const context = supportRequest(raw);
+  const current = workspace.view();
+  const workspaceState = !current.workspace ? 'none' : current.recoveryPath ? 'missing' : 'ready';
+  return buildSupportReport({
+    appVersion: app.getVersion(), platform: process.platform, architecture: process.arch, generatedAt: new Date().toISOString(),
+    workspace: workspaceState, runtime: context.runtime, recoveryCode: context.recoveryCode,
+  });
+}
+
 function registerIpc(): void {
   ipcMain.handle(IPC.start, (event, raw: unknown) => {
     const request = startRequest(raw);
@@ -78,6 +89,16 @@ function registerIpc(): void {
   ipcMain.handle(IPC.workspaceClose, (event, raw: unknown) => closeWorkspaceChat(manager, workspace, event.sender.id, raw));
   ipcMain.handle(IPC.workspaceResume, (_event, raw: unknown) => workspace.resume(chatRequest(raw).sessionId));
   ipcMain.handle(IPC.openLink, async (_event, raw: unknown) => shell.openExternal(linkRequest(raw)));
+  ipcMain.handle(IPC.supportCopy, (_event, raw: unknown) => copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)));
+  ipcMain.handle(IPC.supportSave, async (_event, raw: unknown) => {
+    const report = supportReport(raw);
+    const stamp = report.generatedAt.slice(0, 19).replaceAll(':', '-');
+    return saveSupportReport(
+      report,
+      async () => { const result = await dialog.showSaveDialog({ defaultPath: `Void-Code-Support-${stamp}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] }); return result.canceled ? null : result.filePath ?? null; },
+      (file, text) => writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 }),
+    );
+  });
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
   ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
 }
