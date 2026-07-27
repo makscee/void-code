@@ -172,7 +172,19 @@ func devicePollAt(authHost, deviceCode string, httpClient *http.Client, now func
 }
 
 func decodeOne(r io.Reader, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r, 64<<10))
+	const maxResponseBytes = 64 << 10
+	data, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxResponseBytes {
+		return errors.New("response too large")
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("expected one JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}

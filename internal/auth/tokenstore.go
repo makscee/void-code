@@ -32,12 +32,24 @@ func legacyTokenPath() (string, error) {
 }
 
 func LegacyTokenExists() bool {
+	_, err := LoadLegacyToken()
+	return err == nil
+}
+
+// LoadLegacyToken reads the former cv credential without copying or changing it.
+func LoadLegacyToken() (string, error) {
 	path, err := legacyTokenPath()
 	if err != nil {
-		return false
+		return "", err
 	}
-	_, err = os.Stat(path)
-	return err == nil
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", ErrNotLoggedIn
+	}
+	if err != nil {
+		return "", fmt.Errorf("cannot read legacy token file: %w", err)
+	}
+	return string(data), nil
 }
 
 type credentialOps struct {

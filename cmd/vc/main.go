@@ -918,6 +918,11 @@ func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
 //
 // Returns reached=true only when the server responded successfully.
 // VCD-65: SubDaysLeft removed; budgetGate uses reached to distinguish transient blip.
+func isIdentityCredential(token string) bool {
+	separator := strings.IndexByte(token, '.')
+	return separator > 0 && separator < len(token)-1 && strings.Count(token, ".") == 1
+}
+
 func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, bool, error) {
 	if token == "" {
 		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
@@ -933,8 +938,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		// validate them; the relay performs authoritative identity introspection
 		// before serving any request. Do not reject a valid identity credential at
 		// this obsolete preflight. Legacy credentials remain fail-closed here.
-		separator := strings.IndexByte(token, '.')
-		if separator > 0 && separator < len(token)-1 && strings.Count(token, ".") == 1 {
+		if isIdentityCredential(token) {
 			return auth.MeResult{}, false, nil
 		}
 		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
