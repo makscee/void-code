@@ -92,8 +92,8 @@ func runStatus(_ *cobra.Command, _ []string) error {
 
 	// VCD-49: fetch budget info from /v1/vc/me (pct + reset_at only — no dollar values).
 	// Degrade-safe: if FetchMe fails or pct absent/nil, skip the budget line silently.
-	vcMeClient := &http.Client{Timeout: 5 * time.Second}
-	if me, err := auth.FetchMe(cfg.AuthHost, token, vcMeClient); err == nil && me.Pct != nil {
+	vcMeClient := &http.Client{Timeout: authProbeTimeout}
+	if me, err := cachedFetchMe(cfg.AuthHost, token, vcMeClient); err == nil && me.Pct != nil {
 		line := formatBudgetLine(*me.Pct, me.ResetAt)
 		fmt.Printf("%s %s\n", labelStyle.Render("budget: "), valueStyle.Render(line))
 	}
@@ -133,6 +133,12 @@ func fmtResetDate(resetAt string) string {
 
 // fetchMe calls GET /v1/auth/me and returns the user's slug + email.
 func fetchMe(authHost, token string) (meResponse, error) {
+	if cached, ok := readAuthCache[meResponse]("auth-me", authHost, token, time.Now()); ok {
+		return cached, nil
+	}
+	if err := readAuthTransient("auth-me", authHost, token); err != nil {
+		return meResponse{}, err
+	}
 	url := strings.TrimRight(authHost, "/") + "/v1/auth/me"
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -140,15 +146,22 @@ func fetchMe(authHost, token string) (meResponse, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: authProbeTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		writeAuthTransient("auth-me", authHost, token, err)
 		return meResponse{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return meResponse{}, fmt.Errorf("auth/me returned HTTP %d", resp.StatusCode)
+		err := fmt.Errorf("auth/me returned HTTP %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized {
+			clearAuthCache("auth-me", authHost, token)
+		} else {
+			writeAuthTransient("auth-me", authHost, token, err)
+		}
+		return meResponse{}, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -160,5 +173,6 @@ func fetchMe(authHost, token string) (meResponse, error) {
 	if err := json.Unmarshal(body, &me); err != nil {
 		return meResponse{}, err
 	}
+	writeAuthCache("auth-me", authHost, token, me, time.Now())
 	return me, nil
 }

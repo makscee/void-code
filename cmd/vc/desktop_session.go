@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/compat"
@@ -81,7 +80,7 @@ func init() {
 }
 
 func fetchDesktopGrants(authHost, token string) ([]compat.Grant, error) {
-	infos, err := auth.FetchProviders(authHost, token, &http.Client{Timeout: 10 * time.Second})
+	infos, err := cachedFetchProviders(authHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +107,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
 	}
 	cfg := deps.resolveConfig()
-	me, reached, err := deps.authGate(token, cfg.AuthHost, &http.Client{Timeout: 10 * time.Second})
+	me, reached, err := deps.authGate(token, cfg.AuthHost, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
 	}

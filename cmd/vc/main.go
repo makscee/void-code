@@ -130,7 +130,7 @@ func main() {
 				fetchOK := false
 				if tok, _ := auth.LoadAndMigrate(); strings.TrimSpace(tok) != "" {
 					cfg := config.OSResolve()
-					if infos, gErr := auth.FetchProviders(cfg.AuthHost, tok, &http.Client{Timeout: 10 * time.Second}); gErr == nil {
+					if infos, gErr := cachedFetchProviders(cfg.AuthHost, tok, &http.Client{Timeout: authProbeTimeout}); gErr == nil {
 						for _, pi := range infos {
 							grantedRows = append(grantedRows, welcome.ProviderRowInfo{ID: pi.ID, Name: pi.Name, Type: pi.Type})
 						}
@@ -305,8 +305,8 @@ func resolveAuthState() welcome.AuthState {
 	}
 
 	cfg := config.OSResolve()
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	me, err := auth.FetchMe(cfg.AuthHost, token, httpClient)
+	httpClient := &http.Client{Timeout: authProbeTimeout}
+	me, err := cachedFetchMe(cfg.AuthHost, token, httpClient)
 	if err != nil {
 		// Auth host unreachable or token invalid — show degraded state.
 		if err == auth.ErrNotLoggedIn {
@@ -356,7 +356,7 @@ func fetchCompatGrants(authHost, token string) []compat.Grant {
 	if strings.TrimSpace(token) == "" {
 		return nil
 	}
-	infos, err := auth.FetchProviders(authHost, token, &http.Client{Timeout: 10 * time.Second})
+	infos, err := cachedFetchProviders(authHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return nil
 	}
@@ -380,7 +380,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// Pre-spawn auth gate: verify token before handing control to the active harness.
 	// A missing or rejected token must surface a friendly message here — not a
 	// raw 401 error buried inside the harness UI.
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := &http.Client{Timeout: authProbeTimeout}
 	me, reached, err := authGate(token, cfg.AuthHost, httpClient)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -923,7 +923,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
 	}
 
-	me, err := auth.FetchMe(authHost, token, httpClient)
+	me, err := cachedFetchMe(authHost, token, httpClient)
 	if err == nil {
 		return me, true, nil
 	}

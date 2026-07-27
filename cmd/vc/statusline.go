@@ -358,7 +358,7 @@ func fetchSegData() segData {
 		return d // not logged in → $ hidden
 	}
 	token = strings.TrimSpace(token)
-	me, err := auth.FetchMe(cfg.AuthHost, token, statuslineHTTPClient())
+	me, err := cachedFetchMe(cfg.AuthHost, token, statuslineHTTPClient())
 	if err != nil || me.BalanceUsd == nil {
 		return d // error / field absent → hide $ segment
 	}
