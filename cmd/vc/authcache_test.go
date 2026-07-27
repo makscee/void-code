@@ -141,3 +141,23 @@ func TestCachedFetchMeExpiredCacheDoesNotMaskUnauthorized(t *testing.T) {
 		t.Fatalf("cache dir should remain: %v", err)
 	}
 }
+
+func TestClearAuthCachesForTokenCoversEveryPreflightNamespace(t *testing.T) {
+	withTempHome(t)
+	host, token := "https://auth.example", "session.secret"
+	for _, kind := range []string{"me", "providers", "auth-me"} {
+		writeAuthCache(kind, host, token, "cached", time.Now())
+		writeAuthTransient(kind, host, token, errors.New("transient"))
+	}
+
+	clearAuthCachesForToken(host, token)
+	for _, kind := range []string{"me", "providers", "auth-me", "me-transient", "providers-transient", "auth-me-transient"} {
+		path, err := authCacheDebugPath(kind, host, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cache namespace %q remains: %v", kind, err)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -122,6 +123,29 @@ func TestDeviceRejectsMissingMalformedAndStaleExpiryWithoutInstallingValue(t *te
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestDecodeOneRequiresExactlyOneBoundedJSONObject(t *testing.T) {
+	for _, payload := range []string{
+		``,
+		`[]`,
+		`null`,
+		`{"ok":true}{"extra":true}`,
+		`{"ok":true} trailing`,
+	} {
+		var target struct {
+			OK bool `json:"ok"`
+		}
+		if err := decodeOne(strings.NewReader(payload), &target); err == nil {
+			t.Fatalf("accepted %q", payload)
+		}
+	}
+	oversized := append([]byte(`{"value":"`), bytes.Repeat([]byte("x"), (64<<10)+1)...)
+	oversized = append(oversized, []byte(`"}`)...)
+	var target map[string]string
+	if err := decodeOne(bytes.NewReader(oversized), &target); err == nil {
+		t.Fatal("accepted oversized response")
 	}
 }
 

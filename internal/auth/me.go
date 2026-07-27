@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -55,14 +54,14 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	}
 
 	var r struct {
-		UserID      string   `json:"userId"`
-		Email       string   `json:"email"`
+		UserID string `json:"userId"`
+		Email  string `json:"email"`
 		// subDaysLeft intentionally ignored — VCD-65: sentinel from server, no gate.
-		Pct         *float64 `json:"pct"`
-		ResetAt     string   `json:"resetAt"`
-		BalanceUsd  *float64 `json:"balanceUsd"`
+		Pct        *float64 `json:"pct"`
+		ResetAt    string   `json:"resetAt"`
+		BalanceUsd *float64 `json:"balanceUsd"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := decodeOne(resp.Body, &r); err != nil {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
 	}
 	return MeResult{

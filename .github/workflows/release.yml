@@ -146,8 +146,9 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   publish-auth:
-    name: Sync binaries to void-auth
+    name: Sync stable binaries to void-auth
     needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     # Requires repo secret VOID_AUTH_PUSH_TOKEN — a fine-scoped PAT with
     # contents:write on makscee/void-auth.
