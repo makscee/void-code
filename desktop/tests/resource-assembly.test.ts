@@ -3,7 +3,7 @@ import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertNodePin, assertPiSourcePins, assertPiTreePin, expectedNodeArchive, extractPinnedNodeArchive, shaFile, treeHash } from '../scripts/resource-assembly-lib.mjs';
+import { assertNodePin, assertPiSourcePins, assertPiTreePin, assertWindowsInstallablePaths, expectedNodeArchive, extractPinnedNodeArchive, hoistPiBundledDependencies, shaFile, treeHash } from '../scripts/resource-assembly-lib.mjs';
 import pins from '../scripts/resource-pins.json';
 
 const temporary: string[] = [];
@@ -75,6 +75,27 @@ describe('resource source pins', () => {
     await cp(source, changed, { recursive: true, filter: (entry) => !entry.includes('node_modules') });
     await writeFile(path.join(changed, 'package-lock.json'), `${await readFile(path.join(changed, 'package-lock.json'), 'utf8')} `);
     await expect(assertPiSourcePins(changed, pins.pi)).rejects.toThrow('package-lock hash mismatch');
+  });
+
+  it('hoists bundled Pi dependencies into NSIS-installable paths without changing their bytes', async () => {
+    const tree = await temp();
+    const nested = path.join(tree, 'node_modules/@earendil-works/pi-coding-agent/node_modules/@mistralai/mistralai');
+    const longName = `${'workflow'.repeat(12)}.js`;
+    await mkdir(nested, { recursive: true });
+    await writeFile(path.join(nested, longName), 'runtime bytes');
+    await mkdir(path.join(tree, 'node_modules/.bin'), { recursive: true });
+    await writeFile(path.join(tree, 'node_modules/.bin/pi'), 'root shim');
+    await mkdir(path.join(tree, 'node_modules/@earendil-works/pi-coding-agent/node_modules/.bin'), { recursive: true });
+    await writeFile(path.join(tree, 'node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/transitive'), 'nested shim');
+
+    await expect(assertWindowsInstallablePaths(tree)).rejects.toThrow('Windows installer path limit');
+    await hoistPiBundledDependencies(tree);
+
+    const hoisted = path.join(tree, 'node_modules/@mistralai/mistralai', longName);
+    expect(await readFile(hoisted, 'utf8')).toBe('runtime bytes');
+    expect(await readFile(path.join(tree, 'node_modules/.bin/pi'), 'utf8')).toBe('root shim');
+    await expect(readFile(path.join(tree, 'node_modules/.bin/transitive'))).rejects.toThrow();
+    await expect(assertWindowsInstallablePaths(tree)).resolves.toBeUndefined();
   });
 
   it('rejects a Pi tree changed after reconstruction', async () => {
