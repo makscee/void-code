@@ -1,7 +1,7 @@
 import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { assertPiSourcePins, shaFile, treeHash } from './resource-assembly-lib.mjs';
+import { assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash } from './resource-assembly-lib.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows resource assembly requires Windows x64');
 const desktop = process.cwd();
@@ -53,6 +53,8 @@ try {
     stdio: 'inherit',
   });
   await rm(path.join(staging, 'pi/node_modules/.package-lock.json'), { force: true });
+  await hoistPiBundledDependencies(path.join(staging, 'pi'));
+  await assertWindowsInstallablePaths(staging);
   const piPackage = JSON.parse(await readFile(path.join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'));
   const manifest = {
     schema: 1,

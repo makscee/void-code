@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { lstat, mkdir, readFile, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 export async function shaFile(file) {
@@ -19,6 +19,55 @@ export async function treeHash(root) {
   };
   await visit(root);
   return hash.digest('hex');
+}
+
+async function assertMissing(destination) {
+  try {
+    await lstat(destination);
+    throw new Error(`refusing to overwrite hoisted dependency: ${destination}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
+export async function hoistPiBundledDependencies(piRoot) {
+  const bundled = path.join(piRoot, 'node_modules/@earendil-works/pi-coding-agent/node_modules');
+  const target = path.join(piRoot, 'node_modules');
+  for (const entry of await readdir(bundled, { withFileTypes: true })) {
+    const source = path.join(bundled, entry.name);
+    if (entry.name === '.bin') {
+      await rm(source, { recursive: true });
+    } else if (entry.name.startsWith('@')) {
+      const targetScope = path.join(target, entry.name);
+      await mkdir(targetScope, { recursive: true });
+      for (const child of await readdir(source, { withFileTypes: true })) {
+        const destination = path.join(targetScope, child.name);
+        await assertMissing(destination);
+        await rename(path.join(source, child.name), destination);
+      }
+      await rm(source, { recursive: true });
+    } else {
+      const destination = path.join(target, entry.name);
+      await assertMissing(destination);
+      await rename(source, destination);
+    }
+  }
+  await rm(bundled, { recursive: true });
+}
+
+export async function assertWindowsInstallablePaths(root) {
+  const longestLocalUser = '12345678901234567890';
+  const installRoot = `C:\\Users\\${longestLocalUser}\\AppData\\Local\\Programs\\Void Code\\resources\\private-runtime`;
+  const visit = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(root, absolute).split(path.sep).join('\\');
+      const installed = `${installRoot}\\${relative}`;
+      if (installed.length >= 260) throw new Error(`Windows installer path limit exceeded (${installed.length}): ${relative}`);
+      if (entry.isDirectory()) await visit(absolute);
+    }
+  };
+  await visit(root);
 }
 
 export function expectedNodeArchive(pin) {
