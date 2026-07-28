@@ -15,6 +15,9 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
+import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
+import { focusExistingWindow, runBootstrap, startupStage } from './startup-lifecycle';
+import type { StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
 const smokeOutput = smokeArgument?.slice('--void-smoke-output='.length);
@@ -27,6 +30,7 @@ if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 let manager: SessionManager;
 let workspace: WorkspaceStore;
+let mainWindow: BrowserWindow | undefined;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   const systemPath = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/usr/bin:/bin';
@@ -135,11 +139,11 @@ async function captureVisibleColors(window: BrowserWindow, raw: unknown) {
   } finally { if (attached) debug.detach(); }
 }
 
-async function createWindow(): Promise<void> {
-  const window = new BrowserWindow({
-    show: !smokeOutput && !productionProbeOutput, width: 1100, height: 760, backgroundColor: '#101216',
+async function createWindow(): Promise<BrowserWindow> {
+  const window = await startupStage('window-creation', () => new BrowserWindow({
+    title: 'Void Code', show: !smokeOutput && !productionProbeOutput, width: 1100, height: 760, backgroundColor: '#101216',
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
-  });
+  }));
   const ownerId = window.webContents.id;
   window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
   window.webContents.on('render-process-gone', () => manager.teardownOwner(ownerId));
@@ -176,12 +180,14 @@ async function createWindow(): Promise<void> {
 `, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
     });
     const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
-    await window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined);
-  } else await window.loadFile(path.join(__dirname, '../renderer/index.html'));
+    await startupStage('renderer-load', () => window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined));
+  } else await startupStage('renderer-load', () => window.loadFile(path.join(__dirname, '../renderer/index.html')));
+  return window;
 }
 
-void app.whenReady().then(async () => {
-  const runtime = resolvePrivateRuntime(runtimeRoot);
+async function bootstrap(): Promise<void> {
+  await startupStage('readiness', () => app.whenReady());
+  const runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
   workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
   if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
   const statusChannels = new StatusChannelStore(
@@ -190,7 +196,26 @@ void app.whenReady().then(async () => {
     (chatId) => workspace.view().workspace?.selectedId === chatId,
   );
   manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
-  registerIpc(); await createWindow();
-});
+  registerIpc(); mainWindow = await createWindow();
+}
+
+function failStartup(failure: StartupStageError): void {
+  const userData = app.getPath('userData');
+  try { writeStartupDiagnostic(userData, startupDiagnostic(failure.stage, failure.original, app.getVersion())); } catch { /* the native error remains available if durable storage fails */ }
+  try {
+    if (!process.argv.includes('--void-startup-test-no-dialog')) dialog.showErrorBox(
+      'Void Code could not start',
+      startupDialogMessage(),
+    );
+  } catch { /* startup still terminates if the native error cannot be presented */ }
+  try { manager?.teardownAll(); } catch { /* startup still terminates if cleanup reports an error */ }
+  app.exit(1);
+}
+
+if (!app.requestSingleInstanceLock()) app.exit(0);
+else {
+  app.on('second-instance', () => focusExistingWindow(mainWindow));
+  void runBootstrap(bootstrap, failStartup);
+}
 app.on('before-quit', () => { manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
 app.on('window-all-closed', () => app.quit());
