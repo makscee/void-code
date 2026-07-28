@@ -16,7 +16,7 @@ import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
-import { focusExistingWindow, loadAndPresentWindow, requireRendererFile, runBootstrap, startupStage } from './startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, rendererFilename, requireRendererFile, runBootstrap, startupStage } from './startup-lifecycle';
 import type { StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
@@ -28,6 +28,7 @@ if (productionProbePerturb && !['missing-font', 'palette-collapse'].includes(pro
 const productionProbeRoot = productionProbeOutput ? mkdtempSync(path.join(os.tmpdir(), 'void-code-production-terminal-')) : undefined;
 if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 'user-data'));
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
+const missingRendererTest = process.argv.includes('--void-startup-test-missing-renderer');
 let manager: SessionManager;
 let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
@@ -181,7 +182,7 @@ async function createWindow(): Promise<BrowserWindow> {
     });
     const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
     await startupStage('renderer-load', () => window.loadFile(requireRendererFile(path.join(__dirname, `../renderer/${headless.page}`)), query ? { query } : undefined));
-  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => window.loadFile(requireRendererFile(path.join(__dirname, '../renderer/index.html')))));
+  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => window.loadFile(requireRendererFile(path.join(__dirname, `../renderer/${rendererFilename(missingRendererTest)}`)))));
   return window;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { focusExistingWindow, loadAndPresentWindow, requireRendererFile, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, rendererFilename, requireRendererFile, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
 
 describe('startup lifecycle', () => {
   it('routes asynchronous stage rejection through one failure handler', async () => {
@@ -7,6 +7,11 @@ describe('startup lifecycle', () => {
     await runBootstrap(async () => startupStage('renderer-load', async () => { throw new Error('renderer failed to load'); }), failure);
     expect(failure).toHaveBeenCalledOnce();
     expect(failure.mock.calls[0][0]).toMatchObject({ stage: 'renderer-load' });
+  });
+
+  it('selects a guaranteed-absent renderer only for the explicit startup test hook', () => {
+    expect(rendererFilename(false)).toBe('index.html');
+    expect(rendererFilename(true)).toBe('missing-renderer-test.html');
   });
 
   it('rejects a missing renderer before Electron can hang on load', () => {

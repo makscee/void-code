@@ -22,26 +22,26 @@ function inventory(app) {
   if (!output) return []; const parsed = JSON.parse(output); return Array.isArray(parsed) ? parsed : [parsed];
 }
 
-async function run(name, mutate, expected) {
+async function run(name, mutate, expected, appArgs = []) {
   const root = await mkdtemp(path.join(os.tmpdir(), `void-${name}-`));
   const app = path.join(root, mac ? 'Void Code.app' : 'Void Code');
   const userData = path.join(root, 'user-data');
-  if (mac) execFileSync('/usr/bin/ditto', [source, app]); else await cp(source, app, { recursive: true });
-  await mutate(app);
-  const binary = mac ? path.join(app, 'Contents/MacOS/Void Code') : path.join(app, 'Void Code.exe');
-  const child = execFile(binary, [`--user-data-dir=${userData}`, '--void-startup-test-no-dialog'], { env: { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR ?? '/tmp', PATH: mac ? '/usr/bin:/bin' : `${process.env.SystemRoot}\\System32`, VOID_TEST_TOKEN: secret, ELECTRON_RUN_AS_NODE: undefined } });
-  let stderr = ''; child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-  const exit = await Promise.race([new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))), sleep(20_000).then(() => ({ timeout: true }))]);
-  if (exit.timeout) {
-    if (windows) { try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F']); } catch { /* assertion below reports timeout */ } }
-    else child.kill('SIGKILL');
-  }
-  await sleep(500);
-  const processes = inventory(app);
-  let diagnostic;
-  try { diagnostic = JSON.parse(await readFile(path.join(userData, 'startup-error.json'), 'utf8')); } catch { diagnostic = null; }
-  const serialized = JSON.stringify(diagnostic);
   try {
+    if (mac) execFileSync('/usr/bin/ditto', [source, app]); else await cp(source, app, { recursive: true });
+    await mutate(app);
+    const binary = mac ? path.join(app, 'Contents/MacOS/Void Code') : path.join(app, 'Void Code.exe');
+    const child = execFile(binary, [`--user-data-dir=${userData}`, '--void-startup-test-no-dialog', ...appArgs], { env: { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR ?? '/tmp', PATH: mac ? '/usr/bin:/bin' : `${process.env.SystemRoot}\\System32`, VOID_TEST_TOKEN: secret, ELECTRON_RUN_AS_NODE: undefined } });
+    let stderr = ''; child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+    const exit = await Promise.race([new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))), sleep(20_000).then(() => ({ timeout: true }))]);
+    if (exit.timeout) {
+      if (windows) { try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F']); } catch { /* assertion below reports timeout */ } }
+      else child.kill('SIGKILL');
+    }
+    await sleep(500);
+    const processes = inventory(app);
+    let diagnostic;
+    try { diagnostic = JSON.parse(await readFile(path.join(userData, 'startup-error.json'), 'utf8')); } catch { diagnostic = null; }
+    const serialized = JSON.stringify(diagnostic);
     if (exit.code !== 1 || processes.length || diagnostic?.code !== 'STARTUP_FAILED' || diagnostic?.stage !== expected.stage || diagnostic?.error?.message !== expected.message || serialized.includes(secret)) throw new Error(`${name} assertion failed: ${JSON.stringify({ exit, processes, diagnostic, stderr })}`);
     results.push({ name, exit, diagnostic: { code: diagnostic.code, stage: diagnostic.stage, message: diagnostic.error.message }, processesAfter: 0 });
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -55,11 +55,8 @@ await run('corrupt-runtime', async (app) => {
 
 await run('missing-renderer', async (app) => {
   const resources = mac ? path.join(app, 'Contents/Resources') : path.join(app, 'resources');
-  const archive = path.join(resources, 'app.asar');
-  const extracted = path.join(resources, 'app');
-  asar.extractAll(archive, extracted);
-  await rm(path.join(extracted, 'dist/renderer/index.html'));
-  await rm(archive);
-}, { stage: 'renderer-load', message: 'Unexpected startup error' });
+  const files = asar.listPackage(path.join(resources, 'app.asar'));
+  if (!files.some((file) => file.endsWith('/dist/renderer/index.html')) || files.some((file) => file.endsWith('/dist/renderer/missing-renderer-test.html'))) throw new Error('missing renderer fixture invalid');
+}, { stage: 'renderer-load', message: 'Unexpected startup error' }, ['--void-startup-test-missing-renderer']);
 
 console.log(JSON.stringify(results));

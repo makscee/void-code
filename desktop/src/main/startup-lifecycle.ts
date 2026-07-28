@@ -30,6 +30,10 @@ interface FocusableWindow extends PresentableWindow {
   restore(): void;
 }
 
+export function rendererFilename(missingRendererTest: boolean): string {
+  return missingRendererTest ? 'missing-renderer-test.html' : 'index.html';
+}
+
 export function requireRendererFile(file: string, inspect: (candidate: string) => { isFile(): boolean } = statSync): string {
   if (!inspect(file).isFile()) throw new Error('renderer is not a file');
   return file;
