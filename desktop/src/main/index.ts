@@ -16,7 +16,7 @@ import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
-import { focusExistingWindow, runBootstrap, startupStage } from './startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, runBootstrap, startupStage } from './startup-lifecycle';
 import type { StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
@@ -141,7 +141,7 @@ async function captureVisibleColors(window: BrowserWindow, raw: unknown) {
 
 async function createWindow(): Promise<BrowserWindow> {
   const window = await startupStage('window-creation', () => new BrowserWindow({
-    title: 'Void Code', show: !smokeOutput && !productionProbeOutput, width: 1100, height: 760, backgroundColor: '#101216',
+    title: 'Void Code', show: false, width: 1100, height: 760, backgroundColor: '#101216',
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   }));
   const ownerId = window.webContents.id;
@@ -181,7 +181,7 @@ async function createWindow(): Promise<BrowserWindow> {
     });
     const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
     await startupStage('renderer-load', () => window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined));
-  } else await startupStage('renderer-load', () => window.loadFile(path.join(__dirname, '../renderer/index.html')));
+  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => window.loadFile(path.join(__dirname, '../renderer/index.html'))));
   return window;
 }
 

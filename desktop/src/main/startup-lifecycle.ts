@@ -18,12 +18,21 @@ export async function runBootstrap(bootstrap: () => Promise<void>, failure: (err
   }
 }
 
-interface FocusableWindow {
+interface PresentableWindow {
+  show(): void;
+  focus(): void;
+}
+
+interface FocusableWindow extends PresentableWindow {
   isDestroyed(): boolean;
   isMinimized(): boolean;
   restore(): void;
-  show(): void;
-  focus(): void;
+}
+
+export async function loadAndPresentWindow(window: PresentableWindow, load: () => Promise<unknown>): Promise<void> {
+  await load();
+  window.show();
+  window.focus();
 }
 
 export function focusExistingWindow(window: FocusableWindow | undefined): void {
