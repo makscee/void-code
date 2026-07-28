@@ -1,4 +1,3 @@
-import { statSync } from 'node:fs';
 import type { StartupStage } from './startup-diagnostic';
 
 export class StartupStageError extends Error {
@@ -30,13 +29,22 @@ interface FocusableWindow extends PresentableWindow {
   restore(): void;
 }
 
+export function missingRendererRequested(args: string[], environment: string | undefined, sentinelPresent = false): boolean {
+  return args.includes('--void-startup-test-missing-renderer') || environment === '1' || sentinelPresent;
+}
+
 export function rendererFilename(missingRendererTest: boolean): string {
   return missingRendererTest ? 'missing-renderer-test.html' : 'index.html';
 }
 
-export function requireRendererFile(file: string, inspect: (candidate: string) => { isFile(): boolean } = statSync): string {
-  if (!inspect(file).isFile()) throw new Error('renderer is not a file');
-  return file;
+export async function loadRenderer<T>(load: () => Promise<T>, timeoutMs = 10_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      load(),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('renderer load timed out')), timeoutMs); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 export async function loadAndPresentWindow(window: PresentableWindow, load: () => Promise<unknown>): Promise<void> {

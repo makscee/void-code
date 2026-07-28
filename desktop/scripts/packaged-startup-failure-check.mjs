@@ -1,9 +1,9 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeAsarEntry } from './packaged-check-lib.mjs';
+import { normalizeAsarEntry, startupFailureTimeoutMs } from './packaged-check-lib.mjs';
 
 const mac = process.platform === 'darwin' && process.arch === 'arm64';
 const windows = process.platform === 'win32' && process.arch === 'x64';
@@ -29,11 +29,11 @@ async function run(name, mutate, expected, appArgs = []) {
   const userData = path.join(root, 'user-data');
   try {
     if (mac) execFileSync('/usr/bin/ditto', [source, app]); else await cp(source, app, { recursive: true });
-    await mutate(app);
+    await mutate(app, userData);
     const binary = mac ? path.join(app, 'Contents/MacOS/Void Code') : path.join(app, 'Void Code.exe');
-    const child = execFile(binary, [`--user-data-dir=${userData}`, '--void-startup-test-no-dialog', ...appArgs], { env: { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR ?? '/tmp', PATH: mac ? '/usr/bin:/bin' : `${process.env.SystemRoot}\\System32`, VOID_TEST_TOKEN: secret, ELECTRON_RUN_AS_NODE: undefined } });
+    const child = execFile(binary, [`--user-data-dir=${userData}`, '--void-startup-test-no-dialog', ...appArgs], { env: { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR ?? '/tmp', PATH: mac ? '/usr/bin:/bin' : `${process.env.SystemRoot}\\System32`, VOID_TEST_TOKEN: secret, VOID_STARTUP_TEST_MISSING_RENDERER: appArgs.includes('--void-startup-test-missing-renderer') ? '1' : undefined, ELECTRON_RUN_AS_NODE: undefined } });
     let stderr = ''; child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
-    const exit = await Promise.race([new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))), sleep(20_000).then(() => ({ timeout: true }))]);
+    const exit = await Promise.race([new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))), sleep(startupFailureTimeoutMs(windows)).then(() => ({ timeout: true }))]);
     if (exit.timeout) {
       if (windows) { try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F']); } catch { /* assertion below reports timeout */ } }
       else child.kill('SIGKILL');
@@ -54,10 +54,12 @@ await run('corrupt-runtime', async (app) => {
   const manifest = JSON.parse(await readFile(manifestFile, 'utf8')); manifest.node.sha256 = '0'.repeat(64); await writeFile(manifestFile, JSON.stringify(manifest));
 }, { stage: 'runtime-validation', message: 'Node resource hash mismatch' });
 
-await run('missing-renderer', async (app) => {
+await run('missing-renderer', async (app, userData) => {
   const resources = mac ? path.join(app, 'Contents/Resources') : path.join(app, 'resources');
   const files = asar.listPackage(path.join(resources, 'app.asar')).map(normalizeAsarEntry);
   if (!files.some((file) => file.endsWith('/dist/renderer/index.html')) || files.some((file) => file.endsWith('/dist/renderer/missing-renderer-test.html'))) throw new Error('missing renderer fixture invalid');
+  await mkdir(userData, { recursive: true });
+  await writeFile(path.join(userData, '.void-startup-test-missing-renderer'), 'missing renderer test fixture');
 }, { stage: 'renderer-load', message: 'Unexpected startup error' }, ['--void-startup-test-missing-renderer']);
 
 console.log(JSON.stringify(results));

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { focusExistingWindow, loadAndPresentWindow, rendererFilename, requireRendererFile, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
 
 describe('startup lifecycle', () => {
   it('routes asynchronous stage rejection through one failure handler', async () => {
@@ -9,19 +9,29 @@ describe('startup lifecycle', () => {
     expect(failure.mock.calls[0][0]).toMatchObject({ stage: 'renderer-load' });
   });
 
-  it('selects a guaranteed-absent renderer only for the explicit startup test hook', () => {
+  it('accepts the missing-renderer test hook through argv or the packaged-check environment', () => {
+    expect(missingRendererRequested(['--void-startup-test-missing-renderer'], undefined)).toBe(true);
+    expect(missingRendererRequested([], '1')).toBe(true);
+    expect(missingRendererRequested([], undefined, true)).toBe(true);
+    expect(missingRendererRequested([], undefined)).toBe(false);
+  });
+
+  it('selects a genuinely absent renderer only for the explicit startup test hook', () => {
     expect(rendererFilename(false)).toBe('index.html');
     expect(rendererFilename(true)).toBe('missing-renderer-test.html');
   });
 
-  it('rejects a missing renderer before Electron can hang on load', () => {
-    const inspect = vi.fn(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
-    expect(() => requireRendererFile('renderer/index.html', inspect)).toThrow('missing');
-    expect(inspect).toHaveBeenCalledWith('renderer/index.html');
+  it('bounds a renderer load that never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const result = expect(loadRenderer(() => new Promise(() => undefined), 10)).rejects.toThrow('renderer load timed out');
+      await vi.advanceTimersByTimeAsync(10);
+      await result;
+    } finally { vi.useRealTimers(); }
   });
 
-  it('rejects a renderer path that is not a regular file', () => {
-    expect(() => requireRendererFile('renderer/index.html', () => ({ isFile: () => false }))).toThrow('renderer is not a file');
+  it('accepts a renderer load that settles within the bound', async () => {
+    await expect(loadRenderer(async () => 'loaded', 10)).resolves.toBe('loaded');
   });
 
   it('presents a newly loaded window only after renderer load completes', async () => {

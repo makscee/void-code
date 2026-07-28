@@ -28,12 +28,17 @@ const launch = () => execFile(binary, args, { env: { HOME: process.env.HOME, USE
 const waitExit = (child, timeout) => Promise.race([new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))), sleep(timeout).then(() => ({ timeout: true }))]);
 async function inspectNativeWindow(pid, temporary) {
   if (windows) {
-    const script = `Add-Type @'\nusing System; using System.Runtime.InteropServices; public class VCWindow { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; } [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r); }\n'@; $p=Get-Process -Id ${pid}; $h=$p.MainWindowHandle; $r=New-Object VCWindow+RECT; $ok=($h -ne 0 -and [VCWindow]::IsWindowVisible($h) -and [VCWindow]::GetWindowRect($h,[ref]$r)); @{visible=$ok;width=if($ok){$r.Right-$r.Left}else{0};height=if($ok){$r.Bottom-$r.Top}else{0}} | ConvertTo-Json -Compress`;
+    const script = `Add-Type @'\nusing System; using System.Runtime.InteropServices; public class VCWindow { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; } [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r); }\n'@; $p=Get-Process -Id ${pid}; $h=$p.MainWindowHandle; $r=New-Object VCWindow+RECT; $ok=($h -ne 0 -and [VCWindow]::IsWindowVisible($h) -and [VCWindow]::GetWindowRect($h,[ref]$r)); @{visible=$ok;minimized=if($h -ne 0){[VCWindow]::IsIconic($h)}else{$false};foreground=($h -ne 0 -and [VCWindow]::GetForegroundWindow() -eq $h);width=if($ok){$r.Right-$r.Left}else{0};height=if($ok){$r.Bottom-$r.Top}else{0}} | ConvertTo-Json -Compress`;
     return JSON.parse(execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' }));
   }
   const source = path.join(temporary, 'window-census.swift');
   await writeFile(source, `import Foundation\nimport CoreGraphics\nlet pid = Int32(CommandLine.arguments[1])!\nlet windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]\nfor window in windows {\n  guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid else { continue }\n  guard (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { continue }\n  guard let raw = window[kCGWindowBounds as String], let bounds = CGRect(dictionaryRepresentation: raw as! CFDictionary) else { continue }\n  let alpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0\n  let result: [String: Any] = ["visible": alpha > 0, "width": bounds.width, "height": bounds.height]\n  print(String(data: try! JSONSerialization.data(withJSONObject: result), encoding: .utf8)!)\n  exit(0)\n}\nprint("{\\"visible\\":false,\\"width\\":0,\\"height\\":0}")\n`);
   return JSON.parse(execFileSync('/usr/bin/swift', [source, String(pid)], { encoding: 'utf8' }));
+}
+function minimizeNativeWindow(pid) {
+  if (!windows) return;
+  const script = `Add-Type @'\nusing System; using System.Runtime.InteropServices; public class VCMinimize { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command); }\n'@; $h=(Get-Process -Id ${pid}).MainWindowHandle; if($h -eq 0 -or -not [VCMinimize]::ShowWindow($h,6)){exit 1}`;
+  execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script]);
 }
 async function target() {
   for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -63,12 +68,18 @@ try {
   const processes = inventory();
   const native = await inspectNativeWindow(primary.pid, root);
   if (renderer.title !== 'Void Code' || renderer.visibility !== 'visible' || !renderer.href.endsWith('/renderer/index.html') || !processes.some((process) => process.command.includes('--type=renderer')) || !native.visible || native.width < 500 || native.height < 500) throw new Error(`normal window assertion failed: ${JSON.stringify({ renderer, native, processes })}`);
+  minimizeNativeWindow(primary.pid);
+  if (windows) {
+    const minimized = await inspectNativeWindow(primary.pid, root);
+    if (!minimized.minimized) throw new Error(`window did not minimize before second-instance focus check: ${JSON.stringify(minimized)}`);
+  }
   secondary = launch();
   const secondExit = await waitExit(secondary, 10_000);
   await sleep(500);
   const rootProcesses = roots();
-  if (secondExit.code !== 0 || rootProcesses.length !== 1) throw new Error(`single-instance assertion failed: ${JSON.stringify({ secondExit, rootProcesses, processes: inventory() })}`);
-  console.log(JSON.stringify({ renderer, nativeWindow: native, secondExit, roots: rootProcesses, rendererProcess: true }));
+  const focused = windows ? await inspectNativeWindow(primary.pid, root) : undefined;
+  if (secondExit.code !== 0 || rootProcesses.length !== 1 || (focused && (focused.minimized || !focused.foreground))) throw new Error(`single-instance assertion failed: ${JSON.stringify({ secondExit, rootProcesses, focused, processes: inventory() })}`);
+  console.log(JSON.stringify({ renderer, nativeWindow: native, secondExit, roots: rootProcesses, secondInstanceFocus: focused, rendererProcess: true }));
 } finally {
   if (secondary && secondary.exitCode === null) secondary.kill('SIGKILL');
   if (primary && primary.exitCode === null) primary.kill(mac ? 'SIGTERM' : undefined);

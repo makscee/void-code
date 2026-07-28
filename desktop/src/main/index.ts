@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, webContents } from 'electron';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,7 +16,7 @@ import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
-import { focusExistingWindow, loadAndPresentWindow, rendererFilename, requireRendererFile, runBootstrap, startupStage } from './startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from './startup-lifecycle';
 import type { StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
@@ -28,7 +28,7 @@ if (productionProbePerturb && !['missing-font', 'palette-collapse'].includes(pro
 const productionProbeRoot = productionProbeOutput ? mkdtempSync(path.join(os.tmpdir(), 'void-code-production-terminal-')) : undefined;
 if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 'user-data'));
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
-const missingRendererTest = process.argv.includes('--void-startup-test-missing-renderer');
+const missingRendererTest = missingRendererRequested(process.argv, process.env.VOID_STARTUP_TEST_MISSING_RENDERER, existsSync(path.join(app.getPath('userData'), '.void-startup-test-missing-renderer')));
 let manager: SessionManager;
 let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
@@ -181,8 +181,8 @@ async function createWindow(): Promise<BrowserWindow> {
 `, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
     });
     const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
-    await startupStage('renderer-load', () => window.loadFile(requireRendererFile(path.join(__dirname, `../renderer/${headless.page}`)), query ? { query } : undefined));
-  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => window.loadFile(requireRendererFile(path.join(__dirname, `../renderer/${rendererFilename(missingRendererTest)}`)))));
+    await startupStage('renderer-load', () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined)));
+  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${rendererFilename(missingRendererTest)}`)))));
   return window;
 }
 
