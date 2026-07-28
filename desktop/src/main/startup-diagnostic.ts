@@ -51,7 +51,7 @@ export function writeStartupDiagnostic(userData: string, diagnostic: StartupDiag
   const output = path.join(userData, 'startup-error.json');
   const temporary = path.join(userData, `.startup-error-${process.pid}.tmp`);
   writeFileSync(temporary, `${JSON.stringify(diagnostic, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  const file = openSync(temporary, 'r');
+  const file = openSync(temporary, 'r+');
   try { fsyncSync(file); } finally { closeSync(file); }
   renameSync(temporary, output);
   if (process.platform !== 'win32') {
