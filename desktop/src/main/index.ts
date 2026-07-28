@@ -16,7 +16,7 @@ import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
-import { focusExistingWindow, loadAndPresentWindow, runBootstrap, startupStage } from './startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, requireRendererFile, runBootstrap, startupStage } from './startup-lifecycle';
 import type { StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
@@ -180,8 +180,8 @@ async function createWindow(): Promise<BrowserWindow> {
 `, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
     });
     const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
-    await startupStage('renderer-load', () => window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined));
-  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => window.loadFile(path.join(__dirname, '../renderer/index.html'))));
+    await startupStage('renderer-load', () => window.loadFile(requireRendererFile(path.join(__dirname, `../renderer/${headless.page}`)), query ? { query } : undefined));
+  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => window.loadFile(requireRendererFile(path.join(__dirname, '../renderer/index.html')))));
   return window;
 }
 

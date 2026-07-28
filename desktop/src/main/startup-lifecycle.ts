@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import type { StartupStage } from './startup-diagnostic';
 
 export class StartupStageError extends Error {
@@ -27,6 +28,11 @@ interface FocusableWindow extends PresentableWindow {
   isDestroyed(): boolean;
   isMinimized(): boolean;
   restore(): void;
+}
+
+export function requireRendererFile(file: string, inspect: (candidate: string) => { isFile(): boolean } = statSync): string {
+  if (!inspect(file).isFile()) throw new Error('renderer is not a file');
+  return file;
 }
 
 export async function loadAndPresentWindow(window: PresentableWindow, load: () => Promise<unknown>): Promise<void> {

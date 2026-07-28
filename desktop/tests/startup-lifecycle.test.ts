@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { focusExistingWindow, loadAndPresentWindow, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, requireRendererFile, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
 
 describe('startup lifecycle', () => {
   it('routes asynchronous stage rejection through one failure handler', async () => {
@@ -7,6 +7,16 @@ describe('startup lifecycle', () => {
     await runBootstrap(async () => startupStage('renderer-load', async () => { throw new Error('renderer failed to load'); }), failure);
     expect(failure).toHaveBeenCalledOnce();
     expect(failure.mock.calls[0][0]).toMatchObject({ stage: 'renderer-load' });
+  });
+
+  it('rejects a missing renderer before Electron can hang on load', () => {
+    const inspect = vi.fn(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
+    expect(() => requireRendererFile('renderer/index.html', inspect)).toThrow('missing');
+    expect(inspect).toHaveBeenCalledWith('renderer/index.html');
+  });
+
+  it('rejects a renderer path that is not a regular file', () => {
+    expect(() => requireRendererFile('renderer/index.html', () => ({ isFile: () => false }))).toThrow('renderer is not a file');
   });
 
   it('presents a newly loaded window only after renderer load completes', async () => {
