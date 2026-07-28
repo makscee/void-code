@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { normalizeAsarEntry } from './packaged-check-lib.mjs';
 
 const mac = process.platform === 'darwin' && process.arch === 'arm64';
 const windows = process.platform === 'win32' && process.arch === 'x64';
@@ -55,7 +56,7 @@ await run('corrupt-runtime', async (app) => {
 
 await run('missing-renderer', async (app) => {
   const resources = mac ? path.join(app, 'Contents/Resources') : path.join(app, 'resources');
-  const files = asar.listPackage(path.join(resources, 'app.asar'));
+  const files = asar.listPackage(path.join(resources, 'app.asar')).map(normalizeAsarEntry);
   if (!files.some((file) => file.endsWith('/dist/renderer/index.html')) || files.some((file) => file.endsWith('/dist/renderer/missing-renderer-test.html'))) throw new Error('missing renderer fixture invalid');
 }, { stage: 'renderer-load', message: 'Unexpected startup error' }, ['--void-startup-test-missing-renderer']);
 
