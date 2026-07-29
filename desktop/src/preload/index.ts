@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, sessionId } from '../shared/contract';
+import { IPC, loginStatus, sessionId } from '../shared/contract';
 import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
+const loginListeners = new Set<(_event: Electron.IpcRendererEvent, payload: unknown) => void>();
 function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
   const validId = sessionId(id, true);
   if (typeof listener !== 'function') throw new Error('listener must be a function');
@@ -29,6 +30,8 @@ function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind:
   };
 }
 function teardown(): void {
+  for (const listener of loginListeners) ipcRenderer.removeListener(IPC.loginChanged, listener);
+  loginListeners.clear();
   for (const id of [...active.keys()]) {
     const existing = active.get(id);
     if (existing) {
@@ -50,6 +53,17 @@ const api: TerminalApi = {
   support: Object.freeze({
     copy: (request) => ipcRenderer.invoke(IPC.supportCopy, request),
     save: (request) => ipcRenderer.invoke(IPC.supportSave, request),
+  }),
+  login: Object.freeze({
+    start: () => ipcRenderer.invoke(IPC.loginStart),
+    cancel: () => ipcRenderer.invoke(IPC.loginCancel),
+    status: () => ipcRenderer.invoke(IPC.loginStatus),
+    onStatus: (listener) => {
+      if (typeof listener !== 'function') throw new Error('listener must be a function');
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => listener(loginStatus(payload));
+      loginListeners.add(wrapped); ipcRenderer.on(IPC.loginChanged, wrapped);
+      return () => { loginListeners.delete(wrapped); ipcRenderer.removeListener(IPC.loginChanged, wrapped); };
+    },
   }),
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),

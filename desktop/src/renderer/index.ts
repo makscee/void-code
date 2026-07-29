@@ -1,7 +1,8 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import type { RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
+import { loginCompletionAction } from './login-retry';
+import type { LoginStatus, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
@@ -30,6 +31,9 @@ const endedHeading = document.querySelector<HTMLElement>('#ended-heading')!;
 const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
+const loginStartButtons = [...document.querySelectorAll<HTMLButtonElement>('.login-start')];
+const loginCancelButtons = [...document.querySelectorAll<HTMLButtonElement>('.login-cancel')];
+const loginStatusElements = [...document.querySelectorAll<HTMLElement>('.login-status')];
 
 type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean; recoveryCode?: RecoveryCode };
 const runtimes = new Map<string, Runtime>();
@@ -37,8 +41,33 @@ const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
+let completingLogin = false;
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
+function presentLoginStatus(status: LoginStatus): void {
+  const text = status.state === 'running' ? 'Waiting for sign-in approval in your browser.'
+    : status.state === 'succeeded' ? 'Sign-in complete. Starting your chat…'
+      : status.state === 'failed' ? 'Sign-in did not complete. Try again.'
+        : status.state === 'cancelled' ? 'Sign-in cancelled.' : 'Sign-in is not started.';
+  for (const element of loginStatusElements) element.textContent = text;
+  for (const button of loginStartButtons) button.disabled = status.state === 'running';
+  for (const button of loginCancelButtons) button.hidden = status.state !== 'running';
+}
+async function completeLogin(status: LoginStatus): Promise<void> {
+  presentLoginStatus(status);
+  const action = loginCompletionAction(status, Boolean(selectedTab()));
+  if (action === 'none' || completingLogin) return;
+  completingLogin = true;
+  try {
+    if (action === 'retry') {
+      const tab = selectedTab(); if (!tab) return;
+      await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render();
+    } else {
+      const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render();
+      const tab = selectedTab(); if (tab) await launch(tab, 'create'); render();
+    }
+  } finally { completingLogin = false; }
+}
 function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
   currentRecovery = code; runtime.recoveryCode = code;
   const guidance = RECOVERY_GUIDANCE[code];
@@ -172,6 +201,10 @@ removeWorkspaceButton.addEventListener('click', async () => { for (const id of [
 newChatButton.addEventListener('click', async () => { const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
 restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
+for (const button of loginStartButtons) button.addEventListener('click', () => { void window.voidTerminal.login.start().then((status) => completeLogin(status)); });
+for (const button of loginCancelButtons) button.addEventListener('click', () => { void window.voidTerminal.login.cancel().then((status) => completeLogin(status)); });
+window.voidTerminal.login.onStatus((status) => { void completeLogin(status); });
+void window.voidTerminal.login.status().then((status) => completeLogin(status));
 new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(mainElement);
 
 type ByteFacts = { bytes: number; chunks: number; escBytes: number };
