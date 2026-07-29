@@ -19,7 +19,7 @@ const archive = path.resolve('runtime/cache/node', expectedNodeArchive(pins.node
 describe('resource source pins', () => {
   it('pins the Windows vc runtime to the latest CLI source revision', () => {
     const repo = path.resolve('..');
-    const latestCliCommit = execFileSync('git', ['log', '-1', '--format=%H', '--', 'cmd/vc'], { cwd: repo, encoding: 'utf8' }).trim();
+    const latestCliCommit = execFileSync('git', ['log', '-1', '--format=%H', '--', 'cmd/vc', 'internal/auth'], { cwd: repo, encoding: 'utf8' }).trim();
     expect(pins.windows.vc.sourceCommit).toBe(latestCliCommit);
   });
 
