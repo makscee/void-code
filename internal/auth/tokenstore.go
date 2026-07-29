@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 var ErrNotLoggedIn = errors.New("not logged in — run: vc login")
@@ -60,11 +61,22 @@ type credentialOps struct {
 }
 
 func defaultCredentialOps() credentialOps {
+	return defaultCredentialOpsForPlatform(runtime.GOOS)
+}
+
+func defaultCredentialOpsForPlatform(goos string) credentialOps {
+	dirSync := syncDirectory
+	if goos == "windows" {
+		// Windows does not support syncing an open directory handle. The
+		// replacement file itself is flushed before the atomic rename, which is
+		// the strongest portable durability guarantee available there.
+		dirSync = func(string) error { return nil }
+	}
 	return credentialOps{
 		write:    func(file *os.File, value string) error { _, err := file.WriteString(value); return err },
 		fileSync: func(file *os.File) error { return file.Sync() },
 		rename:   os.Rename,
-		dirSync:  syncDirectory,
+		dirSync:  dirSync,
 	}
 }
 
@@ -163,7 +175,7 @@ func saveWithOps(path, token string, ops credentialOps) error {
 				return fmt.Errorf("%v; cannot restore previous credential: %w", cause, err)
 			}
 		}
-		if err := syncDirectory(dir); err != nil {
+		if err := ops.dirSync(dir); err != nil {
 			return fmt.Errorf("%v; cannot sync credential rollback: %w", cause, err)
 		}
 		return cause

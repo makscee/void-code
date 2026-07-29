@@ -125,6 +125,22 @@ func TestReplacementFaultsRestorePreviousCredentialAndCleanup(t *testing.T) {
 	}
 }
 
+func TestWindowsCredentialSaveDoesNotRequireDirectorySync(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".void-code", "token")
+	ops := defaultCredentialOpsForPlatform("windows")
+	if err := ops.dirSync(filepath.Join(home, "missing-directory")); err != nil {
+		t.Fatalf("Windows directory sync must be skipped: %v", err)
+	}
+	if err := saveWithOps(path, "windows-packaged-login-token", ops); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "windows-packaged-login-token" {
+		t.Fatalf("persisted credential=%q err=%v", got, err)
+	}
+}
+
 func TestReplacementSuccessCompletesFileAndDirectorySync(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
