@@ -4,7 +4,7 @@ export type LoginCompletionAction = 'none' | 'create' | 'retry';
 export type AutomaticLoginRetry = { attempt: number; delayMs: number; mode: 'create' | 'resume' };
 
 const AUTOMATIC_LOGIN_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16_000, 30_000] as const;
-const AUTOMATIC_LOGIN_EARLY_EXIT_MS = 15_000;
+const AUTOMATIC_LOGIN_EARLY_EXIT_MS = 60_000;
 
 export function automaticLoginRetry(mode: 'create' | 'resume', attempt: number, elapsedMs: number): AutomaticLoginRetry | null {
   if (elapsedMs > AUTOMATIC_LOGIN_EARLY_EXIT_MS || attempt < 0 || attempt >= AUTOMATIC_LOGIN_RETRY_DELAYS_MS.length) return null;
