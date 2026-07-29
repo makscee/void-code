@@ -1,7 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import { automaticLoginRetry, loginCompletionAction } from './login-retry';
+import { loginCompletionAction } from './login-retry';
 import type { LoginStatus, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
@@ -61,10 +61,10 @@ async function completeLogin(status: LoginStatus): Promise<void> {
   try {
     if (action === 'retry') {
       const tab = selectedTab(); if (!tab) return;
-      await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume', 0); render();
+      await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render();
     } else {
       const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render();
-      const tab = selectedTab(); if (tab) await launch(tab, 'create', 0); render();
+      const tab = selectedTab(); if (tab) await launch(tab, 'create'); render();
     }
   } finally { completingLogin = false; }
 }
@@ -112,9 +112,8 @@ function dispose(id: string): void {
 async function stop(id: string): Promise<void> { try { await window.voidTerminal.stop({ sessionId: id }); } catch { /* sleeping or exited */ } dispose(id); }
 function selectedTab(): RendererTabRecord | undefined { return view.workspace?.tabs.find((tab) => tab.id === view.workspace?.selectedId); }
 
-async function launch(tab: RendererTabRecord, mode: 'create' | 'resume', automaticAttempt?: number): Promise<void> {
+async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promise<void> {
   const workspace = view.workspace; if (!workspace || view.recoveryPath || runtimes.has(tab.id)) return;
-  const startedAt = Date.now();
   const container = document.createElement('div'); container.className = 'terminal'; container.hidden = tab.id !== workspace.selectedId; terminalsElement.append(container);
   const created = createProductTerminal({ activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } });
   const { terminal } = created;
@@ -128,14 +127,6 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume', automat
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
     offExit = window.voidTerminal.onExit(tab.id, () => {
       runtime.exited = true;
-      const retry = automaticAttempt === undefined ? null : automaticLoginRetry(mode, automaticAttempt, Date.now() - startedAt);
-      if (retry) {
-        setTimeout(() => {
-          if (runtimes.get(tab.id) !== runtime || view.workspace?.selectedId !== tab.id) return;
-          void (async () => { await stop(tab.id); endedElement.hidden = true; await launch(tab, retry.mode, retry.attempt); render(); })();
-        }, retry.delayMs);
-        return;
-      }
       if (view.workspace?.selectedId === tab.id) { container.hidden = true; showEnded('RUNTIME_EXITED', runtime); }
     });
     runtime.offOutput = offOutput; runtime.offExit = offExit;
