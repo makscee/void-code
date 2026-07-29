@@ -7,10 +7,10 @@
 <nav id="tabs" aria-label="Open chats" hidden></nav>
 <main>
   <section id="empty"><h1>Choose one trusted folder</h1><p>Each chat in this window works directly in that folder using your existing VC authentication.</p><button id="empty-choose">Choose Folder</button></section>
-  <section id="preflight" hidden><h2>Before your first chat</h2><p>Ask your operator to confirm that existing VC sign-in and network access are ready. If sign-in is missing, complete the guided VC login outside this app, then choose New Chat.</p></section>
+  <section id="preflight" hidden><h2>Before your first chat</h2><p>Sign in with the guided VC login, then Void Code will start your chat automatically.</p><p class="login-status" role="status">Sign-in is not started.</p><button class="login-start" type="button">Sign in with VC</button><button class="login-cancel" type="button" hidden>Cancel sign-in</button></section>
   <section id="recovery" hidden><h2>Workspace unavailable</h2><p id="recovery-path">The previously selected folder cannot be found.</p><p>Locate the moved folder or remove this saved workspace. No fallback working directory will be used.</p><button id="locate">Locate Folder</button><button id="remove-workspace">Remove</button></section>
   <div id="terminals"></div>
-  <section id="ended" hidden><h2 id="ended-heading">Chat stopped</h2><p id="ended-detail">No shell was opened.</p><button id="restart">Restart</button><button id="close-ended">Close</button></section>
+  <section id="ended" hidden><h2 id="ended-heading">Chat stopped</h2><p id="ended-detail">No shell was opened.</p><p class="login-status" role="status">Sign-in is not started.</p><button class="login-start" type="button">Sign in with VC</button><button class="login-cancel" type="button" hidden>Cancel sign-in</button><button id="restart">Restart</button><button id="close-ended">Close</button></section>
 </main>
 <aside id="recent" aria-labelledby="recent-heading" hidden><div class="recent-heading"><h2 id="recent-heading">Recent Chats</h2><button id="recent-close" type="button" aria-label="Close Recent Chats">×</button></div><div id="recent-list"></div></aside>
 <script type="module" src="index.js"></script>

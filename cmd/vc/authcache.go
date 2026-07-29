@@ -103,6 +103,12 @@ func writeAuthCache[T any](kind, authHost, token string, value T, now time.Time)
 	ok = true
 }
 
+func clearAuthCachesForToken(authHost, token string) {
+	for _, kind := range []string{"me", "providers", "auth-me"} {
+		clearAuthCache(kind, authHost, token)
+	}
+}
+
 func clearAuthCache(kind, authHost, token string) {
 	path, err := authCachePath(kind, authHost, token)
 	if err == nil {

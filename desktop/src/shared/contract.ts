@@ -7,6 +7,7 @@ export const IPC = {
   workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
   workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
   supportCopy: 'support:copy', supportSave: 'support:save',
+  loginStart: 'auth:login-start', loginCancel: 'auth:login-cancel', loginStatus: 'auth:login-status', loginChanged: 'auth:login-changed',
 } as const;
 
 export type SessionId = string;
@@ -37,6 +38,8 @@ export type RuntimeSupportState = 'not_started' | 'running' | 'ended' | 'start_f
 export type RecoveryCode = 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'SESSION_START_FAILED' | 'RUNTIME_EXITED' | 'WORKSPACE_MISSING' | 'SESSION_MISSING';
 export interface SupportRequest { runtime: RuntimeSupportState; recoveryCode: RecoveryCode }
 export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
+export type LoginState = 'unavailable' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export interface LoginStatus { state: LoginState }
 
 export interface TerminalApi {
   start(request: StartRequest): Promise<StartReply>;
@@ -50,6 +53,12 @@ export interface TerminalApi {
   support: {
     copy(request: SupportRequest): Promise<SupportResult>;
     save(request: SupportRequest): Promise<SupportResult>;
+  };
+  login: {
+    start(): Promise<LoginStatus>;
+    cancel(): Promise<LoginStatus>;
+    status(): Promise<LoginStatus>;
+    onStatus(listener: (status: LoginStatus) => void): Unsubscribe;
   };
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;
@@ -95,6 +104,12 @@ export function startRequest(value: unknown): StartRequest {
   if (object.mode !== 'create' && object.mode !== 'resume') throw new Error('invalid session mode');
   if (typeof object.cwd !== 'string' || !isAbsoluteWorkspacePath(object.cwd) || Buffer.byteLength(object.cwd, 'utf8') > 4096) throw new Error('invalid cwd');
   return { sessionId: sessionId(object.sessionId), cwd: object.cwd, mode: object.mode };
+}
+export function loginStatus(value: unknown): LoginStatus {
+  const object = ownedObject(value, ['state']);
+  const states: LoginState[] = ['unavailable', 'running', 'succeeded', 'failed', 'cancelled'];
+  if (!states.includes(object.state as LoginState)) throw new Error('invalid login status');
+  return { state: object.state as LoginState };
 }
 export function supportRequest(value: unknown): SupportRequest {
   const object = ownedObject(value, ['runtime', 'recoveryCode']);

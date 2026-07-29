@@ -9,6 +9,7 @@ import type { RealStartRequest, StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { sessionLifecycleArgs } from './session-files';
 import type { PrivateRuntime } from './resources';
+import { LoginManager } from './login-manager';
 import { SessionManager, wrapPty } from './session-manager';
 import { StatusChannelStore } from './status-channel';
 import { buildSupportReport, copySupportReport, saveSupportReport } from './support-report';
@@ -30,6 +31,7 @@ if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 const missingRendererTest = missingRendererRequested(process.argv, process.env.VOID_STARTUP_TEST_MISSING_RENDERER, existsSync(path.join(app.getPath('userData'), '.void-startup-test-missing-renderer')));
 let manager: SessionManager;
+let loginManager: LoginManager;
 let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
 
@@ -65,6 +67,9 @@ function supportReport(raw: unknown) {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(IPC.loginStart, (_event, ...args: unknown[]) => { if (args.length !== 0) throw new Error('login does not accept arguments'); return loginManager.start(); });
+  ipcMain.handle(IPC.loginCancel, (_event, ...args: unknown[]) => { if (args.length !== 0) throw new Error('login cancel does not accept arguments'); return loginManager.cancel(); });
+  ipcMain.handle(IPC.loginStatus, (_event, ...args: unknown[]) => { if (args.length !== 0) throw new Error('login status does not accept arguments'); return loginManager.status(); });
   ipcMain.handle(IPC.start, (event, raw: unknown) => {
     const request = startRequest(raw);
     if (!('fixture' in request)) workspace.assertLaunch(request.sessionId, request.cwd);
@@ -146,9 +151,9 @@ async function createWindow(): Promise<BrowserWindow> {
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
   }));
   const ownerId = window.webContents.id;
-  window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
-  window.webContents.on('render-process-gone', () => manager.teardownOwner(ownerId));
-  window.webContents.on('destroyed', () => manager.teardownOwner(ownerId));
+  window.webContents.on('did-start-navigation', () => { manager.teardownOwner(ownerId); loginManager.cancel(); });
+  window.webContents.on('render-process-gone', () => { manager.teardownOwner(ownerId); loginManager.cancel(); });
+  window.webContents.on('destroyed', () => { manager.teardownOwner(ownerId); loginManager.cancel(); });
   const headless = smokeOutput ? { output: smokeOutput, prefix: 'VOID_SMOKE:', page: 'smoke.html', query: undefined }
     : productionProbeOutput ? { output: productionProbeOutput, prefix: 'VOID_PRODUCTION_TERMINAL:', page: 'index.html', query: { productionTerminalProbe: '1' } } : undefined;
   if (headless) {
@@ -197,6 +202,8 @@ async function bootstrap(): Promise<void> {
     (chatId) => workspace.view().workspace?.selectedId === chatId,
   );
   manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
+  loginManager = new LoginManager(runtime.vc, runtime.root);
+  loginManager.onStatus((status) => mainWindow?.webContents.send(IPC.loginChanged, status));
   registerIpc(); mainWindow = await createWindow();
 }
 
@@ -218,5 +225,5 @@ else {
   app.on('second-instance', () => focusExistingWindow(mainWindow));
   void runBootstrap(bootstrap, failStartup);
 }
-app.on('before-quit', () => { manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
+app.on('before-quit', () => { loginManager?.shutdown(); manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
 app.on('window-all-closed', () => app.quit());
