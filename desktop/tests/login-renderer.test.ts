@@ -16,7 +16,8 @@ describe('packaged login renderer', () => {
     expect(automaticLoginRetry('create', 0, 500)).toEqual({ attempt: 1, delayMs: 1000, mode: 'create' });
     expect(automaticLoginRetry('create', 1, 2_000)).toEqual({ attempt: 2, delayMs: 2000, mode: 'create' });
     expect(automaticLoginRetry('resume', 2, 5_000)).toEqual({ attempt: 3, delayMs: 4000, mode: 'resume' });
-    expect(automaticLoginRetry('create', 3, 5_000)).toBeNull();
+    expect(automaticLoginRetry('create', 5, 5_000)).toEqual({ attempt: 6, delayMs: 30_000, mode: 'create' });
+    expect(automaticLoginRetry('create', 6, 5_000)).toBeNull();
     expect(automaticLoginRetry('create', 0, 15_001)).toBeNull();
   });
 
