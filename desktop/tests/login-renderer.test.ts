@@ -18,8 +18,7 @@ describe('packaged login renderer', () => {
     expect(automaticLoginRetry('resume', 2, 5_000)).toEqual({ attempt: 3, delayMs: 4000, mode: 'resume' });
     expect(automaticLoginRetry('create', 5, 5_000)).toEqual({ attempt: 6, delayMs: 30_000, mode: 'create' });
     expect(automaticLoginRetry('create', 6, 5_000)).toBeNull();
-    expect(automaticLoginRetry('create', 0, 45_000)).toEqual({ attempt: 1, delayMs: 1000, mode: 'create' });
-    expect(automaticLoginRetry('create', 0, 60_001)).toBeNull();
+    expect(automaticLoginRetry('create', 0, 15_001)).toBeNull();
   });
 
   it('offers bounded sign-in and cancellation actions without collecting auth data', () => {
