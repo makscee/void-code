@@ -322,7 +322,10 @@ func runLoginPicker() (pickerChoice, error) {
 // ─── email OTP flow ──────────────────────────────────────────────────────────
 
 func runEmailFlow(cfg config.Config) error {
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	httpClient, err := auth.NewHTTPClient(15*time.Second, cfg.CAOverride)
+	if err != nil {
+		return fmt.Errorf("loading deployment trust: %w", err)
+	}
 
 	email, err := promptEmail()
 	if err != nil {
@@ -584,7 +587,10 @@ func installDeviceCredential(authHost, token string, httpClient *http.Client, wa
 
 // runDeviceFlow performs Flow 1b: pairing-code (device-authorization) flow.
 func runDeviceFlow(cfg config.Config) error {
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	httpClient, err := auth.NewHTTPClient(15*time.Second, cfg.CAOverride)
+	if err != nil {
+		return fmt.Errorf("loading deployment trust: %w", err)
+	}
 
 	start, err := auth.DeviceStart(cfg.AuthHost, voidCodeDeviceLabel(runtime.GOOS), httpClient)
 	if err != nil {

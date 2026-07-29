@@ -28,7 +28,7 @@ type desktopSessionDeps struct {
 	loadToken       func() (string, error)
 	resolveConfig   func() config.Config
 	authGate        func(string, string, *http.Client) (auth.MeResult, bool, error)
-	fetchGrants     func(string, string) ([]compat.Grant, error)
+	fetchGrants     func(string, string, *http.Client) ([]compat.Grant, error)
 	resolveCA       func(config.Config) (string, error)
 	reconcilePi     func() (string, error)
 	reconcileSearch func(bool) (managedWebSearchState, error)
@@ -79,8 +79,8 @@ func init() {
 	rootCmd.AddCommand(desktopSessionCmd)
 }
 
-func fetchDesktopGrants(authHost, token string) ([]compat.Grant, error) {
-	infos, err := cachedFetchProviders(authHost, token, &http.Client{Timeout: authProbeTimeout})
+func fetchDesktopGrants(authHost, token string, client *http.Client) ([]compat.Grant, error) {
+	infos, err := cachedFetchProviders(authHost, token, client)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,11 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
 	}
 	cfg := deps.resolveConfig()
-	me, reached, err := deps.authGate(token, cfg.AuthHost, &http.Client{Timeout: authProbeTimeout})
+	authClient, err := auth.NewHTTPClient(authProbeTimeout, cfg.CAOverride)
+	if err != nil {
+		return desktopSessionPlan{}, fmt.Errorf("authentication trust unavailable: %w", err)
+	}
+	me, reached, err := deps.authGate(token, cfg.AuthHost, authClient)
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
 	}
@@ -119,7 +123,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 
 	active := deps.loadProvider()
 	label := deps.loadLabel()
-	grants, err := deps.fetchGrants(cfg.AuthHost, token)
+	grants, err := deps.fetchGrants(cfg.AuthHost, token, authClient)
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("provider grants unavailable: %w", err)
 	}

@@ -19,6 +19,15 @@ describe('packaged login process', () => {
     expect(JSON.stringify(manager.status())).not.toMatch(/staging|token|device|environment/i);
   });
 
+  it('does not manufacture endpoints, credentials, or trust configuration', () => {
+    const child = new FakeChild(); const spawn = vi.fn(() => child as never);
+    const manager = new LoginManager('/owned/vc', '/owned', spawn, { PATH: '/host/path' });
+    manager.start();
+    const options = spawn.mock.calls[0][2];
+    expect(options.env).toEqual({ PATH: '/host/path' });
+    expect(JSON.stringify(options)).not.toMatch(/makscee|token|credential|auth[_-]?host|relay[_-]?ca/i);
+  });
+
   it('prevents concurrent attempts and reports only coarse completion state', () => {
     const first = new FakeChild(); const spawn = vi.fn(() => first as never);
     const states: string[] = []; const manager = new LoginManager('/owned/vc', '/owned', spawn, {});
