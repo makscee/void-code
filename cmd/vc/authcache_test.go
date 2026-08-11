@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,9 +126,9 @@ func TestCachedFetchMeTransientFailurePreservesLastKnownIdentity(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			withTempHome(t)
-			calls := 0
+			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				calls++
+				calls.Add(1)
 				time.Sleep(tc.delay)
 				w.WriteHeader(tc.code)
 				_, _ = w.Write([]byte(tc.body))
@@ -146,7 +147,7 @@ func TestCachedFetchMeTransientFailurePreservesLastKnownIdentity(t *testing.T) {
 			}
 
 			state, err = cachedFetchMeState(srv.URL, "cache-key", client)
-			if err == nil || !state.Stale || calls != 1 {
+			if err == nil || !state.Stale || calls.Load() != 1 {
 				t.Fatal("transient backoff did not retain stale state without another request")
 			}
 		})
