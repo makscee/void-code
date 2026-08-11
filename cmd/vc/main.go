@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -306,23 +307,30 @@ func resolveAuthState() welcome.AuthState {
 
 	cfg := config.OSResolve()
 	httpClient := &http.Client{Timeout: authProbeTimeout}
-	me, err := cachedFetchMe(cfg.AuthHost, token, httpClient)
+	cached, err := cachedFetchMeState(cfg.AuthHost, token, httpClient)
 	if err != nil {
-		// Auth host unreachable or token invalid — show degraded state.
-		if err == auth.ErrNotLoggedIn {
+		if errors.Is(err, auth.ErrNotLoggedIn) {
 			return welcome.AuthState{LoggedIn: false}
 		}
-		// Network error — still logged in; degrade gracefully.
-		return welcome.AuthState{
-			LoggedIn: true,
-			Identity: "(unknown)",
-		}
+		return staleMeResultToState(cached.Me)
 	}
 
 	// Cache result for 5 minutes.
-	meCacheResult = &me
+	meCacheResult = &cached.Me
 	meCacheExpiry = time.Now().Add(5 * time.Minute)
-	return meResultToState(me)
+	return meResultToState(cached.Me)
+}
+
+func staleMeResultToState(me auth.MeResult) welcome.AuthState {
+	identity := me.Email
+	if identity == "" {
+		identity = me.UserID
+	}
+	return welcome.AuthState{
+		LoggedIn:           true,
+		Identity:           identity,
+		IdentityUnverified: true,
+	}
 }
 
 func meResultToState(me auth.MeResult) welcome.AuthState {
@@ -933,8 +941,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		// validate them; the relay performs authoritative identity introspection
 		// before serving any request. Do not reject a valid identity credential at
 		// this obsolete preflight. Legacy credentials remain fail-closed here.
-		separator := strings.IndexByte(token, '.')
-		if separator > 0 && separator < len(token)-1 && strings.Count(token, ".") == 1 {
+		if isIdentityToken(token) {
 			return auth.MeResult{}, false, nil
 		}
 		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")

@@ -24,6 +24,9 @@ type AuthState struct {
 	LoggedIn bool
 	// Identity is the user identity string (email or userId) when logged in.
 	Identity string
+	// IdentityUnverified reports that Identity is last-known, not freshly verified.
+	// When Identity is empty, render neutral availability copy rather than a person.
+	IdentityUnverified bool
 	// UpdateNudge is an optional one-line message shown in the banner when
 	// the user declined an update or when no auto-update is configured.
 	// Empty means no nudge.
@@ -647,7 +650,7 @@ func (m model) View() string {
 
 	// ◇  identity · $X.XX left  (or "Not logged in")
 	if m.LoggedIn {
-		infoText := m.Identity + " · " + FormatBalance(m.BalanceUsd)
+		infoText := identityDisplay(m.Identity, m.IdentityUnverified) + " · " + FormatBalance(m.BalanceUsd)
 		sb.WriteString(clackui.RailLine("◇", "  "+infoTextStyle.Render(infoText)))
 	} else {
 		sb.WriteString(clackui.RailLine("◇", "  "+warnStyle.Render("Not logged in")))
@@ -731,11 +734,25 @@ func (m model) renderMatrixSummary() string {
 
 // plainBanner returns a plain-text version of the landing screen (no ANSI).
 // Used as a non-TTY fallback when the bubbletea program cannot run.
+func identityDisplay(identity string, unverified bool) string {
+	if !unverified {
+		return identity
+	}
+	if identity == "" {
+		return "identity temporarily unavailable"
+	}
+	return identity + " (last known; temporarily unverified)"
+}
+
 func plainBanner(state AuthState) string {
 	var sb strings.Builder
 	sb.WriteString("\nvoid-code " + version.Version + " — relay harness for Claude Code and Pi — by makscee.ru\n\n")
 	if state.LoggedIn {
-		sb.WriteString("  Logged in as " + state.Identity + "\n")
+		if state.IdentityUnverified {
+			sb.WriteString("  Identity: " + identityDisplay(state.Identity, true) + "\n")
+		} else {
+			sb.WriteString("  Logged in as " + state.Identity + "\n")
+		}
 		sb.WriteString("  " + FormatBalance(state.BalanceUsd) + "\n")
 	} else {
 		sb.WriteString("  Not logged in\n")
