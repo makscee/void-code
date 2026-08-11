@@ -120,6 +120,7 @@ func TestCachedFetchMeTransientFailurePreservesLastKnownIdentity(t *testing.T) {
 	}{
 		{name: "timeout", code: http.StatusOK, delay: 50 * time.Millisecond, clientTimeout: 5 * time.Millisecond},
 		{name: "malformed response", code: http.StatusOK, body: `{not-json`},
+		{name: "missing identity", code: http.StatusOK, body: `{}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
