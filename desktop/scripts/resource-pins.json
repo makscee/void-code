@@ -19,10 +19,10 @@
     }
   },
   "pi": {
-    "version": "0.82.1",
-    "packageJsonSha256": "a70ae8eb320d35c26fc8c25c6ef697579a4304d9e69736ba1deb981321473804",
-    "packageLockSha256": "f1ad56630b78af85103d2926f09d9cd04a38eb69ee8a46a95c960134119c3360",
-    "packageIntegrity": "sha512-zbkAhoIuDPMF3pKuja0ajZabrMWU29FUMV9A/XMXT/XC1yXs5xt6t6t13GogQFsDrDqbFP4DkZQO1w8rWRAzYA==",
-    "treeSha256": "044217f44d11e4a124e405426f5b0919ef39542e2eaaabbbded48a91e4648d9c"
+    "version": "0.84.1",
+    "packageJsonSha256": "92864ba983181883cd58148bfd9bc3f1d6fc7ceac8e3f5d7eb6ae6bf34b1847e",
+    "packageLockSha256": "213e7be737db598b7649792d539a697769e728d52889cec3a9447908674df314",
+    "packageIntegrity": "sha512-ncAqFrG+iybuPGOhMiZoEHkEzTpJgz3guYD32pD+M7ucc0WeHmauP6wa7qwP8V/KWvsZDVNa5XGsdZ7fkC7w7A==",
+    "treeSha256": "23c70701cca3e33a2d9139e784487d2f6e3b9dffb8cf87dd45a98c16348c04cc"
   }
 }
