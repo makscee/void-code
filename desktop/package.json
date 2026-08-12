@@ -24,7 +24,8 @@
     "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs",
     "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs && node scripts/packaged-window-check.mjs && node scripts/packaged-startup-failure-check.mjs",
     "candidate:generate": "node scripts/candidate-manifest.mjs generate",
-    "candidate:check": "node scripts/candidate-manifest.mjs check"
+    "candidate:check": "node scripts/candidate-manifest.mjs check",
+    "check:pinned-pi-smoke": "node scripts/check-pinned-pi-smoke.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.2.8",

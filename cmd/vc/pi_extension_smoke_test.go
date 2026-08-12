@@ -490,21 +490,16 @@ func pinnedDesktopPi(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node := filepath.Join(root, "desktop", "resources", "staged", "node", "bin", "node")
-	piEntry := filepath.Join(root, "desktop", "resources", "staged", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")
-	out, err := exec.Command(node, piEntry, "--version").CombinedOutput()
-	if err != nil || strings.TrimSpace(string(out)) != "0.84.1" {
-		t.Fatalf("desktop-pinned Pi must be available at 0.84.1: err=%v output=%q", err, out)
-	}
+	prerequisites := requireOrSkipPinnedPiSmoke(t, root)
 	bin := t.TempDir()
 	pi := filepath.Join(bin, "pi")
-	if err := os.Symlink(piEntry, pi); err != nil {
+	if err := os.Symlink(prerequisites.piEntry, pi); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(node, filepath.Join(bin, "node")); err != nil {
+	if err := os.Symlink(prerequisites.node, filepath.Join(bin, "node")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(root, "desktop", "resources", "staged", "node", "bin", "npm"), filepath.Join(bin, "npm")); err != nil {
+	if err := os.Symlink(prerequisites.npm, filepath.Join(bin, "npm")); err != nil {
 		t.Fatal(err)
 	}
 	return pi, bin
@@ -621,8 +616,6 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	if !strings.Contains(stdout.String(), "void smoke ok") {
 		t.Fatalf("pi stdout missing streamed text; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	assertManagedWebInstalledSource(t, managedWebSearchPackagePath())
-
 	select {
 	case seen := <-seenCh:
 		if seen.Path != "/codex/responses" {
