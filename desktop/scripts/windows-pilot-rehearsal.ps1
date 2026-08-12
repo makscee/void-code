@@ -127,7 +127,7 @@ function Get-OwnedRows([int]$CandidateRoot) {
   foreach ($row in $owned) { if ($row.Name -notin $allowedNames) { throw 'OWNERSHIP_AMBIGUOUS' } }
   return @($owned | ForEach-Object { [ordered]@{ name=[IO.Path]::GetFileNameWithoutExtension([string]$_.Name); pid=[int]$_.ProcessId; parentPid=[int]$_.ParentProcessId; creationDate=(Convert-CreationDate $_.CreationDate) } })
 }
-function Test-PriorEvidence($Value, [string[]]$AllowedPhases = @('during_launch','after_chat_close')) {
+function Test-PriorEvidence($Value, [string[]]$AllowedPhases = @('during_launch','after_chat_close'), [bool]$RequireDirectVc = $false) {
   if (-not (Test-ExactKeys $Value @('schema','phase','occurredAt','result','check','coarseCode','candidate','processes','support')) -or -not (Test-Integer $Value.schema) -or $Value.schema -ne 1 -or
       $Value.phase -cnotin $AllowedPhases -or -not (Test-CanonicalTimestamp $Value.occurredAt) -or $Value.result -cne 'PASS' -or $Value.check -cne 'PROCESS_OWNERSHIP' -or $Value.coarseCode -cne 'NONE' -or
       $null -ne $Value.candidate -or $null -ne $Value.support -or @($Value.processes).Count -lt 1) { return $false }
@@ -139,6 +139,10 @@ function Test-PriorEvidence($Value, [string[]]$AllowedPhases = @('during_launch'
   if (@($ids | Select-Object -Unique).Count -ne $ids.Count -or $ids -notcontains $RootPid) { return $false }
   $root = @(@($Value.processes) | Where-Object { [int]$_.pid -eq $RootPid })
   if ($root.Count -ne 1 -or $root[0].name -cne 'Void Code' -or $ids -contains [int]$root[0].parentPid) { return $false }
+  if ($RequireDirectVc) {
+    $directVc = @(@($Value.processes) | Where-Object { $_.name -ceq 'vc' -and [int]$_.parentPid -eq $RootPid })
+    if ($directVc.Count -ne 1 -or @($Value.processes).Count -lt 2) { return $false }
+  }
   $reachable = New-Object 'System.Collections.Generic.HashSet[int]'
   [void]$reachable.Add($RootPid)
   do {
@@ -187,7 +191,7 @@ try {
   }
   if ($Phase -eq 'AfterChatClose') {
     $prior = Read-JsonFile $PriorEvidence
-    if (-not (Test-PriorEvidence $prior @('during_launch'))) { Stop-Document 'PROCESS_EXIT' 'OWNERSHIP_AMBIGUOUS' }
+    if (-not (Test-PriorEvidence $prior @('during_launch') $true)) { Stop-Document 'PROCESS_EXIT' 'OWNERSHIP_AMBIGUOUS' }
     $rows = @(Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CreationDate)
     foreach ($process in @($prior.processes | Where-Object { [int]$_.pid -ne $RootPid })) {
       $current = @($rows | Where-Object { [int]$_.ProcessId -eq [int]$process.pid })

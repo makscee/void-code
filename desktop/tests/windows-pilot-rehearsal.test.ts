@@ -106,6 +106,25 @@ describe('value-free Windows pilot rehearsal contract', () => {
     expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS');
   });
 
+  it.runIf(pwshAvailable)('AfterChatClose rejects prior evidence without exactly one direct vc chat identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-chat-shape-')); const priorPath = join(dir, 'prior.json');
+    const root = { name: 'Void Code', pid: 20, parentPid: 1, creationDate: timestamp };
+    const vc = { name: 'vc', pid: 30, parentPid: 20, creationDate: timestamp };
+    const evidence = (processes: object[]) => ({ schema: 1, phase: 'during_launch', occurredAt: timestamp, result: 'PASS', check: 'PROCESS_OWNERSHIP', coarseCode: 'NONE', candidate: null, processes, support: null });
+    const rootOnlyRepro = "function Get-CimInstance { [pscustomobject]@{Name='Void Code.exe';ProcessId=20;ParentProcessId=1;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'} }";
+    for (const processes of [
+      [root],
+      [root, { ...vc, name: 'node' }],
+      [root, vc, { ...vc, pid: 31 }],
+      [root, { ...vc, parentPid: 40 }, { name: 'node', pid: 40, parentPid: 30, creationDate: timestamp }],
+      [{ ...root, name: 'node' }, vc],
+    ]) {
+      writeFileSync(priorPath, JSON.stringify(evidence(processes)));
+      const result = runPowerShell(['-Phase', 'AfterChatClose', '-PriorEvidence', quoted(priorPath), '-RootPid', '20'], rootOnlyRepro);
+      expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS');
+    }
+  });
+
   it.runIf(pwshAvailable)('DuringLaunch scopes evidence to an explicit direct vc child and its descendants', () => {
     const rows = "function Get-CimInstance { @([pscustomobject]@{Name='Void Code.exe';ProcessId=20;ParentProcessId=1;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='vc.exe';ProcessId=30;ParentProcessId=20;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='node.exe';ProcessId=40;ParentProcessId=30;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='node.exe';ProcessId=50;ParentProcessId=20;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'}) }";
     let result = runPowerShell(['-Phase', 'DuringLaunch', '-RootPid', '20', '-ChatPid', '30'], rows);

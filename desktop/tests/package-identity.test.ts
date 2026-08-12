@@ -33,7 +33,12 @@ describe('decided pilot package identity', () => {
     expect(smoke).toContain("release/mac-arm64/Void Code.app");
     expect(smoke).toContain("identity.version !== '0.1.0'");
     expect(smoke).toContain("identity.appId !== 'works.voidcode.desktop'");
-    expect(read('scripts/mac-pty-check.mjs')).toContain("release/mac-arm64/Void Code.app");
+    const macPtyCheck = read('scripts/mac-pty-check.mjs');
+    expect(macPtyCheck).toContain("release/mac-arm64/Void Code.app");
+    expect(macPtyCheck).toContain("const electronVersion = packageJson.devDependencies?.electron");
+    expect(macPtyCheck).toContain("installedElectronVersion !== electronVersion");
+    expect(macPtyCheck).toContain("electron: electronVersion");
+    expect(macPtyCheck).not.toMatch(/electron:\s*['"]\d+\.\d+\.\d+['"]/);
     expect(read('scripts/production-terminal-check.mjs')).toContain("release/mac-arm64/Void Code.app/Contents/MacOS/Void Code");
     expect(read('scripts/windows-package-check.mjs')).toContain("Void-Code-0.1.0-windows-x64.exe");
   });
