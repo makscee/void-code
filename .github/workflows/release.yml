@@ -22,6 +22,8 @@ jobs:
           cache: true
       - name: Run tests
         run: go test ./...
+      - name: Validate auth-sync commit message
+        run: ruby .github/scripts/check-release-auth-commit-message.rb
 
   build:
     needs: test
@@ -227,5 +229,6 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: bump vc binaries to ${{ github.ref_name }}
 
           Automated sync from makscee/void-code release ${{ github.ref_name }}.
+
           Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           git push
