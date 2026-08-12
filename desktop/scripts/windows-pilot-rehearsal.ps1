@@ -77,9 +77,12 @@ function Write-Document($Document) {
 function Stop-Document([string]$Check, [string]$Code) { Write-Document (New-Document 'STOP' $Check $Code $null @() $null) }
 function Read-JsonFile([string]$File) {
   if (-not $File -or -not [IO.File]::Exists($File)) { throw 'INVALID_INPUT' }
-  return [IO.File]::ReadAllText($File) | ConvertFrom-Json
+  $text = [IO.File]::ReadAllText($File)
+  $convertCommand = Get-Command ConvertFrom-Json
+  if ($convertCommand.Parameters.ContainsKey('DateKind')) { return $text | ConvertFrom-Json -DateKind String }
+  return $text | ConvertFrom-Json
 }
-function Test-Reference($Value) { return $Value -is [string] -and $Value -cmatch $referencePattern -and $Value -cnotmatch $mutableReferencePattern }
+function Test-Reference($Value) { return $Value -is [string] -and $Value -cmatch $referencePattern -and $Value -notmatch $mutableReferencePattern }
 function Test-Manifest($Value) {
   if (-not (Test-ExactKeys $Value @('schema','product','source','build','installer','resources','predecessor','signing','operatorGate')) -or
       -not (Test-ExactKeys $Value.product @('name','version')) -or
@@ -134,11 +137,20 @@ function Test-PriorEvidence($Value) {
   }
   if (@($ids | Select-Object -Unique).Count -ne $ids.Count -or $ids -notcontains $RootPid) { return $false }
   $root = @(@($Value.processes) | Where-Object { [int]$_.pid -eq $RootPid })
-  if ($root.Count -ne 1 -or $root[0].name -cne 'Void Code') { return $false }
-  foreach ($process in @($Value.processes)) {
-    if ([int]$process.pid -ne $RootPid -and $ids -notcontains [int]$process.parentPid) { return $false }
-  }
-  return $true
+  if ($root.Count -ne 1 -or $root[0].name -cne 'Void Code' -or $ids -contains [int]$root[0].parentPid) { return $false }
+  $reachable = New-Object 'System.Collections.Generic.HashSet[int]'
+  [void]$reachable.Add($RootPid)
+  do {
+    $added = $false
+    foreach ($process in @($Value.processes)) {
+      $pidValue = [int]$process.pid
+      if (-not $reachable.Contains($pidValue) -and $reachable.Contains([int]$process.parentPid)) {
+        [void]$reachable.Add($pidValue)
+        $added = $true
+      }
+    }
+  } while ($added)
+  return $reachable.Count -eq $ids.Count
 }
 
 try {

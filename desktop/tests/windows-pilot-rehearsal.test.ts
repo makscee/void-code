@@ -14,6 +14,16 @@ function runPowerShell(args: string[], prelude = '') {
   return spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${prelude}\n& '${scriptPath.replaceAll("'", "''")}' ${args.join(' ')}`], { encoding: 'utf8' });
 }
 function quoted(value: string) { return `'${value.replaceAll("'", "''")}'`; }
+function validManifest() {
+  return {
+    schema: 1, product: { name: 'Void Code', version: '0.1.0' },
+    source: { commit: 'a'.repeat(40), branch: 'main', remote: 'origin/main', originUrl: 'https://github.com/makscee/void-code.git' },
+    build: { timestamp }, installer: { basename: 'Void-Code-0.1.0-windows-x64.exe', size: 1, sha256: 'a'.repeat(64), arch: 'x64' },
+    resources: { manifest: { basename: 'manifest.json', size: 1, sha256: 'b'.repeat(64) }, platform: 'win32-x64' },
+    predecessor: { reference: 'v0.0.1', installerSha256: 'c'.repeat(64) }, signing: { status: 'unsigned' },
+    operatorGate: { status: 'verified', evidence: 'pilot-2026-01-02', verifiedAt: timestamp },
+  };
+}
 
 describe('value-free Windows pilot rehearsal contract', () => {
   it('serializes only exact, semantically related evidence', () => {
@@ -42,6 +52,24 @@ describe('value-free Windows pilot rehearsal contract', () => {
     expect(() => descendantSnapshot([...rows, { name: 'node.exe', pid: 20, parentPid: 20, creationDate: timestamp }], 20)).toThrow('ROOT_NOT_FOUND');
   });
 
+  it.runIf(pwshAvailable)('PowerShell rejects noncanonical timestamp lexemes in support, manifest, and prior evidence', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-timestamps-'));
+    const inputPath = join(dir, 'input.json');
+    const support = { schema: 1, app: { name: 'Void Code', version: '0.1.0' }, system: { platform: 'windows', architecture: 'x64' }, generatedAt: timestamp, state: { workspace: 'ready', runtime: 'running', recoveryCode: 'NONE' } };
+    for (const generatedAt of ['2026-01-02T03:04:05Z', '2026-01-02T03:04:05+02:00']) {
+      writeFileSync(inputPath, JSON.stringify({ ...support, generatedAt }));
+      const result = runPowerShell(['-Phase', 'SupportReport', '-SupportReport', quoted(inputPath)]);
+      expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('SUPPORT_REPORT_INVALID');
+    }
+    writeFileSync(inputPath, JSON.stringify({ ...validManifest(), build: { timestamp: '2026-01-02T03:04:05Z' } }));
+    let result = runPowerShell(['-Phase', 'Preflight', '-Manifest', quoted(inputPath)]);
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('MANIFEST_INVALID');
+    const prior = { schema: 1, phase: 'during_launch', occurredAt: timestamp, result: 'PASS', check: 'PROCESS_OWNERSHIP', coarseCode: 'NONE', candidate: null, processes: [{ name: 'Void Code', pid: 20, parentPid: 1, creationDate: '2026-01-02T03:04:05+02:00' }], support: null };
+    writeFileSync(inputPath, JSON.stringify(prior));
+    result = runPowerShell(['-Phase', 'AfterQuit', '-PriorEvidence', quoted(inputPath), '-RootPid', '20']);
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS');
+  });
+
   it.runIf(pwshAvailable)('PowerShell rejects impossible support timestamps and emits coarse collision failures', () => {
     const dir = mkdtempSync(join(tmpdir(), 'vc-pwsh-'));
     const reportPath = join(dir, 'support.json'); const outputPath = join(dir, 'exists.json');
@@ -61,6 +89,26 @@ describe('value-free Windows pilot rehearsal contract', () => {
     writeFileSync(manifestPath, JSON.stringify(manifest));
     const result = runPowerShell(['-Phase', 'Preflight', '-Manifest', quoted(manifestPath)]);
     expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('MANIFEST_INVALID'); expect(result.stderr).toBe('');
+  });
+
+  it.runIf(pwshAvailable)('PowerShell rejects uppercase mutable manifest references', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-references-')); const manifestPath = join(dir, 'candidate.json');
+    for (const manifest of [
+      { ...validManifest(), predecessor: { ...validManifest().predecessor, reference: 'LATEST' } },
+      { ...validManifest(), operatorGate: { ...validManifest().operatorGate, evidence: 'PENDING' } },
+    ]) {
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const result = runPowerShell(['-Phase', 'Preflight', '-Manifest', quoted(manifestPath)]);
+      expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('MANIFEST_INVALID');
+    }
+  });
+
+  it.runIf(pwshAvailable)('PowerShell rejects disconnected prior-process cycles', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-cycle-')); const priorPath = join(dir, 'prior.json');
+    const processes = [{ name: 'Void Code', pid: 20, parentPid: 1, creationDate: timestamp }, { name: 'node', pid: 30, parentPid: 40, creationDate: timestamp }, { name: 'node', pid: 40, parentPid: 30, creationDate: timestamp }];
+    writeFileSync(priorPath, JSON.stringify({ schema: 1, phase: 'during_launch', occurredAt: timestamp, result: 'PASS', check: 'PROCESS_OWNERSHIP', coarseCode: 'NONE', candidate: null, processes, support: null }));
+    const result = runPowerShell(['-Phase', 'AfterQuit', '-PriorEvidence', quoted(priorPath), '-RootPid', '20'], 'function Get-CimInstance { @() }');
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS'); expect(result.stderr).toBe('');
   });
 
   it.runIf(pwshAvailable)('PowerShell validates prior evidence and ignores reused PIDs with a new creation identity', () => {
