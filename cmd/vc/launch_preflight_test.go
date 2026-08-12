@@ -162,6 +162,16 @@ func TestLaunchPreflight_ProviderOrderIsAuthoritativeAndSingleCall(t *testing.T)
 	}
 }
 
+func TestLaunchPreflight_ConfirmedEmptyIsSuccessfulOutcome(t *testing.T) {
+	deps := testPreflightDeps(time.Now)
+	deps.auth = func(string, string, *http.Client) (auth.MeResult, bool, error) { return auth.MeResult{}, true, nil }
+	deps.providers = func(string, string, *http.Client) ([]auth.ProviderInfo, error) { return []auth.ProviderInfo{}, nil }
+	result, reused := startLaunchPreflight("legacy", "host", false, deps).awaitProvider("legacy", "host")
+	if !reused || !result.successful() || result.err != nil || result.grants == nil {
+		t.Fatalf("confirmed empty outcome = %#v, reused=%v", result, reused)
+	}
+}
+
 func TestLaunchPreflight_ProviderFailureAndTimeoutAreExplicit(t *testing.T) {
 	t.Run("error", func(t *testing.T) {
 		deps := testPreflightDeps(time.Now)

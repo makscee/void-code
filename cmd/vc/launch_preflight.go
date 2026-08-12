@@ -21,11 +21,21 @@ type launchAuthResult struct {
 	err     error
 }
 
+type providerOutcomeKind uint8
+
+const (
+	providerOutcomeUnknown providerOutcomeKind = iota
+	providerOutcomeSuccess
+)
+
 type launchProviderResult struct {
+	kind   providerOutcomeKind
 	rows   []welcome.ProviderRowInfo
 	grants []compat.Grant
 	err    error
 }
+
+func (r launchProviderResult) successful() bool { return r.kind == providerOutcomeSuccess }
 
 type launchPreflightDeps struct {
 	now         func() time.Time
@@ -88,6 +98,7 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 			infos, err := deps.providers(authHost, token, deps.newClient())
 			result.err = err
 			if err == nil {
+				result.kind = providerOutcomeSuccess
 				result.rows = make([]welcome.ProviderRowInfo, 0, len(infos))
 				result.grants = make([]compat.Grant, 0, len(infos))
 				for _, info := range infos {
@@ -168,8 +179,7 @@ func (p *launchPreflight) providerIfReady(token, authHost string) (launchProvide
 }
 
 // awaitProvider reuses the launch's authoritative provider request and shares
-// its original deadline. It is used only at the Pi spawn boundary, where grants
-// decide whether the managed web package may be activated.
+// its original deadline for every consumer whose compatibility state depends on it.
 func (p *launchPreflight) awaitProvider(token, authHost string) (launchProviderResult, bool) {
 	if !p.reusable(token, authHost) {
 		return launchProviderResult{}, false

@@ -438,20 +438,17 @@ func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeRes
 	return authGate(token, authHost, &http.Client{Timeout: authProbeTimeout})
 }
 
-func spawnCompatGrants(p *launchPreflight, token, authHost string, admissionRelevant bool) ([]compat.Grant, error) {
-	if admissionRelevant {
+func spawnProviderOutcome(p *launchPreflight, token, authHost string) launchProviderResult {
+	if p != nil {
 		if carried, reused := p.awaitProvider(token, authHost); reused {
-			return carried.grants, carried.err
+			return carried
 		}
-	} else if carried, ready := p.providerIfReady(token, authHost); ready {
-		return carried.grants, carried.err
 	}
-	if p == nil || !p.reusable(token, authHost) {
-		return fetchCompatGrants(authHost, token)
+	grants, err := fetchCompatGrants(authHost, token)
+	if err != nil {
+		return launchProviderResult{err: err}
 	}
-	// Non-Pi launches preserve provider non-gating semantics and never duplicate
-	// the same-launch request.
-	return nil, nil
+	return launchProviderResult{kind: providerOutcomeSuccess, grants: grants}
 }
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
@@ -490,19 +487,22 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	active := provider.Load()
 	activeLabel := provider.LoadLabel()
-	compatGrants, providerErr := spawnCompatGrants(currentLaunchPreflight, token, cfg.AuthHost, activeHarness.Kind == harnesschoice.Pi)
-	if providerErr != nil && activeHarness.Kind == harnesschoice.Pi {
-		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search unavailable: provider discovery failed: %v\n", providerErr)
+	providerOutcome := spawnProviderOutcome(currentLaunchPreflight, token, cfg.AuthHost)
+	compatGrants := providerOutcome.grants
+	if providerOutcome.err != nil && activeHarness.Kind == harnesschoice.Pi {
+		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search unavailable: provider discovery failed: %v\n", providerOutcome.err)
 	}
-	// Provider discovery remains non-gating except for bounded Pi web-package
-	// authorization; an unavailable result continues with relay defaults.
-	if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
-		_ = harnesschoice.Save(d.Harness)
-		_ = provider.Save(d.Provider)
-		_ = provider.SaveLabel(d.ProviderLabel)
-		activeHarness, active, activeLabel = d.Harness, d.Provider, d.ProviderLabel
-		if d.Warning != "" {
-			fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
+	// Unknown/error outcomes preserve the durable selection exactly. Only a
+	// successful current response (including confirmed empty) is authoritative.
+	if providerOutcome.successful() {
+		if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
+			_ = harnesschoice.Save(d.Harness)
+			_ = provider.Save(d.Provider)
+			_ = provider.SaveLabel(d.ProviderLabel)
+			activeHarness, active, activeLabel = d.Harness, d.Provider, d.ProviderLabel
+			if d.Warning != "" {
+				fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
+			}
 		}
 	}
 
@@ -510,8 +510,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if managedPiErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", managedPiErr)
 	}
-	_, _, hasManagedChatGPT := compat.FirstChatGPT(compatGrants)
-	webEligible := activeHarness.Kind == harnesschoice.Pi && hasManagedChatGPT
+	activeGrantClass, exactActiveGrant := compat.ExactGrantClass(active, compatGrants)
+	webEligible := providerOutcome.successful() && activeHarness.Kind == harnesschoice.Pi && exactActiveGrant && activeGrantClass == compat.ProviderChatGPT
 	if _, webErr := reconcileManagedWebSearch(webEligible); webErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
 	}

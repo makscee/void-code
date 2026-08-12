@@ -46,7 +46,8 @@ func ClassifyProvider(p provider.Provider, label string, grants []Grant) Provide
 		fields := []string{p.ID, label}
 		for _, g := range grants {
 			if g.ID == p.ID {
-				if class, ok := classifyType(g.Type); ok {
+				if strings.TrimSpace(g.Type) != "" {
+					class, _ := classifyType(g.Type)
 					return class
 				}
 				fields = append(fields, g.ID, g.Name, g.Label)
@@ -82,6 +83,26 @@ func classifyFields(fields []string) ProviderClass {
 		}
 	}
 	return ProviderInvalid
+}
+
+// ExactGrantClass returns the authoritative class of the active relay provider
+// only when its exact opaque ID is present in the current successful grant set.
+func ExactGrantClass(p provider.Provider, grants []Grant) (ProviderClass, bool) {
+	if p.Kind != provider.RelayProvider {
+		return ProviderInvalid, false
+	}
+	for _, g := range grants {
+		if g.ID != p.ID {
+			continue
+		}
+		if strings.TrimSpace(g.Type) != "" {
+			class, ok := classifyType(g.Type)
+			return class, ok
+		}
+		class := classifyFields([]string{g.ID, g.Name, g.Label})
+		return class, class != ProviderInvalid
+	}
+	return ProviderInvalid, false
 }
 
 // FirstChatGPT returns the first granted ChatGPT/OpenAI/Codex relay provider.

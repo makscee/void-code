@@ -43,11 +43,9 @@ func reconcileManagedWebSearch(eligible bool) (managedWebSearchState, error) {
 		return managedWebSearchUnavailable, nil
 	}
 	if !eligible {
-		// Keep the owned package cached, but never leave it activated without a
-		// current authoritative ChatGPT grant.
-		if err := reconcileManagedPackageSetting(path, false); err != nil {
-			return managedWebSearchBroken, err
-		}
+		// Ordinary ineligibility or unknown authority must not destructively
+		// change an installation owned by vc. Explicit opt-out above is the sole
+		// deregistration/removal operation.
 		return managedWebSearchUnavailable, nil
 	}
 

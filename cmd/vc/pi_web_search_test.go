@@ -82,8 +82,8 @@ func TestManagedWebSearchUnavailableAndBrokenOwnership(t *testing.T) {
 	if err != nil || state != managedWebSearchUnavailable {
 		t.Fatalf("ineligible = %q, %v", state, err)
 	}
-	if registered, err := inspectManagedPackageSetting(path); err != nil || registered {
-		t.Fatalf("ineligible package remains registered=%v err=%v", registered, err)
+	if registered, err := inspectManagedPackageSetting(path); err != nil || !registered {
+		t.Fatalf("ineligible package registration preserved=%v err=%v", registered, err)
 	}
 	if err := os.MkdirAll(path, 0700); err != nil {
 		t.Fatal(err)
