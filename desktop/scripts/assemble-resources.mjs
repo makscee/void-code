@@ -1,7 +1,20 @@
-import { cp, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { assertPiSourcePins, assertPiTreePin, expectedNodeArchive, extractPinnedNodeArchive, shaFile, treeHash } from './resource-assembly-lib.mjs';
+
+async function materializeTreeLinks(root) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const absolute = path.join(root, entry.name);
+    if (entry.isDirectory()) await materializeTreeLinks(absolute);
+    else if (entry.isSymbolicLink()) {
+      const target = path.resolve(path.dirname(absolute), await readlink(absolute));
+      const targetStat = await lstat(target);
+      await rm(absolute);
+      await cp(target, absolute, { recursive: targetStat.isDirectory() });
+    }
+  }
+}
 
 const desktop = process.cwd();
 const repo = path.resolve(desktop, '..');
@@ -59,6 +72,9 @@ try {
   });
   // npm's generated hidden lock varies with npm itself; the source lock remains pinned.
   await rm(path.join(staging, 'pi/node_modules/.package-lock.json'), { force: true });
+  // Pi is a trusted executable tree: materialize npm's convenience links so the
+  // shipped tree contains only real directories and regular files.
+  await materializeTreeLinks(path.join(staging, 'pi'));
   const piTreeSha256 = await assertPiTreePin(path.join(staging, 'pi'), pins.pi);
 
   await cp(path.join(desktop, 'dist/fixture/round-trip.js'), path.join(staging, 'fixture/round-trip.js'));

@@ -10,6 +10,7 @@ import (
 func TestClassifyProvider(t *testing.T) {
 	grants := []Grant{
 		{ID: "opaque-1", Name: "OpenAI seats"},
+		{ID: "typed-incompatible", Name: "ChatGPT", Type: "anthropic-api-key"},
 		{ID: "opaque-type-chat", Name: "Enterprise", Type: "openai-codex-oauth"},
 		{ID: "opaque-type-deep", Name: "Enterprise", Type: "deepseek"},
 		{ID: "deepseek-sub", Name: "DeepSeek"},
@@ -27,6 +28,7 @@ func TestClassifyProvider(t *testing.T) {
 		{"chatgpt type", provider.Provider{Kind: provider.RelayProvider, ID: "opaque-type-chat"}, "", ProviderChatGPT},
 		{"deepseek type", provider.Provider{Kind: provider.RelayProvider, ID: "opaque-type-deep"}, "", ProviderDeepSeek},
 		{"deepseek id", provider.Provider{Kind: provider.RelayProvider, ID: "deepseek-sub"}, "", ProviderDeepSeek},
+		{"explicit incompatible type never falls back to name", provider.Provider{Kind: provider.RelayProvider, ID: "typed-incompatible"}, "ChatGPT", ProviderInvalid},
 		{"plain invalid", provider.Provider{Kind: provider.Plain}, "Plain", ProviderInvalid},
 		{"key invalid", provider.Provider{Kind: provider.NamedKey, Name: "work"}, "key: work", ProviderInvalid},
 	}
@@ -34,6 +36,30 @@ func TestClassifyProvider(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClassifyProvider(tc.p, tc.label, grants); got != tc.want {
 				t.Fatalf("ClassifyProvider = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExactGrantClassRequiresOpaqueIDAndAuthoritativeType(t *testing.T) {
+	active := provider.Provider{Kind: provider.RelayProvider, ID: "active"}
+	cases := []struct {
+		name   string
+		grants []Grant
+		want   ProviderClass
+		ok     bool
+	}{
+		{"exact compatible", []Grant{{ID: "active", Name: "neutral", Type: "openai-codex-oauth"}}, ProviderChatGPT, true},
+		{"other compatible", []Grant{{ID: "other", Name: "ChatGPT", Type: "openai-codex-oauth"}}, ProviderInvalid, false},
+		{"exact explicit incompatible", []Grant{{ID: "active", Name: "ChatGPT", Type: "anthropic-api-key"}}, ProviderInvalid, false},
+		{"exact legacy name", []Grant{{ID: "active", Name: "ChatGPT"}}, ProviderChatGPT, true},
+		{"confirmed empty", []Grant{}, ProviderInvalid, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ExactGrantClass(active, tc.grants)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("ExactGrantClass = %v,%v want %v,%v", got, ok, tc.want, tc.ok)
 			}
 		})
 	}

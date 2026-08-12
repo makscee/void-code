@@ -6,7 +6,7 @@
   "main": "dist/main/index.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:renderer",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:preload && npm run bundle:renderer",
     "lint": "eslint src tests scripts",
     "test": "vitest run",
     "assemble": "node scripts/assemble-resources.mjs",
@@ -18,11 +18,14 @@
     "check:mac-pty": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/mac-pty-check.mjs",
     "check:mac-tabs": "npm run clean && npm run lint && npm run test && npm run package:mac",
     "check:status": "npm run lint && vitest run tests/status-channel.test.ts tests/session-manager.test.ts tests/workspace-close-ipc.test.ts tests/contract.test.ts",
+    "bundle:preload": "esbuild src/preload/index.ts --bundle --format=cjs --platform=node --target=node22 --external:electron --outfile=dist/preload/index.js",
     "bundle:renderer": "esbuild src/renderer/index.ts --bundle --format=esm --platform=browser --target=chrome130 --loader:.woff2=file --loader:.woff=file --asset-names=assets/[name]-[hash] --outfile=dist/renderer/index.js",
+    "smoke:sandbox-preload": "node scripts/sandbox-preload-smoke.cjs",
     "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs",
     "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs && node scripts/packaged-window-check.mjs && node scripts/packaged-startup-failure-check.mjs",
     "candidate:generate": "node scripts/candidate-manifest.mjs generate",
-    "candidate:check": "node scripts/candidate-manifest.mjs check"
+    "candidate:check": "node scripts/candidate-manifest.mjs check",
+    "check:pinned-pi-smoke": "node scripts/check-pinned-pi-smoke.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.2.8",
@@ -34,13 +37,13 @@
   "devDependencies": {
     "@eslint/js": "9.39.1",
     "@types/node": "24.10.1",
-    "electron": "39.2.6",
-    "electron-builder": "26.0.12",
+    "electron": "41.10.3",
+    "electron-builder": "26.15.7",
     "esbuild": "0.25.8",
     "eslint": "9.39.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.48.0",
-    "vitest": "4.0.15"
+    "vitest": "4.1.10"
   },
   "build": {
     "directories": {

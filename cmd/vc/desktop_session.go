@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/compat"
@@ -28,7 +30,8 @@ type desktopSessionDeps struct {
 	loadToken       func() (string, error)
 	resolveConfig   func() config.Config
 	authGate        func(string, string, *http.Client) (auth.MeResult, bool, error)
-	fetchGrants     func(string, string) ([]compat.Grant, error)
+	fetchGrants     func(string, string, *http.Client) ([]compat.Grant, error)
+	now             func() time.Time
 	resolveCA       func(config.Config) (string, error)
 	reconcilePi     func() (string, error)
 	reconcileSearch func(bool) (managedWebSearchState, error)
@@ -43,6 +46,7 @@ func defaultDesktopSessionDeps() desktopSessionDeps {
 		resolveConfig:   config.OSResolve,
 		authGate:        authGate,
 		fetchGrants:     fetchDesktopGrants,
+		now:             time.Now,
 		resolveCA:       resolveCA,
 		reconcilePi:     reconcileManagedPiExtension,
 		reconcileSearch: reconcileManagedWebSearch,
@@ -79,8 +83,8 @@ func init() {
 	rootCmd.AddCommand(desktopSessionCmd)
 }
 
-func fetchDesktopGrants(authHost, token string) ([]compat.Grant, error) {
-	infos, err := cachedFetchProviders(authHost, token, &http.Client{Timeout: authProbeTimeout})
+func fetchDesktopGrants(authHost, token string, client *http.Client) ([]compat.Grant, error) {
+	infos, err := cachedFetchProviders(authHost, token, client)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +96,9 @@ func fetchDesktopGrants(authHost, token string) ([]compat.Grant, error) {
 }
 
 func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps desktopSessionDeps) (desktopSessionPlan, error) {
+	if deps.now == nil {
+		deps.now = time.Now
+	}
 	if err := validateDesktopPiArgs(piArgs); err != nil {
 		return desktopSessionPlan{}, err
 	}
@@ -107,7 +114,32 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
 	}
 	cfg := deps.resolveConfig()
-	me, reached, err := deps.authGate(token, cfg.AuthHost, &http.Client{Timeout: authProbeTimeout})
+	started := deps.now()
+	deadline := started.Add(authProbeTimeout)
+	type authResult struct {
+		me      auth.MeResult
+		reached bool
+		err     error
+	}
+	var authResultValue authResult
+	var providerResult launchProviderResult
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		me, reached, err := deps.authGate(token, cfg.AuthHost, &http.Client{Timeout: remainingDesktopBudget(deadline, deps.now())})
+		authResultValue = authResult{me: me, reached: reached, err: err}
+	}()
+	go func() {
+		defer wg.Done()
+		grants, err := deps.fetchGrants(cfg.AuthHost, token, &http.Client{Timeout: remainingDesktopBudget(deadline, deps.now())})
+		providerResult = launchProviderResult{grants: grants, err: err}
+		if err == nil {
+			providerResult.kind = providerOutcomeSuccess
+		}
+	}()
+	wg.Wait()
+	me, reached, err := authResultValue.me, authResultValue.reached, authResultValue.err
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
 	}
@@ -119,11 +151,12 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 
 	active := deps.loadProvider()
 	label := deps.loadLabel()
-	grants, err := deps.fetchGrants(cfg.AuthHost, token)
-	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("provider grants unavailable: %w", err)
+	grants := providerResult.grants
+	classGrants := grants
+	if !providerResult.successful() {
+		classGrants = nil
 	}
-	class := compat.ClassifyProvider(active, label, grants)
+	class := compat.ClassifyProvider(active, label, classGrants)
 	if class != compat.ProviderChatGPT && class != compat.ProviderDeepSeek {
 		return desktopSessionPlan{}, fmt.Errorf("active provider is not in the current Pi-compatible grants")
 	}
@@ -132,8 +165,9 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("managed Pi provider unavailable: %w", err)
 	}
-	_, _, hasManagedChatGPT := compat.FirstChatGPT(grants)
-	if _, err := deps.reconcileSearch(hasManagedChatGPT); err != nil {
+	grantClass, exactGrant := compat.ExactGrantClass(active, grants)
+	webEligible := providerResult.successful() && exactGrant && grantClass == compat.ProviderChatGPT
+	if _, err := deps.reconcileSearch(webEligible); err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("managed Pi web search unavailable: %w", err)
 	}
 	if extensionPath == "" {
@@ -194,6 +228,14 @@ func validateDesktopPiArgs(args []string) error {
 		}
 	}
 	return nil
+}
+
+func remainingDesktopBudget(deadline, now time.Time) time.Duration {
+	remaining := deadline.Sub(now)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
 }
 
 func setDesktopEnv(env []string, key, value string) []string {

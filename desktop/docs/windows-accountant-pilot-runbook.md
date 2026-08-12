@@ -5,7 +5,7 @@
 
 ## Evidence rule
 
-Record only checklist item, UTC time, `PASS`/`STOP`, installer/report SHA-256, coarse recovery code, and process **name/PID/parent PID** needed below. Never retain the one-time code or token, terminal/chat/prompt text, file contents, environment, command lines, raw errors/stacks, username/home path, client name, or unredacted workspace path. Do not screenshot PowerShell, terminal panes, folder paths, chats, SmartScreen details beyond the expected generic unsigned flow, or client files.
+Record only checklist item, UTC time, `PASS`/`STOP`, installer/report SHA-256, coarse recovery code, and process **name/PID/parent PID/creation time** needed below. Creation time is a value-free stable process identity used only to distinguish PID reuse. Never retain the one-time code or token, terminal/chat/prompt text, file contents, environment, command lines, raw errors/stacks, username/home path, client name, or unredacted workspace path. Do not screenshot PowerShell, terminal panes, folder paths, chats, SmartScreen details beyond the expected generic unsigned flow, or client files.
 
 Any `STOP` ends the procedure. Do not improvise, disable antivirus, change auth, or select valuable data.
 
@@ -15,11 +15,13 @@ Maks verifies locally, recording only PASS/STOP:
 
 - Windows 10/11 x64; ordinary accountant user can install per-user software.
 - At least 2 GB free disk; current date/time; supported network available.
-- No other Void Code pilot process is running. Existing unrelated `node`, `vc`, `conhost`, or `OpenConsole` processes are noted by PID and left untouched.
+- No other Void Code, Pi, or session-maintenance process is running. Existing unrelated `node`, `vc`, `conhost`, or `OpenConsole` processes are noted by PID and left untouched.
 - Exact candidate manifest, exact installer named `Void-Code-0.1.0-windows-x64.exe`, and retained predecessor installer are present from the controlled handoff.
-- Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `product.version = 0.1.0`, `signing.status = unsigned`, and carries the intended predecessor hash/reference and current operator-gate status.
+- Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `product.version = 0.1.0`, `signing.status = unsigned`, and carries the intended predecessor hash/reference and current operator-gate status. A `verified` value is only the manifest-declared status; it is not evidence that this machine's manual gate or the guided pilot passed.
 
-**STOP:** wrong Windows/architecture, insufficient space, missing manifest/installer/predecessor, or unexpected existing Void Code process.
+**STOP:** wrong Windows/architecture, insufficient space, missing manifest/installer/predecessor, or unexpected concurrent Void Code, Pi, or session-maintenance process.
+
+Pilot trust boundary: hostile mutation of the Pi session store by another process running as the same Windows user is outside the pilot integrity guarantee. Session discovery uses descriptor and pathname revalidation to reduce accidental replacement, but Pi still receives and reopens a pathname, so a residual pathname-handoff race remains. The no-concurrent-process gate and disposable copied-data rule are mandatory.
 
 ## 2. Existing authorized VC sign-in — no credential evidence
 
@@ -55,17 +57,42 @@ Compare `$actual` character-for-character with `installer.sha256` in the exact c
 
 **STOP immediately:** hash mismatch, wrong basename/version, missing manifest, zero/implausible file, or more than one candidate installer. Delete nothing and do not run it.
 
-## 4. Expected unsigned installer flow
+## 4. Verify unsigned identity and choose the MOTW branch
 
-Double-click the already-hash-verified installer. This pilot is intentionally unsigned. The only accepted generic SmartScreen path is:
+Keep `$installer` bound to the exact hash-verified file. Independently check its Authenticode status:
+
+```powershell
+$signatureStatus = (Get-AuthenticodeSignature -LiteralPath $installer.FullName).Status
+if ($signatureStatus -ne [System.Management.Automation.SignatureStatus]::NotSigned) { throw "STOP" }
+```
+
+Record only `SIGNATURE_NOT_SIGNED PASS` or `SIGNATURE_NOT_SIGNED STOP`. Do not record signature status output, certificate or publisher details. A result other than exactly `NotSigned`, a query failure, or a result for a different basename is **STOP**. This check supplements and never substitutes for the manifest hash comparison.
+
+Next inspect only whether that same file has a `Zone.Identifier` alternate data stream. Do not read or record stream contents, URL, host, referrer, zone value, paths, screenshots, shell output, or signature details.
+
+```powershell
+$motw = Get-Item -LiteralPath $installer.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue
+```
+
+An inspection failure, ambiguous result, or inspection of a different file is **STOP**. Record exactly one branch label:
+
+### `MOTW_ABSENT PASS`
+
+No `Zone.Identifier` stream exists. This is accepted for a controlled handoff or local copy. Double-click the exact verified installer and expect direct launch with no SmartScreen or other execution/security prompt. Do not solicit or claim a SmartScreen dialog. Complete the per-user installer for **Void Code**. If any execution/security prompt appears, **STOP**; do not bypass it.
+
+### `MOTW_PRESENT PASS`
+
+A `Zone.Identifier` stream exists. Double-click the exact verified installer. The only accepted generic unsigned SmartScreen path is:
 
 1. **Windows protected your PC** / unknown publisher warning.
 2. Select **More info**.
 3. Confirm the app is the exact already-verified `Void-Code-0.1.0-windows-x64.exe`.
 4. Select **Run anyway**.
-5. Complete the per-user installer with product name **Void Code**. Do not change the install directory unless the documented default is unavailable.
+5. Complete the per-user installer with product name **Void Code**.
 
-**STOP:** any hash has changed; a named/unexpected publisher appears; Windows requests disabling security; the prompt names another product/version/file; an admin/system-wide change is unexpectedly required; or prompts differ materially. Do not “try anyway.”
+Record only `SMARTSCREEN_UNSIGNED PASS`, not dialog details.
+
+For either branch, do not change the install directory unless the documented default is unavailable. **STOP:** the hash changes; Authenticode is not exactly `NotSigned`; MOTW inspection fails or is ambiguous; a named or unexpected publisher appears; Windows requests disabling security; the prompt names another product/version/file; elevation or an admin/system-wide change is unexpectedly required; any prompt differs materially; or the absent-MOTW branch shows a prompt. Do not “try anyway.”
 
 ## 5. Safe first workspace
 
@@ -127,11 +154,11 @@ In Task Manager → **Details**, record only name and PID for existing processes
 
 ### During launch
 
-Record the candidate `Void Code` root PID from Task Manager. In PowerShell, enter that PID when prompted; this script reads only name/PID/parent PID and emits only the candidate descendant tree:
+Record the candidate `Void Code` root PID from Task Manager. In PowerShell, enter that PID when prompted; this script reads only name/PID/parent PID/creation time and emits only the candidate descendant tree. Creation time is retained in approved process rows so exit checks compare `(PID, creation time)` rather than treating a reused PID as candidate-owned:
 
 ```powershell
 $rootPid = [int](Read-Host "Void Code root PID")
-$rows = Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId
+$rows = Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CreationDate
 $ids = [System.Collections.Generic.HashSet[int]]::new()
 [void]$ids.Add($rootPid)
 do {
@@ -140,10 +167,10 @@ do {
     if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $added = $true }
   }
 } while ($added)
-$rows | Where-Object { $ids.Contains([int]$_.ProcessId) } | Sort-Object ProcessId | Format-Table Name,ProcessId,ParentProcessId
+$rows | Where-Object { $ids.Contains([int]$_.ProcessId) } | Sort-Object ProcessId | Format-Table Name,ProcessId,ParentProcessId,CreationDate
 ```
 
-Confirm the tree is bounded to candidate-owned Electron/Void Code, private `vc`, Node/Pi and Windows ConPTY host descendants. Record only those three columns.
+Confirm the tree is bounded to candidate-owned Electron/Void Code, private `vc`, Node/Pi and Windows ConPTY host descendants. Record only those four columns. The rehearsal tool validates prior evidence's exact schema, phase, result/code, real UTC timestamp, root identity and descendant relationships, then compares both PID and creation time. A PID occupied by a process with a different creation time is reused and is not reported as a surviving candidate process.
 
 ### After chat close and app quit
 

@@ -7,6 +7,10 @@ import path from 'node:path';
 import { clearTimeout } from 'node:timers';
 
 const require = createRequire(import.meta.url);
+const packageJson = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
+const electronVersion = packageJson.devDependencies?.electron;
+const installedElectronVersion = require('electron/package.json').version;
+if (typeof electronVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(electronVersion) || installedElectronVersion !== electronVersion) throw new Error('Electron package pin mismatch');
 chmodSync(path.resolve('node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper'), 0o755);
 const pty = require('node-pty');
 const { wrapPty } = require('../dist/main/session-manager.js');
@@ -68,7 +72,7 @@ const after = inventory();
 if (after.length) throw new Error(`stale app-owned processes after lifecycle probes: ${after.join(';')}`);
 
 const result = {
-  package: { electron: '39.2.6', xterm: '6.0.0', nodePty: '1.1.0' },
+  package: { electron: electronVersion, xterm: '6.0.0', nodePty: '1.1.0' },
   runtime: { vc: manifest.vc.version, vcSourceCommit: manifest.vc.sourceCommit, node: manifest.node.version, npm: manifest.node.npm.version, pi: manifest.pi.version },
   hashes: { appAsar: await sha(path.join(resources, 'app.asar')), nativePty: await sha(native), vc: manifest.vc.sha256, node: manifest.node.sha256, piTree: manifest.pi.treeSha256 },
   boundaries: { nativeModuleOutsideAsar: true, privateRuntimeOutsideAsar: true, signing: 'expected-unsigned-local-prototype (identity=null)', staleOwnedProcessCount: after.length },

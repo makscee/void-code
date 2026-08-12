@@ -50,7 +50,7 @@ func desktopTestDeps() desktopSessionDeps {
 		authGate: func(string, string, *http.Client) (auth.MeResult, bool, error) {
 			return auth.MeResult{}, true, nil
 		},
-		fetchGrants: func(string, string) ([]compat.Grant, error) { return []compat.Grant{}, nil },
+		fetchGrants: func(string, string, *http.Client) ([]compat.Grant, error) { return []compat.Grant{}, nil },
 		resolveCA: func(config.Config) (string, error) {
 			return filepath.Join(string(filepath.Separator), "private", "ca.pem"), nil
 		},
@@ -256,7 +256,7 @@ func TestDesktopSessionBeforeAfterFixtureMatrix(t *testing.T) {
 			d.loadToken = func() (string, error) { return "", errors.New("unavailable") }
 		}},
 		{"grants unavailable", func(d *desktopSessionDeps) {
-			d.fetchGrants = func(string, string) ([]compat.Grant, error) { return nil, errors.New("unavailable") }
+			d.fetchGrants = func(string, string, *http.Client) ([]compat.Grant, error) { return nil, errors.New("unavailable") }
 		}},
 		{"managed extension unavailable", func(d *desktopSessionDeps) {
 			d.reconcilePi = func() (string, error) { return "", errors.New("unavailable") }

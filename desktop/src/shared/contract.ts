@@ -1,13 +1,5 @@
 import path from 'node:path';
-
-export const IPC = {
-  start: 'terminal:start', input: 'terminal:input', resize: 'terminal:resize', stop: 'terminal:stop', status: 'terminal:status',
-  chooseFolder: 'terminal:choose-folder', openLink: 'terminal:open-link', subscribe: 'terminal:subscribe', unsubscribe: 'terminal:unsubscribe',
-  output: 'terminal:output', exit: 'terminal:exit', lifecycle: 'chat:lifecycle', lifecycleStatus: 'chat:lifecycle-status',
-  workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
-  workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
-  supportCopy: 'support:copy', supportSave: 'support:save',
-} as const;
+export { IPC } from './preload-contract';
 
 export type SessionId = string;
 export type SubscriptionKind = 'output' | 'exit' | 'status';
