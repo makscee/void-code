@@ -55,17 +55,42 @@ Compare `$actual` character-for-character with `installer.sha256` in the exact c
 
 **STOP immediately:** hash mismatch, wrong basename/version, missing manifest, zero/implausible file, or more than one candidate installer. Delete nothing and do not run it.
 
-## 4. Expected unsigned installer flow
+## 4. Verify unsigned identity and choose the MOTW branch
 
-Double-click the already-hash-verified installer. This pilot is intentionally unsigned. The only accepted generic SmartScreen path is:
+Keep `$installer` bound to the exact hash-verified file. Independently check its Authenticode status:
+
+```powershell
+$signatureStatus = (Get-AuthenticodeSignature -LiteralPath $installer.FullName).Status
+if ($signatureStatus -ne [System.Management.Automation.SignatureStatus]::NotSigned) { throw "STOP" }
+```
+
+Record only `SIGNATURE_NOT_SIGNED PASS` or `SIGNATURE_NOT_SIGNED STOP`. Do not record signature status output, certificate or publisher details. A result other than exactly `NotSigned`, a query failure, or a result for a different basename is **STOP**. This check supplements and never substitutes for the manifest hash comparison.
+
+Next inspect only whether that same file has a `Zone.Identifier` alternate data stream. Do not read or record stream contents, URL, host, referrer, zone value, paths, screenshots, shell output, or signature details.
+
+```powershell
+$motw = Get-Item -LiteralPath $installer.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue
+```
+
+An inspection failure, ambiguous result, or inspection of a different file is **STOP**. Record exactly one branch label:
+
+### `MOTW_ABSENT PASS`
+
+No `Zone.Identifier` stream exists. This is accepted for a controlled handoff or local copy. Double-click the exact verified installer and expect direct launch with no SmartScreen or other execution/security prompt. Do not solicit or claim a SmartScreen dialog. Complete the per-user installer for **Void Code**. If any execution/security prompt appears, **STOP**; do not bypass it.
+
+### `MOTW_PRESENT PASS`
+
+A `Zone.Identifier` stream exists. Double-click the exact verified installer. The only accepted generic unsigned SmartScreen path is:
 
 1. **Windows protected your PC** / unknown publisher warning.
 2. Select **More info**.
 3. Confirm the app is the exact already-verified `Void-Code-0.1.0-windows-x64.exe`.
 4. Select **Run anyway**.
-5. Complete the per-user installer with product name **Void Code**. Do not change the install directory unless the documented default is unavailable.
+5. Complete the per-user installer with product name **Void Code**.
 
-**STOP:** any hash has changed; a named/unexpected publisher appears; Windows requests disabling security; the prompt names another product/version/file; an admin/system-wide change is unexpectedly required; or prompts differ materially. Do not “try anyway.”
+Record only `SMARTSCREEN_UNSIGNED PASS`, not dialog details.
+
+For either branch, do not change the install directory unless the documented default is unavailable. **STOP:** the hash changes; Authenticode is not exactly `NotSigned`; MOTW inspection fails or is ambiguous; a named or unexpected publisher appears; Windows requests disabling security; the prompt names another product/version/file; elevation or an admin/system-wide change is unexpectedly required; any prompt differs materially; or the absent-MOTW branch shows a prompt. Do not “try anyway.”
 
 ## 5. Safe first workspace
 
