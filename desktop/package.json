@@ -6,7 +6,7 @@
   "main": "dist/main/index.js",
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:renderer",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:preload && npm run bundle:renderer",
     "lint": "eslint src tests scripts",
     "test": "vitest run",
     "assemble": "node scripts/assemble-resources.mjs",
@@ -18,7 +18,9 @@
     "check:mac-pty": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/mac-pty-check.mjs",
     "check:mac-tabs": "npm run clean && npm run lint && npm run test && npm run package:mac",
     "check:status": "npm run lint && vitest run tests/status-channel.test.ts tests/session-manager.test.ts tests/workspace-close-ipc.test.ts tests/contract.test.ts",
+    "bundle:preload": "esbuild src/preload/index.ts --bundle --format=cjs --platform=node --target=node22 --external:electron --outfile=dist/preload/index.js",
     "bundle:renderer": "esbuild src/renderer/index.ts --bundle --format=esm --platform=browser --target=chrome130 --loader:.woff2=file --loader:.woff=file --asset-names=assets/[name]-[hash] --outfile=dist/renderer/index.js",
+    "smoke:sandbox-preload": "node scripts/sandbox-preload-smoke.cjs",
     "check:production-terminal": "npm run clean && npm run lint && npm run test && npm run package:mac && node scripts/production-terminal-check.mjs",
     "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs && node scripts/packaged-window-check.mjs && node scripts/packaged-startup-failure-check.mjs",
     "candidate:generate": "node scripts/candidate-manifest.mjs generate",
