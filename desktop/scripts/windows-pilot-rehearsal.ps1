@@ -5,6 +5,7 @@ param(
   [string]$Manifest,
   [string]$Installer,
   [int]$RootPid,
+  [int]$ChatPid,
   [string]$PriorEvidence,
   [string]$SupportReport,
   [string]$OutputFile
@@ -126,9 +127,9 @@ function Get-OwnedRows([int]$CandidateRoot) {
   foreach ($row in $owned) { if ($row.Name -notin $allowedNames) { throw 'OWNERSHIP_AMBIGUOUS' } }
   return @($owned | ForEach-Object { [ordered]@{ name=[IO.Path]::GetFileNameWithoutExtension([string]$_.Name); pid=[int]$_.ProcessId; parentPid=[int]$_.ParentProcessId; creationDate=(Convert-CreationDate $_.CreationDate) } })
 }
-function Test-PriorEvidence($Value) {
+function Test-PriorEvidence($Value, [string[]]$AllowedPhases = @('during_launch','after_chat_close')) {
   if (-not (Test-ExactKeys $Value @('schema','phase','occurredAt','result','check','coarseCode','candidate','processes','support')) -or -not (Test-Integer $Value.schema) -or $Value.schema -ne 1 -or
-      $Value.phase -cnotin @('during_launch','after_chat_close') -or -not (Test-CanonicalTimestamp $Value.occurredAt) -or $Value.result -cne 'PASS' -or $Value.check -cne 'PROCESS_OWNERSHIP' -or $Value.coarseCode -cne 'NONE' -or
+      $Value.phase -cnotin $AllowedPhases -or -not (Test-CanonicalTimestamp $Value.occurredAt) -or $Value.result -cne 'PASS' -or $Value.check -cne 'PROCESS_OWNERSHIP' -or $Value.coarseCode -cne 'NONE' -or
       $null -ne $Value.candidate -or $null -ne $Value.support -or @($Value.processes).Count -lt 1) { return $false }
   $ids = @()
   foreach ($process in @($Value.processes)) {
@@ -169,9 +170,31 @@ try {
     $candidate = [ordered]@{ installerBasename=$item.Name; expectedSha256=$manifestValue.installer.sha256; actualSha256=$actual; operatorGateDeclaredStatus=$manifestValue.operatorGate.status; signature='not_signed'; motw=$motw }
     Write-Document (New-Document 'PASS' 'MANIFEST' 'NONE' $candidate @() $null)
   }
-  if ($Phase -eq 'DuringLaunch' -or $Phase -eq 'AfterChatClose') {
+  if ($Phase -eq 'DuringLaunch') {
     $owned = Get-OwnedRows $RootPid
-    Write-Document (New-Document 'PASS' 'PROCESS_OWNERSHIP' 'NONE' $null $owned $null)
+    $chat = @($owned | Where-Object { $_.pid -eq $ChatPid })
+    if ($ChatPid -le 0 -or $chat.Count -ne 1 -or $chat[0].name -cne 'vc' -or $chat[0].parentPid -ne $RootPid) { Stop-Document 'PROCESS_OWNERSHIP' 'OWNERSHIP_AMBIGUOUS' }
+    $chatIds = New-Object 'System.Collections.Generic.HashSet[int]'
+    [void]$chatIds.Add($ChatPid)
+    do {
+      $added = $false
+      foreach ($process in $owned) {
+        if ($chatIds.Contains([int]$process.parentPid) -and -not $chatIds.Contains([int]$process.pid)) { [void]$chatIds.Add([int]$process.pid); $added = $true }
+      }
+    } while ($added)
+    $chatOwned = @($owned | Where-Object { $_.pid -eq $RootPid -or $chatIds.Contains([int]$_.pid) })
+    Write-Document (New-Document 'PASS' 'PROCESS_OWNERSHIP' 'NONE' $null $chatOwned $null)
+  }
+  if ($Phase -eq 'AfterChatClose') {
+    $prior = Read-JsonFile $PriorEvidence
+    if (-not (Test-PriorEvidence $prior @('during_launch'))) { Stop-Document 'PROCESS_EXIT' 'OWNERSHIP_AMBIGUOUS' }
+    $rows = @(Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CreationDate)
+    foreach ($process in @($prior.processes | Where-Object { [int]$_.pid -ne $RootPid })) {
+      $current = @($rows | Where-Object { [int]$_.ProcessId -eq [int]$process.pid })
+      if ($current.Count -gt 1) { Stop-Document 'PROCESS_EXIT' 'OWNERSHIP_AMBIGUOUS' }
+      if ($current.Count -eq 1 -and (Convert-CreationDate $current[0].CreationDate) -ceq (Format-CanonicalTimestamp $process.creationDate)) { Stop-Document 'PROCESS_EXIT' 'OWNED_PROCESS_REMAINS' }
+    }
+    Write-Document (New-Document 'PASS' 'PROCESS_EXIT' 'NONE' $null @() $null)
   }
   if ($Phase -eq 'AfterQuit' -or $Phase -eq 'AfterUninstall') {
     $prior = Read-JsonFile $PriorEvidence
@@ -191,10 +214,10 @@ try {
     $valid = (Test-ExactKeys $report @('schema','app','system','generatedAt','state')) -and (Test-ExactKeys $report.app @('name','version')) -and
       (Test-ExactKeys $report.system @('platform','architecture')) -and (Test-ExactKeys $report.state @('workspace','runtime','recoveryCode')) -and
       (Test-Integer $report.schema) -and $report.schema -eq 1 -and $report.app.name -ceq 'Void Code' -and $report.app.version -is [string] -and $report.app.version -cmatch $versionPattern -and
-      $report.system.platform -cin @('windows','macos','linux','other') -and $report.system.architecture -cin @('x64','arm64','other') -and
-      (Test-CanonicalTimestamp $report.generatedAt) -and $report.state.workspace -cin @('none','ready','missing') -and
-      $report.state.runtime -cin @('not_started','running','ended','start_failed') -and
-      $report.state.recoveryCode -cin @('NONE','AUTH_PREFLIGHT_REQUIRED','SESSION_START_FAILED','RUNTIME_EXITED','WORKSPACE_MISSING','SESSION_MISSING')
+      @('windows','macos','linux','other') -ccontains $report.system.platform -and @('x64','arm64','other') -ccontains $report.system.architecture -and
+      (Test-CanonicalTimestamp $report.generatedAt) -and @('none','ready','missing') -ccontains $report.state.workspace -and
+      @('not_started','running','ended','start_failed') -ccontains $report.state.runtime -and
+      @('NONE','AUTH_PREFLIGHT_REQUIRED','SESSION_START_FAILED','RUNTIME_EXITED','WORKSPACE_MISSING','SESSION_MISSING') -ccontains $report.state.recoveryCode
     if (-not $valid) { Stop-Document 'SUPPORT_REPORT' 'SUPPORT_REPORT_INVALID' }
     $hash = (Get-FileHash -LiteralPath $SupportReport -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Document (New-Document 'PASS' 'SUPPORT_REPORT' 'NONE' $null @() ([ordered]@{sha256=$hash;valid=$true}))

@@ -70,6 +70,50 @@ describe('value-free Windows pilot rehearsal contract', () => {
     expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS');
   });
 
+  it.runIf(pwshAvailable)('PowerShell requires exact case-sensitive canonical support enums', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-enums-')); const reportPath = join(dir, 'support.json');
+    const report = { schema: 1, app: { name: 'Void Code', version: '0.1.0' }, system: { platform: 'windows', architecture: 'x64' }, generatedAt: timestamp, state: { workspace: 'ready', runtime: 'running', recoveryCode: 'NONE' } };
+    for (const poisoned of [
+      { ...report, system: { ...report.system, platform: 'WINDOWS' } },
+      { ...report, system: { ...report.system, architecture: 'X64' } },
+      { ...report, state: { ...report.state, workspace: 'READY' } },
+      { ...report, state: { ...report.state, runtime: 'RUNNING' } },
+      { ...report, state: { ...report.state, recoveryCode: 'none' } },
+    ]) {
+      writeFileSync(reportPath, JSON.stringify(poisoned));
+      const result = runPowerShell(['-Phase', 'SupportReport', '-SupportReport', quoted(reportPath)]);
+      expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('SUPPORT_REPORT_INVALID');
+    }
+  });
+
+  it.runIf(pwshAvailable)('AfterChatClose requires DuringLaunch evidence and rejects a surviving chat identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-chat-close-')); const priorPath = join(dir, 'prior.json');
+    const processes = [
+      { name: 'Void Code', pid: 20, parentPid: 1, creationDate: timestamp },
+      { name: 'vc', pid: 30, parentPid: 20, creationDate: timestamp },
+      { name: 'node', pid: 40, parentPid: 30, creationDate: timestamp },
+    ];
+    const prior = { schema: 1, phase: 'during_launch', occurredAt: timestamp, result: 'PASS', check: 'PROCESS_OWNERSHIP', coarseCode: 'NONE', candidate: null, processes, support: null };
+    writeFileSync(priorPath, JSON.stringify(prior));
+    const gone = "function Get-CimInstance { [pscustomobject]@{Name='Void Code.exe';ProcessId=20;ParentProcessId=1;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'} }";
+    let result = runPowerShell(['-Phase', 'AfterChatClose', '-PriorEvidence', quoted(priorPath), '-RootPid', '20'], gone);
+    expect(result.status).toBe(0); expect(JSON.parse(result.stdout).check).toBe('PROCESS_EXIT');
+    const remains = "function Get-CimInstance { @([pscustomobject]@{Name='Void Code.exe';ProcessId=20;ParentProcessId=1;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='node.exe';ProcessId=40;ParentProcessId=30;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'}) }";
+    result = runPowerShell(['-Phase', 'AfterChatClose', '-PriorEvidence', quoted(priorPath), '-RootPid', '20'], remains);
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNED_PROCESS_REMAINS');
+    writeFileSync(priorPath, JSON.stringify({ ...prior, phase: 'after_chat_close' }));
+    result = runPowerShell(['-Phase', 'AfterChatClose', '-PriorEvidence', quoted(priorPath), '-RootPid', '20'], gone);
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS');
+  });
+
+  it.runIf(pwshAvailable)('DuringLaunch scopes evidence to an explicit direct vc child and its descendants', () => {
+    const rows = "function Get-CimInstance { @([pscustomobject]@{Name='Void Code.exe';ProcessId=20;ParentProcessId=1;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='vc.exe';ProcessId=30;ParentProcessId=20;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='node.exe';ProcessId=40;ParentProcessId=30;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'},[pscustomobject]@{Name='node.exe';ProcessId=50;ParentProcessId=20;CreationDate=[datetime]'2026-01-02T03:04:05.006Z'}) }";
+    let result = runPowerShell(['-Phase', 'DuringLaunch', '-RootPid', '20', '-ChatPid', '30'], rows);
+    expect(result.status).toBe(0); expect(JSON.parse(result.stdout).processes.map((process: { pid: number }) => process.pid)).toEqual([20, 30, 40]);
+    result = runPowerShell(['-Phase', 'DuringLaunch', '-RootPid', '20', '-ChatPid', '50'], rows);
+    expect(result.status).toBe(1); expect(JSON.parse(result.stdout).coarseCode).toBe('OWNERSHIP_AMBIGUOUS');
+  });
+
   it.runIf(pwshAvailable)('PowerShell rejects impossible support timestamps and emits coarse collision failures', () => {
     const dir = mkdtempSync(join(tmpdir(), 'vc-pwsh-'));
     const reportPath = join(dir, 'support.json'); const outputPath = join(dir, 'exists.json');

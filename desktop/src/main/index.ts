@@ -152,6 +152,8 @@ async function createWindow(): Promise<BrowserWindow> {
     title: 'Void Code', show: false, width: 1100, height: 760, backgroundColor: '#101216',
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   }));
+  // Renderer IPC begins during load, so authority must name this exact window before loading it.
+  mainWindow = window;
   const ownerId = window.webContents.id;
   installNavigationPolicy(window.webContents);
   window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
@@ -205,7 +207,7 @@ async function bootstrap(): Promise<void> {
     (chatId) => workspace.view().workspace?.selectedId === chatId,
   );
   manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
-  registerIpc(); mainWindow = await createWindow();
+  registerIpc(); await createWindow();
 }
 
 function failStartup(failure: StartupStageError): void {
