@@ -11,8 +11,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.24.0'
           cache: true
@@ -28,31 +28,19 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.24.0'
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.23.1'
           cache: npm
           cache-dependency-path: |
             desktop/package-lock.json
             desktop/runtime/pi/package-lock.json
-      - name: Provision exact desktop inputs
-        working-directory: desktop
-        run: |
-          npm ci
-          npm run build
-          mkdir -p runtime/cache/node
-          node_url=$(node -e "const p=require('./scripts/resource-pins.json'); process.stdout.write(p.node.source)")
-          node_archive="runtime/cache/node/${node_url##*/}"
-          curl --fail --location --proto '=https' --tlsv1.2 "$node_url" --output "$node_archive"
-          want=$(node -e "const p=require('./scripts/resource-pins.json'); process.stdout.write(p.node.sourceArchiveSha256)")
-          echo "$want  $node_archive" | shasum -a 256 -c -
-          npm ci --prefix runtime/pi --ignore-scripts --no-audit --no-fund
-          npm run assemble
-      - name: Require exact pinned Pi smoke
-        working-directory: desktop
-        run: npm run check:pinned-pi-smoke
+      - name: Provision and require exact pinned Pi smoke
+        run: desktop/scripts/provision-pinned-pi-smoke.sh

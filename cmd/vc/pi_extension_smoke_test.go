@@ -714,11 +714,11 @@ func assembleManagedWebFixture(t *testing.T, hostHome string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("npm", "ci", "--offline", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund")
+	cmd := exec.Command("npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "HOME="+hostHome, "npm_config_offline=true")
+	cmd.Env = append(os.Environ(), "HOME="+hostHome)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("assemble exact embedded managed-web fixture offline: %v\n%s", err, output)
+		t.Fatalf("assemble exact embedded managed-web fixture from its lockfile: %v\n%s", err, output)
 	}
 	fixture := filepath.Join(root, "node_modules")
 	assertManagedWebFixture(t, fixture)

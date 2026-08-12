@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -46,6 +48,48 @@ type pinnedPiPrerequisites struct {
 	node    string
 	piEntry string
 	npm     string
+}
+
+// canonicalPiTreeHash mirrors desktop/scripts/resource-assembly-lib.mjs treeHash:
+// every non-directory entry contributes its slash-separated relative path,
+// NUL, contents, and NUL in lexical traversal order.
+func canonicalPiTreeHash(root string) (string, error) {
+	hash := sha256.New()
+	var visit func(string) error
+	visit = func(directory string) error {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		// os.ReadDir is already sorted, but keep the ordering requirement explicit.
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			name := filepath.Join(directory, entry.Name())
+			if entry.IsDir() {
+				if err := visit(name); err != nil {
+					return err
+				}
+				continue
+			}
+			relative, err := filepath.Rel(root, name)
+			if err != nil {
+				return err
+			}
+			contents, err := os.ReadFile(name)
+			if err != nil {
+				return err
+			}
+			hash.Write([]byte(filepath.ToSlash(relative)))
+			hash.Write([]byte{0})
+			hash.Write(contents)
+			hash.Write([]byte{0})
+		}
+		return nil
+	}
+	if err := visit(root); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func pinnedPiSmokePrerequisites(root string) (pinnedPiPrerequisites, error) {
@@ -102,6 +146,18 @@ func pinnedPiSmokePrerequisites(root string) (pinnedPiPrerequisites, error) {
 	actualNodeHash := sha256.Sum256(nodeBytes)
 	if hex.EncodeToString(actualNodeHash[:]) != pins.Node.ExecutableSHA256 {
 		return pinnedPiPrerequisites{}, fmt.Errorf("staged Node executable hash differs from resource-pins.json")
+	}
+	nodeVersion, err := exec.Command(node, "--version").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(nodeVersion)) != pins.Node.Version {
+		return pinnedPiPrerequisites{}, fmt.Errorf("staged Node version is %q (err=%v), want %s", strings.TrimSpace(string(nodeVersion)), err, pins.Node.Version)
+	}
+	piRoot := filepath.Join(staged, "pi")
+	actualPiHash, err := canonicalPiTreeHash(piRoot)
+	if err != nil {
+		return pinnedPiPrerequisites{}, fmt.Errorf("hash staged Pi tree: %w", err)
+	}
+	if actualPiHash != pins.Pi.TreeSHA256 {
+		return pinnedPiPrerequisites{}, fmt.Errorf("staged Pi tree hash differs from resource-pins.json: %s", actualPiHash)
 	}
 	out, err := exec.Command(node, piEntry, "--version").CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != pins.Pi.Version {
@@ -172,6 +228,81 @@ func TestPinnedPiSmokePrerequisitePolicyAbsentAndStale(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "staged Pi pin differs") {
 		t.Fatalf("stale prerequisites error = %v", err)
 	}
+}
+
+func TestPinnedPiSmokeRequiredModeRejectsTamperedOrAdditionalPiFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX executable")
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{name: "tampered", mutate: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "desktop", "resources", "staged", "pi", "cli.js"), []byte("tampered"), 0600)
+		}},
+		{name: "additional", mutate: func(root string) error {
+			return os.WriteFile(filepath.Join(root, "desktop", "resources", "staged", "pi", "unreviewed.js"), []byte("extra"), 0600)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := writeValidPinnedPiFixture(t)
+			if err := test.mutate(root); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(os.Args[0], "-test.run=^TestPinnedPiSmokePrerequisitePolicyRequiredModeFails$", "-test.v")
+			cmd.Env = append(os.Environ(), "VC_PINNED_PI_POLICY_HELPER_ROOT="+root, requirePinnedPiSmokeEnv+"=1")
+			out, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(out), pinnedPiSmokeSkipPrefix) || !strings.Contains(string(out), "staged Pi tree hash differs") {
+				t.Fatalf("required helper err=%v output=%s", err, out)
+			}
+		})
+	}
+}
+
+func writeValidPinnedPiFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	scripts := filepath.Join(root, "desktop", "scripts")
+	staged := filepath.Join(root, "desktop", "resources", "staged")
+	piRoot := filepath.Join(staged, "pi")
+	nodePath := filepath.Join(staged, "node", "bin", "node")
+	if err := os.MkdirAll(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(piRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(nodePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nodePath, []byte("#!/bin/sh\necho v22.23.1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(nodePath), "npm"), []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piRoot, "cli.js"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nodeBytes, err := os.ReadFile(nodePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeHash := sha256.Sum256(nodeBytes)
+	piHash, err := canonicalPiTreeHash(piRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := fmt.Sprintf(`{"node":{"version":"v22.23.1","executableSha256":"%x"},"pi":{"version":"0.84.1","treeSha256":%q}}`, nodeHash, piHash)
+	manifest := fmt.Sprintf(`{"schema":1,"platform":"darwin-arm64","node":{"version":"v22.23.1","path":"node/bin/node","sha256":"%x"},"pi":{"version":"0.84.1","entry":"pi/cli.js","treeSha256":%q}}`, nodeHash, piHash)
+	if err := os.WriteFile(filepath.Join(scripts, "resource-pins.json"), []byte(pins), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staged, "manifest.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func writeStalePinnedPiFixture(t *testing.T, root string) {
