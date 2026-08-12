@@ -173,7 +173,7 @@ func main() {
 						return keystore.DeleteKey(name)
 					},
 				}
-				result, err := welcome.Run(state, cb)
+				result, err := runWelcomeScreen(state, cb)
 				if err != nil {
 					// welcome.Run already handled non-TTY fallback; ignore error here.
 					_ = err
@@ -377,6 +377,33 @@ func fetchCompatGrants(authHost, token string) []compat.Grant {
 	return grants
 }
 
+var runWelcome = welcome.Run
+
+func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.RunResult, error) {
+	return runWelcome(state, cb)
+}
+
+func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeResult, bool, error) {
+	if carriedMe, carriedReached, carriedErr, reused := p.awaitAuth(token, authHost); reused {
+		return carriedMe, carriedReached, carriedErr
+	}
+	return authGate(token, authHost, &http.Client{Timeout: authProbeTimeout})
+}
+
+func spawnCompatGrants(p *launchPreflight, token, authHost string) []compat.Grant {
+	if carried, ready := p.providerIfReady(token, authHost); ready {
+		if carried.err == nil {
+			return carried.grants
+		}
+		return nil
+	}
+	if p == nil || !p.reusable(token, authHost) {
+		return fetchCompatGrants(authHost, token)
+	}
+	// A same-launch provider probe still in flight is not duplicated.
+	return nil
+}
+
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
 func runSpawn(cmd *cobra.Command, args []string) error {
 	activeHarness := harnesschoice.Load()
@@ -390,15 +417,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// Pre-spawn auth gate: verify token before handing control to the active harness.
 	// A missing or rejected token must surface a friendly message here — not a
 	// raw 401 error buried inside the harness UI.
-	var me auth.MeResult
-	var reached bool
-	var err error
-	if carriedMe, carriedReached, carriedErr, reused := currentLaunchPreflight.awaitAuth(token, cfg.AuthHost); reused {
-		me, reached, err = carriedMe, carriedReached, carriedErr
-	} else {
-		httpClient := &http.Client{Timeout: authProbeTimeout}
-		me, reached, err = authGate(token, cfg.AuthHost, httpClient)
-	}
+	me, reached, err := awaitSpawnAdmission(currentLaunchPreflight, token, cfg.AuthHost)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
@@ -418,14 +437,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	active := provider.Load()
 	activeLabel := provider.LoadLabel()
-	var compatGrants []compat.Grant
-	if carried, ready := currentLaunchPreflight.providerIfReady(token, cfg.AuthHost); ready {
-		if carried.err == nil {
-			compatGrants = carried.grants
-		}
-	} else if currentLaunchPreflight == nil || !currentLaunchPreflight.reusable(token, cfg.AuthHost) {
-		compatGrants = fetchCompatGrants(cfg.AuthHost, token)
-	}
+	compatGrants := spawnCompatGrants(currentLaunchPreflight, token, cfg.AuthHost)
 	// A same-launch provider probe still in flight degrades to relay defaults;
 	// provider discovery is never an admission gate and is not duplicated.
 	if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
