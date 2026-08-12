@@ -16,6 +16,7 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/welcome"
+	"github.com/spf13/cobra"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -95,10 +96,43 @@ func startLaunchIntegration(t *testing.T, token string, now func() time.Time, au
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWelcomeCommandTransition(welcome.AuthState{LoggedIn: true}, welcome.Callbacks{PiInstalled: true}, rootCmd, nil)
+		_, err := runWelcomeCommandTransition(welcome.AuthState{LoggedIn: true}, welcome.Callbacks{PiInstalled: true}, rootCmd, []string{})
+		done <- err
 	}()
 	t.Cleanup(func() { _ = writer.Close() })
 	return launchIntegration{writer, output.wrote, done, &spawnCalls, &authCalls, &providerCalls}
+}
+
+func TestWelcomeCommandTransition_ReturnsNonSpawnChoicesWithoutRunningCobra(t *testing.T) {
+	oldOptions := welcomeProgramOptions
+	t.Cleanup(func() { welcomeProgramOptions = oldOptions })
+
+	tests := []struct {
+		name  string
+		state welcome.AuthState
+		input string
+		want  welcome.RunResult
+	}{
+		{name: "quit", state: welcome.AuthState{LoggedIn: true}, input: "q", want: welcome.Quit},
+		{name: "login", state: welcome.AuthState{LoggedIn: false}, input: "\r", want: welcome.RunLogin},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			welcomeProgramOptions = []tea.ProgramOption{tea.WithInput(bytes.NewBufferString(tt.input)), tea.WithOutput(io.Discard)}
+			var runCalls atomic.Int32
+			cmd := &cobra.Command{Use: "vc", RunE: func(*cobra.Command, []string) error {
+				runCalls.Add(1)
+				return nil
+			}}
+			got, err := runWelcomeCommandTransition(tt.state, welcome.Callbacks{}, cmd, []string{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want || runCalls.Load() != 0 {
+				t.Fatalf("result=%v run calls=%d, want result=%v and no run", got, runCalls.Load(), tt.want)
+			}
+		})
+	}
 }
 
 func TestWelcomeRunToSpawnAdmission_ReusesInflightAuthAndProviderAfterImmediateRender(t *testing.T) {

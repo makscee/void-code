@@ -81,11 +81,16 @@ func init() {
 
 // Execute is the single entry-point called from main().
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		if exitErr, ok := err.(interface{ ExitCode() int }); ok && exitErr.ExitCode() >= 0 {
-			os.Exit(exitErr.ExitCode())
-		}
-		// Cobra already prints the error; exit with code 1.
-		os.Exit(1)
+	handleExecuteError(rootCmd.Execute())
+}
+
+func handleExecuteError(err error) {
+	if err == nil {
+		return
 	}
+	if exitErr, ok := err.(interface{ ExitCode() int }); ok && exitErr.ExitCode() >= 0 {
+		os.Exit(exitErr.ExitCode())
+	}
+	// Cobra already prints the error; exit with code 1.
+	os.Exit(1)
 }

@@ -175,7 +175,13 @@ func main() {
 						return keystore.DeleteKey(name)
 					},
 				}
-				result, err := runWelcomeScreen(state, cb)
+				result, err := runWelcomeCommandTransition(state, cb, rootCmd, os.Args[1:])
+				if result == welcome.SpawnClaude {
+					if err != nil {
+						handleExecuteError(err)
+					}
+					return // root RunE already spawned the selected harness exactly once
+				}
 				if err != nil {
 					// welcome.Run already handled non-TTY fallback; ignore error here.
 					_ = err
@@ -239,7 +245,7 @@ func main() {
 				}
 			}
 		}
-		// Fall through to Execute() which calls runSpawn via rootCmd.
+		// Non-interactive and post-login paths fall through to Cobra execution.
 	}
 
 	Execute()
@@ -386,17 +392,18 @@ func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.Ru
 }
 
 // runWelcomeCommandTransition is the bare-launch boundary from the production
-// welcome program into Cobra's production RunE (runSpawn for rootCmd). Terminal,
-// network, and process seams remain injectable without replacing either side.
-func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) error {
+// welcome program into Cobra. Non-spawn choices are returned to main for their
+// existing dispatch; SpawnClaude executes Cobra so parsing and error behavior
+// remain identical to every other root invocation.
+func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
 	result, err := runWelcomeScreen(state, cb)
-	if err != nil {
-		return err
-	}
 	if result != welcome.SpawnClaude {
-		return fmt.Errorf("welcome returned %v instead of spawn", result)
+		return result, err
 	}
-	return cmd.RunE(cmd, args)
+	// Preserve the existing fallback: a welcome error with the spawn default
+	// still proceeds through Cobra rather than replacing Cobra's error result.
+	cmd.SetArgs(args)
+	return result, cmd.Execute()
 }
 
 func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeResult, bool, error) {
