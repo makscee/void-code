@@ -8,10 +8,11 @@ import { sessionLifecycleArgs } from '../src/main/session-files';
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
-// Captured from real @earendil-works/pi-coding-agent 0.82.1 output, with only
-// timestamps and the disposable cwd normalized. The pinned 0.84.1 desktop
-// resolver must pass its bytes through unchanged for Pi itself to resume.
-describe('real Pi 0.82.1 fixture to pinned 0.84.1 compatibility', () => {
+// Generated during development by running Pi 0.82.1 against a disposable
+// workspace, then manually replacing its cwd/timestamps and selected synthetic
+// message/provider/model/id/usage fields. This is a resolver-format regression
+// fixture, not a byte-faithful capture or proof that Pi 0.84.1 consumed it.
+describe('Pi 0.82-format fixture accepted by the pinned 0.84.1 desktop resolver', () => {
   it('resolves the durable fixture without rewriting it', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'vc-pi-082-fixture-')); roots.push(root);
     const store = path.join(root, 'sessions'); const work = path.join(root, 'work'); mkdirSync(store); mkdirSync(work);

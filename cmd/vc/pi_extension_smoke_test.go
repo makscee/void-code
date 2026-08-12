@@ -797,6 +797,11 @@ func hasExactManagedWebTools(raw any) bool {
 	if !ok {
 		return false
 	}
+	expected := map[string]map[string]string{
+		"web_search":         {"query": "string", "queries": "array", "numResults": "number", "includeContent": "boolean", "recencyFilter": "string", "domainFilter": "array", "provider": "string", "workflow": "string"},
+		"fetch_content":      {"url": "string", "urls": "array", "forceClone": "boolean", "prompt": "string", "timestamp": "string", "frames": "integer", "model": "string"},
+		"get_search_content": {"responseId": "string", "query": "string", "queryIndex": "number", "url": "string", "urlIndex": "number"},
+	}
 	seen := map[string]bool{}
 	for _, item := range tools {
 		tool, ok := item.(map[string]any)
@@ -804,15 +809,35 @@ func hasExactManagedWebTools(raw any) bool {
 			return false
 		}
 		name, _ := tool["name"].(string)
-		if name != "web_search" && name != "fetch_content" && name != "get_search_content" {
+		schema, managed := expected[name]
+		if !managed {
+			// Other Pi built-ins are expected, but no unknown web authority may drift in unnoticed.
+			if strings.Contains(name, "web") || strings.Contains(name, "search") || strings.Contains(name, "fetch") {
+				return false
+			}
 			continue
 		}
 		description, _ := tool["description"].(string)
 		parameters, parametersOK := tool["parameters"].(map[string]any)
-		if tool["type"] != "function" || description == "" || !parametersOK || parameters["type"] != "object" {
+		properties, propertiesOK := parameters["properties"].(map[string]any)
+		if tool["type"] != "function" || description == "" || !parametersOK || !propertiesOK || parameters["type"] != "object" || len(properties) != len(schema) || seen[name] {
+			return false
+		}
+		for property, expectedType := range schema {
+			definition, ok := properties[property].(map[string]any)
+			if !ok || definition["type"] != expectedType {
+				return false
+			}
+		}
+		required, _ := parameters["required"].([]any)
+		if name == "get_search_content" {
+			if len(required) != 1 || required[0] != "responseId" {
+				return false
+			}
+		} else if len(required) != 0 {
 			return false
 		}
 		seen[name] = true
 	}
-	return seen["web_search"] && seen["fetch_content"] && seen["get_search_content"]
+	return len(seen) == len(expected)
 }

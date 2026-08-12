@@ -1,4 +1,4 @@
-import { closeSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, type Stats } from 'node:fs';
 import path from 'node:path';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -25,6 +25,8 @@ export type SessionPathPlatform = 'darwin' | 'win32';
 export interface SessionDiscoveryOptions {
   platform?: SessionPathPlatform;
   limits?: Partial<SessionScanLimits>;
+  /** Test-only barrier used to exercise replacement between descriptor read and pathname handoff. */
+  beforeCandidateRevalidation?: (file: string) => void;
 }
 
 export class SessionDiscoveryError extends Error {
@@ -60,13 +62,21 @@ function normalizeCwd(raw: string, platform: SessionPathPlatform): string | unde
   try { return realpathSync(lexical); } catch { return lexical; }
 }
 
-function readHeader(file: string, limits: SessionScanLimits): Record<string, unknown> | undefined {
+function sameFile(first: Stats, second: Stats): boolean {
+  return first.dev === second.dev && first.ino === second.ino && first.mode === second.mode && first.size === second.size && first.mtimeMs === second.mtimeMs && first.ctimeMs === second.ctimeMs;
+}
+
+function readHeader(file: string, canonicalRoot: string, limits: SessionScanLimits, beforeCandidateRevalidation?: (file: string) => void): Record<string, unknown> | undefined {
   let fd: number | undefined;
   try {
+    const pathBefore = lstatSync(file);
+    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return undefined;
+    const canonicalBefore = realpathSync(file);
+    if (!within(canonicalRoot, canonicalBefore)) return undefined;
     fd = openSync(file, 'r');
-    const stat = lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
-    const capacity = Math.min(limits.maxHeaderBytes, stat.size) + 1;
+    const descriptorBefore = fstatSync(fd);
+    if (!descriptorBefore.isFile() || !sameFile(pathBefore, descriptorBefore)) return undefined;
+    const capacity = Math.min(limits.maxHeaderBytes, descriptorBefore.size) + 1;
     const buffer = Buffer.alloc(capacity);
     let used = 0;
     while (used < capacity) {
@@ -86,6 +96,11 @@ function readHeader(file: string, limits: SessionScanLimits): Record<string, unk
       let parsed: unknown;
       try { parsed = JSON.parse(line.replace(/^\uFEFF/, '')); } catch { continue; }
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+      const descriptorAfter = fstatSync(fd);
+      beforeCandidateRevalidation?.(file);
+      const pathAfter = lstatSync(file);
+      const canonicalAfter = realpathSync(file);
+      if (!sameFile(descriptorBefore, descriptorAfter) || !sameFile(descriptorAfter, pathAfter) || canonicalAfter !== canonicalBefore || !within(canonicalRoot, canonicalAfter)) return undefined;
       return parsed as Record<string, unknown>;
     }
     return undefined;
@@ -143,7 +158,7 @@ export function findSessionFiles(root: string, sessionId: string, workspaceCwd: 
       } else if (stat.isFile() && entry.name.endsWith('.jsonl')) {
         candidatesSeen++;
         if (candidatesSeen > limits.maxCandidates) throw new SessionDiscoveryError('SESSION_SCAN_LIMIT');
-        const header = readHeader(candidate, limits);
+        const header = readHeader(candidate, canonicalRoot, limits, options.beforeCandidateRevalidation);
         if (header && validHeader(header, sessionId, requestedCwd, platform)) matches.push(candidate);
       }
     }

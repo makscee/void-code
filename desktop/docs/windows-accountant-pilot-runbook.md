@@ -15,11 +15,13 @@ Maks verifies locally, recording only PASS/STOP:
 
 - Windows 10/11 x64; ordinary accountant user can install per-user software.
 - At least 2 GB free disk; current date/time; supported network available.
-- No other Void Code pilot process is running. Existing unrelated `node`, `vc`, `conhost`, or `OpenConsole` processes are noted by PID and left untouched.
+- No other Void Code, Pi, or session-maintenance process is running. Existing unrelated `node`, `vc`, `conhost`, or `OpenConsole` processes are noted by PID and left untouched.
 - Exact candidate manifest, exact installer named `Void-Code-0.1.0-windows-x64.exe`, and retained predecessor installer are present from the controlled handoff.
 - Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `product.version = 0.1.0`, `signing.status = unsigned`, and carries the intended predecessor hash/reference and current operator-gate status. A `verified` value is only the manifest-declared status; it is not evidence that this machine's manual gate or the guided pilot passed.
 
-**STOP:** wrong Windows/architecture, insufficient space, missing manifest/installer/predecessor, or unexpected existing Void Code process.
+**STOP:** wrong Windows/architecture, insufficient space, missing manifest/installer/predecessor, or unexpected concurrent Void Code, Pi, or session-maintenance process.
+
+Pilot trust boundary: hostile mutation of the Pi session store by another process running as the same Windows user is outside the pilot integrity guarantee. Session discovery uses descriptor and pathname revalidation to reduce accidental replacement, but Pi still receives and reopens a pathname, so a residual pathname-handoff race remains. The no-concurrent-process gate and disposable copied-data rule are mandatory.
 
 ## 2. Existing authorized VC sign-in — no credential evidence
 

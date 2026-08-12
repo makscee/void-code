@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,5 +27,10 @@ describe('adversarial Pi session discovery', () => {
   it('rejects oversized physical headers while continuing to a valid candidate', async () => {
     const { store, work } = await base(); writeFileSync(path.join(store, 'oversize.jsonl'), `${'x'.repeat(301)}\n${body(work)}`); const valid = path.join(store, 'valid.jsonl'); writeFileSync(valid, body(work));
     expect(findSessionFile(store, id, work, { limits: { maxHeaderBytes: 1024, maxHeaderLineBytes: 300 } })).toBe(valid);
+  });
+  it('deterministically rejects replacement after descriptor validation', async () => {
+    const { root, store, work } = await base(); const candidate = path.join(store, 'race.jsonl'); const moved = path.join(store, 'moved.jsonl'); const outside = path.join(root, 'outside.jsonl');
+    writeFileSync(candidate, body(work)); writeFileSync(outside, body(work));
+    expect(findSessionFile(store, id, work, { beforeCandidateRevalidation(file) { if (file === candidate) { renameSync(candidate, moved); symlinkSync(outside, candidate, 'file'); } } })).toBeUndefined();
   });
 });

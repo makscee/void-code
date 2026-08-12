@@ -1,9 +1,22 @@
-import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash } from './resource-assembly-lib.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows resource assembly requires Windows x64');
+async function materializeTreeLinks(root) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const absolute = path.join(root, entry.name);
+    if (entry.isDirectory()) await materializeTreeLinks(absolute);
+    else if (entry.isSymbolicLink()) {
+      const target = path.resolve(path.dirname(absolute), await readlink(absolute));
+      const targetStat = await lstat(target);
+      await rm(absolute);
+      await cp(target, absolute, { recursive: targetStat.isDirectory() });
+    }
+  }
+}
+
 const desktop = process.cwd();
 const pins = JSON.parse(await readFile(path.join(desktop, 'scripts/resource-pins.json'), 'utf8'));
 const win = pins.windows;
@@ -54,6 +67,7 @@ try {
   });
   await rm(path.join(staging, 'pi/node_modules/.package-lock.json'), { force: true });
   await hoistPiBundledDependencies(path.join(staging, 'pi'));
+  await materializeTreeLinks(path.join(staging, 'pi'));
   await assertWindowsInstallablePaths(staging);
   const piPackage = JSON.parse(await readFile(path.join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'));
   const manifest = {
