@@ -25,11 +25,12 @@ type launchProviderResult struct {
 }
 
 type launchPreflightDeps struct {
-	now       func() time.Time
-	auth      func(string, string, *http.Client) (auth.MeResult, bool, error)
-	providers func(string, string, *http.Client) ([]auth.ProviderInfo, error)
-	update    func() string
-	newClient func() *http.Client
+	now         func() time.Time
+	auth        func(string, string, *http.Client) (auth.MeResult, bool, error)
+	providers   func(string, string, *http.Client) ([]auth.ProviderInfo, error)
+	update      func() string
+	newClient   func() *http.Client
+	diagnostics *launchDiagnostics
 }
 
 var currentLaunchPreflight *launchPreflight
@@ -50,11 +51,12 @@ type launchPreflight struct {
 
 func defaultLaunchPreflightDeps() launchPreflightDeps {
 	return launchPreflightDeps{
-		now:       time.Now,
-		auth:      authGate,
-		providers: cachedFetchProviders,
-		update:    launchUpdateCheck,
-		newClient: func() *http.Client { return &http.Client{Timeout: authProbeTimeout} },
+		now:         time.Now,
+		auth:        authGate,
+		providers:   cachedFetchProviders,
+		update:      launchUpdateCheck,
+		newClient:   func() *http.Client { return &http.Client{Timeout: authProbeTimeout} },
+		diagnostics: currentLaunchDiagnostics,
 	}
 }
 
@@ -68,6 +70,13 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 		p.mu.Lock()
 		p.authResult = launchAuthResult{me: me, reached: reached, err: err}
 		p.mu.Unlock()
+		outcome, source := outcomeComplete, sourceTransient
+		if err != nil {
+			outcome, source = outcomeRejected, sourceRejected
+		} else if reached {
+			source = sourceFresh
+		}
+		deps.diagnostics.record(phaseAuthComplete, outcome, source)
 		close(p.authDone)
 	}()
 	go func() {
@@ -87,6 +96,13 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 		p.mu.Lock()
 		p.providerResult = result
 		p.mu.Unlock()
+		source := sourceFresh
+		if token == "" {
+			source = sourceLocal
+		} else if result.err != nil {
+			source = sourceTransient
+		}
+		deps.diagnostics.record(phaseProvidersComplete, outcomeComplete, source)
 		close(p.providersDone)
 	}()
 	if withUpdate {
@@ -95,9 +111,11 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 			p.mu.Lock()
 			p.updateNudge = nudge
 			p.mu.Unlock()
+			deps.diagnostics.record(phaseUpdateComplete, outcomeComplete, sourceFresh)
 			close(p.updateDone)
 		}()
 	} else {
+		deps.diagnostics.record(phaseUpdateComplete, outcomeComplete, sourceLocal)
 		close(p.updateDone)
 	}
 	return p

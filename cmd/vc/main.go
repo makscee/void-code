@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,11 +53,12 @@ var (
 	meCacheResult *auth.MeResult
 	meCacheExpiry time.Time
 
-	spawnHarness      = harness.Spawn
-	exitProcess       = os.Exit
-	claudeIsInstalled = claudebin.IsInstalled
-	codexIsInstalled  = codexbin.IsInstalled
-	piIsInstalled     = pibin.IsInstalled
+	spawnHarness             = harness.Spawn
+	exitProcess              = os.Exit
+	currentLaunchDiagnostics = newLaunchDiagnostics(false, time.Now, io.Discard)
+	claudeIsInstalled        = claudebin.IsInstalled
+	codexIsInstalled         = codexbin.IsInstalled
+	piIsInstalled            = pibin.IsInstalled
 )
 
 func main() {
@@ -97,7 +99,9 @@ func main() {
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true, "desktop-session": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd && !hasRaw {
-		state, token, authHost := resolveLocalAuthState()
+		currentLaunchDiagnostics = newLaunchDiagnosticsFromEnv(time.Now, os.Stderr)
+		state, token, authHost, localSource := resolveLocalAuthStateWithSource()
+		currentLaunchDiagnostics.record(phaseLocalStateLoad, outcomeComplete, localSource)
 		currentLaunchPreflight = startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
 		// Interactive only when stdin is a TTY AND --non-interactive was not
 		// passed. cobra has not parsed flags yet at this point, so scan os.Args
@@ -283,20 +287,25 @@ func decideGate(stdinTTY, loggedIn bool) gateDecision {
 // resolveLocalAuthState reads only local token/cache state so the welcome screen
 // can render before any optional network request completes.
 func resolveLocalAuthState() (welcome.AuthState, string, string) {
+	state, token, authHost, _ := resolveLocalAuthStateWithSource()
+	return state, token, authHost
+}
+
+func resolveLocalAuthStateWithSource() (welcome.AuthState, string, string, launchSource) {
 	token, err := auth.LoadAndMigrate()
 	cfg := config.OSResolve()
 	if err != nil || token == "" {
-		return welcome.AuthState{LoggedIn: false}, token, cfg.AuthHost
+		return welcome.AuthState{LoggedIn: false}, token, cfg.AuthHost, sourceLocal
 	}
 	if cached, ok := readMeCache(cfg.AuthHost, token, time.Now()); ok {
 		if cached.Stale {
-			return staleMeResultToState(cached.Me), token, cfg.AuthHost
+			return staleMeResultToState(cached.Me), token, cfg.AuthHost, sourceStale
 		}
-		return meResultToState(cached.Me), token, cfg.AuthHost
+		return meResultToState(cached.Me), token, cfg.AuthHost, sourceFresh
 	}
 	// Token presence is sufficient for the local landing screen. The in-flight
 	// admission probe remains authoritative for legacy credentials at Start.
-	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AuthHost
+	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AuthHost, sourceLocal
 }
 
 // resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
@@ -388,7 +397,22 @@ func fetchCompatGrants(authHost, token string) []compat.Grant {
 var welcomeProgramOptions []tea.ProgramOption
 
 func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.RunResult, error) {
-	return welcome.RunWithOptions(state, cb, welcomeProgramOptions...)
+	opts := welcomeProgramOptions
+	if currentLaunchDiagnostics != nil && currentLaunchDiagnostics.enabled {
+		opts = append(append([]tea.ProgramOption{}, opts...), tea.WithOutput(&firstRenderDiagnosticWriter{out: os.Stdout, diagnostics: currentLaunchDiagnostics}))
+	}
+	return welcome.RunWithOptions(state, cb, opts...)
+}
+
+type firstRenderDiagnosticWriter struct {
+	out         io.Writer
+	diagnostics *launchDiagnostics
+	once        sync.Once
+}
+
+func (w *firstRenderDiagnosticWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { w.diagnostics.record(phaseFirstRender, outcomeComplete, sourceLocal) })
+	return w.out.Write(p)
 }
 
 // runWelcomeCommandTransition is the bare-launch boundary from the production
@@ -397,6 +421,7 @@ func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.Ru
 // remain identical to every other root invocation.
 func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
 	result, err := runWelcomeScreen(state, cb)
+	currentLaunchDiagnostics.record(phaseSelection, outcomeComplete, sourceLocal)
 	if result != welcome.SpawnClaude {
 		return result, err
 	}
@@ -442,6 +467,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// raw 401 error buried inside the harness UI.
 	me, reached, err := awaitSpawnAdmission(currentLaunchPreflight, token, cfg.AuthHost)
 	if err != nil {
+		currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeRejected, sourceRejected)
+		currentLaunchDiagnostics.flush()
 		fmt.Fprintln(os.Stderr, err.Error())
 		exitProcess(1)
 		return err
@@ -684,6 +711,8 @@ func ensureSelectedHarnessInstalled(h harnesschoice.Choice) error {
 }
 
 func spawnSelectedHarness(h harnesschoice.Choice, args []string, env []string) error {
+	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
+	currentLaunchDiagnostics.flush()
 	wrapped := wrappedBinaryFor(h)
 	if err := spawnHarness(context.Background(), wrapped, args, env); err != nil {
 		// Post-spawn not-found fallback (should be caught by pre-flight above,
