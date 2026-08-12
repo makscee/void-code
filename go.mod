@@ -1,8 +1,11 @@
 module github.com/makscee/void-code
 
-go 1.24.0
+go 1.26.0
+
+toolchain go1.26.5
 
 require (
+	filippo.io/age v1.3.1
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/term v0.2.1
@@ -11,7 +14,6 @@ require (
 )
 
 require (
-	filippo.io/age v1.3.1 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
