@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	_ "image/jpeg"
 	"image/png"
 	"io"
+	"io/fs"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -482,13 +484,37 @@ func tailString(value string, max int) string {
 	return value[len(value)-max:]
 }
 
-func TestPiVoidCodexExtensionSmoke(t *testing.T) {
-	piBin, err := exec.LookPath("pi")
+func pinnedDesktopPi(t *testing.T) (string, string) {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
-		t.Skip("pi CLI not installed")
+		t.Fatal(err)
 	}
+	node := filepath.Join(root, "desktop", "resources", "staged", "node", "bin", "node")
+	piEntry := filepath.Join(root, "desktop", "resources", "staged", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")
+	out, err := exec.Command(node, piEntry, "--version").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "0.84.1" {
+		t.Fatalf("desktop-pinned Pi must be available at 0.84.1: err=%v output=%q", err, out)
+	}
+	bin := t.TempDir()
+	pi := filepath.Join(bin, "pi")
+	if err := os.Symlink(piEntry, pi); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(node, filepath.Join(bin, "node")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "desktop", "resources", "staged", "node", "bin", "npm"), filepath.Join(bin, "npm")); err != nil {
+		t.Fatal(err)
+	}
+	return pi, bin
+}
+
+func TestPiVoidCodexExtensionSmoke(t *testing.T) {
+	piBin, privateBin := pinnedDesktopPi(t)
 
 	hostHome := os.Getenv("HOME")
+	managedFixture := assembleManagedWebFixture(t, hostHome)
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
@@ -548,7 +574,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	vcBin := filepath.Join(tmp, "vc")
-	build := exec.CommandContext(ctx, "go", "build", "-o", vcBin, ".")
+	build := exec.CommandContext(ctx, "go", "build", "-tags", "vctestfixture", "-o", vcBin, ".")
 	build.Dir = "."
 	build.Env = append(os.Environ(), "HOME="+hostHome)
 	if out, err := build.CombinedOutput(); err != nil {
@@ -566,7 +592,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	}
 	cmd := exec.CommandContext(ctx, vcBin, "--",
 		"--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes",
-		"--tools", "web_search,fetch_content,get_search_content", "--no-session", "--no-approve", "-p", "Say exactly: smoke",
+		"--no-session", "--no-approve", "-p", "Say exactly: smoke",
 	)
 	cmd.Env = append(withoutVCEnv(os.Environ()),
 		"HOME="+tmp,
@@ -577,6 +603,9 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		"VC_PI_MANAGED_PROVIDER=1",
 		"VC_PI_MANAGED_WEB_SEARCH=1",
 		"VC_DISABLE_UPDATE_CHECK=1",
+		"VC_TEST_MANAGED_WEB_NODE_MODULES="+managedFixture,
+		"PATH="+privateBin+string(os.PathListSeparator)+"/usr/bin:/bin",
+		"npm_config_offline=true",
 		"PI_SKIP_VERSION_CHECK=1",
 		"PI_TELEMETRY=0",
 	)
@@ -592,6 +621,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	if !strings.Contains(stdout.String(), "void smoke ok") {
 		t.Fatalf("pi stdout missing streamed text; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
+	assertManagedWebInstalledSource(t, managedWebSearchPackagePath())
 
 	select {
 	case seen := <-seenCh:
@@ -615,7 +645,8 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 			t.Fatalf("instructions do not include Pi and managed web-search guidance: %#v", seen.Body["instructions"])
 		}
 		if !hasExactManagedWebTools(seen.Body["tools"]) {
-			t.Fatalf("managed web tools missing from request: %#v", seen.Body["tools"])
+			settings, _ := os.ReadFile(filepath.Join(tmp, ".pi", "agent", "settings.json"))
+			t.Fatalf("managed web tools missing from request: %#v\nsettings=%s\nstderr=%s", seen.Body["tools"], settings, stderr.String())
 		}
 		if _, ok := seen.Body["reasoning"]; !ok {
 			t.Fatalf("codex body missing native reasoning block: %#v", seen.Body)
@@ -641,9 +672,9 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		direct := exec.CommandContext(ctx, piBin,
 			"--provider", "void-codex", "--model", "gpt-5.6-sol",
 			"--no-context-files", "--no-skills", "--no-prompt-templates", "--no-themes",
-			"--tools", "web_search,fetch_content,get_search_content", "--no-session", "--no-approve", "-p", "Say exactly: smoke",
+			"--no-session", "--no-approve", "-p", "Say exactly: smoke",
 		)
-		direct.Env = append(withoutVCEnv(os.Environ()), "HOME="+tmp, "USERPROFILE="+tmp, "PI_CODING_AGENT_DIR="+filepath.Join(tmp, ".pi", "agent"), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"), "PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0")
+		direct.Env = append(withoutVCEnv(os.Environ()), "HOME="+tmp, "USERPROFILE="+tmp, "PI_CODING_AGENT_DIR="+filepath.Join(tmp, ".pi", "agent"), "PATH="+binDir+string(os.PathListSeparator)+privateBin+string(os.PathListSeparator)+"/usr/bin:/bin", "PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0")
 		var directOut, directErr bytes.Buffer
 		direct.Stdout, direct.Stderr = &directOut, &directErr
 		if err := direct.Run(); err != nil || !strings.Contains(directOut.String(), "void smoke ok") {
@@ -651,6 +682,9 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		}
 		select {
 		case seen := <-seenCh:
+			if seen.Authorization != "Bearer smoke-token" || seen.Provider != "prov-smoke" || seen.ChatGPTAcct != "" {
+				t.Fatalf("direct Pi headers = authorization %q provider %q account %q", seen.Authorization, seen.Provider, seen.ChatGPTAcct)
+			}
 			if !hasExactManagedWebTools(seen.Body["tools"]) {
 				t.Fatalf("direct Pi tools = %#v", seen.Body["tools"])
 			}
@@ -663,9 +697,104 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	}
 }
 
+func assembleManagedWebFixture(t *testing.T, hostHome string) string {
+	t.Helper()
+	root := t.TempDir()
+	err := fs.WalkDir(piWebAccessFork, "embed/pi-web-access-0.13.0", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, _ := filepath.Rel("embed/pi-web-access-0.13.0", name)
+		if rel == "." {
+			return nil
+		}
+		destination := filepath.Join(root, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0700)
+		}
+		contents, err := piWebAccessFork.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(destination, contents, 0600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("npm", "ci", "--offline", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "HOME="+hostHome, "npm_config_offline=true")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("assemble exact embedded managed-web fixture offline: %v\n%s", err, output)
+	}
+	fixture := filepath.Join(root, "node_modules")
+	assertManagedWebFixture(t, fixture)
+	return fixture
+}
+
+func assertManagedWebFixture(t *testing.T, fixture string) {
+	t.Helper()
+	lockBytes, err := piWebAccessFork.ReadFile("embed/pi-web-access-0.13.0/package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(lockBytes, &lock); err != nil {
+		t.Fatal(err)
+	}
+	for _, dependency := range []string{"@mozilla/readability", "linkedom", "p-limit", "turndown", "unpdf"} {
+		manifest, err := os.ReadFile(filepath.Join(fixture, filepath.FromSlash(dependency), "package.json"))
+		if err != nil {
+			t.Fatalf("hermetic managed web fixture lacks %s: %v", dependency, err)
+		}
+		var installed struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(manifest, &installed); err != nil {
+			t.Fatal(err)
+		}
+		if installed.Version != lock.Packages["node_modules/"+dependency].Version {
+			t.Fatalf("managed web fixture %s version %q differs from embedded lock %q", dependency, installed.Version, lock.Packages["node_modules/"+dependency].Version)
+		}
+	}
+}
+
+func assertManagedWebInstalledSource(t *testing.T, installed string) {
+	t.Helper()
+	err := fs.WalkDir(piWebAccessFork, "embed/pi-web-access-0.13.0", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		rel, _ := filepath.Rel("embed/pi-web-access-0.13.0", name)
+		embedded, err := piWebAccessFork.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		actual, err := os.ReadFile(filepath.Join(installed, rel))
+		if err != nil {
+			return err
+		}
+		if sha256.Sum256(actual) != sha256.Sum256(embedded) {
+			return fmt.Errorf("installed source bytes differ: %s", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, foreign, err := inspectManagedWebSearchPackage(installed)
+	if err != nil || !current || foreign {
+		t.Fatalf("fixture is not production-recognized installed state: current=%v foreign=%v err=%v", current, foreign, err)
+	}
+}
+
 func hasExactManagedWebTools(raw any) bool {
 	tools, ok := raw.([]any)
-	if !ok || len(tools) != 3 {
+	if !ok {
 		return false
 	}
 	seen := map[string]bool{}
@@ -675,6 +804,14 @@ func hasExactManagedWebTools(raw any) bool {
 			return false
 		}
 		name, _ := tool["name"].(string)
+		if name != "web_search" && name != "fetch_content" && name != "get_search_content" {
+			continue
+		}
+		description, _ := tool["description"].(string)
+		parameters, parametersOK := tool["parameters"].(map[string]any)
+		if tool["type"] != "function" || description == "" || !parametersOK || parameters["type"] != "object" {
+			return false
+		}
 		seen[name] = true
 	}
 	return seen["web_search"] && seen["fetch_content"] && seen["get_search_content"]

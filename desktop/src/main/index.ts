@@ -1,14 +1,14 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, webContents } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
 import { IPC, chatRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
-import type { RealStartRequest, StartRequest } from '../shared/contract';
+import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
-import { sessionLifecycleArgs } from './session-files';
+import { spawnDesktopRequest } from './spawn-request';
 import type { PrivateRuntime } from './resources';
 import { SessionManager, wrapPty } from './session-manager';
 import { StatusChannelStore } from './status-channel';
@@ -16,7 +16,6 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
-import { desktopChildEnv } from './desktop-child-env';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from './startup-lifecycle';
@@ -37,21 +36,7 @@ let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
-  const systemPath = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32') : '/usr/bin:/bin';
-  const conpty = process.platform === 'win32' ? { useConptyDll: true } : {};
-  if ('fixture' in request) return wrapPty(pty.spawn(runtime.node, [runtime.fixture], {
-    name: 'xterm-256color', cols: 80, rows: 24, cwd: runtime.root, ...conpty,
-    env: { PATH: systemPath, TERM: 'xterm-256color', COLORTERM: 'truecolor', VOID_FIXTURE: 'owned' },
-  }));
-  const real = request as RealStartRequest;
-  if (!statSync(real.cwd).isDirectory()) throw new Error('selected folder is unavailable');
-  const sessionsRoot = path.join(os.homedir(), '.pi/agent/sessions');
-  const lifecycle = sessionLifecycleArgs(sessionsRoot, real.sessionId, real.mode);
-  const args = ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle];
-  return wrapPty(pty.spawn(runtime.vc, args, {
-    name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd, ...conpty,
-    env: desktopChildEnv(process.platform === 'win32' ? 'win32' : 'darwin', process.env, runtime.node, authority),
-  }));
+  return wrapPty(spawnDesktopRequest(runtime, request, pty.spawn, authority));
 }
 
 function supportReport(raw: unknown) {

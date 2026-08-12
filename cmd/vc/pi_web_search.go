@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/provider"
@@ -22,15 +20,6 @@ const (
 	managedWebSearchPackageName                       = "@void-code/pi-web-access"
 	managedWebSearchMarker                            = "VC-10 managed void-codex seam v1"
 )
-
-var installManagedWebSearchDependencies = func(dir string) error {
-	cmd := exec.Command("npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("install pinned web-search dependencies: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
 
 var renameManagedWebSearchPath = os.Rename
 

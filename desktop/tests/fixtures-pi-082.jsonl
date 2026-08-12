@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"523e4567-e89b-42d3-a456-426614174000","timestamp":"2025-06-15T15:06:40.000Z","cwd":"WORKSPACE_CWD"}
+{"type":"message","id":"93914cf0","parentId":null,"timestamp":"2025-06-15T15:06:41.000Z","message":{"role":"user","content":[{"type":"text","text":"made by 0.82.1"}],"timestamp":1750000000000}}
+{"type":"message","id":"2ee80e53","parentId":"93914cf0","timestamp":"2025-06-15T15:06:41.000Z","message":{"role":"assistant","content":[{"type":"text","text":"legacy answer"}],"api":"x","provider":"x","model":"x","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1750000000000}}
