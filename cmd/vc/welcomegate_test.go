@@ -7,6 +7,28 @@ import (
 )
 
 // TestMeResultToState_CarriesBalance verifies that BalanceUsd flows through.
+func TestStaleMeResultToStateUsesTruthfulIdentityCopy(t *testing.T) {
+	tests := []struct {
+		name string
+		me   auth.MeResult
+		want string
+	}{
+		{name: "last known user", me: auth.MeResult{UserID: "user-last"}, want: "user-last"},
+		{name: "no identity history", me: auth.MeResult{}, want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := staleMeResultToState(tc.me)
+			if !state.LoggedIn || !state.IdentityUnverified || state.Identity != tc.want {
+				t.Fatal("transient state did not preserve truthful verification status")
+			}
+			if state.BalanceUsd != nil {
+				t.Fatal("stale response must not present stale balance as current")
+			}
+		})
+	}
+}
+
 func TestMeResultToState_CarriesBalance(t *testing.T) {
 	bal := 9.99
 	st := meResultToState(auth.MeResult{Email: "a@b.com", BalanceUsd: &bal})

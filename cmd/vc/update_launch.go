@@ -61,68 +61,26 @@ func touchUpdateCache() {
 	_ = os.Chtimes(path, time.Now(), time.Now())
 }
 
-// launchUpdateCheck fires an async version probe and handles the result before
-// the welcome screen renders.  It returns a nudge string to display after the
-// banner when the user dismissed an update (pressed 'n').
-//
-// Side effects:
-//   - May install a new binary and exec-restart the process (silent auto-update
-//     or 'y'/'a' keypress).
-//   - Writes to ~/.void-code/config (prefs update on 'n' and 'a').
-//   - Touches ~/.void-code/last-update-check.
-func launchUpdateCheck() (nudge string) {
+// launchUpdateCheck performs only the terminal-inert part of launch update
+// handling. It may probe the network and touch the check cache, but it never
+// reads stdin, writes to the terminal, installs, or restarts while welcome.Run
+// owns the terminal. A completed probe can be surfaced as a nonblocking nudge;
+// installation remains available through the explicit `vc update` command.
+func launchUpdateCheck() string {
 	if checkCacheFresh() {
 		return ""
 	}
 
-	// Fire async probe.
-	probeCh := update.ProbeAsync(version.Version, "", 2*time.Second)
-
-	// Let the probe run; we'll wait below (at most the 2s already in the goroutine).
-	result := <-probeCh
-
+	result := <-update.ProbeAsync(version.Version, "", 2*time.Second)
 	touchUpdateCache()
+	return launchUpdateNudge(result)
+}
 
+func launchUpdateNudge(result update.ProbeResult) string {
 	if result.Err != nil || !result.HasUpdate {
 		return ""
 	}
-
-	// We have a newer version.
-	latest := result.Latest
-	prefs := config.ReadUpdatePrefs()
-
-	// Auto-update path.
-	if prefs.AutoUpdate {
-		fmt.Printf("\n  ==> auto-updating to %s...\n", latest)
-		return runInstallAndRestart(latest)
-	}
-
-	// Already declined this exact version.
-	if prefs.LastPromptedVersion == latest {
-		return fmt.Sprintf("update available · run vc update to install %s", latest)
-	}
-
-	// Prompt.
-	choice := promptUpdate(version.Version, latest)
-	switch choice {
-	case updateChoiceYes:
-		fmt.Printf("\n  ==> downloading %s...\n", latest)
-		return runInstallAndRestart(latest)
-	case updateChoiceAlways:
-		_ = config.WriteUpdatePrefs(config.UpdatePrefs{
-			AutoUpdate:          true,
-			LastPromptedVersion: latest,
-		})
-		fmt.Printf("\n  ==> auto-update enabled. downloading %s...\n", latest)
-		return runInstallAndRestart(latest)
-	case updateChoiceNo:
-		_ = config.WriteUpdatePrefs(config.UpdatePrefs{
-			AutoUpdate:          false,
-			LastPromptedVersion: latest,
-		})
-		return fmt.Sprintf("update available · run vc update to install %s", latest)
-	}
-	return ""
+	return fmt.Sprintf("update available · run vc update to install %s", result.Latest)
 }
 
 // runInstallAndRestart downloads the latest binary, replaces it, and

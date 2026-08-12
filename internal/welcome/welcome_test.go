@@ -40,6 +40,25 @@ func TestPlainBanner_ShowsIdentity(t *testing.T) {
 	}
 }
 
+func TestPlainBanner_UnverifiedIdentityIsTruthful(t *testing.T) {
+	tests := []struct {
+		name     string
+		identity string
+		want     string
+	}{
+		{name: "last known", identity: "user-last", want: "user-last (last known; temporarily unverified)"},
+		{name: "no history", want: "identity temporarily unavailable"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: true, Identity: tc.identity, IdentityUnverified: true})
+			if !strings.Contains(out, tc.want) || strings.Contains(out, "Logged in as") || strings.Contains(out, "unknown") {
+				t.Fatal("unverified identity banner is not neutral and explicit")
+			}
+		})
+	}
+}
+
 func TestPlainBanner_NotLoggedIn(t *testing.T) {
 	out := welcome.PlainBannerForTest(welcome.AuthState{LoggedIn: false})
 	if !strings.Contains(out, "Not logged in") {

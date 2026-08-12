@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,6 +111,130 @@ func TestCachedFetchMeBacksOffTransientFailure(t *testing.T) {
 	}
 }
 
+func TestCachedFetchMeTransientFailurePreservesLastKnownIdentity(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		code          int
+		delay         time.Duration
+		clientTimeout time.Duration
+	}{
+		{name: "timeout", code: http.StatusOK, delay: 50 * time.Millisecond, clientTimeout: 5 * time.Millisecond},
+		{name: "malformed response", code: http.StatusOK, body: `{not-json`},
+		{name: "missing identity", code: http.StatusOK, body: `{}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempHome(t)
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				time.Sleep(tc.delay)
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			client := srv.Client()
+			client.Timeout = tc.clientTimeout
+
+			writeMeCache(srv.URL, "cache-key", auth.MeResult{UserID: "user-old"}, time.Now().Add(-authCacheTTL-time.Second))
+			state, err := cachedFetchMeState(srv.URL, "cache-key", client)
+			if err == nil {
+				t.Fatal("transient fetch unexpectedly succeeded")
+			}
+			if !state.Stale || state.Me.UserID != "user-old" {
+				t.Fatal("last-known identity was not returned as stale")
+			}
+
+			state, err = cachedFetchMeState(srv.URL, "cache-key", client)
+			if err == nil || !state.Stale || calls.Load() != 1 {
+				t.Fatal("transient backoff did not retain stale state without another request")
+			}
+		})
+	}
+}
+
+func TestCachedFetchMeTransientFailureWithoutHistoryIsNeutral(t *testing.T) {
+	withTempHome(t)
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		http.Error(w, "diagnostic-sentinel", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	for range 2 {
+		state, err := cachedFetchMeState(srv.URL, "cache-key", srv.Client())
+		if err == nil || state.Me.Email != "" || state.Me.UserID != "" {
+			t.Fatal("failure without history must return no attributed identity")
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want bounded backoff", calls)
+	}
+	path, err := authCacheDebugPath("me-transient", srv.URL, "cache-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "diagnostic-sentinel") || strings.Contains(string(data), "cache-key") {
+		t.Fatal("transient cache contains request or server diagnostic material")
+	}
+}
+
+func TestCachedFetchMeConsumersDoNotUseStaleBudgetOrBalance(t *testing.T) {
+	withTempHome(t)
+	pct, balance := 90.0, 12.0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{not-json`))
+	}))
+	defer srv.Close()
+	writeMeCache(srv.URL, "cache-key", auth.MeResult{
+		UserID: "user-last", Pct: &pct, BalanceUsd: &balance,
+	}, time.Now().Add(-authCacheTTL-time.Second))
+
+	me, err := cachedFetchMe(srv.URL, "cache-key", srv.Client())
+	if err == nil || me.Pct != nil || me.BalanceUsd != nil {
+		t.Fatal("auth gate/statusline consumers treated stale non-identity fields as fresh")
+	}
+}
+
+func TestCachedFetchMeSuccessfulRefreshReplacesLastKnownAtomically(t *testing.T) {
+	withTempHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"userId":"user-new"}`))
+	}))
+	defer srv.Close()
+	writeMeCache(srv.URL, "cache-key", auth.MeResult{UserID: "user-old"}, time.Now().Add(-authCacheTTL-time.Second))
+
+	state, err := cachedFetchMeState(srv.URL, "cache-key", srv.Client())
+	if err != nil || state.Stale || state.Me.UserID != "user-new" {
+		t.Fatal("refresh did not return the new fresh identity")
+	}
+	path, err := authCacheDebugPath("me", srv.URL, "cache-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatal("identity cache must exist with mode 0600")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "cache-key") || strings.Contains(string(data), "Authorization") {
+		t.Fatal("identity cache contains credential material")
+	}
+	cached, ok := readMeCache(srv.URL, "cache-key", time.Now().Add(authCacheTTL+time.Second))
+	if !ok || !cached.Stale || cached.Me.UserID != "user-new" {
+		t.Fatal("last-known record was not updated with the successful refresh")
+	}
+}
+
 func TestCachedFetchMeExpiredCacheDoesNotMaskUnauthorized(t *testing.T) {
 	withTempHome(t)
 	writeAuthCache("me", "https://auth.example", "tok", auth.MeResult{Email: "stale@example.com"}, time.Now().Add(-authCacheTTL-1*time.Second))
@@ -129,6 +255,11 @@ func TestCachedFetchMeExpiredCacheDoesNotMaskUnauthorized(t *testing.T) {
 	if err := os.Rename(oldPath, newPath); err != nil {
 		t.Fatalf("rename stale cache: %v", err)
 	}
+	writeAuthCache("me-transient", srv.URL, "tok", "temporarily unavailable", time.Now().Add(-authCacheTTL-time.Second))
+	transientPath, err := authCacheDebugPath("me-transient", srv.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = cachedFetchMe(srv.URL, "tok", srv.Client())
 	if !errors.Is(err, auth.ErrNotLoggedIn) {
@@ -137,7 +268,29 @@ func TestCachedFetchMeExpiredCacheDoesNotMaskUnauthorized(t *testing.T) {
 	if _, statErr := os.Stat(newPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("stale cache was not cleared, stat err = %v", statErr)
 	}
+	if _, statErr := os.Stat(transientPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("transient cache was not cleared, stat err = %v", statErr)
+	}
 	if _, err := os.Stat(filepath.Dir(newPath)); err != nil {
 		t.Fatalf("cache dir should remain: %v", err)
+	}
+}
+
+func TestCachedFetchMeIdentityTokenRejectionRetainsLastKnown(t *testing.T) {
+	withTempHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	token := "session-part.secret-part"
+	writeMeCache(srv.URL, token, auth.MeResult{UserID: "user-last"}, time.Now().Add(-authCacheTTL-time.Second))
+
+	_, err := cachedFetchMeState(srv.URL, token, srv.Client())
+	if !errors.Is(err, auth.ErrNotLoggedIn) {
+		t.Fatal("legacy endpoint rejection must remain visible to the relay-boundary caller")
+	}
+	cached, ok := readMeCache(srv.URL, token, time.Now())
+	if !ok || !cached.Stale || cached.Me.UserID != "user-last" {
+		t.Fatal("legacy endpoint erased identity-token last-known state")
 	}
 }
