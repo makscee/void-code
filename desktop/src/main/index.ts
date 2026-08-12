@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, webContents } from 'electron';
+import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -15,6 +16,8 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
+import { desktopChildEnv } from './desktop-child-env';
+import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from './startup-lifecycle';
 import type { StartupStageError } from './startup-lifecycle';
@@ -47,10 +50,7 @@ function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?
   const args = ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle];
   return wrapPty(pty.spawn(runtime.vc, args, {
     name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd, ...conpty,
-    env: {
-      ...process.env, PATH: `${path.dirname(runtime.node)}${path.delimiter}${systemPath}`, TERM: 'xterm-256color', COLORTERM: 'truecolor',
-      ...(authority ? { VC_DESKTOP_STATUS_PATH: authority.path, VC_DESKTOP_CHAT_ID: authority.chatId, VC_DESKTOP_STATUS_GENERATION: String(authority.generation) } : {}),
-    },
+    env: desktopChildEnv(process.platform === 'win32' ? 'win32' : 'darwin', process.env, runtime.node, authority),
   }));
 }
 
@@ -64,38 +64,45 @@ function supportReport(raw: unknown) {
   });
 }
 
+function assertRenderer(event: IpcMainInvokeEvent | IpcMainEvent): void {
+  if (!mainWindow) throw new Error('renderer authority rejected');
+  const page = smokeOutput ? 'smoke.html' : 'index.html';
+  const query = productionProbeOutput ? { productionTerminalProbe: '1', ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
+  rendererAuthority(mainWindow.webContents, rendererUrl(path.join(__dirname, `../renderer/${page}`), query))(event);
+}
+
 function registerIpc(): void {
-  ipcMain.handle(IPC.start, (event, raw: unknown) => {
+  ipcMain.handle(IPC.start, (event, raw: unknown) => { assertRenderer(event);
     const request = startRequest(raw);
     if (!('fixture' in request)) workspace.assertLaunch(request.sessionId, request.cwd);
     return { sessionId: request.sessionId, ...manager.start(event.sender.id, request) };
   });
-  ipcMain.handle(IPC.input, (event, raw: unknown) => { const request = inputRequest(raw); manager.input(event.sender.id, request.sessionId, request.data); });
-  ipcMain.handle(IPC.resize, (event, raw: unknown) => { const request = resizeRequest(raw); manager.resize(event.sender.id, request.sessionId, request.cols, request.rows); });
-  ipcMain.handle(IPC.stop, (event, raw: unknown) => { const request = sessionRequest(raw); manager.stop(event.sender.id, request.sessionId); });
-  ipcMain.handle(IPC.status, (event, raw: unknown) => { const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.status(event.sender.id, request.sessionId) }; });
-  ipcMain.handle(IPC.lifecycleStatus, (event, raw: unknown) => { const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.lifecycleStatus(event.sender.id, request.sessionId) }; });
-  ipcMain.handle(IPC.chooseFolder, async () => { const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? null : result.filePaths[0]; });
-  ipcMain.handle(IPC.workspaceLoad, () => workspace.view());
-  ipcMain.handle(IPC.workspaceChoose, async () => {
+  ipcMain.handle(IPC.input, (event, raw: unknown) => { assertRenderer(event); const request = inputRequest(raw); manager.input(event.sender.id, request.sessionId, request.data); });
+  ipcMain.handle(IPC.resize, (event, raw: unknown) => { assertRenderer(event); const request = resizeRequest(raw); manager.resize(event.sender.id, request.sessionId, request.cols, request.rows); });
+  ipcMain.handle(IPC.stop, (event, raw: unknown) => { assertRenderer(event); const request = sessionRequest(raw); manager.stop(event.sender.id, request.sessionId); });
+  ipcMain.handle(IPC.status, (event, raw: unknown) => { assertRenderer(event); const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.status(event.sender.id, request.sessionId) }; });
+  ipcMain.handle(IPC.lifecycleStatus, (event, raw: unknown) => { assertRenderer(event); const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.lifecycleStatus(event.sender.id, request.sessionId) }; });
+  ipcMain.handle(IPC.chooseFolder, async (event) => { assertRenderer(event); const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? null : result.filePaths[0]; });
+  ipcMain.handle(IPC.workspaceLoad, (event) => { assertRenderer(event); return workspace.view(); });
+  ipcMain.handle(IPC.workspaceChoose, async (event) => { assertRenderer(event);
     const current = workspace.view();
     if (current.workspace && !current.recoveryPath) throw new Error('this window already owns a folder');
     const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : workspace.setFolder(result.filePaths[0]);
   });
-  ipcMain.handle(IPC.workspaceRemove, () => workspace.removeWorkspace());
-  ipcMain.handle(IPC.workspaceNewChat, () => ({ view: workspace.newChat(randomUUID()) }));
-  ipcMain.handle(IPC.workspaceSelect, (event, raw: unknown) => {
+  ipcMain.handle(IPC.workspaceRemove, (event) => { assertRenderer(event); return workspace.removeWorkspace(); });
+  ipcMain.handle(IPC.workspaceNewChat, (event) => { assertRenderer(event); return { view: workspace.newChat(randomUUID()) }; });
+  ipcMain.handle(IPC.workspaceSelect, (event, raw: unknown) => { assertRenderer(event);
     const selected = chatRequest(raw).sessionId;
     const view = workspace.select(selected);
     try { manager.clearUnread(event.sender.id, selected); } catch { /* sleeping chat has no live status channel */ }
     return view;
   });
-  ipcMain.handle(IPC.workspaceClose, (event, raw: unknown) => closeWorkspaceChat(manager, workspace, event.sender.id, raw));
-  ipcMain.handle(IPC.workspaceResume, (_event, raw: unknown) => workspace.resume(chatRequest(raw).sessionId));
-  ipcMain.handle(IPC.openLink, async (_event, raw: unknown) => shell.openExternal(linkRequest(raw)));
-  ipcMain.handle(IPC.supportCopy, (_event, raw: unknown) => copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)));
-  ipcMain.handle(IPC.supportSave, async (_event, raw: unknown) => {
+  ipcMain.handle(IPC.workspaceClose, (event, raw: unknown) => { assertRenderer(event); return closeWorkspaceChat(manager, workspace, event.sender.id, raw); });
+  ipcMain.handle(IPC.workspaceResume, (event, raw: unknown) => { assertRenderer(event); return workspace.resume(chatRequest(raw).sessionId); });
+  ipcMain.handle(IPC.openLink, async (event, raw: unknown) => { assertRenderer(event); return shell.openExternal(linkRequest(raw)); });
+  ipcMain.handle(IPC.supportCopy, (event, raw: unknown) => { assertRenderer(event); return copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)); });
+  ipcMain.handle(IPC.supportSave, async (event, raw: unknown) => { assertRenderer(event);
     const report = supportReport(raw);
     const stamp = report.generatedAt.slice(0, 19).replaceAll(':', '-');
     return saveSupportReport(
@@ -104,8 +111,8 @@ function registerIpc(): void {
       (file, text) => writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 }),
     );
   });
-  ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
-  ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
+  ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { assertRenderer(event); manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
+  ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { assertRenderer(event); try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
 }
 
 function pixelContrast(red: number, green: number, blue: number, background: number[]): number {
@@ -143,9 +150,10 @@ async function captureVisibleColors(window: BrowserWindow, raw: unknown) {
 async function createWindow(): Promise<BrowserWindow> {
   const window = await startupStage('window-creation', () => new BrowserWindow({
     title: 'Void Code', show: false, width: 1100, height: 760, backgroundColor: '#101216',
-    webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   }));
   const ownerId = window.webContents.id;
+  installNavigationPolicy(window.webContents);
   window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
   window.webContents.on('render-process-gone', () => manager.teardownOwner(ownerId));
   window.webContents.on('destroyed', () => manager.teardownOwner(ownerId));

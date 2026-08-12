@@ -1,10 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC, sessionId } from '../shared/contract';
+import { IPC, preloadSessionId } from '../shared/preload-contract';
 import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
 function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
-  const validId = sessionId(id, true);
+  const validId = preloadSessionId(id);
   if (typeof listener !== 'function') throw new Error('listener must be a function');
   const subscriptionId = crypto.randomUUID();
   const request: SubscribeRequest = { sessionId: validId, kind, subscriptionId };
