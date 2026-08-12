@@ -95,7 +95,8 @@ func main() {
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true, "desktop-session": true}
 	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
 	if !hasSubCmd && !hasRaw {
-		state := resolveAuthState()
+		state, token, authHost := resolveLocalAuthState()
+		currentLaunchPreflight = startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
 		// Interactive only when stdin is a TTY AND --non-interactive was not
 		// passed. cobra has not parsed flags yet at this point, so scan os.Args
 		// for the flag directly (mirrors the early --raw scan above). When not
@@ -114,47 +115,26 @@ func main() {
 			// blocks on a keypress that a non-TTY stdin can never deliver, which
 			// hangs automation callers forever. Fall straight through to spawn.
 		case gateShowWelcome:
-			// Interactive terminal: async update probe, then the landing screen.
-			nudge := launchUpdateCheck()
-			if nudge != "" {
-				state.UpdateNudge = nudge
-			}
+			// Optional network work is already running, but first render uses only
+			// local state. Completed results may be applied on later menu renders.
 		menuLoop:
 			for {
 				keyNames, _ := keystore.ListKeys()
 				activeProv := provider.Load()
 				activeLabel := provider.LoadLabel()
 				activeHarness := harnesschoice.Load()
-				// Fetch the granted provider list from void-auth (VCD-72).
-				// Failure degrades to an empty list — relay/deepseek baseline preserved.
+				// Provider and update probes never gate rendering. Apply them only if
+				// they happened to complete before this render.
 				var grantedRows []welcome.ProviderRowInfo
-				fetchOK := false
-				if tok, _ := auth.LoadAndMigrate(); strings.TrimSpace(tok) != "" {
-					cfg := config.OSResolve()
-					if infos, gErr := cachedFetchProviders(cfg.AuthHost, tok, &http.Client{Timeout: authProbeTimeout}); gErr == nil {
-						for _, pi := range infos {
-							grantedRows = append(grantedRows, welcome.ProviderRowInfo{ID: pi.ID, Name: pi.Name, Type: pi.Type})
-						}
-						fetchOK = true
-					} else {
-						fmt.Fprintf(os.Stderr, "vc: could not fetch providers (%v) — showing relay default only\n", gErr)
-					}
-				} else {
-					// No token — still reconcile non-relay-provider labels (derived locally).
-					fetchOK = true
-				}
-				// VCD-79: reconcile + persist active provider label from live list so
-				// pre-existing prov:<id> configs (no label) self-heal on first launch.
-				if fetchOK {
+				if result, ready := currentLaunchPreflight.providerIfReady(token, authHost); ready && result.err == nil {
+					grantedRows = result.rows
 					granted := make([]provider.GrantedEntry, len(grantedRows))
-					compatGrants := make([]compat.Grant, len(grantedRows))
 					for i, r := range grantedRows {
 						granted[i] = provider.GrantedEntry{ID: r.ID, Name: r.Name}
-						compatGrants[i] = compat.Grant{ID: r.ID, Name: r.Name, Type: r.Type}
 					}
 					_ = provider.ReconcileLabel(granted)
 					activeLabel = provider.LoadLabel()
-					if d := compat.Reconcile(activeHarness, activeProv, activeLabel, compatGrants); d.Changed {
+					if d := compat.Reconcile(activeHarness, activeProv, activeLabel, result.grants); d.Changed {
 						_ = harnesschoice.Save(d.Harness)
 						_ = provider.Save(d.Provider)
 						_ = provider.SaveLabel(d.ProviderLabel)
@@ -163,6 +143,9 @@ func main() {
 							fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
 						}
 					}
+				}
+				if nudge, ready := currentLaunchPreflight.updateIfReady(); ready && nudge != "" {
+					state.UpdateNudge = nudge
 				}
 				cb := welcome.Callbacks{
 					KeyNames:            keyNames,
@@ -289,6 +272,25 @@ func decideGate(stdinTTY, loggedIn bool) gateDecision {
 	return gateShowWelcome
 }
 
+// resolveLocalAuthState reads only local token/cache state so the welcome screen
+// can render before any optional network request completes.
+func resolveLocalAuthState() (welcome.AuthState, string, string) {
+	token, err := auth.LoadAndMigrate()
+	cfg := config.OSResolve()
+	if err != nil || token == "" {
+		return welcome.AuthState{LoggedIn: false}, token, cfg.AuthHost
+	}
+	if cached, ok := readMeCache(cfg.AuthHost, token, time.Now()); ok {
+		if cached.Stale {
+			return staleMeResultToState(cached.Me), token, cfg.AuthHost
+		}
+		return meResultToState(cached.Me), token, cfg.AuthHost
+	}
+	// Token presence is sufficient for the local landing screen. The in-flight
+	// admission probe remains authoritative for legacy credentials at Start.
+	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AuthHost
+}
+
 // resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
 // Never fatal — on any error it returns a graceful degraded state.
 func resolveAuthState() welcome.AuthState {
@@ -388,8 +390,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// Pre-spawn auth gate: verify token before handing control to the active harness.
 	// A missing or rejected token must surface a friendly message here — not a
 	// raw 401 error buried inside the harness UI.
-	httpClient := &http.Client{Timeout: authProbeTimeout}
-	me, reached, err := authGate(token, cfg.AuthHost, httpClient)
+	var me auth.MeResult
+	var reached bool
+	var err error
+	if carriedMe, carriedReached, carriedErr, reused := currentLaunchPreflight.awaitAuth(token, cfg.AuthHost); reused {
+		me, reached, err = carriedMe, carriedReached, carriedErr
+	} else {
+		httpClient := &http.Client{Timeout: authProbeTimeout}
+		me, reached, err = authGate(token, cfg.AuthHost, httpClient)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
@@ -409,7 +418,16 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	active := provider.Load()
 	activeLabel := provider.LoadLabel()
-	compatGrants := fetchCompatGrants(cfg.AuthHost, token)
+	var compatGrants []compat.Grant
+	if carried, ready := currentLaunchPreflight.providerIfReady(token, cfg.AuthHost); ready {
+		if carried.err == nil {
+			compatGrants = carried.grants
+		}
+	} else if currentLaunchPreflight == nil || !currentLaunchPreflight.reusable(token, cfg.AuthHost) {
+		compatGrants = fetchCompatGrants(cfg.AuthHost, token)
+	}
+	// A same-launch provider probe still in flight degrades to relay defaults;
+	// provider discovery is never an admission gate and is not duplicated.
 	if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
 		_ = harnesschoice.Save(d.Harness)
 		_ = provider.Save(d.Provider)
