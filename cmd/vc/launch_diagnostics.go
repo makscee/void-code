@@ -82,12 +82,10 @@ func (d *launchDiagnostics) record(phase launchPhase, outcome launchOutcome, sou
 	if duration < 0 {
 		duration = 0
 	}
-	r := launchDiagnosticRecord{phase: phase, outcome: outcome, source: source, durationMS: duration}
 	if d.flushed {
-		d.write(r)
 		return
 	}
-	d.pending = append(d.pending, r)
+	d.pending = append(d.pending, launchDiagnosticRecord{phase: phase, outcome: outcome, source: source, durationMS: duration})
 }
 
 func (d *launchDiagnostics) flush() {

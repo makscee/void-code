@@ -187,3 +187,39 @@ func TestLaunchDiagnostics_BuffersUntilFlush(t *testing.T) {
 		t.Fatalf("flushed records = %d, want 2", lines)
 	}
 }
+
+func TestLaunchDiagnostics_DelayedPreflightCompletionWritesNoPostFlushBytes(t *testing.T) {
+	var out bytes.Buffer
+	base := time.Unix(100, 0)
+	d := newLaunchDiagnostics(true, func() time.Time { return base }, &out)
+	providerRelease := make(chan struct{})
+	updateRelease := make(chan struct{})
+	deps := testPreflightDeps(func() time.Time { return base })
+	deps.diagnostics = d
+	deps.providers = func(string, string, *http.Client) ([]auth.ProviderInfo, error) {
+		<-providerRelease
+		return nil, nil
+	}
+	deps.update = func() string {
+		<-updateRelease
+		return ""
+	}
+
+	p := startLaunchPreflight("token", "https://auth.test", true, deps)
+	<-p.authDone
+	d.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
+	d.flush()
+	flushed := append([]byte(nil), out.Bytes()...)
+
+	close(providerRelease)
+	close(updateRelease)
+	<-p.providersDone
+	<-p.updateDone
+
+	if got := out.Bytes(); !bytes.Equal(got, flushed) {
+		t.Fatalf("late provider/update completion wrote after terminal-safe flush\nbefore=%q\nafter=%q", flushed, got)
+	}
+	if strings.Contains(out.String(), "phase=providers_complete") || strings.Contains(out.String(), "phase=update_complete") {
+		t.Fatalf("flush included records that were incomplete at handoff: %q", out.String())
+	}
+}
