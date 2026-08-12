@@ -18,3 +18,5 @@ jobs:
           cache: true
       - name: Run tests
         run: go test ./...
+      - name: Validate release tag graphs
+        run: ruby .github/scripts/check-release-tag-graphs.rb
