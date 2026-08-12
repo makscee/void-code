@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -11,6 +12,8 @@ import (
 )
 
 const launchPreflightFreshness = 5 * time.Minute
+
+var errProviderProbeTimeout = errors.New("provider discovery timed out")
 
 type launchAuthResult struct {
 	me      auth.MeResult
@@ -161,6 +164,33 @@ func (p *launchPreflight) providerIfReady(token, authHost string) (launchProvide
 		return p.providerResult, true
 	default:
 		return launchProviderResult{}, false
+	}
+}
+
+// awaitProvider reuses the launch's authoritative provider request and shares
+// its original deadline. It is used only at the Pi spawn boundary, where grants
+// decide whether the managed web package may be activated.
+func (p *launchPreflight) awaitProvider(token, authHost string) (launchProviderResult, bool) {
+	if !p.reusable(token, authHost) {
+		return launchProviderResult{}, false
+	}
+	remaining := authProbeTimeout - p.deps.now().Sub(p.started)
+	if remaining > 0 {
+		timer := time.NewTimer(remaining)
+		defer timer.Stop()
+		select {
+		case <-p.providersDone:
+		case <-timer.C:
+			return launchProviderResult{err: errProviderProbeTimeout}, true
+		}
+	}
+	select {
+	case <-p.providersDone:
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		return p.providerResult, true
+	default:
+		return launchProviderResult{err: errProviderProbeTimeout}, true
 	}
 }
 

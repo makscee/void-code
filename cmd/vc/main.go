@@ -379,19 +379,19 @@ func openProfile(authHost, token string, httpClient *http.Client, open func(stri
 	open(browser.ProfileURL)
 }
 
-func fetchCompatGrants(authHost, token string) []compat.Grant {
+func fetchCompatGrants(authHost, token string) ([]compat.Grant, error) {
 	if strings.TrimSpace(token) == "" {
-		return nil
+		return nil, nil
 	}
 	infos, err := cachedFetchProviders(authHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	grants := make([]compat.Grant, 0, len(infos))
 	for _, pi := range infos {
 		grants = append(grants, compat.Grant{ID: pi.ID, Name: pi.Name, Type: pi.Type})
 	}
-	return grants
+	return grants, nil
 }
 
 var welcomeProgramOptions []tea.ProgramOption
@@ -438,18 +438,20 @@ func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeRes
 	return authGate(token, authHost, &http.Client{Timeout: authProbeTimeout})
 }
 
-func spawnCompatGrants(p *launchPreflight, token, authHost string) []compat.Grant {
-	if carried, ready := p.providerIfReady(token, authHost); ready {
-		if carried.err == nil {
-			return carried.grants
+func spawnCompatGrants(p *launchPreflight, token, authHost string, admissionRelevant bool) ([]compat.Grant, error) {
+	if admissionRelevant {
+		if carried, reused := p.awaitProvider(token, authHost); reused {
+			return carried.grants, carried.err
 		}
-		return nil
+	} else if carried, ready := p.providerIfReady(token, authHost); ready {
+		return carried.grants, carried.err
 	}
 	if p == nil || !p.reusable(token, authHost) {
 		return fetchCompatGrants(authHost, token)
 	}
-	// A same-launch provider probe still in flight is not duplicated.
-	return nil
+	// Non-Pi launches preserve provider non-gating semantics and never duplicate
+	// the same-launch request.
+	return nil, nil
 }
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
@@ -488,9 +490,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	active := provider.Load()
 	activeLabel := provider.LoadLabel()
-	compatGrants := spawnCompatGrants(currentLaunchPreflight, token, cfg.AuthHost)
-	// A same-launch provider probe still in flight degrades to relay defaults;
-	// provider discovery is never an admission gate and is not duplicated.
+	compatGrants, providerErr := spawnCompatGrants(currentLaunchPreflight, token, cfg.AuthHost, activeHarness.Kind == harnesschoice.Pi)
+	if providerErr != nil && activeHarness.Kind == harnesschoice.Pi {
+		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search unavailable: provider discovery failed: %v\n", providerErr)
+	}
+	// Provider discovery remains non-gating except for bounded Pi web-package
+	// authorization; an unavailable result continues with relay defaults.
 	if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
 		_ = harnesschoice.Save(d.Harness)
 		_ = provider.Save(d.Provider)

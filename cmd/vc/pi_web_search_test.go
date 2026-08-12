@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,11 +74,17 @@ func TestManagedWebSearchUnavailableAndBrokenOwnership(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", dir)
 	t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "1")
+	path := managedWebSearchPackagePath()
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(fmt.Sprintf(`{"packages":[%q]}`, path)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	state, err := reconcileManagedWebSearch(false)
 	if err != nil || state != managedWebSearchUnavailable {
 		t.Fatalf("ineligible = %q, %v", state, err)
 	}
-	path := managedWebSearchPackagePath()
+	if registered, err := inspectManagedPackageSetting(path); err != nil || registered {
+		t.Fatalf("ineligible package remains registered=%v err=%v", registered, err)
+	}
 	if err := os.MkdirAll(path, 0700); err != nil {
 		t.Fatal(err)
 	}
