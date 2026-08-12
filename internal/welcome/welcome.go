@@ -113,8 +113,14 @@ type Callbacks struct {
 // In non-TTY environments (CI, pipe) it falls back to a plain-text banner
 // and returns SpawnClaude (logged-in) or RunLogin (logged-out).
 func Run(state AuthState, cb Callbacks) (RunResult, error) {
+	return RunWithOptions(state, cb)
+}
+
+// RunWithOptions runs the production welcome model with caller-supplied terminal
+// options. It is primarily useful for deterministic embedding and tests.
+func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
 	m := newModel(state, cb)
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, opts...)
 	out, err := p.Run()
 	if err != nil {
 		// Non-TTY fallback: print a plain banner, pick safe default.

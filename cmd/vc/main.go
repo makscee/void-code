@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	term "github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
@@ -52,6 +53,7 @@ var (
 	meCacheExpiry time.Time
 
 	spawnHarness      = harness.Spawn
+	exitProcess       = os.Exit
 	claudeIsInstalled = claudebin.IsInstalled
 	codexIsInstalled  = codexbin.IsInstalled
 	piIsInstalled     = pibin.IsInstalled
@@ -377,10 +379,24 @@ func fetchCompatGrants(authHost, token string) []compat.Grant {
 	return grants
 }
 
-var runWelcome = welcome.Run
+var welcomeProgramOptions []tea.ProgramOption
 
 func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.RunResult, error) {
-	return runWelcome(state, cb)
+	return welcome.RunWithOptions(state, cb, welcomeProgramOptions...)
+}
+
+// runWelcomeCommandTransition is the bare-launch boundary from the production
+// welcome program into Cobra's production RunE (runSpawn for rootCmd). Terminal,
+// network, and process seams remain injectable without replacing either side.
+func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) error {
+	result, err := runWelcomeScreen(state, cb)
+	if err != nil {
+		return err
+	}
+	if result != welcome.SpawnClaude {
+		return fmt.Errorf("welcome returned %v instead of spawn", result)
+	}
+	return cmd.RunE(cmd, args)
 }
 
 func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeResult, bool, error) {
@@ -420,7 +436,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	me, reached, err := awaitSpawnAdmission(currentLaunchPreflight, token, cfg.AuthHost)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(1)
+		exitProcess(1)
+		return err
 	}
 	// VCD-49 budget gate: only when reached + pct present (degrade-safe).
 	// VCD-65: subscriptionGate removed — budgetGate is the sole client-side gate.

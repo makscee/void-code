@@ -1,135 +1,194 @@
 package main
 
 import (
-	"errors"
+	"bytes"
+	"context"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/harnesschoice"
 	"github.com/makscee/void-code/internal/welcome"
 )
 
-func TestWelcomeToSpawnAdmission_ReusesOneInflightAuthAndProvider(t *testing.T) {
-	oldRunWelcome := runWelcome
-	t.Cleanup(func() { runWelcome = oldRunWelcome })
+type roundTripFunc func(*http.Request) (*http.Response, error)
 
-	authStarted := make(chan struct{})
-	providerStarted := make(chan struct{})
-	release := make(chan struct{})
-	var authCalls, providerCalls atomic.Int32
-	deps := testPreflightDeps(time.Now)
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func unauthorizedClient() *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(bytes.NewBuffer(nil)), Header: make(http.Header)}, nil
+	})}
+}
+
+type firstWriteBuffer struct {
+	bytes.Buffer
+	once  sync.Once
+	wrote chan struct{}
+}
+
+func (w *firstWriteBuffer) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	w.once.Do(func() { close(w.wrote) })
+	return n, err
+}
+
+type launchIntegration struct {
+	input         *io.PipeWriter
+	firstRender   <-chan struct{}
+	done          <-chan error
+	spawnCalls    *atomic.Int32
+	authCalls     *atomic.Int32
+	providerCalls *atomic.Int32
+}
+
+func startLaunchIntegration(t *testing.T, token string, now func() time.Time, authProbe func() (auth.MeResult, bool, error), providerProbe func() ([]auth.ProviderInfo, error)) launchIntegration {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("VC_AUTH_HOST", "https://auth.test")
+	caPath := filepath.Join(home, "relay-ca.pem")
+	if err := os.WriteFile(caPath, []byte("test ca"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VC_RELAY_CA", caPath)
+	if err := auth.Save(token); err != nil {
+		t.Fatal(err)
+	}
+	if err := harnesschoice.Save(harnesschoice.Choice{Kind: harnesschoice.Pi}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldOptions, oldSpawn, oldPi, oldExit, oldPreflight := welcomeProgramOptions, spawnHarness, piIsInstalled, exitProcess, currentLaunchPreflight
+	t.Cleanup(func() {
+		welcomeProgramOptions, spawnHarness, piIsInstalled, exitProcess, currentLaunchPreflight = oldOptions, oldSpawn, oldPi, oldExit, oldPreflight
+	})
+
+	var authCalls, providerCalls, spawnCalls atomic.Int32
+	deps := testPreflightDeps(now)
 	deps.auth = func(string, string, *http.Client) (auth.MeResult, bool, error) {
 		authCalls.Add(1)
-		close(authStarted)
-		<-release
-		return auth.MeResult{UserID: "u"}, true, nil
+		return authProbe()
 	}
 	deps.providers = func(string, string, *http.Client) ([]auth.ProviderInfo, error) {
 		providerCalls.Add(1)
-		close(providerStarted)
-		<-release
-		return []auth.ProviderInfo{{ID: "p", Name: "ChatGPT"}}, nil
+		return providerProbe()
 	}
-	p := startLaunchPreflight("legacy", "host", false, deps)
+	currentLaunchPreflight = startLaunchPreflight(token, "https://auth.test", false, deps)
 
-	welcomeEntered := make(chan struct{})
-	welcomeRelease := make(chan struct{})
-	runWelcome = func(welcome.AuthState, welcome.Callbacks) (welcome.RunResult, error) {
-		close(welcomeEntered) // deterministic first-render boundary
-		<-welcomeRelease
-		return welcome.SpawnClaude, nil
+	reader, writer := io.Pipe()
+	output := &firstWriteBuffer{wrote: make(chan struct{})}
+	welcomeProgramOptions = []tea.ProgramOption{tea.WithInput(reader), tea.WithOutput(output)}
+	piIsInstalled = func() bool { return true }
+	spawnHarness = func(context.Context, string, []string, []string) error {
+		spawnCalls.Add(1)
+		return nil
 	}
-	welcomeDone := make(chan struct{})
+	exitProcess = func(int) {}
+
+	done := make(chan error, 1)
 	go func() {
-		_, _ = runWelcomeScreen(welcome.AuthState{LoggedIn: true}, welcome.Callbacks{})
-		close(welcomeDone)
+		done <- runWelcomeCommandTransition(welcome.AuthState{LoggedIn: true}, welcome.Callbacks{PiInstalled: true}, rootCmd, nil)
 	}()
-
-	<-welcomeEntered
-	<-authStarted
-	<-providerStarted
-	if authCalls.Load() != 1 || providerCalls.Load() != 1 {
-		t.Fatalf("at first render calls auth=%d providers=%d, want one each", authCalls.Load(), providerCalls.Load())
-	}
-
-	admitted := make(chan error, 1)
-	go func() {
-		_, _, err := awaitSpawnAdmission(p, "legacy", "host")
-		admitted <- err
-	}()
-	close(release)
-	if err := <-admitted; err != nil {
-		t.Fatalf("spawn admission: %v", err)
-	}
-	<-p.providersDone
-	if got := spawnCompatGrants(p, "legacy", "host"); len(got) != 1 || got[0].ID != "p" {
-		t.Fatalf("spawn grants = %#v, want carried provider", got)
-	}
-	if authCalls.Load() != 1 || providerCalls.Load() != 1 {
-		t.Fatalf("consumer duplicated calls auth=%d providers=%d", authCalls.Load(), providerCalls.Load())
-	}
-	close(welcomeRelease)
-	<-welcomeDone
+	t.Cleanup(func() { _ = writer.Close() })
+	return launchIntegration{writer, output.wrote, done, &spawnCalls, &authCalls, &providerCalls}
 }
 
-func TestWelcomeToSpawnAdmission_Reuses401(t *testing.T) {
-	var calls atomic.Int32
+func TestWelcomeRunToSpawnAdmission_ReusesInflightAuthAndProviderAfterImmediateRender(t *testing.T) {
 	release := make(chan struct{})
-	deps := testPreflightDeps(time.Now)
-	deps.auth = func(string, string, *http.Client) (auth.MeResult, bool, error) {
-		calls.Add(1)
-		<-release
-		return auth.MeResult{}, true, errors.New("Session token rejected — re-authenticate with `vc login`")
+	started := make(chan struct{}, 2)
+	flow := startLaunchIntegration(t, "legacy", time.Now,
+		func() (auth.MeResult, bool, error) {
+			started <- struct{}{}
+			<-release
+			return auth.MeResult{UserID: "u"}, true, nil
+		},
+		func() ([]auth.ProviderInfo, error) {
+			started <- struct{}{}
+			<-release
+			return []auth.ProviderInfo{{ID: "p", Name: "ChatGPT"}}, nil
+		},
+	)
+	<-started
+	<-started
+	<-flow.firstRender
+	if flow.authCalls.Load() != 1 || flow.providerCalls.Load() != 1 {
+		t.Fatalf("at first production render calls auth=%d providers=%d", flow.authCalls.Load(), flow.providerCalls.Load())
 	}
-	deps.providers = func(string, string, *http.Client) ([]auth.ProviderInfo, error) { return nil, nil }
-	p := startLaunchPreflight("legacy", "host", false, deps)
-	result := make(chan error, 1)
-	go func() {
-		_, _, err := awaitSpawnAdmission(p, "legacy", "host")
-		result <- err
-	}()
 	close(release)
-	if err := <-result; err == nil {
-		t.Fatal("carried 401 did not block spawn admission")
+	if _, err := flow.input.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("401 auth calls = %d, want one", calls.Load())
+	if err := <-flow.done; err != nil {
+		t.Fatal(err)
+	}
+	if flow.spawnCalls.Load() != 1 || flow.authCalls.Load() != 1 || flow.providerCalls.Load() != 1 {
+		t.Fatalf("calls spawn=%d auth=%d providers=%d", flow.spawnCalls.Load(), flow.authCalls.Load(), flow.providerCalls.Load())
 	}
 }
 
-func TestWelcomeToSpawnAdmission_TimeoutDoesNotDuplicateInflightCalls(t *testing.T) {
+func TestWelcomeRunToSpawnAdmission_Legacy401IsAuthoritative(t *testing.T) {
+	release := make(chan struct{})
+	flow := startLaunchIntegration(t, "legacy", time.Now,
+		func() (auth.MeResult, bool, error) {
+			<-release
+			return authGate("legacy", "https://auth.test", unauthorizedClient())
+		},
+		func() ([]auth.ProviderInfo, error) { return nil, nil },
+	)
+	<-flow.firstRender
+	close(release)
+	_, _ = flow.input.Write([]byte("\r"))
+	if err := <-flow.done; err == nil || flow.spawnCalls.Load() != 0 {
+		t.Fatalf("legacy 401 err=%v spawn=%d", err, flow.spawnCalls.Load())
+	}
+	if flow.authCalls.Load() != 1 {
+		t.Fatalf("auth calls=%d", flow.authCalls.Load())
+	}
+}
+
+func TestWelcomeRunToSpawnAdmission_TransientTimeoutDoesNotDuplicate(t *testing.T) {
 	now := time.Unix(100, 0)
 	blocked := make(chan struct{})
-	authStarted := make(chan struct{})
-	providerStarted := make(chan struct{})
-	var authCalls, providerCalls atomic.Int32
-	deps := testPreflightDeps(func() time.Time { return now })
-	deps.auth = func(string, string, *http.Client) (auth.MeResult, bool, error) {
-		authCalls.Add(1)
-		close(authStarted)
-		<-blocked
-		return auth.MeResult{}, false, nil
-	}
-	deps.providers = func(string, string, *http.Client) ([]auth.ProviderInfo, error) {
-		providerCalls.Add(1)
-		close(providerStarted)
-		<-blocked
-		return nil, nil
-	}
-	p := startLaunchPreflight("legacy", "host", false, deps)
-	<-authStarted
-	<-providerStarted
+	flow := startLaunchIntegration(t, "legacy", func() time.Time { return now },
+		func() (auth.MeResult, bool, error) { <-blocked; return auth.MeResult{}, false, nil },
+		func() ([]auth.ProviderInfo, error) { <-blocked; return nil, nil },
+	)
+	<-flow.firstRender
 	now = now.Add(authProbeTimeout)
-	if _, reached, err := awaitSpawnAdmission(p, "legacy", "host"); err != nil || reached {
-		t.Fatalf("timeout admission reached=%v err=%v", reached, err)
+	_, _ = flow.input.Write([]byte("\r"))
+	if err := <-flow.done; err != nil {
+		t.Fatal(err)
 	}
-	if got := spawnCompatGrants(p, "legacy", "host"); got != nil {
-		t.Fatalf("inflight provider grants = %#v, want nil", got)
-	}
-	if authCalls.Load() != 1 || providerCalls.Load() != 1 {
-		t.Fatalf("timeout duplicated calls auth=%d providers=%d", authCalls.Load(), providerCalls.Load())
+	if flow.spawnCalls.Load() != 1 || flow.authCalls.Load() != 1 || flow.providerCalls.Load() != 1 {
+		t.Fatalf("calls spawn=%d auth=%d providers=%d", flow.spawnCalls.Load(), flow.authCalls.Load(), flow.providerCalls.Load())
 	}
 	close(blocked)
+}
+
+func TestWelcomeRunToSpawnAdmission_DottedIdentity401DefersToRelay(t *testing.T) {
+	release := make(chan struct{})
+	flow := startLaunchIntegration(t, "session.secret", time.Now,
+		func() (auth.MeResult, bool, error) {
+			<-release
+			return authGate("session.secret", "https://auth.test", unauthorizedClient())
+		},
+		func() ([]auth.ProviderInfo, error) { return nil, nil },
+	)
+	<-flow.firstRender
+	close(release)
+	_, _ = flow.input.Write([]byte("\r"))
+	if err := <-flow.done; err != nil {
+		t.Fatal(err)
+	}
+	if flow.spawnCalls.Load() != 1 || flow.authCalls.Load() != 1 {
+		t.Fatalf("dotted identity calls spawn=%d auth=%d", flow.spawnCalls.Load(), flow.authCalls.Load())
+	}
 }
