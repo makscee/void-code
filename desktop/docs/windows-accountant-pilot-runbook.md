@@ -5,7 +5,7 @@
 
 ## Evidence rule
 
-Record only checklist item, UTC time, `PASS`/`STOP`, installer/report SHA-256, coarse recovery code, and process **name/PID/parent PID** needed below. Never retain the one-time code or token, terminal/chat/prompt text, file contents, environment, command lines, raw errors/stacks, username/home path, client name, or unredacted workspace path. Do not screenshot PowerShell, terminal panes, folder paths, chats, SmartScreen details beyond the expected generic unsigned flow, or client files.
+Record only checklist item, UTC time, `PASS`/`STOP`, installer/report SHA-256, coarse recovery code, and process **name/PID/parent PID/creation time** needed below. Creation time is a value-free stable process identity used only to distinguish PID reuse. Never retain the one-time code or token, terminal/chat/prompt text, file contents, environment, command lines, raw errors/stacks, username/home path, client name, or unredacted workspace path. Do not screenshot PowerShell, terminal panes, folder paths, chats, SmartScreen details beyond the expected generic unsigned flow, or client files.
 
 Any `STOP` ends the procedure. Do not improvise, disable antivirus, change auth, or select valuable data.
 
@@ -17,7 +17,7 @@ Maks verifies locally, recording only PASS/STOP:
 - At least 2 GB free disk; current date/time; supported network available.
 - No other Void Code pilot process is running. Existing unrelated `node`, `vc`, `conhost`, or `OpenConsole` processes are noted by PID and left untouched.
 - Exact candidate manifest, exact installer named `Void-Code-0.1.0-windows-x64.exe`, and retained predecessor installer are present from the controlled handoff.
-- Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `product.version = 0.1.0`, `signing.status = unsigned`, and carries the intended predecessor hash/reference and current operator-gate status.
+- Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `product.version = 0.1.0`, `signing.status = unsigned`, and carries the intended predecessor hash/reference and current operator-gate status. A `verified` value is only the manifest-declared status; it is not evidence that this machine's manual gate or the guided pilot passed.
 
 **STOP:** wrong Windows/architecture, insufficient space, missing manifest/installer/predecessor, or unexpected existing Void Code process.
 
@@ -152,11 +152,11 @@ In Task Manager → **Details**, record only name and PID for existing processes
 
 ### During launch
 
-Record the candidate `Void Code` root PID from Task Manager. In PowerShell, enter that PID when prompted; this script reads only name/PID/parent PID and emits only the candidate descendant tree:
+Record the candidate `Void Code` root PID from Task Manager. In PowerShell, enter that PID when prompted; this script reads only name/PID/parent PID/creation time and emits only the candidate descendant tree. Creation time is retained in approved process rows so exit checks compare `(PID, creation time)` rather than treating a reused PID as candidate-owned:
 
 ```powershell
 $rootPid = [int](Read-Host "Void Code root PID")
-$rows = Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId
+$rows = Get-CimInstance Win32_Process | Select-Object Name,ProcessId,ParentProcessId,CreationDate
 $ids = [System.Collections.Generic.HashSet[int]]::new()
 [void]$ids.Add($rootPid)
 do {
@@ -165,10 +165,10 @@ do {
     if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $added = $true }
   }
 } while ($added)
-$rows | Where-Object { $ids.Contains([int]$_.ProcessId) } | Sort-Object ProcessId | Format-Table Name,ProcessId,ParentProcessId
+$rows | Where-Object { $ids.Contains([int]$_.ProcessId) } | Sort-Object ProcessId | Format-Table Name,ProcessId,ParentProcessId,CreationDate
 ```
 
-Confirm the tree is bounded to candidate-owned Electron/Void Code, private `vc`, Node/Pi and Windows ConPTY host descendants. Record only those three columns.
+Confirm the tree is bounded to candidate-owned Electron/Void Code, private `vc`, Node/Pi and Windows ConPTY host descendants. Record only those four columns. The rehearsal tool validates prior evidence's exact schema, phase, result/code, real UTC timestamp, root identity and descendant relationships, then compares both PID and creation time. A PID occupied by a process with a different creation time is reused and is not reported as a surviving candidate process.
 
 ### After chat close and app quit
 
