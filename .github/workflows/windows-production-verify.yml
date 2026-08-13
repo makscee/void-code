@@ -1,0 +1,48 @@
+name: Windows production verification
+on:
+  push:
+    branches: [verify/windows-v0246]
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Verify clean initial state
+        shell: powershell
+        run: |
+          if (Get-Command vc -ErrorAction SilentlyContinue) { throw 'vc unexpectedly preinstalled' }
+          [Environment]::OSVersion.VersionString
+          $PSVersionTable
+      - name: Install from public production endpoint
+        shell: powershell
+        run: |
+          $env:VC_LANG='en'
+          $env:VC_INSTALL_PI='0'
+          $env:VC_INSTALL_CLAUDE='0'
+          $env:VC_INSTALL_CODEX='0'
+          irm https://auth.makscee.ru/vc/install.ps1 | iex
+          $vc = Join-Path $HOME '.void-code\bin\vc.exe'
+          if (-not (Test-Path $vc)) { throw "vc missing at $vc" }
+          & $vc --version | Tee-Object -FilePath vc-version.txt
+          if ((Get-Content vc-version.txt -Raw) -notmatch 'vc v0\.2\.46') { throw 'wrong vc version' }
+          (Get-FileHash $vc -Algorithm SHA256).Hash.ToLower() | Tee-Object -FilePath vc-sha256.txt
+          if ((Get-Content vc-sha256.txt -Raw).Trim() -ne '1a008fd2e1b724fa31276cea64110dd5d1be0a27d7aa69370ec47555871a133a') { throw 'wrong vc checksum' }
+          & $vc --non-interactive status
+          & $vc --non-interactive doctor
+      - name: Verify idempotent reinstall
+        shell: powershell
+        run: |
+          $env:VC_LANG='en'
+          $env:VC_INSTALL_PI='0'
+          $env:VC_INSTALL_CLAUDE='0'
+          $env:VC_INSTALL_CODEX='0'
+          irm https://auth.makscee.ru/vc/install.ps1 | iex
+          $vc = Join-Path $HOME '.void-code\bin\vc.exe'
+          & $vc --version
+          if ((Get-FileHash $vc -Algorithm SHA256).Hash.ToLower() -ne '1a008fd2e1b724fa31276cea64110dd5d1be0a27d7aa69370ec47555871a133a') { throw 'checksum changed after reinstall' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-production-verification
+          path: |
+            vc-version.txt
+            vc-sha256.txt
