@@ -40,15 +40,13 @@ This downloads `vc.exe`, installs it to `%USERPROFILE%\.void-code\bin\`, and add
 
 ## Step 4 — Log in
 
-Your operator will give you a one-time access code (looks like `ABCD-EFGH`).
-
-In a **new** PowerShell window:
+In a **new** PowerShell window, start the interactive authentication flow:
 
 ```
-vc login --code <YOUR-CODE-FROM-OPERATOR>
+vc login
 ```
 
-Replace `<YOUR-CODE-FROM-OPERATOR>` with the code you received.
+Follow the prompts to complete login.
 
 ---
 

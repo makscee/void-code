@@ -25,12 +25,10 @@ Pilot trust boundary: hostile mutation of the Pi session store by another proces
 
 ## 2. Existing authorized VC sign-in — no credential evidence
 
-Maks obtains one authorized one-time code through the existing operator process. The accountant enters it directly; nobody says it aloud for recording, pastes it into chat, screenshots it, or writes it into evidence.
-
-In PowerShell, use the existing VC installation and invoke the authorized flow without putting the literal code in shell history:
+In PowerShell, use the existing VC installation and start the plain interactive authentication flow. Follow its prompts without saying credentials aloud for recording, pasting them into chat, taking screenshots, or writing them into evidence:
 
 ```powershell
-vc login --code (Read-Host "Enter the one-time VC code")
+vc login
 ```
 
 After success, perform the value-free readiness check locally:

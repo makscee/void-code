@@ -45,27 +45,17 @@ This downloads `vc`, installs it to `~/.void-code/bin/`, appends that directory 
 > source ~/.zshrc
 > ```
 
-If you already have an access code from your operator, you can log in automatically:
-
-```sh
-curl -fsSL https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
-```
-
-Replace `ABCD-EFGH` with your actual code.
-
 ---
 
 ## Step 4 — Log in
 
-Your operator will give you a one-time access code (looks like `ABCD-EFGH`).
-
-In a **new** terminal:
+In a **new** terminal, start the interactive authentication flow:
 
 ```sh
-vc login --code <YOUR-CODE-FROM-OPERATOR>
+vc login
 ```
 
-Replace `<YOUR-CODE-FROM-OPERATOR>` with the code you received.
+Follow the prompts to complete login.
 
 ---
 
@@ -96,4 +86,4 @@ Run `vc doctor` — it checks your setup and tells you what's missing.
 
 ---
 
-> The installer at `https://auth.makscee.ru/vc/install.sh` handles Steps 3+ automatically (including login if `VC_CODE` is set).
+> The installer at `https://auth.makscee.ru/vc/install.sh` handles Step 3 automatically. Run `vc login` interactively afterward.

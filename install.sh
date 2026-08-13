@@ -4,14 +4,14 @@
 # Default: vc + node + Pi only. Optional flags install Claude Code and/or Codex.
 #
 # Usage (recommended):
-#   curl -fsSL https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
+#   curl -fsSL https://auth.makscee.ru/vc/install.sh | sh
 #
 # Or if curl is not available (e.g. fresh debian LXC ships wget only):
-#   wget -qO- https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
+#   wget -qO- https://auth.makscee.ru/vc/install.sh | sh
+#
+# After installation, authenticate interactively with: vc login
 #
 # Env:
-#   VC_CODE             access code (required for vc login). Wiped from env
-#                       after use — never echoed or written to disk.
 #   VC_AUTH_HOST        default https://auth.makscee.ru — overrides every
 #                       fetch URL. Used by e2e harness to point at staging.
 #   VC_SKIP_DOWNLOAD    set to 1 to skip vc binary download + PATH-append
@@ -743,9 +743,7 @@ if [ "$DRY_RUN" = 1 ]; then
   fi
   _dry_rc="$(detect_rc_file)"
   printf 'RC file: %s\n' "${_dry_rc}"
-  if [ -n "${VC_CODE:-}" ]; then
-    printf 'WOULD: vc login  (VC_CODE set)\n'
-  fi
+  printf 'NEXT: vc login\n'
   exit 0
 fi
 
@@ -803,16 +801,6 @@ if ensure_node; then
   check_selected_agents
 else
   printf 'vc: node bootstrap incomplete — vc itself is installed; finish node + selected agents per the steps below.\n' >&2
-fi
-
-# 5. vc login — use VC_CODE if provided, then wipe it from env
-if [ -n "${VC_CODE:-}" ]; then
-  VC_CODE_VALUE="$VC_CODE"
-  unset VC_CODE
-  printf '==> running first-time login...\n' >&2
-  "$BIN_DIR/vc" login --code "$VC_CODE_VALUE" \
-    || printf 'vc: login failed — re-run: vc login --code <YOUR-CODE>\n' >&2
-  unset VC_CODE_VALUE
 fi
 
 # ── post-install UX ───────────────────────────────────────────────────────────
@@ -880,7 +868,7 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
     printf '         or run: source %s\n' "${RC_FILE:-~/.zshrc}"
     _n=$((_n + 1))
   fi
-  printf '\n  %s. Log in: vc login --code <YOUR-CODE-FROM-OPERATOR>\n' "$_n"
+  printf '\n  %s. Log in interactively: vc login\n' "$_n"
   _n=$((_n + 1))
   printf '\n  %s. Run: vc\n' "$_n"
 
