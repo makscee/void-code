@@ -12,6 +12,7 @@ import (
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/compat"
+	"github.com/makscee/void-code/internal/welcome"
 )
 
 func testPreflightDeps(now func() time.Time) launchPreflightDeps {
@@ -74,6 +75,63 @@ func TestLaunchPreflight_ImmediateInteractiveRenderIncludesChatGPTCompletedWithi
 	}
 	if len(result.rows) != 1 || result.rows[0].ID != "chatgpt-sub" || result.rows[0].Name != "ChatGPT" {
 		t.Fatalf("first render rows = %+v, want ChatGPT grant", result.rows)
+	}
+}
+
+func TestRefreshLaunchAfterLogin_ReloadsCredentialAndDiscoversSelectableChatGPTOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VC_AUTH_HOST", "https://new-auth.example")
+
+	var emptyAuthCalls, loggedInAuthCalls, providerCalls, updateCalls atomic.Int32
+	deps := testPreflightDeps(time.Now)
+	deps.auth = func(token, host string, _ *http.Client) (auth.MeResult, bool, error) {
+		if token == "" {
+			emptyAuthCalls.Add(1)
+			return auth.MeResult{}, false, errors.New("not logged in")
+		}
+		loggedInAuthCalls.Add(1)
+		if token != "new-session.new-secret" || host != "https://new-auth.example" {
+			t.Errorf("refreshed auth inputs = token %q host %q", token, host)
+		}
+		return auth.MeResult{UserID: "new-user"}, true, nil
+	}
+	deps.providers = func(host, token string, _ *http.Client) ([]auth.ProviderInfo, error) {
+		providerCalls.Add(1)
+		if token != "new-session.new-secret" || host != "https://new-auth.example" {
+			t.Errorf("provider inputs = token %q host %q", token, host)
+		}
+		return []auth.ProviderInfo{{ID: "chatgpt-sub", Name: "ChatGPT", Type: "openai-codex-oauth"}}, nil
+	}
+	deps.update = func() string { updateCalls.Add(1); return "" }
+
+	loggedOut := startLaunchPreflight("", "https://old-auth.example", true, deps)
+	<-loggedOut.authDone
+	<-loggedOut.providersDone
+	<-loggedOut.updateDone
+	if providerCalls.Load() != 0 {
+		t.Fatalf("logged-out provider calls = %d, want 0", providerCalls.Load())
+	}
+	if err := auth.Save("new-session.new-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	state, token, host, refreshed := refreshLaunchAfterLogin(deps)
+	if !state.LoggedIn || token != "new-session.new-secret" || host != "https://new-auth.example" {
+		t.Fatalf("refreshed state = %+v token=%q host=%q", state, token, host)
+	}
+	result, ready := refreshed.providerForRender(token, host, true)
+	if !ready || result.err != nil || len(result.rows) != 1 {
+		t.Fatalf("refreshed providers = %#v ready=%v", result, ready)
+	}
+	menu := welcome.NewProvidersModelWithGrantedForTest(nil, result.rows, "relay")
+	if menu.RowCount() != 2 || menu.RowLabel(1) != "ChatGPT relay" {
+		t.Fatalf("logged-in provider menu lacks selectable ChatGPT: count=%d label=%q", menu.RowCount(), menu.RowLabel(1))
+	}
+	if _, _, err, reused := refreshed.awaitAuth(token, host); !reused || err != nil {
+		t.Fatalf("refreshed auth result reused=%v err=%v", reused, err)
+	}
+	if emptyAuthCalls.Load() != 1 || loggedInAuthCalls.Load() != 1 || providerCalls.Load() != 1 || updateCalls.Load() != 1 {
+		t.Fatalf("calls empty-auth=%d logged-in-auth=%d providers=%d update=%d", emptyAuthCalls.Load(), loggedInAuthCalls.Load(), providerCalls.Load(), updateCalls.Load())
 	}
 }
 

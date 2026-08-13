@@ -242,7 +242,12 @@ func main() {
 						fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)
 						os.Exit(1)
 					}
-					break menuLoop // after login → fall through to spawn
+					// Login replaces the credential, so the logged-out preflight cannot
+					// be reused. Reload all auth inputs and gate the next render on one
+					// fresh, bounded provider probe for the newly issued token.
+					state, token, authHost, currentLaunchPreflight = refreshLaunchAfterLogin(defaultLaunchPreflightDeps())
+					firstRender = true
+					continue menuLoop
 				case welcome.Quit:
 					os.Exit(0)
 				default: // SpawnClaude
@@ -290,6 +295,12 @@ func decideGate(stdinTTY, loggedIn bool) gateDecision {
 func resolveLocalAuthState() (welcome.AuthState, string, string) {
 	state, token, authHost, _ := resolveLocalAuthStateWithSource()
 	return state, token, authHost
+}
+
+func refreshLaunchAfterLogin(deps launchPreflightDeps) (welcome.AuthState, string, string, *launchPreflight) {
+	state, token, authHost, source := resolveLocalAuthStateWithSource()
+	deps.diagnostics.record(phaseLocalStateLoad, outcomeComplete, source)
+	return state, token, authHost, startLaunchPreflight(token, authHost, false, deps)
 }
 
 func resolveLocalAuthStateWithSource() (welcome.AuthState, string, string, launchSource) {
