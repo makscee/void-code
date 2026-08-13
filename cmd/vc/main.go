@@ -121,18 +121,19 @@ func main() {
 			// blocks on a keypress that a non-TTY stdin can never deliver, which
 			// hangs automation callers forever. Fall straight through to spawn.
 		case gateShowWelcome:
-			// Optional network work is already running, but first render uses only
-			// local state. Completed results may be applied on later menu renders.
+			// Provider discovery gates only the first render, up to the existing
+			// bounded probe deadline, so newly issued grants are visible immediately.
+			firstRender := true
 		menuLoop:
 			for {
 				keyNames, _ := keystore.ListKeys()
 				activeProv := provider.Load()
 				activeLabel := provider.LoadLabel()
 				activeHarness := harnesschoice.Load()
-				// Provider and update probes never gate rendering. Apply them only if
-				// they happened to complete before this render.
 				var grantedRows []welcome.ProviderRowInfo
-				if result, ready := currentLaunchPreflight.providerIfReady(token, authHost); ready && result.err == nil {
+				providerResult, providerReady := currentLaunchPreflight.providerForRender(token, authHost, firstRender)
+				firstRender = false
+				if result := providerResult; providerReady && result.err == nil {
 					grantedRows = result.rows
 					granted := make([]provider.GrantedEntry, len(grantedRows))
 					for i, r := range grantedRows {
@@ -383,7 +384,7 @@ func fetchCompatGrants(authHost, token string) ([]compat.Grant, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, nil
 	}
-	infos, err := cachedFetchProviders(authHost, token, &http.Client{Timeout: authProbeTimeout})
+	infos, err := fetchProvidersLive(authHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return nil, err
 	}

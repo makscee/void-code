@@ -84,7 +84,7 @@ func init() {
 }
 
 func fetchDesktopGrants(authHost, token string, client *http.Client) ([]compat.Grant, error) {
-	infos, err := cachedFetchProviders(authHost, token, client)
+	infos, err := fetchProvidersLive(authHost, token, client)
 	if err != nil {
 		return nil, err
 	}

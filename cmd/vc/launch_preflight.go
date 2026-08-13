@@ -66,7 +66,7 @@ func defaultLaunchPreflightDeps() launchPreflightDeps {
 	return launchPreflightDeps{
 		now:         time.Now,
 		auth:        authGate,
-		providers:   cachedFetchProviders,
+		providers:   fetchProvidersLive,
 		update:      launchUpdateCheck,
 		newClient:   func() *http.Client { return &http.Client{Timeout: authProbeTimeout} },
 		diagnostics: currentLaunchDiagnostics,
@@ -162,6 +162,13 @@ func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool
 	default:
 		return auth.MeResult{}, false, nil, true
 	}
+}
+
+func (p *launchPreflight) providerForRender(token, authHost string, first bool) (launchProviderResult, bool) {
+	if first {
+		return p.awaitProvider(token, authHost)
+	}
+	return p.providerIfReady(token, authHost)
 }
 
 func (p *launchPreflight) providerIfReady(token, authHost string) (launchProviderResult, bool) {

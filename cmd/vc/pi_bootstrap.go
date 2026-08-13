@@ -50,7 +50,7 @@ func currentPiBootstrap() (piBootstrap, error) {
 		return piBootstrap{}, fmt.Errorf("Pi provider bootstrap requires `vc login`")
 	}
 	cfg := config.OSResolve()
-	infos, err := cachedFetchProviders(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
+	infos, err := fetchProvidersLive(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return piBootstrap{}, fmt.Errorf("refresh Pi provider grants: %w", err)
 	}

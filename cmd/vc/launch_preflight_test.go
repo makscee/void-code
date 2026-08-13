@@ -18,13 +18,13 @@ func testPreflightDeps(now func() time.Time) launchPreflightDeps {
 	return launchPreflightDeps{
 		now:       now,
 		auth:      authGate,
-		providers: cachedFetchProviders,
+		providers: fetchProvidersLive,
 		update:    func() string { return "" },
 		newClient: func() *http.Client { return &http.Client{Timeout: authProbeTimeout} },
 	}
 }
 
-func TestLaunchPreflight_FirstRenderDoesNotWaitForNetwork(t *testing.T) {
+func TestLaunchPreflight_StartDoesNotWaitForNetwork(t *testing.T) {
 	blocked := make(chan struct{})
 	defer close(blocked)
 	now := time.Unix(1, 0)
@@ -49,6 +49,31 @@ func TestLaunchPreflight_FirstRenderDoesNotWaitForNetwork(t *testing.T) {
 	}
 	if nudge, ready := p.updateIfReady(); ready || nudge != "" {
 		t.Fatalf("hanging update = (%q, %v), want no nudge and not ready", nudge, ready)
+	}
+}
+
+func TestLaunchPreflight_ImmediateInteractiveRenderIncludesChatGPTCompletedWithinDeadline(t *testing.T) {
+	providerRelease := make(chan struct{})
+	deps := testPreflightDeps(time.Now)
+	deps.auth = func(string, string, *http.Client) (auth.MeResult, bool, error) {
+		return auth.MeResult{}, true, nil
+	}
+	deps.providers = func(string, string, *http.Client) ([]auth.ProviderInfo, error) {
+		<-providerRelease
+		return []auth.ProviderInfo{{ID: "chatgpt-sub", Name: "ChatGPT", Type: "openai-codex-oauth"}}, nil
+	}
+	p := startLaunchPreflight("legacy", "host", false, deps)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(providerRelease)
+	}()
+
+	result, ready := p.providerForRender("legacy", "host", true)
+	if !ready || result.err != nil {
+		t.Fatalf("first render provider result ready=%v err=%v", ready, result.err)
+	}
+	if len(result.rows) != 1 || result.rows[0].ID != "chatgpt-sub" || result.rows[0].Name != "ChatGPT" {
+		t.Fatalf("first render rows = %+v, want ChatGPT grant", result.rows)
 	}
 }
 

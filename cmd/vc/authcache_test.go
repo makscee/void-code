@@ -63,7 +63,7 @@ func TestCachedFetchMeReusesFreshDiskCache(t *testing.T) {
 	}
 }
 
-func TestCachedFetchProvidersReusesFreshDiskCache(t *testing.T) {
+func TestFetchProvidersLive_IgnoresCachedEmptyGrantList(t *testing.T) {
 	withTempHome(t)
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,23 +71,22 @@ func TestCachedFetchProvidersReusesFreshDiskCache(t *testing.T) {
 		if r.URL.Path != "/v1/vc/providers" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"providers":[{"id":"plat-2","name":"ChatGPT Sub","type":"openai-codex-oauth"}]}`))
+		_, _ = w.Write([]byte(`{"providers":[{"id":"chatgpt-sub","name":"ChatGPT","type":"openai-codex-oauth"}]}`))
 	}))
 	defer srv.Close()
 
-	first, err := cachedFetchProviders(srv.URL, "tok", srv.Client())
+	// Seed the cache under the server's actual host, then prove discovery still
+	// performs a live request and returns the newly issued grant.
+	writeAuthCache("providers", srv.URL, "tok", []auth.ProviderInfo{}, time.Now())
+	providers, err := fetchProvidersLive(srv.URL, "tok", srv.Client())
 	if err != nil {
-		t.Fatalf("first fetch: %v", err)
-	}
-	second, err := cachedFetchProviders(srv.URL, "tok", srv.Client())
-	if err != nil {
-		t.Fatalf("second fetch: %v", err)
+		t.Fatalf("fetch providers: %v", err)
 	}
 	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
+		t.Fatalf("calls = %d, want 1 live request", calls)
 	}
-	if len(first) != 1 || len(second) != 1 || second[0].ID != "plat-2" {
-		t.Fatalf("cached providers mismatch: first=%+v second=%+v", first, second)
+	if len(providers) != 1 || providers[0].ID != "chatgpt-sub" {
+		t.Fatalf("providers = %+v, want live chatgpt-sub grant", providers)
 	}
 }
 

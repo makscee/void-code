@@ -242,23 +242,18 @@ func cachedFetchMe(authHost, token string, httpClient *http.Client) (auth.MeResu
 	return state.Me, nil
 }
 
-func cachedFetchProviders(authHost, token string, httpClient *http.Client) ([]auth.ProviderInfo, error) {
-	if cached, ok := readAuthCache[[]auth.ProviderInfo]("providers", authHost, token, time.Now()); ok {
-		return cached, nil
-	}
-	if err := readAuthTransient("providers", authHost, token); err != nil {
-		return nil, err
-	}
+// fetchProvidersLive always asks the auth service for the current grants.
+// Provider grants can change immediately after login, so even a fresh empty
+// cache entry is not authoritative.
+func fetchProvidersLive(authHost, token string, httpClient *http.Client) ([]auth.ProviderInfo, error) {
 	providers, err := auth.FetchProviders(authHost, token, httpClient)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotLoggedIn) {
 			clearAuthCache("providers", authHost, token)
-		} else {
-			writeAuthTransient("providers", authHost, token, err)
 		}
 		return nil, err
 	}
-	writeAuthCache("providers", authHost, token, providers, time.Now())
+	clearAuthCache("providers", authHost, token)
 	return providers, nil
 }
 
