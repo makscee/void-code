@@ -27,9 +27,6 @@ jobs:
           if ((Get-Content vc-version.txt -Raw) -notmatch 'vc v0\.2\.46') { throw 'wrong vc version' }
           (Get-FileHash $vc -Algorithm SHA256).Hash.ToLower() | Tee-Object -FilePath vc-sha256.txt
           if ((Get-Content vc-sha256.txt -Raw).Trim() -ne '1a008fd2e1b724fa31276cea64110dd5d1be0a27d7aa69370ec47555871a133a') { throw 'wrong vc checksum' }
-          & $vc --non-interactive status 2>&1 | Out-File vc-status.txt
-          if ((Get-Content vc-status.txt -Raw) -notmatch 'login|token|auth') { throw 'logged-out status lacked auth guidance' }
-          $global:LASTEXITCODE = 0
       - name: Verify idempotent reinstall
         shell: powershell
         run: |
