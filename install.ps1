@@ -156,10 +156,22 @@ if (Test-Path $target) { Move-Item -Force $target $old }
 Move-Item -Force $tmp $target
 Write-Host "==> installing to $target" -ForegroundColor Green
 
-# 2. Download relay CA (public cert)
+# 2. Download relay CA (public cert). This is useful for relay-backed agents,
+# but it must never prevent vc.exe itself from installing. Windows PowerShell's
+# Invoke-WebRequest can occasionally wait indefinitely during this small fetch,
+# so bound it and degrade with actionable guidance.
 $caPath = Join-Path $vcDir 'relay-ca.pem'
 Write-Host "==> provisioning relay CA" -ForegroundColor Cyan
-Invoke-WebRequest -Uri $relayCaUrl -OutFile $caPath -UseBasicParsing
+$caReady = $false
+try {
+    Invoke-WebRequest -Uri $relayCaUrl -OutFile $caPath -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+    $caReady = (Test-Path $caPath) -and ((Get-Item $caPath).Length -gt 0)
+    if (-not $caReady) { throw 'downloaded relay CA is empty' }
+} catch {
+    Remove-Item -Force $caPath -ErrorAction SilentlyContinue
+    Write-Host "vc: relay CA download failed or timed out: $_" -ForegroundColor Yellow
+    Write-Host "    vc is installed; retry later by re-running this installer." -ForegroundColor Yellow
+}
 
 # 2b. Trust the relay CA in the OS store so Schannel/.NET consumers (PowerShell
 # Invoke-WebRequest, etc.) can validate the relay's HTTPS proxy cert. vc injects
@@ -170,12 +182,20 @@ Invoke-WebRequest -Uri $relayCaUrl -OutFile $caPath -UseBasicParsing
 # proxy-revocation override. Full curl fix is relay-side (leaf cert CRL/OCSP) or the
 # plaintext relay (VC_RELAY_HOST=http://relay.makscee.ru:8448). A trust prompt appears
 # once (CurrentUser\Root). Non-fatal + idempotent (same-thumbprint re-import is a no-op).
-try {
-    Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
-    Write-Host "==> trusted relay CA in CurrentUser\Root store" -ForegroundColor Green
-} catch {
-    Write-Host "vc: could not auto-trust relay CA: $_" -ForegroundColor Yellow
-    Write-Host "    In-session curl/git may show SSL errors; import $caPath into Certificates (Current User) > Trusted Root." -ForegroundColor Yellow
+# Importing a private CA into Trusted Root can display a GUI confirmation and
+# indefinitely block terminal-only installs. vc passes this CA directly to its
+# managed Node agents, so OS-store trust is optional. Operators that explicitly
+# need Schannel/.NET trust can opt in; ordinary onboarding remains unattended.
+if ($env:VC_TRUST_RELAY_CA -eq '1') {
+    try {
+        if (-not $caReady) { throw 'relay CA is unavailable' }
+        Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
+        Write-Host "==> trusted relay CA in CurrentUser\Root store" -ForegroundColor Green
+    } catch {
+        Write-Host "vc: could not trust relay CA: $_" -ForegroundColor Yellow
+    }
+} elseif ($caReady) {
+    Write-Host "==> relay CA saved (OS trust skipped; set VC_TRUST_RELAY_CA=1 to opt in)" -ForegroundColor Green
 }
 
 # Add ~/.void-code/bin to user PATH if not already there (idempotent)
