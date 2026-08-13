@@ -56,15 +56,6 @@ func defaultCredentialOps() credentialOps {
 	}
 }
 
-func syncDirectory(dir string) error {
-	directory, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
-}
-
 func Save(token string) error {
 	path, err := tokenPath()
 	if err != nil {
