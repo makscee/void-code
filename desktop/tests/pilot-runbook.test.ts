@@ -5,7 +5,7 @@ const runbook = readFileSync(new URL('../docs/windows-accountant-pilot-runbook.m
 
 describe('guided Windows accountant pilot runbook', () => {
   it('orders auth, hash-before-bypass, safe workspace and exact product lifecycle', () => {
-    expect(runbook.indexOf('vc login --code')).toBeLessThan(runbook.indexOf('Get-FileHash'));
+    expect(runbook.indexOf('vc login')).toBeLessThan(runbook.indexOf('Get-FileHash'));
     expect(runbook.indexOf('Get-FileHash')).toBeLessThan(runbook.indexOf('Get-AuthenticodeSignature'));
     expect(runbook.indexOf('Get-AuthenticodeSignature')).toBeLessThan(runbook.indexOf('-Stream Zone.Identifier'));
     expect(runbook.indexOf('-Stream Zone.Identifier')).toBeLessThan(runbook.indexOf('**More info**'));

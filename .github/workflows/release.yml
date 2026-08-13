@@ -186,12 +186,15 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   publish-auth:
-    name: Sync binaries to void-auth
+    name: Sync release to void-auth
     needs: release
     runs-on: ubuntu-latest
     # Requires repo secret VOID_AUTH_PUSH_TOKEN — a fine-scoped PAT with
     # contents:write on makscee/void-auth.
     steps:
+      - name: Checkout void-code
+        uses: actions/checkout@v4
+
       - name: Checkout void-auth
         uses: actions/checkout@v4
         with:
@@ -242,15 +245,22 @@ jobs:
           }
           EOF
 
-      - name: Make Unix binaries executable
-        run: chmod +x void-auth/public/vc/bin/vc-darwin-* void-auth/public/vc/bin/vc-linux-*
+      - name: Sync installers to canonical routes
+        run: |
+          cp install.sh void-auth/public/vc/install.sh
+          cp install.ps1 void-auth/public/vc/install.ps1
+
+      - name: Make Unix files executable
+        run: |
+          chmod +x void-auth/public/vc/bin/vc-darwin-* void-auth/public/vc/bin/vc-linux-*
+          chmod +x void-auth/public/vc/install.sh
 
       - name: Commit and push to void-auth
         run: |
           cd void-auth
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/vc/bin/ public/vc/version.json
+          git add public/vc/bin/ public/vc/version.json public/vc/install.sh public/vc/install.ps1
           git diff --cached --quiet || git commit -m "chore: bump vc binaries to ${{ github.ref_name }}
 
           Automated sync from makscee/void-code release ${{ github.ref_name }}.

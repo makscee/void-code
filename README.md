@@ -5,8 +5,11 @@
 ## Install
 
 ```bash
-curl -fsSL https://auth.makscee.ru/vc/install.sh | VC_CODE=ABCD-EFGH sh
+curl -fsSL https://auth.makscee.ru/vc/install.sh | sh
+vc login
 ```
+
+`vc login` starts the interactive authentication flow after installation.
 
 Default install provisions `vc`, Node.js, and Pi only. Optional harness CLIs:
 
@@ -17,15 +20,15 @@ VC_INSTALL_PI=0 sh install.sh --with-codex   # Codex only
 
 Windows (PowerShell):
 ```powershell
-$env:VC_CODE='ABCD-EFGH'; iex (irm https://auth.makscee.ru/vc/install.ps1)
+iex (irm https://auth.makscee.ru/vc/install.ps1)
+vc login
 ```
 
 ## Usage
 
 ```
 vc                    # launch the active harness with relay env injected
-vc login              # authenticate (reads $VC_CODE or prompts)
-vc login --device     # device-code flow
+vc login              # authenticate interactively
 vc logout             # wipe credentials
 vc status             # show auth / relay / provider / harness / version info
 vc doctor             # check selected harness binary and compatibility matrix
@@ -75,7 +78,6 @@ The desktop main process must supply package-owned paths; renderer input must no
 | `VC_RELAY_HOST` | `relay.makscee.ru:443` | relay host:port |
 | `VC_AUTH_HOST` | `https://auth.makscee.ru` | void-auth base URL |
 | `VC_RELAY_CA` | _(embedded)_ | filesystem path to relay CA PEM |
-| `VC_CODE` | _(none)_ | access code for `vc login` |
 
 ## Token storage
 

@@ -3,8 +3,7 @@
 # Usage:
 #   iex (irm https://auth.makscee.ru/vc/install.ps1)
 #
-# With access code (logs in automatically):
-#   $env:VC_CODE='ABCD-EFGH'; iex (irm https://auth.makscee.ru/vc/install.ps1)
+# After installation, authenticate interactively with: vc login
 #
 # Installs vc.exe — the void-code relay launcher for Windows.
 # Bootstraps node + selected agent CLIs automatically on bare machines.
@@ -12,8 +11,6 @@
 # node installed via winget (if present) or official Node LTS .msi fallback.
 #
 # Env:
-#   $env:VC_CODE              access code (optional — runs vc login after install).
-#                             Wiped from env after use — never echoed or written to disk.
 #   $env:VC_AUTH_HOST         default https://auth.makscee.ru — overrides fetch URL.
 #                             Used by e2e harness to point at staging.
 #   $env:VC_LANG              language for vc UI: en (default) or ru. If set,
@@ -67,6 +64,7 @@ if ($env:VC_INSTALL_DRY_RUN -eq '1') {
         Write-Output "WOULD: $(Format-NpmInstallGlobal '@openai/codex')"
         Write-Output 'WOULD: consider Codex healthy only if codex --version contains codex-cli; repair missing native optional package if needed'
     }
+    Write-Output 'NEXT: vc login'
     exit 0
 }
 
@@ -573,19 +571,6 @@ if (Test-Path $configFile) {
     $langLine | Set-Content $configFile
 }
 
-# 5. vc login — use VC_CODE if provided, then wipe it
-if ($env:VC_CODE) {
-    Write-Host "==> running first-time login..." -ForegroundColor Cyan
-    $codeValue  = $env:VC_CODE
-    $env:VC_CODE = $null
-    try {
-        & $target login --code $codeValue
-    } catch {
-        Write-Host "vc: login failed: $_ — re-run 'vc login --code <YOUR-CODE>' manually" -ForegroundColor Yellow
-    }
-    Remove-Variable -Name codeValue -ErrorAction SilentlyContinue
-}
-
 # Post-install UX
 # Refresh PATH so we can resolve the binaries we just installed.
 $machinePathFinal = [System.Environment]::GetEnvironmentVariable('PATH','Machine')
@@ -626,7 +611,7 @@ if ($InstallCodex -and -not $codexInstalled) {
     $step++
 }
 Write-Host ""
-Write-Host "  $step. Run: vc login --code <YOUR-CODE-FROM-OPERATOR>" -ForegroundColor White
+Write-Host "  $step. Log in interactively: vc login" -ForegroundColor White
 $step++
 Write-Host ""
 Write-Host "  $step. Run: vc" -ForegroundColor White
