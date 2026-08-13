@@ -29,7 +29,6 @@ vc login
 ```
 vc                    # launch the active harness with relay env injected
 vc login              # authenticate interactively
-vc login --device     # device-code flow
 vc logout             # wipe credentials
 vc status             # show auth / relay / provider / harness / version info
 vc doctor             # check selected harness binary and compatibility matrix

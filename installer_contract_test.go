@@ -42,7 +42,7 @@ func TestUserDocsDoNotPromiseAutomaticOrAccessCodeLogin(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			content := readInstaller(t, name)
-			for _, obsolete := range []string{"VC_CODE", "login --code", "logs in automatically"} {
+			for _, obsolete := range []string{"VC_CODE", "login --code", "login --device", "logs in automatically"} {
 				if strings.Contains(content, obsolete) {
 					t.Errorf("%s contains obsolete login wording %q", name, obsolete)
 				}
