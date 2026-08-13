@@ -33,6 +33,54 @@ func TestInstallersUsePlainInteractiveLogin(t *testing.T) {
 	}
 }
 
+func TestUserDocsDoNotPromiseAutomaticOrAccessCodeLogin(t *testing.T) {
+	for _, name := range []string{
+		"README.md",
+		"docs/mac-setup.md",
+		"docs/windows-setup.md",
+		"desktop/docs/windows-accountant-pilot-runbook.md",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := readInstaller(t, name)
+			for _, obsolete := range []string{"VC_CODE", "login --code", "logs in automatically"} {
+				if strings.Contains(content, obsolete) {
+					t.Errorf("%s contains obsolete login wording %q", name, obsolete)
+				}
+			}
+		})
+	}
+}
+
+func TestRootHelpDescribesCurrentLoginFlow(t *testing.T) {
+	content := readInstaller(t, "cmd/vc/root.go")
+	if strings.Contains(content, "Authenticate with an access code") {
+		t.Fatal("root help advertises obsolete access-code login")
+	}
+	if !strings.Contains(content, "login    Authenticate interactively or with device flow") {
+		t.Fatal("root help does not describe the current login flow")
+	}
+}
+
+func TestStableReleaseSyncsInstallersAndBinariesToVoidAuth(t *testing.T) {
+	content := readInstaller(t, ".github/workflows/release.yml")
+	for _, required := range []string{
+		"out-file-path: void-auth/public/vc/bin",
+		"cp install.sh void-auth/public/vc/install.sh",
+		"cp install.ps1 void-auth/public/vc/install.ps1",
+		"git add public/vc/bin/ public/vc/version.json public/vc/install.sh public/vc/install.ps1",
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("stable release workflow is missing %q", required)
+		}
+	}
+
+	checkout := strings.Index(content, "- name: Checkout void-code")
+	sync := strings.Index(content, "cp install.sh void-auth/public/vc/install.sh")
+	if checkout < 0 || sync < 0 || checkout >= sync {
+		t.Fatal("stable release workflow must check out installer sources before syncing them")
+	}
+}
+
 func TestShellInstallerDryRunDoesNotWrite(t *testing.T) {
 	home := t.TempDir()
 	before, err := os.ReadDir(home)

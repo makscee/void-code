@@ -32,7 +32,7 @@ vc launches the selected coding harness (Claude Code, OpenAI Codex, or Pi) with 
 Running "vc" with no sub-command starts the active harness with relay env injected.
 
 Sub-commands:
-  login    Authenticate with an access code or device flow
+  login    Authenticate interactively or with device flow
   logout   Wipe cached credentials
   status   Show current auth / relay / version status
   update           Fetch the latest vc release and swap the binary
