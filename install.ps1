@@ -38,10 +38,10 @@ function ConvertTo-VCNormalizedPathEntry {
 
     if ($null -eq $Entry) { return '' }
     $trimmed = $Entry.Trim()
-    $unquoted = $trimmed.Trim('"')
+    $unquoted = $trimmed.Trim([char[]]@([char]34))
     $expanded = [Environment]::ExpandEnvironmentVariables($unquoted)
-    $normalized = $expanded.Replace('/', '\')
-    while ($normalized.Length -gt 3 -and ($normalized.EndsWith('\') -or $normalized.EndsWith('/'))) {
+    $normalized = $expanded.Replace([char]47, [char]92)
+    while ($normalized.Length -gt 3 -and ($normalized.EndsWith([string][char]92) -or $normalized.EndsWith([string][char]47))) {
         $normalized = $normalized.Substring(0, $normalized.Length - 1)
     }
     return $normalized
