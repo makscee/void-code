@@ -21,6 +21,42 @@ jobs:
       - name: Validate release tag graphs
         run: ruby .github/scripts/check-release-tag-graphs.rb
 
+  windows-installer-powershell51:
+    name: Windows installer (PowerShell 5.1)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Require Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
+            throw "expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
+          }
+      - name: Parse installer with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $installerSource = Get-Content -Raw -Encoding UTF8 (Join-Path $PWD 'install.ps1')
+          [void][System.Management.Automation.Language.Parser]::ParseInput(
+            $installerSource, [ref]$tokens, [ref]$errors)
+          foreach ($parseError in $errors) {
+            $line = $parseError.Extent.StartLineNumber
+            $message = $parseError.Message.Replace("`r", ' ').Replace("`n", ' ')
+            Write-Output "::error file=install.ps1,line=$($line)::$message"
+          }
+          if ($errors.Count) { exit 1 }
+      - name: Exercise installer PATH helpers
+        shell: powershell
+        run: .\scripts\test-install-ps1-path.ps1
+      - name: Run installer contract tests
+        shell: powershell
+        run: go test . -run 'TestWindowsInstallerPathRepairContract|TestWindowsSetupDocumentsNoReinstallFallback|TestPowerShellPathHarness' -count=1
+
   desktop-pinned-pi-smoke:
     name: Desktop pinned Pi smoke
     runs-on: macos-14
