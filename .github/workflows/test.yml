@@ -41,8 +41,9 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $PWD 'install.ps1'), [ref]$tokens, [ref]$errors)
+          $installerSource = Get-Content -Raw -Encoding UTF8 (Join-Path $PWD 'install.ps1')
+          [void][System.Management.Automation.Language.Parser]::ParseInput(
+            $installerSource, [ref]$tokens, [ref]$errors)
           foreach ($parseError in $errors) {
             $line = $parseError.Extent.StartLineNumber
             $message = $parseError.Message.Replace("`r", ' ').Replace("`n", ' ')

@@ -1,7 +1,7 @@
 param([string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'))
 
 $ErrorActionPreference = 'Stop'
-$source = Get-Content -Raw $Installer
+$source = Get-Content -Raw -Encoding UTF8 $Installer
 $begin = '# BEGIN VC PATH HELPERS'
 $end = '# END VC PATH HELPERS'
 $beginIndex = $source.IndexOf($begin)

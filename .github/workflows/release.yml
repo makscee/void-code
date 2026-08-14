@@ -43,8 +43,9 @@ jobs:
           }
           $tokens = $null
           $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $PWD 'install.ps1'), [ref]$tokens, [ref]$errors)
+          $installerSource = Get-Content -Raw -Encoding UTF8 (Join-Path $PWD 'install.ps1')
+          [void][System.Management.Automation.Language.Parser]::ParseInput(
+            $installerSource, [ref]$tokens, [ref]$errors)
           if ($errors.Count) { throw ($errors | Out-String) }
           .\scripts\test-install-ps1-path.ps1
           go test . -run 'TestWindowsInstallerPathRepairContract|TestStableReleaseRequiresPowerShell51InstallerGate|TestWindowsSetupDocumentsNoReinstallFallback|TestPowerShellPathHarness' -count=1

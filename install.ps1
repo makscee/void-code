@@ -142,9 +142,7 @@ namespace VC {
             $HWND_BROADCAST = [IntPtr]0xffff
             $WM_SETTINGCHANGE = 0x001A
             $SMTO_ABORTIFHUNG = 0x0002
-            $sendResult = [VC.NativeMethods]::SendMessageTimeout(
-                $HWND_BROADCAST, $WM_SETTINGCHANGE, [IntPtr]::Zero,
-                'Environment', $SMTO_ABORTIFHUNG, 2000, [ref]$result)
+            $sendResult = [VC.NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [IntPtr]::Zero, 'Environment', $SMTO_ABORTIFHUNG, 2000, [ref]$result)
             if ($sendResult -eq [IntPtr]::Zero) {
                 $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
                 throw "WM_SETTINGCHANGE broadcast failed (Win32 error $errorCode)"
