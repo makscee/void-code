@@ -30,19 +30,26 @@ jobs:
         with:
           go-version-file: .go-version
           cache: true
-      - name: Parse and exercise installer PATH helpers
+      - name: Require Windows PowerShell 5.1
         shell: powershell
         run: |
           if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
             throw "expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
           }
+      - name: Parse installer with Windows PowerShell 5.1
+        shell: powershell
+        run: |
           $tokens = $null
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile(
             (Join-Path $PWD 'install.ps1'), [ref]$tokens, [ref]$errors)
           if ($errors.Count) { throw ($errors | Out-String) }
-          .\scripts\test-install-ps1-path.ps1
-          go test . -run 'TestWindowsInstallerPathRepairContract|TestWindowsSetupDocumentsNoReinstallFallback|TestPowerShellPathHarness' -count=1
+      - name: Exercise installer PATH helpers
+        shell: powershell
+        run: .\scripts\test-install-ps1-path.ps1
+      - name: Run installer contract tests
+        shell: powershell
+        run: go test . -run 'TestWindowsInstallerPathRepairContract|TestWindowsSetupDocumentsNoReinstallFallback|TestPowerShellPathHarness' -count=1
 
   desktop-pinned-pi-smoke:
     name: Desktop pinned Pi smoke
