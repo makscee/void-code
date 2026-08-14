@@ -32,9 +32,9 @@ In a PowerShell window, run:
 irm https://auth.makscee.ru/vc/install.ps1 | iex
 ```
 
-This downloads `vc.exe`, installs it to `%USERPROFILE%\.void-code\bin\`, and adds it to your user PATH.
+This downloads `vc.exe`, installs it to `%USERPROFILE%\.void-code\bin\`, repairs your user PATH, and refreshes the current PowerShell PATH.
 
-> **Open a new terminal** after the installer finishes — the PATH update only takes effect in new windows.
+> If you installed from VS Code and the installer warns about stale PATH state, fully exit all VS Code windows and `Code.exe` processes, then reopen VS Code. The installer never closes VS Code automatically.
 
 ---
 
@@ -63,7 +63,13 @@ That's it. vc launches claude with your relay connection.
 ## Troubleshooting
 
 **`vc` is not recognized:**
-Open a brand-new PowerShell window (close and reopen). If it still fails, run the installer again: `irm https://auth.makscee.ru/vc/install.ps1 | iex`
+Do not reinstall or log in again. Run the installed binary directly:
+
+```powershell
+& "$env:USERPROFILE\.void-code\bin\vc.exe" status
+```
+
+If VS Code was open during installation, fully exit all VS Code windows and `Code.exe` processes, then reopen VS Code and try `vc` again.
 
 **`claude` is not found after install:**
 Open a new terminal window, then retry Step 2. Node's PATH update requires a fresh shell.

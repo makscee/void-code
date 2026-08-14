@@ -40,8 +40,9 @@ assert(matches_tag?(canary_patterns, CANARY_TAG), "canary tag must start the can
 
 release_jobs = release.fetch("jobs")
 assert(release_jobs.key?("desktop-pinned-pi-smoke"), "stable release must contain pinned Pi qualification")
+assert(release_jobs.key?("windows-installer-powershell51"), "stable release must contain Windows PowerShell 5.1 installer qualification")
 assert(release_jobs.fetch("build").fetch("needs").sort == ["desktop-pinned-pi-smoke", "test"], "stable build must depend on test and pinned Pi qualification")
-assert(release_jobs.fetch("release").fetch("needs") == "build", "stable release must depend on build")
+assert(release_jobs.fetch("release").fetch("needs").sort == ["build", "windows-installer-powershell51"], "stable release must depend on build and Windows installer qualification")
 assert(release_jobs.fetch("publish-auth").fetch("needs") == "release", "stable publish-auth must depend on release")
 assert(canary.fetch("jobs").keys == ["build"], "canary graph must contain only its candidate build/release job")
 

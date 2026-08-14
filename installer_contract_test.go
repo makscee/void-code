@@ -143,6 +143,87 @@ func TestPowerShellDryRunExitsBeforeWrites(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallerPathRepairContract(t *testing.T) {
+	content := readInstaller(t, "install.ps1")
+	for _, required := range []string{
+		"# BEGIN VC PATH HELPERS",
+		"function Merge-VCPathEntry",
+		"[StringComparison]::OrdinalIgnoreCase",
+		"function Join-VCProcessPath",
+		"function Send-VCEnvironmentChange",
+		"SendMessageTimeout",
+		"WM_SETTINGCHANGE",
+		"Get-Command vc",
+		"& $target --version",
+		"restored the previous vc.exe",
+		"Fully exit all VS Code windows and Code.exe processes, then reopen VS Code.",
+		`& "$env:USERPROFILE\.void-code\bin\vc.exe" status`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("Windows installer PATH repair is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`$userPath -notlike "*$binDir*"`,
+		`$env:PATH -notlike "*$binDir*"`,
+		"Stop-Process",
+		"taskkill",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("Windows installer contains forbidden stale/unsafe behavior %q", forbidden)
+		}
+	}
+}
+
+func TestStableReleaseRequiresPowerShell51InstallerGate(t *testing.T) {
+	content := readInstaller(t, ".github/workflows/release.yml")
+	for _, required := range []string{
+		"windows-installer-powershell51:",
+		"runs-on: windows-2022",
+		"expected Windows PowerShell 5.1",
+		"needs: [build, windows-installer-powershell51]",
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("stable release is missing PowerShell 5.1 gate %q", required)
+		}
+	}
+}
+
+func TestWindowsSetupDocumentsNoReinstallFallback(t *testing.T) {
+	content := readInstaller(t, "docs/windows-setup.md")
+	for _, required := range []string{
+		"fully exit all VS Code windows and `Code.exe` processes",
+		`& "$env:USERPROFILE\.void-code\bin\vc.exe" status`,
+		"Do not reinstall or log in again.",
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("Windows setup guidance is missing %q", required)
+		}
+	}
+	if strings.Contains(content, "run the installer again") {
+		t.Fatal("Windows PATH troubleshooting still recommends reinstalling")
+	}
+}
+
+func TestPowerShellPathHarness(t *testing.T) {
+	powerShell, err := exec.LookPath("pwsh")
+	if err != nil {
+		powerShell, err = exec.LookPath("powershell")
+	}
+	if err != nil {
+		t.Skip("PowerShell is not available")
+	}
+
+	cmd := exec.Command(powerShell, "-NoProfile", "-File", "scripts/test-install-ps1-path.ps1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PowerShell PATH harness failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "PASS: 20 installer PATH assertions") {
+		t.Fatalf("unexpected PATH harness output:\n%s", output)
+	}
+}
+
 func entryNames(entries []os.DirEntry) []string {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
