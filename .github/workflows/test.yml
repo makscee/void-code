@@ -43,7 +43,12 @@ jobs:
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile(
             (Join-Path $PWD 'install.ps1'), [ref]$tokens, [ref]$errors)
-          if ($errors.Count) { throw ($errors | Out-String) }
+          foreach ($parseError in $errors) {
+            $line = $parseError.Extent.StartLineNumber
+            $message = $parseError.Message.Replace("`r", ' ').Replace("`n", ' ')
+            Write-Output "::error file=install.ps1,line=$($line)::$message"
+          }
+          if ($errors.Count) { exit 1 }
       - name: Exercise installer PATH helpers
         shell: powershell
         run: .\scripts\test-install-ps1-path.ps1
