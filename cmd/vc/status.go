@@ -33,7 +33,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("not logged in"))
 		return nil
 	}
-	me, err := cachedFetchMe(cfg.AuthHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
+	me, err := auth.FetchMe(cfg.AuthHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token present but verification failed: "+err.Error()))
 		return nil

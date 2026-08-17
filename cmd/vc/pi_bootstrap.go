@@ -36,7 +36,7 @@ func init() { rootCmd.AddCommand(piBootstrapCmd) }
 // currentPiBootstrap exposes every subscription-granted Pi transport to Pi,
 // not a VC-selected active provider. Pi's native model picker owns selection.
 func currentPiBootstrap() (piBootstrap, error) {
-	token, err := auth.LoadAndMigrate()
+	token, _, err := auth.Load()
 	if err != nil || strings.TrimSpace(token) == "" {
 		return piBootstrap{}, fmt.Errorf("Pi bootstrap requires `vc login`")
 	}

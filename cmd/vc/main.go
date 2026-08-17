@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,17 +23,11 @@ import (
 	term "github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
-	"github.com/makscee/void-code/internal/ccjson"
-	"github.com/makscee/void-code/internal/ccsettings"
-	"github.com/makscee/void-code/internal/claudebin"
-	"github.com/makscee/void-code/internal/codexbin"
 	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/direct"
 	"github.com/makscee/void-code/internal/harness/relay"
-	"github.com/makscee/void-code/internal/harnesschoice"
-	"github.com/makscee/void-code/internal/keystore"
 	"github.com/makscee/void-code/internal/pibin"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/update"
@@ -56,8 +49,6 @@ var (
 	spawnHarness             = harness.Spawn
 	exitProcess              = os.Exit
 	currentLaunchDiagnostics = newLaunchDiagnostics(false, time.Now, io.Discard)
-	claudeIsInstalled        = claudebin.IsInstalled
-	codexIsInstalled         = codexbin.IsInstalled
 	piIsInstalled            = pibin.IsInstalled
 )
 
@@ -215,52 +206,26 @@ func refreshLaunchAfterLogin(deps launchPreflightDeps) (welcome.AuthState, strin
 }
 
 func resolveLocalAuthStateWithSource() (welcome.AuthState, string, string, launchSource) {
-	token, err := auth.LoadAndMigrate()
+	token, _, err := auth.Load()
 	cfg := config.OSResolve()
-	if err != nil || token == "" {
+	if err != nil || strings.TrimSpace(token) == "" {
 		return welcome.AuthState{LoggedIn: false}, token, cfg.AuthHost, sourceLocal
 	}
-	if cached, ok := readMeCache(cfg.AuthHost, token, time.Now()); ok {
-		if cached.Stale {
-			return staleMeResultToState(cached.Me), token, cfg.AuthHost, sourceStale
-		}
-		return meResultToState(cached.Me), token, cfg.AuthHost, sourceFresh
-	}
-	// Token presence is sufficient for the local landing screen. The in-flight
-	// admission probe remains authoritative for legacy credentials at Start.
 	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AuthHost, sourceLocal
 }
 
 // resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
 // Never fatal — on any error it returns a graceful degraded state.
 func resolveAuthState() welcome.AuthState {
-	token, err := auth.LoadAndMigrate()
-	if err != nil {
+	token, _, err := auth.Load()
+	if err != nil || strings.TrimSpace(token) == "" {
 		return welcome.AuthState{LoggedIn: false}
 	}
-	if token == "" {
-		return welcome.AuthState{LoggedIn: false}
-	}
-
-	// Check 5-minute in-memory cache first.
-	if meCacheResult != nil && time.Now().Before(meCacheExpiry) {
-		return meResultToState(*meCacheResult)
-	}
-
-	cfg := config.OSResolve()
-	httpClient := &http.Client{Timeout: authProbeTimeout}
-	cached, err := cachedFetchMeState(cfg.AuthHost, token, httpClient)
+	me, err := auth.FetchMe(config.OSResolve().AuthHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
-		if errors.Is(err, auth.ErrNotLoggedIn) {
-			return welcome.AuthState{LoggedIn: false}
-		}
-		return staleMeResultToState(cached.Me)
+		return welcome.AuthState{LoggedIn: false, IdentityUnverified: true}
 	}
-
-	// Cache result for 5 minutes.
-	meCacheResult = &cached.Me
-	meCacheExpiry = time.Now().Add(5 * time.Minute)
-	return meResultToState(cached.Me)
+	return meResultToState(me)
 }
 
 func staleMeResultToState(me auth.MeResult) welcome.AuthState {
@@ -354,296 +319,55 @@ func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, 
 	return result, cmd.Execute()
 }
 
-func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeResult, bool, error) {
-	if carriedMe, carriedReached, carriedErr, reused := p.awaitAuth(token, authHost); reused {
-		return carriedMe, carriedReached, carriedErr
-	}
-	return authGate(token, authHost, &http.Client{Timeout: authProbeTimeout})
-}
-
 // runSpawn is the default RunE for rootCmd — no sub-command launches Pi.
-func runSpawn(cmd *cobra.Command, args []string) error {
-	// VC has one product path: the bundled Pi runtime. Legacy active_harness
-	// config is deliberately ignored.
-	activeHarness := harnesschoice.Choice{Kind: harnesschoice.Pi}
-
+func runSpawn(_ *cobra.Command, args []string) error {
 	cfg := config.OSResolve()
+	token, _, _ := auth.Load()
 
-	// Load token with legacy cv fallback: tries ~/.void-code/token first,
-	// then falls back to ~/.claudev/token and silently migrates on success.
-	token, _ := auth.LoadAndMigrate()
-
-	// Pre-spawn auth gate: verify token before handing control to Pi.
-	// A missing or rejected token must surface a friendly message here — not a
-	// raw 401 error buried inside the harness UI.
-	me, reached, err := awaitSpawnAdmission(currentLaunchPreflight, token, cfg.AuthHost)
+	// Admission is always live: cached identity and budget are only display hints,
+	// never permission to start a paid session.
+	me, reached, err := authGate(token, cfg.AuthHost, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeRejected, sourceRejected)
 		currentLaunchDiagnostics.flush()
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, err)
 		exitProcess(1)
 		return err
 	}
-	// VCD-49 budget gate: only when reached + pct present (degrade-safe).
-	// VCD-65: subscriptionGate removed — budgetGate is the sole client-side gate.
-	// Hard-block at ≥100%; soft warn (print, still spawn) at 80–99%.
-	// pct==nil = no budget / server absent → proceed without warning.
 	if reached && me.Pct != nil {
 		if d := budgetGate(me.Pct, nil); d.Block {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
-			os.Exit(1)
+			exitProcess(1)
+			return errors.New(d.Message)
 		} else if d.Warn {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 		}
 	}
-
-	managedPiPath, managedPiErr := reconcileManagedPiExtension()
-	if managedPiErr != nil {
-		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", managedPiErr)
+	if !piIsInstalled() {
+		return fmt.Errorf("%s", pibin.MissingMessage())
+	}
+	extPath, extErr := reconcileManagedPiExtension()
+	if extErr != nil {
+		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", extErr)
 	}
 	if _, webErr := reconcileManagedWebSearch(true); webErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
 	}
-
-	if err := ensureSelectedHarnessInstalled(activeHarness); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(127)
-	}
-
-	// Check and update @anthropic-ai/claude-code before spawning Claude Code.
-	// This prevents claude-code's own auto-update from failing inside the proxy.
-	// Silent on network failures; only prints on actual update or hard error.
-	if activeHarness.Kind == harnesschoice.Claude {
-		launchCCUpdateCheck()
-	}
-
-	// Resolve the relay CA: NODE_EXTRA_CA_CERTS must point at it so CC trusts the
-	// relay's MITM proxy TLS. resolveCA falls back to the embedded CA on network
-	// failure, so an error here means no CA at all — fatal, because the HTTPS_PROXY
-	// transport cannot validate the proxy without it.
 	caPath, err := resolveCA(cfg)
 	if err != nil {
 		return fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
 	}
-
-	active := provider.Provider{Kind: provider.Relay} // legacy branches below are unreachable on the fixed Pi path.
-	var env []string
-	if activeHarness.Kind == harnesschoice.Pi {
-		env = buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-		extPath := ""
-		if managedPiPath != "" && hasPiFlag(args, "--no-extensions") {
-			// Explicitly requested extension isolation still keeps vc's provider,
-			// matching the historical vc --raw contract.
-			extPath = managedPiPath
-		}
-		if managedPiPath == "" {
-			// Opt-out, conflict, or permissions failure must not break wrapped vc.
-			extPath, err = ensurePiVoidCodexExtension()
-			if err != nil {
-				return fmt.Errorf("cannot write Pi relay extension: %w", err)
-			}
-		}
-		return spawnSelectedHarness(activeHarness, buildPiArgs(args, extPath), env)
-	}
-	if activeHarness.Kind == harnesschoice.Codex {
-		env = buildCodexSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-		spawnArgs := buildCodexArgs(args, cfg.RelayScheme, cfg.RelayHost)
-		return spawnSelectedHarness(activeHarness, spawnArgs, env)
-	}
-	env, err = buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "vc: %v\n", err)
-		env = relay.BuildEnv(os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-	}
-
-	// Pre-seed ~/.claude.json if absent so Claude Code skips first-run onboarding,
-	// and mark the current working directory as a trusted folder. Folder trust is
-	// load-bearing: CC does not load ~/.claude/settings.json (bypassPermissions,
-	// hooks) until the working dir is trusted, so a fresh project folder otherwise
-	// drops CC into `auto` mode and fires its safety classifier — a model sub-call
-	// the relay can't serve ("<model> not accessible" when running a script). On
-	// Windows the trust dialog also fails to persist upstream, so we always seed.
-	if home, err := os.UserHomeDir(); err == nil {
-		claudeJSON := filepath.Join(home, ".claude.json")
-		if err := ccjson.EnsureDefaults(claudeJSON); err != nil {
-			fmt.Fprintf(os.Stderr, "vc: warning: cannot pre-seed ~/.claude.json: %v\n", err)
-		}
-		if cwd, err := os.Getwd(); err == nil {
-			if err := ccjson.EnsureFolderTrust(claudeJSON, ccjson.TrustKeys(cwd)...); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot pre-seed folder trust: %v\n", err)
-			}
+	if extPath == "" {
+		extPath, err = ensurePiVoidCodexExtension()
+		if err != nil {
+			return fmt.Errorf("cannot write Pi relay extension: %w", err)
 		}
 	}
-
-	// Permission posture: belt-and-suspenders so a tool call never triggers
-	// Claude Code's server-side safety classifier (a model sub-call the relay
-	// can't serve — it surfaces as "<model> not accessible" mid-task):
-	//   1. bypassPermissions + skip-confirm — runs every tool with no prompt and
-	//      no classifier WHEN the user stays in bypass mode.
-	//   2. always-allow `vc hook` PreToolUse hook — short-circuits the classifier
-	//      in EVERY mode (auto/acceptEdits/default), so even if the user cycles
-	//      off bypass (shift+tab) a bash command is still allowed locally with
-	//      ZERO model sub-call (VCD-70 always-allow; VCD-46 proved CC honors it
-	//      in auto mode). The hook is the durable fix; #1 alone left `auto` mode
-	//      hitting the flaky classifier. Both only load once the folder is
-	//      trusted — hence the folder-trust pre-seed above.
-	// ccSettingsPath, when non-empty, is a vc-owned settings file passed to claude
-	// via --settings. It loads regardless of folder trust (unlike
-	// ~/.claude/settings.json), so the always-allow hook + bypass posture it
-	// carries take effect even in a fresh/untrusted folder — making `auto` mode
-	// classifier-free everywhere. See ccsettings.WriteManagedSettings.
-	var ccSettingsPath string
-	if execPath, err := os.Executable(); err == nil {
-		hookCmd := ccsettings.HookCmd(ccsettings.ForwardSlash(execPath))
-
-		// FIX B (Path 3 — guard, not full removal): the always-allow PreToolUse
-		// hook is belt-and-suspenders that only matters in `auto` mode (reachable
-		// via shift+tab off bypass); native bypassPermissions does NOT cover that
-		// residual case, so we keep the hook for ASCII + space-free exec paths.
-		// But when execPath has non-ASCII (Cyrillic) or a space, CC's Windows spawn
-		// of the hook command fails and spams a garbled CP1251 "hook failed" banner
-		// on every tool call. There, seed NO hook and strip any prior one — the
-		// user falls back to native bypass-only. The check is on the ORIGINAL
-		// execPath (pre-ForwardSlash) so the space test sees real characters.
-		hookSafe := ccsettings.PathHookSafe(execPath)
-
-		settingsPath, pathErr := ccsettings.SettingsPath()
-		if pathErr == nil {
-			if err := ccsettings.EnsureAllowAllPermissions(settingsPath); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot set allow-all permissions: %v\n", err)
-			}
-			// FIX A: skip CC's hardcoded claude.ai WebFetch safety preflight so
-			// relay users (who can't reach claude.ai) don't fail every WebFetch.
-			if err := ccsettings.EnsureSkipWebFetchPreflight(settingsPath); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot set skipWebFetchPreflight: %v\n", err)
-			}
-			// Suppress the warn-level "claude.ai connectors are disabled because
-			// ANTHROPIC_API_KEY ... takes precedence" nag for relay/BYO users.
-			if err := ccsettings.EnsureDisableClaudeAiConnectors(settingsPath); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot set disableClaudeAiConnectors: %v\n", err)
-			}
-			if hookSafe {
-				if err := ccsettings.EnsureHook(settingsPath, hookCmd); err != nil {
-					fmt.Fprintf(os.Stderr, "vc: warning: cannot install always-allow hook: %v\n", err)
-				}
-			} else if err := ccsettings.RemoveHook(settingsPath); err != nil {
-				// Non-ASCII/spaced path: strip any broken hook from a prior install.
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot remove stale hook: %v\n", err)
-			}
-			// Install the statusLine command (non-clobbering — leaves user's foreign statusLine untouched).
-			slCmd := ccsettings.StatusLineCmd(ccsettings.ForwardSlash(execPath))
-			if err := ccsettings.EnsureStatusLine(settingsPath, slCmd); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot install statusLine: %v\n", err)
-			}
-		}
-
-		// Trust-independent layer: write vc's full posture (bypass defaults +
-		// skip-prompt + skipWebFetchPreflight, and the always-allow hook only when
-		// the exec path is hook-safe) to ~/.void-code/cc-settings.json and pass it
-		// via --settings below. This is what guarantees `auto` mode never calls the
-		// classifier even when ~/.claude/settings.json hasn't loaded.
-		if cacheDir, cerr := config.CacheDir(); cerr == nil {
-			p := filepath.Join(cacheDir, "cc-settings.json")
-			if err := ccsettings.WriteManagedSettings(p, hookCmd, hookSafe); err != nil {
-				fmt.Fprintf(os.Stderr, "vc: warning: cannot write managed CC settings: %v\n", err)
-			} else {
-				ccSettingsPath = p
-			}
-		}
-	}
-
-	// Build the claude argv. Two trust-independent layers (see permmode.go and
-	// ccsettings.WriteManagedSettings):
-	//   1. --permission-mode bypassPermissions → session STARTS in bypass (no
-	//      classifier), unless the user picked a posture explicitly.
-	//   2. --settings <cc-settings.json> → delivers the always-allow PreToolUse
-	//      hook + skip-prompt regardless of folder trust, so if the user shift+tab's
-	//      into `auto` mode every tool is still approved locally with ZERO model
-	//      sub-call (no "<model> temporarily unavailable" classifier error).
-	spawnArgs := ensureBypassPermissionMode(args)
-	if ccSettingsPath != "" {
-		spawnArgs = append([]string{"--settings", ccSettingsPath}, spawnArgs...)
-	}
-
-	return spawnSelectedHarness(activeHarness, spawnArgs, env)
-}
-
-func wrappedBinaryFor(h harnesschoice.Choice) string {
-	switch h.Kind {
-	case harnesschoice.Claude:
-		return "claude"
-	case harnesschoice.Codex:
-		return "codex"
-	default:
-		return "pi"
-	}
-}
-
-func ensureSelectedHarnessInstalled(h harnesschoice.Choice) error {
-	switch h.Kind {
-	case harnesschoice.Claude:
-		if !claudeIsInstalled() {
-			return fmt.Errorf("%s", claudebin.MissingMessage())
-		}
-	case harnesschoice.Codex:
-		if !codexIsInstalled() {
-			return fmt.Errorf("%s", codexbin.MissingMessage())
-		}
-	default:
-		if !piIsInstalled() {
-			return fmt.Errorf("%s", pibin.MissingMessage())
-		}
-	}
-	return nil
-}
-
-func spawnSelectedHarness(h harnesschoice.Choice, args []string, env []string) error {
+	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	wrapped := wrappedBinaryFor(h)
-	if err := spawnHarness(context.Background(), wrapped, args, env); err != nil {
-		// Post-spawn not-found fallback (should be caught by pre-flight above,
-		// but defend against race conditions such as the harness being removed
-		// between the pre-flight check and the actual spawn).
-		if claudebin.IsNotFoundErr(err) {
-			switch h.Kind {
-			case harnesschoice.Claude:
-				fmt.Fprintln(os.Stderr, claudebin.MissingMessage())
-			case harnesschoice.Codex:
-				fmt.Fprintln(os.Stderr, codexbin.MissingMessage())
-			default:
-				fmt.Fprintln(os.Stderr, pibin.MissingMessage())
-			}
-			os.Exit(127)
-		}
-		// Propagate the harness exit code.
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
-		return err
-	}
-	return nil
+	return spawnHarness(context.Background(), "pi", buildPiArgs(args, extPath), env)
 }
-
-func runInstallPi(out io.Writer) {
-	fmt.Fprintln(out, pibin.InstallInstructions())
-}
-
-func runInstallClaude(out io.Writer) {
-	fmt.Fprintln(out, claudebin.InstallInstructions())
-}
-
-func runInstallCodex(out io.Writer) {
-	fmt.Fprintln(out, codexbin.InstallInstructions())
-}
-
-const (
-	piVoidCodexProvider        = "void-codex"
-	piVoidCodexDefaultModel    = "gpt-5.6-terra"
-	piVoidDeepSeekProvider     = "void-deepseek"
-	piVoidDeepSeekDefaultModel = "deepseek/deepseek-v4-pro"
-	codexDefaultModel          = "gpt-5.6-terra"
-)
 
 var (
 	piVoidCodexModels = []string{
@@ -665,14 +389,6 @@ func buildPiArgs(args []string, extensionPath string) []string {
 		out = append(out, "-e", extensionPath)
 	}
 	return append(out, args...)
-}
-
-// Compatibility aliases deliberately no longer select a provider or model.
-func buildPiVoidCodexArgs(args []string, extensionPath string) []string {
-	return buildPiArgs(args, extensionPath)
-}
-func buildPiVoidDeepSeekArgs(args []string, extensionPath string) []string {
-	return buildPiArgs(args, extensionPath)
 }
 
 func hasPiFlag(args []string, name string) bool {
@@ -702,86 +418,6 @@ func ensurePiVoidCodexExtension() (string, error) {
 		return "", err
 	}
 	return path, nil
-}
-
-// buildSpawnEnv selects the claude env for the active provider.
-//   - Relay         → relay.BuildEnv (HTTPS_PROXY + relay CA + pool token).
-//   - RelayProvider → relay.BuildEnv + ANTHROPIC_CUSTOM_HEADERS=x-void-provider: <id>
-//     (VCD-72: CC emits this header; void-relay (VRL-61) resolves credential + base_url)
-//   - NamedKey      → direct.NamedKeyEnv with the saved OAuth token (relay bypassed).
-//   - Plain         → direct.PlainEnv (native CC auth, no injection).
-func buildSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) ([]string, error) {
-	switch p.Kind {
-	case provider.Plain:
-		return direct.PlainEnv(parent), nil
-	case provider.NamedKey:
-		key, err := keystore.GetKey(p.Name)
-		if err != nil {
-			return nil, fmt.Errorf("provider %q: %w", p.Name, err)
-		}
-		return direct.NamedKeyEnv(parent, key), nil
-	case provider.RelayProvider:
-		// Relay path + x-void-provider header so void-relay injects the right credential.
-		// CC reads ANTHROPIC_CUSTOM_HEADERS (Name: Value, newline-separated) and emits
-		// them on every Anthropic request. The credential never reaches the client.
-		env := relay.BuildEnv(parent, relayScheme, relayHost, token, caPath)
-		env = append(env, "ANTHROPIC_CUSTOM_HEADERS=x-void-provider: "+p.ID)
-		return env, nil
-	default: // Relay
-		return relay.BuildEnv(parent, relayScheme, relayHost, token, caPath), nil
-	}
-}
-
-func buildCodexArgs(args []string, relayScheme, relayHost string) []string {
-	baseURL := fmt.Sprintf("%s://%s/codex", relayScheme, relayHost)
-	prefix := []string{
-		"-c", "model_provider=void",
-		"-c", "model_providers.void.name=Void relay",
-		"-c", "model_providers.void.base_url=" + baseURL,
-		"-c", "model_providers.void.wire_api=responses",
-		"-c", "model_providers.void.env_key=VC_AUTH_TOKEN",
-		"-c", "model_providers.void.env_http_headers.x-void-provider=VC_RELAY_PROVIDER_ID",
-		"-c", "model=" + codexDefaultModel,
-	}
-	out := make([]string, 0, len(prefix)+len(args))
-	out = append(out, prefix...)
-	out = append(out, args...)
-	return out
-}
-
-func buildCodexSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) []string {
-	strip := map[string]bool{
-		"OPENAI_API_KEY":       true,
-		"OPENAI_BASE_URL":      true,
-		"OPENAI_ORG_ID":        true,
-		"AZURE_OPENAI_API_KEY": true,
-		"CHATGPT_ACCESS_TOKEN": true,
-		"CHATGPT_ACCOUNT_ID":   true,
-		"CHATGPT_API_KEY":      true,
-		"CODEX_API_KEY":        true,
-		"VC_AUTH_TOKEN":        true,
-		"VC_RELAY_PROVIDER_ID": true,
-		"VC_RELAY_URL":         true,
-		"VC_RELAY_CA":          true,
-	}
-	base := direct.PlainEnv(parent)
-	out := make([]string, 0, len(base)+6)
-	for _, e := range base {
-		k, _, _ := strings.Cut(e, "=")
-		if strip[k] {
-			continue
-		}
-		out = append(out, e)
-	}
-	out = append(out,
-		"VC_HARNESS=codex",
-		"VC_PROVIDER=relay",
-		fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
-		"VC_RELAY_CA="+caPath,
-		"VC_AUTH_TOKEN="+token,
-		"VC_RELAY_PROVIDER_ID="+p.ID,
-	)
-	return out
 }
 
 // buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay
@@ -891,32 +527,22 @@ func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
 //   - token absent → error (not logged in)
 //   - token present, auth server returns 401 → error (token rejected)
 //   - token present, server reachable → returns (me, true, nil)
-//   - token present, network/server error → returns (zero, false, nil) — transient blip, do not block
+//   - token present, network/server error → error — admission cannot be authoritative
 //
 // Returns reached=true only when the server responded successfully.
-// VCD-65: SubDaysLeft removed; budgetGate uses reached to distinguish transient blip.
 func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, bool, error) {
 	if token == "" {
 		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
 	}
 
-	me, err := cachedFetchMe(authHost, token, httpClient)
+	me, err := auth.FetchMe(authHost, token, httpClient)
 	if err == nil {
 		return me, true, nil
 	}
-	if err == auth.ErrNotLoggedIn {
-		// Identity device credentials are opaque <session>.<secret> values. During
-		// VI-12, /v1/vc/me remains a legacy-auth budget endpoint and cannot
-		// validate them; the relay performs authoritative identity introspection
-		// before serving any request. Do not reject a valid identity credential at
-		// this obsolete preflight. Legacy credentials remain fail-closed here.
-		if isIdentityToken(token) {
-			return auth.MeResult{}, false, nil
-		}
+	if errors.Is(err, auth.ErrNotLoggedIn) {
 		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
 	}
-	// Network / server error — don't block; transient blip.
-	return auth.MeResult{}, false, nil
+	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
 }
 
 // resolveCA determines the relay CA path in priority order:

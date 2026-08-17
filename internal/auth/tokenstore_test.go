@@ -156,14 +156,8 @@ func TestLegacyTokenIsRetainedButNeverLoaded(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte("legacy-input-only"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !LegacyTokenExists() {
-		t.Fatal("legacy migration input not detected")
-	}
 	if _, _, err := Load(); !errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("legacy token was accepted: %v", err)
-	}
-	if _, err := LoadAndMigrate(); !errors.Is(err, ErrNotLoggedIn) {
-		t.Fatalf("legacy token was migrated early: %v", err)
 	}
 	if err := Wipe(); err != nil {
 		t.Fatal(err)

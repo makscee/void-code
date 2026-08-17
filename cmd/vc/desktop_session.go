@@ -34,7 +34,7 @@ type desktopSessionDeps struct {
 }
 
 func defaultDesktopSessionDeps() desktopSessionDeps {
-	return desktopSessionDeps{auth.LoadAndMigrate, config.OSResolve, authGate, resolveCA, reconcileManagedPiExtension, reconcileManagedWebSearch, time.Now, runDesktopSessionProcess}
+	return desktopSessionDeps{func() (string, error) { token, _, err := auth.Load(); return token, err }, config.OSResolve, authGate, resolveCA, reconcileManagedPiExtension, reconcileManagedWebSearch, time.Now, runDesktopSessionProcess}
 }
 func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 	var nodePath, piEntry string

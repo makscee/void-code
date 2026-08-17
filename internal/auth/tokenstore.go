@@ -23,22 +23,6 @@ func tokenPath() (string, error) {
 	}
 	return filepath.Join(dir, "token"), nil
 }
-func legacyTokenPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".claudev", "token"), nil
-}
-
-func LegacyTokenExists() bool {
-	path, err := legacyTokenPath()
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(path)
-	return err == nil
-}
 
 type credentialOps struct {
 	write    func(*os.File, string) error
@@ -188,8 +172,7 @@ func restoreCredential(path string, value []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// Load reads only the canonical identity credential. The legacy token remains
-// untouched as later migration input and is never accepted as identity auth.
+// Load reads only the canonical identity credential.
 func Load() (string, bool, error) {
 	path, err := tokenPath()
 	if err != nil {
@@ -204,10 +187,6 @@ func Load() (string, bool, error) {
 	}
 	return string(data), false, nil
 }
-
-// LoadAndMigrate is retained for callers while migration is deferred to VI-10.
-// It loads only the canonical credential and never reads or copies legacy auth.
-func LoadAndMigrate() (string, error) { token, _, err := Load(); return token, err }
 
 func Wipe() error {
 	dir, err := tokenDir()

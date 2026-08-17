@@ -64,4 +64,4 @@ go build -ldflags "-X github.com/makscee/void-code/internal/version.Version=dev"
 go test ./...
 ```
 
-Design canon: `hub/vault/projects/void-code/CONTEXT.md` · ADR: `docs/adr/0002-void-code-fresh-harness.md`
+See [console simplification notes](docs/console-simplification-deletion-map.md).
