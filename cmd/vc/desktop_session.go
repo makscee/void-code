@@ -38,7 +38,7 @@ func defaultDesktopSessionDeps() desktopSessionDeps {
 }
 func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 	var nodePath, piEntry string
-	cmd := &cobra.Command{Use: "desktop-session --node <absolute-node> --pi-entry <absolute-cli.js> -- <pi-args...>", Short: "Launch the private Pi runtime", Args: cobra.ArbitraryArgs, RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "desktop-session --node <absolute-node> --pi-entry <absolute-cli.js> -- <pi-args...>", Short: "Launch a private Pi runtime", Args: cobra.ArbitraryArgs, RunE: func(cmd *cobra.Command, args []string) error {
 		plan, err := prepareDesktopSession(nodePath, piEntry, args, deps)
 		if err != nil {
 			return fmt.Errorf("desktop-session: %w", err)

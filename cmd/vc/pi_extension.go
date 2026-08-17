@@ -104,7 +104,9 @@ function registerDesktopLifecycle(pi: ExtensionAPI): void {
 
 function loadBootstrap(): Bootstrap | undefined {
 	try {
-		const raw = execFileSync("vc", ["pi-bootstrap"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
+		const executable = process.env.VC_BOOTSTRAP_EXECUTABLE;
+		if (!executable || !path.isAbsolute(executable)) throw new Error("trusted vc bootstrap executable unavailable");
+		const raw = execFileSync(executable, ["pi-bootstrap"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
 		const value = JSON.parse(raw) as Bootstrap;
 		if (value.version !== 1 || !value.relayUrl || !value.authToken || !Array.isArray(value.providers)) throw new Error("invalid bootstrap response");
 		return value;

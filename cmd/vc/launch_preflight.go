@@ -1,18 +1,14 @@
 package main
 
 import (
-	"errors"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/makscee/void-code/internal/auth"
-	"github.com/makscee/void-code/internal/compat"
 )
 
 const launchPreflightFreshness = 5 * time.Minute
-
-var errProviderProbeTimeout = errors.New("provider discovery timed out")
 
 type launchAuthResult struct {
 	me      auth.MeResult
@@ -20,25 +16,9 @@ type launchAuthResult struct {
 	err     error
 }
 
-type providerOutcomeKind uint8
-
-const (
-	providerOutcomeUnknown providerOutcomeKind = iota
-	providerOutcomeSuccess
-)
-
-type launchProviderResult struct {
-	kind   providerOutcomeKind
-	grants []compat.Grant
-	err    error
-}
-
-func (r launchProviderResult) successful() bool { return r.kind == providerOutcomeSuccess }
-
 type launchPreflightDeps struct {
 	now         func() time.Time
 	auth        func(string, string, *http.Client) (auth.MeResult, bool, error)
-	providers   func(string, string, *http.Client) ([]auth.ProviderInfo, error)
 	update      func() string
 	newClient   func() *http.Client
 	diagnostics *launchDiagnostics
@@ -50,32 +30,22 @@ type launchPreflight struct {
 	token, authHost string
 	started         time.Time
 	deps            launchPreflightDeps
-
-	authDone       chan struct{}
-	providersDone  chan struct{}
-	updateDone     chan struct{}
-	mu             sync.RWMutex
-	authResult     launchAuthResult
-	providerResult launchProviderResult
-	updateNudge    string
+	authDone        chan struct{}
+	updateDone      chan struct{}
+	mu              sync.RWMutex
+	authResult      launchAuthResult
+	updateNudge     string
 }
 
 func defaultLaunchPreflightDeps() launchPreflightDeps {
-	return launchPreflightDeps{
-		now:         time.Now,
-		auth:        authGate,
-		providers:   fetchProvidersLive,
-		update:      launchUpdateCheck,
-		newClient:   func() *http.Client { return &http.Client{Timeout: authProbeTimeout} },
-		diagnostics: currentLaunchDiagnostics,
-	}
+	return launchPreflightDeps{now: time.Now, auth: authGate, update: launchUpdateCheck, newClient: func() *http.Client { return &http.Client{Timeout: authProbeTimeout} }, diagnostics: currentLaunchDiagnostics}
 }
 
+// startLaunchPreflight admits authentication and checks for updates. Provider
+// discovery is intentionally not a launch preflight: the managed Pi extension
+// obtains the current subscription capabilities from pi-bootstrap when Pi starts.
 func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPreflightDeps) *launchPreflight {
-	p := &launchPreflight{
-		token: token, authHost: authHost, started: deps.now(), deps: deps,
-		authDone: make(chan struct{}), providersDone: make(chan struct{}), updateDone: make(chan struct{}),
-	}
+	p := &launchPreflight{token: token, authHost: authHost, started: deps.now(), deps: deps, authDone: make(chan struct{}), updateDone: make(chan struct{})}
 	go func() {
 		me, reached, err := deps.auth(token, authHost, deps.newClient())
 		p.mu.Lock()
@@ -89,31 +59,6 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 		}
 		deps.diagnostics.record(phaseAuthComplete, outcome, source)
 		close(p.authDone)
-	}()
-	go func() {
-		result := launchProviderResult{}
-		if token != "" {
-			infos, err := deps.providers(authHost, token, deps.newClient())
-			result.err = err
-			if err == nil {
-				result.kind = providerOutcomeSuccess
-				result.grants = make([]compat.Grant, 0, len(infos))
-				for _, info := range infos {
-					result.grants = append(result.grants, compat.Grant{ID: info.ID, Name: info.Name, Type: info.Type})
-				}
-			}
-		}
-		p.mu.Lock()
-		p.providerResult = result
-		p.mu.Unlock()
-		source := sourceFresh
-		if token == "" {
-			source = sourceLocal
-		} else if result.err != nil {
-			source = sourceTransient
-		}
-		deps.diagnostics.record(phaseProvidersComplete, outcomeComplete, source)
-		close(p.providersDone)
 	}()
 	if withUpdate {
 		go func() {
@@ -134,7 +79,6 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 func (p *launchPreflight) reusable(token, authHost string) bool {
 	return p != nil && token == p.token && authHost == p.authHost && p.deps.now().Sub(p.started) <= launchPreflightFreshness
 }
-
 func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool, error, bool) {
 	if !p.reusable(token, authHost) {
 		return auth.MeResult{}, false, nil, false
@@ -146,7 +90,6 @@ func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool
 		select {
 		case <-p.authDone:
 		case <-timer.C:
-			// The existing transient-network policy is non-blocking.
 			return auth.MeResult{}, false, nil, true
 		}
 	}
@@ -159,54 +102,6 @@ func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool
 		return auth.MeResult{}, false, nil, true
 	}
 }
-
-func (p *launchPreflight) providerForRender(token, authHost string, first bool) (launchProviderResult, bool) {
-	if first {
-		return p.awaitProvider(token, authHost)
-	}
-	return p.providerIfReady(token, authHost)
-}
-
-func (p *launchPreflight) providerIfReady(token, authHost string) (launchProviderResult, bool) {
-	if !p.reusable(token, authHost) {
-		return launchProviderResult{}, false
-	}
-	select {
-	case <-p.providersDone:
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-		return p.providerResult, true
-	default:
-		return launchProviderResult{}, false
-	}
-}
-
-// awaitProvider reuses the launch's authoritative provider request and shares
-// its original deadline for every consumer whose compatibility state depends on it.
-func (p *launchPreflight) awaitProvider(token, authHost string) (launchProviderResult, bool) {
-	if !p.reusable(token, authHost) {
-		return launchProviderResult{}, false
-	}
-	remaining := authProbeTimeout - p.deps.now().Sub(p.started)
-	if remaining > 0 {
-		timer := time.NewTimer(remaining)
-		defer timer.Stop()
-		select {
-		case <-p.providersDone:
-		case <-timer.C:
-			return launchProviderResult{err: errProviderProbeTimeout}, true
-		}
-	}
-	select {
-	case <-p.providersDone:
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-		return p.providerResult, true
-	default:
-		return launchProviderResult{err: errProviderProbeTimeout}, true
-	}
-}
-
 func (p *launchPreflight) updateIfReady() (string, bool) {
 	select {
 	case <-p.updateDone:

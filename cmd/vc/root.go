@@ -12,7 +12,7 @@ var (
 	// versionFlag is set by the --version flag on rootCmd.
 	versionFlag bool
 	// rawModeFlag is set by --raw; skips the title/menu screen and passes the
-	// controlling tty straight to the active harness for tmux send-keys / daemon use.
+	// controlling tty straight to Pi for tmux send-keys / daemon use.
 	rawModeFlag bool
 )
 
@@ -22,7 +22,7 @@ var brandStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#7C3AED"))
 
 // rootCmd is the entry-point Cobra command.  When invoked with no sub-command
-// arguments it spawns the active harness with relay env (handled in main.go).
+// arguments it launches Pi with VC-managed subscription transport (handled in main.go).
 var rootCmd = &cobra.Command{
 	Use:   "vc [flags] [-- pi-args...]",
 	Short: "void-code — subscription console for Pi",
@@ -71,7 +71,7 @@ Run "vc <command> --help" for sub-command details.`,
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&versionFlag, "version", false, "Print version and exit")
 	rootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "non-interactive", false, "Never prompt; print guidance and pick safe defaults (also implied when stdin is not a TTY)")
-	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to active harness (for tmux/daemon use)")
+	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to Pi (for tmux/daemon use)")
 	// Disable the auto-generated 'completion' sub-command — not needed for v0.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 }

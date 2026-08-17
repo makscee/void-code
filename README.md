@@ -44,9 +44,24 @@ vc -- --help          # Pi's native help
 
 `~/.void-code/token` (mode 0600). `vc logout` wipes it.
 
+## Release artifacts
+
+Published to [GitHub Releases](https://github.com/makscee/void-code/releases) on every `v*.*.*` tag:
+
+| Binary | Platform |
+|---|---|
+| `vc-darwin-arm64` | macOS Apple Silicon |
+| `vc-darwin-amd64` | macOS Intel |
+| `vc-linux-arm64` | Linux ARM64 |
+| `vc-linux-amd64` | Linux x86-64 |
+| `vc-windows-arm64.exe` | Windows ARM64 |
+| `vc-windows-amd64.exe` | Windows x86-64 |
+
 ## Development
 
 ```bash
 go build -ldflags "-X github.com/makscee/void-code/internal/version.Version=dev" ./cmd/vc
 go test ./...
 ```
+
+Design canon: `hub/vault/projects/void-code/CONTEXT.md` · ADR: `docs/adr/0002-void-code-fresh-harness.md`

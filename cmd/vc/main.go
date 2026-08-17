@@ -1,4 +1,4 @@
-// Binary vc — void-code relay harness for Claude Code and Pi.
+// Binary vc — void-code subscription console for Pi.
 //
 // Version is injected at build time:
 //
@@ -76,7 +76,7 @@ func main() {
 		}
 	}
 
-	// --raw: skip title/menu screen and pass tty straight to the active harness.
+	// --raw: skip title screen and pass tty straight to Pi.
 	// Parse --raw early (before cobra.Execute) so we can skip the welcome gate.
 	// Relay auth is one-shot env injection at Spawn time; vc need not stay
 	// resident, so no pty-proxy is required — cmd.Run() passthrough is enough.
@@ -87,13 +87,13 @@ func main() {
 			break
 		}
 		if a == "--" {
-			break // everything after -- is for the active harness
+			break // everything after -- is for Pi
 		}
 	}
 
 	// Persistent landing screen — shown on bare `vc` invocation (no sub-command).
 	// Checks auth state, shows banner, waits for any keypress.
-	// Any keypress → logged-in: spawn active harness; logged-out: run login.
+	// Any keypress → logged-in: spawn Pi; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
 	// Skipped when --raw is set (jump straight to spawn, no TUI).
 	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true, "desktop-session": true}
@@ -182,7 +182,7 @@ type gateDecision int
 const (
 	// gateShowWelcome: interactive terminal — render the landing screen.
 	gateShowWelcome gateDecision = iota
-	// gateSpawn: non-TTY but logged in — skip welcome, spawn active harness directly.
+	// gateSpawn: non-TTY but logged in — skip welcome and spawn Pi directly.
 	gateSpawn
 	// gateFailAuth: non-TTY and not logged in — cannot run login UI, fail fast.
 	gateFailAuth
@@ -340,7 +340,7 @@ func (w *firstRenderDiagnosticWriter) Write(p []byte) (int, error) {
 
 // runWelcomeCommandTransition is the bare-launch boundary from the production
 // welcome program into Cobra. Non-spawn choices are returned to main for their
-// existing dispatch; SpawnClaude executes Cobra so parsing and error behavior
+// existing dispatch; the Pi spawn executes Cobra so parsing and error behavior
 // remain identical to every other root invocation.
 func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
 	result, err := runWelcomeScreen(state, cb)
@@ -361,20 +361,7 @@ func awaitSpawnAdmission(p *launchPreflight, token, authHost string) (auth.MeRes
 	return authGate(token, authHost, &http.Client{Timeout: authProbeTimeout})
 }
 
-func spawnProviderOutcome(p *launchPreflight, token, authHost string) launchProviderResult {
-	if p != nil {
-		if carried, reused := p.awaitProvider(token, authHost); reused {
-			return carried
-		}
-	}
-	grants, err := fetchCompatGrants(authHost, token)
-	if err != nil {
-		return launchProviderResult{err: err}
-	}
-	return launchProviderResult{kind: providerOutcomeSuccess, grants: grants}
-}
-
-// runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
+// runSpawn is the default RunE for rootCmd — no sub-command launches Pi.
 func runSpawn(cmd *cobra.Command, args []string) error {
 	// VC has one product path: the bundled Pi runtime. Legacy active_harness
 	// config is deliberately ignored.
@@ -386,7 +373,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// then falls back to ~/.claudev/token and silently migrates on success.
 	token, _ := auth.LoadAndMigrate()
 
-	// Pre-spawn auth gate: verify token before handing control to the active harness.
+	// Pre-spawn auth gate: verify token before handing control to Pi.
 	// A missing or rejected token must surface a friendly message here — not a
 	// raw 401 error buried inside the harness UI.
 	me, reached, err := awaitSpawnAdmission(currentLaunchPreflight, token, cfg.AuthHost)
@@ -807,6 +794,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 		"VC_RELAY_URL":             true,
 		"VC_RELAY_CA":              true,
 		"VC_AUTH_TOKEN":            true,
+		"VC_BOOTSTRAP_EXECUTABLE":  true,
 		"ANTHROPIC_CUSTOM_HEADERS": true,
 	}
 	if p.Kind == provider.Relay || p.Kind == provider.RelayProvider {
@@ -831,6 +819,11 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 			continue
 		}
 		out = append(out, e)
+	}
+	// Do not let inherited PATH choose the authority that serves credentials to
+	// the extension. os.Executable is the already-running VC binary.
+	if executable, err := os.Executable(); err == nil && filepath.IsAbs(executable) {
+		out = append(out, "VC_BOOTSTRAP_EXECUTABLE="+executable)
 	}
 	out = append(out, "VC_HARNESS=pi")
 	switch p.Kind {
@@ -892,7 +885,7 @@ func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
 	}
 }
 
-// authGate validates the session token before spawning claude.
+// authGate validates the session token before spawning Pi.
 //
 // Rules:
 //   - token absent → error (not logged in)
