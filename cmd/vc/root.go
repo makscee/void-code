@@ -24,12 +24,12 @@ var brandStyle = lipgloss.NewStyle().
 // rootCmd is the entry-point Cobra command.  When invoked with no sub-command
 // arguments it spawns the active harness with relay env (handled in main.go).
 var rootCmd = &cobra.Command{
-	Use:   "vc [flags] [-- harness-args...]",
-	Short: "void-code — relay harness for Claude Code, Codex, and Pi",
+	Use:   "vc [flags] [-- pi-args...]",
+	Short: "void-code — subscription console for Pi",
 	Long: fmt.Sprintf(`%s
 
-vc launches the selected coding harness (Claude Code, OpenAI Codex, or Pi) with void-relay authentication.
-Running "vc" with no sub-command starts the active harness with relay env injected.
+vc launches Pi with your void-code subscription authentication.
+Running "vc" starts the Pi console; Pi owns model selection.
 
 Sub-commands:
   login    Authenticate interactively or with device flow
@@ -44,28 +44,25 @@ never hangs in scripts, daemons, or CI.
 
 Run "vc <command> --help" for sub-command details.`,
 		brandStyle.Render("void-code")),
-	Example: `  # Launch the active harness normally
+	Example: `  # Launch the Pi console
   vc
 
-  # Skip title screen — pass tty straight to the active harness (for tmux send-keys / daemon use)
+  # Skip title screen — pass tty straight to Pi (for tmux send-keys / daemon use)
   vc --raw -- --session-id <id> --permission-mode bypassPermissions
 
   # Never prompt; fail fast / print guidance instead of blocking (scripts, CI)
   vc --non-interactive doctor
 
-  # Pass flags directly to the active harness using -- (double-dash terminator)
+  # Pass flags directly to Pi using -- (double-dash terminator)
   vc -- --dangerously-skip-permissions
   vc -- --debug --verbose
 
-  # vc flags before --, harness flags after
+  # vc flags before --, Pi flags after
   vc --version
   vc -- --help`,
 	// SilenceUsage hides the usage block on runtime errors — less noise for users.
 	SilenceUsage: true,
-	// ArbitraryArgs ensures any positional args are passed through to runSpawn
-	// (and on to the active harness) rather than cobra treating them as unknown subcommands.
-	// Without this, strings like "dev-VCD57-paste" cause cobra to say
-	// "unknown command" instead of forwarding the arg to the harness.
+	// ArbitraryArgs forwards Pi arguments after VC's own flags.
 	Args: cobra.ArbitraryArgs,
 	// When no sub-command is matched, RunE (in main.go) handles the spawn.
 	RunE: runSpawn,

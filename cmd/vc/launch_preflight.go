@@ -8,7 +8,6 @@ import (
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/compat"
-	"github.com/makscee/void-code/internal/welcome"
 )
 
 const launchPreflightFreshness = 5 * time.Minute
@@ -30,7 +29,6 @@ const (
 
 type launchProviderResult struct {
 	kind   providerOutcomeKind
-	rows   []welcome.ProviderRowInfo
 	grants []compat.Grant
 	err    error
 }
@@ -99,10 +97,8 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 			result.err = err
 			if err == nil {
 				result.kind = providerOutcomeSuccess
-				result.rows = make([]welcome.ProviderRowInfo, 0, len(infos))
 				result.grants = make([]compat.Grant, 0, len(infos))
 				for _, info := range infos {
-					result.rows = append(result.rows, welcome.ProviderRowInfo{ID: info.ID, Name: info.Name, Type: info.Type})
 					result.grants = append(result.grants, compat.Grant{ID: info.ID, Name: info.Name, Type: info.Type})
 				}
 			}

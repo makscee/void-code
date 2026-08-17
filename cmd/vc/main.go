@@ -121,75 +121,17 @@ func main() {
 			// blocks on a keypress that a non-TTY stdin can never deliver, which
 			// hangs automation callers forever. Fall straight through to spawn.
 		case gateShowWelcome:
-			// Provider discovery gates only the first render, up to the existing
-			// bounded probe deadline, so newly issued grants are visible immediately.
-			firstRender := true
 		menuLoop:
 			for {
-				keyNames, _ := keystore.ListKeys()
-				activeProv := provider.Load()
-				activeLabel := provider.LoadLabel()
-				activeHarness := harnesschoice.Load()
-				var grantedRows []welcome.ProviderRowInfo
-				providerResult, providerReady := currentLaunchPreflight.providerForRender(token, authHost, firstRender)
-				firstRender = false
-				if result := providerResult; providerReady && result.err == nil {
-					grantedRows = result.rows
-					granted := make([]provider.GrantedEntry, len(grantedRows))
-					for i, r := range grantedRows {
-						granted[i] = provider.GrantedEntry{ID: r.ID, Name: r.Name}
-					}
-					_ = provider.ReconcileLabel(granted)
-					activeLabel = provider.LoadLabel()
-					if d := compat.Reconcile(activeHarness, activeProv, activeLabel, result.grants); d.Changed {
-						_ = harnesschoice.Save(d.Harness)
-						_ = provider.Save(d.Provider)
-						_ = provider.SaveLabel(d.ProviderLabel)
-						activeHarness, activeProv, activeLabel = d.Harness, d.Provider, d.ProviderLabel
-						if d.Warning != "" {
-							fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
-						}
-					}
-				}
 				if nudge, ready := currentLaunchPreflight.updateIfReady(); ready && nudge != "" {
 					state.UpdateNudge = nudge
 				}
-				cb := welcome.Callbacks{
-					KeyNames:            keyNames,
-					ActiveProvider:      activeProv.String(),
-					ActiveProviderLabel: activeLabel,
-					GrantedProviders:    grantedRows,
-					ActiveHarness:       activeHarness.String(),
-					ActiveHarnessLabel:  activeHarness.Label(),
-					ClaudeInstalled:     claudeIsInstalled(),
-					CodexInstalled:      codexIsInstalled(),
-					PiInstalled:         piIsInstalled(),
-					OnSelectHarness: func(h harnesschoice.Choice) error {
-						return harnesschoice.Save(h)
-					},
-					OnSelect: func(p provider.Provider) error {
-						return provider.Save(p)
-					},
-					OnSelectLabel: func(label string) error {
-						return provider.SaveLabel(label)
-					},
-					OnAddKey: func(name, token string) error {
-						return keystore.AddKey(name, token)
-					},
-					OnDeleteKey: func(name string) error {
-						return keystore.DeleteKey(name)
-					},
-				}
-				result, err := runWelcomeCommandTransition(state, cb, rootCmd, os.Args[1:])
-				if result == welcome.SpawnClaude {
+				result, err := runWelcomeCommandTransition(state, welcome.Callbacks{}, rootCmd, os.Args[1:])
+				if result == welcome.SpawnPi {
 					if err != nil {
 						handleExecuteError(err)
 					}
-					return // root RunE already spawned the selected harness exactly once
-				}
-				if err != nil {
-					// welcome.Run already handled non-TTY fallback; ignore error here.
-					_ = err
+					return
 				}
 				switch result {
 				case welcome.RunDoctor:
@@ -199,59 +141,28 @@ func main() {
 					}
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop // re-show menu
-				case welcome.RunInstallPi:
-					fmt.Println()
-					runInstallPi(os.Stdout)
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop // re-show menu
-				case welcome.RunInstallClaude:
-					fmt.Println()
-					runInstallClaude(os.Stdout)
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop // re-show menu
-				case welcome.RunInstallCodex:
-					fmt.Println()
-					runInstallCodex(os.Stdout)
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop // re-show menu
-				case welcome.RunStatusline:
-					fmt.Println()
-					runInstallStatuslineMenu(os.Stdout)
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop // re-show menu
+					continue menuLoop
 				case welcome.RunProfile:
-					fmt.Println()
-					{
-						cfg := config.OSResolve()
-						token, _, _ := auth.Load()
-						client := &http.Client{Timeout: 10 * time.Second}
-						openProfile(cfg.AuthHost, token, client, func(u string) {
-							_ = browser.OpenURL(u, os.Stdout)
-						})
-					}
+					cfg := config.OSResolve()
+					token, _, _ := auth.Load()
+					openProfile(cfg.AuthHost, token, &http.Client{Timeout: 10 * time.Second}, func(u string) { _ = browser.OpenURL(u, os.Stdout) })
 					fmt.Println("\n  press enter to return to the menu…")
 					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop // re-show menu
+					continue menuLoop
 				case welcome.RunLogin:
 					if lerr := runLoginInteractive(); lerr != nil {
 						fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)
 						os.Exit(1)
 					}
-					// Login replaces the credential, so the logged-out preflight cannot
-					// be reused. Reload all auth inputs and gate the next render on one
-					// fresh, bounded provider probe for the newly issued token.
 					state, token, authHost, currentLaunchPreflight = refreshLaunchAfterLogin(defaultLaunchPreflightDeps())
-					firstRender = true
+					_ = token
+					_ = authHost
 					continue menuLoop
 				case welcome.Quit:
 					os.Exit(0)
-				default: // SpawnClaude
-					break menuLoop
+				default:
+					_ = err
+					continue menuLoop
 				}
 			}
 		}
@@ -434,7 +345,7 @@ func (w *firstRenderDiagnosticWriter) Write(p []byte) (int, error) {
 func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
 	result, err := runWelcomeScreen(state, cb)
 	currentLaunchDiagnostics.record(phaseSelection, outcomeComplete, sourceLocal)
-	if result != welcome.SpawnClaude {
+	if result != welcome.SpawnPi {
 		return result, err
 	}
 	// Preserve the existing fallback: a welcome error with the spawn default
@@ -465,7 +376,9 @@ func spawnProviderOutcome(p *launchPreflight, token, authHost string) launchProv
 
 // runSpawn is the default RunE for rootCmd — no sub-command means "launch active harness".
 func runSpawn(cmd *cobra.Command, args []string) error {
-	activeHarness := harnesschoice.Load()
+	// VC has one product path: the bundled Pi runtime. Legacy active_harness
+	// config is deliberately ignored.
+	activeHarness := harnesschoice.Choice{Kind: harnesschoice.Pi}
 
 	cfg := config.OSResolve()
 
@@ -497,34 +410,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	active := provider.Load()
-	activeLabel := provider.LoadLabel()
-	providerOutcome := spawnProviderOutcome(currentLaunchPreflight, token, cfg.AuthHost)
-	compatGrants := providerOutcome.grants
-	if providerOutcome.err != nil && activeHarness.Kind == harnesschoice.Pi {
-		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search unavailable: provider discovery failed: %v\n", providerOutcome.err)
-	}
-	// Unknown/error outcomes preserve the durable selection exactly. Only a
-	// successful current response (including confirmed empty) is authoritative.
-	if providerOutcome.successful() {
-		if d := compat.Reconcile(activeHarness, active, activeLabel, compatGrants); d.Changed {
-			_ = harnesschoice.Save(d.Harness)
-			_ = provider.Save(d.Provider)
-			_ = provider.SaveLabel(d.ProviderLabel)
-			activeHarness, active, activeLabel = d.Harness, d.Provider, d.ProviderLabel
-			if d.Warning != "" {
-				fmt.Fprintln(os.Stderr, "vc: "+d.Warning)
-			}
-		}
-	}
-
 	managedPiPath, managedPiErr := reconcileManagedPiExtension()
 	if managedPiErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", managedPiErr)
 	}
-	activeGrantClass, exactActiveGrant := compat.ExactGrantClass(active, compatGrants)
-	webEligible := providerOutcome.successful() && activeHarness.Kind == harnesschoice.Pi && exactActiveGrant && activeGrantClass == compat.ProviderChatGPT
-	if _, webErr := reconcileManagedWebSearch(webEligible); webErr != nil {
+	if _, webErr := reconcileManagedWebSearch(true); webErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
 	}
 
@@ -549,9 +439,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
 	}
 
+	active := provider.Provider{Kind: provider.Relay} // legacy branches below are unreachable on the fixed Pi path.
 	var env []string
 	if activeHarness.Kind == harnesschoice.Pi {
-		env = buildPiSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+		env = buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 		extPath := ""
 		if managedPiPath != "" && hasPiFlag(args, "--no-extensions") {
 			// Explicitly requested extension isolation still keeps vc's provider,
@@ -565,15 +456,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("cannot write Pi relay extension: %w", err)
 			}
 		}
-		switch compat.ClassifyProvider(active, activeLabel, compatGrants) {
-		case compat.ProviderChatGPT:
-			env = append(env, "VC_PI_PROVIDER_KIND=codex")
-			args = buildPiVoidCodexArgs(args, extPath)
-		case compat.ProviderDeepSeek:
-			env = append(env, "VC_PI_PROVIDER_KIND=deepseek")
-			args = buildPiVoidDeepSeekArgs(args, extPath)
-		}
-		return spawnSelectedHarness(activeHarness, args, env)
+		return spawnSelectedHarness(activeHarness, buildPiArgs(args, extPath), env)
 	}
 	if activeHarness.Kind == harnesschoice.Codex {
 		env = buildCodexSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
@@ -582,7 +465,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	env, err = buildSpawnEnv(active, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vc: %v\n  falling back to relay. Fix the provider in the Providers menu.\n", err)
+		fmt.Fprintf(os.Stderr, "vc: %v\n", err)
 		env = relay.BuildEnv(os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	}
 
@@ -787,29 +670,22 @@ var (
 	}
 )
 
-func buildPiVoidCodexArgs(args []string, extensionPath string) []string {
-	model := resolvePiManagedModel(piVoidCodexDefaultModel, piVoidCodexModels)
-	return buildPiRelayArgs(args, extensionPath, piVoidCodexProvider, model)
-}
-
-func buildPiVoidDeepSeekArgs(args []string, extensionPath string) []string {
-	model := resolvePiManagedModel(piVoidDeepSeekDefaultModel, piVoidDeepSeekModels)
-	return buildPiRelayArgs(args, extensionPath, piVoidDeepSeekProvider, model)
-}
-
-func buildPiRelayArgs(args []string, extensionPath, providerID, modelID string) []string {
-	out := make([]string, 0, len(args)+6)
+// buildPiArgs adds only VC's transport extension. Pi receives all model and
+// provider choice through its own native configuration and UI.
+func buildPiArgs(args []string, extensionPath string) []string {
+	out := make([]string, 0, len(args)+2)
 	if extensionPath != "" {
 		out = append(out, "-e", extensionPath)
 	}
-	if !hasPiFlag(args, "--provider") {
-		out = append(out, "--provider", providerID)
-	}
-	if !hasPiFlag(args, "--model") {
-		out = append(out, "--model", modelID)
-	}
-	out = append(out, args...)
-	return out
+	return append(out, args...)
+}
+
+// Compatibility aliases deliberately no longer select a provider or model.
+func buildPiVoidCodexArgs(args []string, extensionPath string) []string {
+	return buildPiArgs(args, extensionPath)
+}
+func buildPiVoidDeepSeekArgs(args []string, extensionPath string) []string {
+	return buildPiArgs(args, extensionPath)
 }
 
 func hasPiFlag(args []string, name string) bool {
