@@ -30,5 +30,5 @@ func InstallInstructions() string {
 
 // MissingMessage returns a concise missing-binary message plus instructions.
 func MissingMessage() string {
-	return fmt.Sprintf("pi CLI not found — install Pi before selecting the Pi harness\n%s", InstallInstructions())
+	return fmt.Sprintf("pi CLI not found — install Pi before starting VC\n%s", InstallInstructions())
 }
