@@ -6,8 +6,8 @@ import (
 )
 
 func TestDirectPiLaunchAddsOnlyTransportExtension(t *testing.T) {
-	got := buildPiArgs([]string{"-p", "hello"}, "/tmp/void-code.ts")
-	want := []string{"-e", "/tmp/void-code.ts", "-p", "hello"}
+	got := buildPiArgs([]string{"--session-id", "session-1"}, "/tmp/void-code.ts")
+	want := []string{"-e", "/tmp/void-code.ts", "--session-id", "session-1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Pi args = %#v, want %#v; VC must not inject provider/model selection", got, want)
 	}

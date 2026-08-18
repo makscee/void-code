@@ -1,21 +1,47 @@
-// Package pibin resolves the Pi coding-agent binary and install guidance.
+// Package pibin resolves VC's managed Pi entrypoint and install guidance.
 package pibin
 
 import (
 	"fmt"
-	"os/exec"
+	"os"
+	"path/filepath"
+	"runtime"
 )
 
-// Resolve returns the resolved path to the pi binary on PATH.
+const managedPiRelativePath = ".void-code/runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+
+func managedPiPath(home string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", ".bin", "pi.cmd")
+	}
+	return filepath.Join(home, filepath.FromSlash(managedPiRelativePath))
+}
+
+// Resolve returns VC's absolute, managed Pi entrypoint. It intentionally does
+// not consult PATH: a PATH-selected executable would receive VC credentials.
 func Resolve() (string, error) {
-	p, err := exec.LookPath("pi")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve VC home: %w", err)
+	}
+	path := managedPiPath(home)
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("managed Pi path is not absolute")
+	}
+	info, err := os.Lstat(path)
 	if err != nil {
 		return "", err
 	}
-	return p, nil
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("managed Pi entrypoint is not a regular file: %s", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("managed Pi entrypoint is not executable: %s", path)
+	}
+	return path, nil
 }
 
-// IsInstalled reports whether pi is reachable on PATH.
+// IsInstalled reports whether VC's managed Pi entrypoint is available.
 func IsInstalled() bool {
 	_, err := Resolve()
 	return err == nil
@@ -23,12 +49,10 @@ func IsInstalled() bool {
 
 // InstallInstructions returns copy-pasteable Pi install guidance.
 func InstallInstructions() string {
-	return "Install Pi coding agent:\n\n" +
-		"  npm install -g @earendil-works/pi-coding-agent\n\n" +
-		"Then restart your terminal if `pi` is still not on PATH."
+	return "Re-run the VC installer to provision its managed Pi runtime."
 }
 
-// MissingMessage returns a concise missing-binary message plus instructions.
+// MissingMessage returns a concise missing-runtime message plus instructions.
 func MissingMessage() string {
-	return fmt.Sprintf("pi CLI not found — install Pi before starting VC\n%s", InstallInstructions())
+	return fmt.Sprintf("VC managed Pi runtime not found — Pi must be provisioned by VC\n%s", InstallInstructions())
 }

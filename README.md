@@ -27,10 +27,9 @@ vc logout             # wipe credentials
 vc status             # show subscription/relay/version state
 vc doctor             # check Pi setup
 vc update             # self-update
-vc -- --help          # Pi's native help
 ```
 
-`desktop-session` is the hardened private Pi runtime seam used by the desktop product. It accepts only session lifecycle flags after `--`; Pi's own UI controls models after the session opens.
+`vc` accepts no Pi launch arguments; Pi's native UI controls models and permissions after the session opens. `desktop-session` is the hardened private Pi runtime seam used by the desktop product and accepts only session lifecycle flags after `--`.
 
 ## Environment overrides
 

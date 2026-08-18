@@ -24,7 +24,7 @@ var brandStyle = lipgloss.NewStyle().
 // rootCmd is the entry-point Cobra command.  When invoked with no sub-command
 // arguments it launches Pi with VC-managed subscription transport (handled in main.go).
 var rootCmd = &cobra.Command{
-	Use:   "vc [flags] [-- pi-args...]",
+	Use:   "vc [flags]",
 	Short: "void-code — subscription console for Pi",
 	Long: fmt.Sprintf(`%s
 
@@ -47,23 +47,19 @@ Run "vc <command> --help" for sub-command details.`,
 	Example: `  # Launch the Pi console
   vc
 
-  # Skip title screen — pass tty straight to Pi (for tmux send-keys / daemon use)
-  vc --raw -- --session-id <id> --permission-mode bypassPermissions
+  # Skip title screen and hand the terminal to the managed Pi session
+  vc --raw
 
   # Never prompt; fail fast / print guidance instead of blocking (scripts, CI)
   vc --non-interactive doctor
 
-  # Pass flags directly to Pi using -- (double-dash terminator)
-  vc -- --dangerously-skip-permissions
-  vc -- --debug --verbose
-
-  # vc flags before --, Pi flags after
-  vc --version
-  vc -- --help`,
+  # Print VC's version
+  vc --version`,
 	// SilenceUsage hides the usage block on runtime errors — less noise for users.
 	SilenceUsage: true,
-	// ArbitraryArgs forwards Pi arguments after VC's own flags.
-	Args: cobra.ArbitraryArgs,
+	// Pi launch arguments are intentionally not a public VC surface. Model,
+	// provider, and permission choices remain in Pi's native UI.
+	Args: cobra.NoArgs,
 	// When no sub-command is matched, RunE (in main.go) handles the spawn.
 	RunE: runSpawn,
 }

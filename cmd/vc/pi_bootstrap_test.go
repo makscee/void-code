@@ -107,9 +107,9 @@ func TestCurrentPiBootstrapRejectsRevokedActiveGrant(t *testing.T) {
 	}
 }
 
-func TestPiArgsPreserveDirectModelOwnership(t *testing.T) {
-	got := buildPiArgs([]string{"--model", "user-choice", "-p", "hello"}, "/managed.ts")
-	want := []string{"-e", "/managed.ts", "--model", "user-choice", "-p", "hello"}
+func TestPiArgsPreserveDesktopSessionLifecycle(t *testing.T) {
+	got := buildPiArgs([]string{"--session-id", "session-1"}, "/managed.ts")
+	want := []string{"-e", "/managed.ts", "--session-id", "session-1"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}

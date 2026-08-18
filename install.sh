@@ -53,6 +53,9 @@ AUTH_HOST="${VC_AUTH_HOST:-https://auth.makscee.ru}"
 VC_DIR="$HOME/.void-code"
 BIN_DIR="$VC_DIR/bin"
 CA_DIR="$VC_DIR"
+# Pi lives under VC's managed runtime; vc launches this fixed entrypoint, never a PATH shim.
+PI_RUNTIME_DIR="$VC_DIR/runtime/pi"
+PI_ENTRY="$PI_RUNTIME_DIR/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
 
 # Minimum node major version installed for the Node-based agent CLIs (Claude Code + Pi).
 MIN_NODE_MAJOR=22
@@ -415,6 +418,18 @@ ensure_node() {
 NPM_INSTALL_RETRY_ARGS="--maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000"
 NPM_NODE_OPTIONS="--dns-result-order=ipv4first"
 
+npm_install_managed_pi() {
+  _attempt=1
+  while [ "$_attempt" -le 3 ]; do
+    if NODE_OPTIONS="$NPM_NODE_OPTIONS" npm install --prefix "$PI_RUNTIME_DIR" $NPM_INSTALL_RETRY_ARGS --no-save @earendil-works/pi-coding-agent && [ -x "$PI_ENTRY" ]; then
+      return 0
+    fi
+    [ "$_attempt" -ge 3 ] && return 1
+    sleep 5
+    _attempt=$((_attempt + 1))
+  done
+}
+
 npm_install_global() {
   _pkg="$1"
   _attempt=1
@@ -452,6 +467,10 @@ print_npm_install_global() {
 
 agent_bin_present() {
   _bin="$1"
+  if [ "$_bin" = "pi" ]; then
+    [ -x "$PI_ENTRY" ]
+    return
+  fi
   command -v "$_bin" >/dev/null 2>&1 || [ -x "$HOME/.void-code/bin/$_bin" ]
 }
 
@@ -615,7 +634,7 @@ check_npm_agent() {
 
   if [ "$_do_install" = 1 ]; then
     printf 'vc: installing %s via npm...\n' "$_pkg" >&2
-    if npm_install_global "$_pkg" >&2; then
+    if { [ "$_bin" = "pi" ] && npm_install_managed_pi || [ "$_bin" != "pi" ] && npm_install_global "$_pkg"; } >&2; then
       if [ "$_bin" = "codex" ]; then
         if codex_health_check || repair_codex_native_optional; then
           printf 'vc: %s installed.\n' "$_pkg" >&2
@@ -631,13 +650,21 @@ check_npm_agent() {
     else
       printf 'vc: npm install failed.\n' >&2
       printf '    Run manually: ' >&2
-      print_npm_install_global "$_pkg" >&2
+      if [ "$_bin" = "pi" ]; then
+        printf 'npm install --prefix %s %s --no-save @earendil-works/pi-coding-agent' "$PI_RUNTIME_DIR" "$NPM_INSTALL_RETRY_ARGS" >&2
+      else
+        print_npm_install_global "$_pkg" >&2
+      fi
       printf '\n' >&2
       return 1
     fi
   else
     printf '    Run when ready: ' >&2
-    print_npm_install_global "$_pkg" >&2
+    if [ "$_bin" = "pi" ]; then
+      printf 'npm install --prefix %s %s --no-save @earendil-works/pi-coding-agent' "$PI_RUNTIME_DIR" "$NPM_INSTALL_RETRY_ARGS" >&2
+    else
+      print_npm_install_global "$_pkg" >&2
+    fi
     printf '\n' >&2
     return 1
   fi
@@ -727,9 +754,7 @@ if [ "$DRY_RUN" = 1 ]; then
     fi
   fi
   if [ "$INSTALL_PI" = 1 ]; then
-    printf 'WOULD: '
-    print_npm_install_global @earendil-works/pi-coding-agent
-    printf '\n'
+    printf 'WOULD: npm install --prefix %s %s --no-save @earendil-works/pi-coding-agent\n' "$PI_RUNTIME_DIR" "$NPM_INSTALL_RETRY_ARGS"
   fi
   if [ "$INSTALL_CLAUDE" = 1 ]; then
     printf 'WOULD: '
@@ -806,8 +831,7 @@ fi
 # ── post-install UX ───────────────────────────────────────────────────────────
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   _pi_ok=0
-  command -v pi >/dev/null 2>&1 && _pi_ok=1
-  [ -x "$HOME/.void-code/bin/pi" ] && _pi_ok=1
+  [ -x "$PI_ENTRY" ] && _pi_ok=1
   _claude_ok=0
   command -v claude >/dev/null 2>&1 && _claude_ok=1
   [ -x "$HOME/.void-code/bin/claude" ] && _claude_ok=1
@@ -841,9 +865,7 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   _agents_missing=0
   if [ "$INSTALL_PI" = 1 ] && [ "$_pi_ok" = 0 ]; then
     printf '\n  %s. Install Pi:\n' "$_n"
-    printf '         '
-    print_npm_install_global @earendil-works/pi-coding-agent
-    printf '\n'
+    printf '         npm install --prefix %s %s --no-save @earendil-works/pi-coding-agent\n' "$PI_RUNTIME_DIR" "$NPM_INSTALL_RETRY_ARGS"
     _agents_missing=1
     _n=$((_n + 1))
   fi

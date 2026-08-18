@@ -49,7 +49,6 @@ var (
 	spawnHarness             = harness.Spawn
 	exitProcess              = os.Exit
 	currentLaunchDiagnostics = newLaunchDiagnostics(false, time.Now, io.Discard)
-	piIsInstalled            = pibin.IsInstalled
 )
 
 func main() {
@@ -343,8 +342,12 @@ func runSpawn(_ *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 		}
 	}
-	if !piIsInstalled() {
-		return fmt.Errorf("%s", pibin.MissingMessage())
+	// Resolve the VC-managed entrypoint exactly once, after live admission and
+	// before constructing token-bearing child environment. Never substitute a
+	// PATH result here: that binary would inherit VC_AUTH_TOKEN.
+	piPath, err := pibin.Resolve()
+	if err != nil {
+		return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
 	}
 	extPath, extErr := reconcileManagedPiExtension()
 	if extErr != nil {
@@ -366,7 +369,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), "pi", buildPiArgs(args, extPath), env)
+	return spawnHarness(context.Background(), piPath, buildPiArgs(nil, extPath), env)
 }
 
 var (
