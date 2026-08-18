@@ -7,9 +7,7 @@ import (
 	"strings"
 
 	"github.com/makscee/void-code/internal/auth"
-	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/config"
-	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -19,69 +17,45 @@ type piBootstrap struct {
 	AuthToken string                `json:"authToken"`
 	Providers []piBootstrapProvider `json:"providers"`
 }
-
 type piBootstrapProvider struct {
 	Kind            string   `json:"kind"`
 	RelayProviderID string   `json:"relayProviderId"`
 	Models          []string `json:"models"`
 }
 
-var piBootstrapCmd = &cobra.Command{
-	Use:    "pi-bootstrap",
-	Short:  "Return transient bootstrap data to the managed Pi extension",
-	Hidden: true,
-	Args:   cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		bootstrap, err := currentPiBootstrap()
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(bootstrap)
-	},
-}
+var piBootstrapCmd = &cobra.Command{Use: "pi-bootstrap", Short: "Return transient subscription transport data to the managed Pi extension", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	bootstrap, err := currentPiBootstrap()
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(bootstrap)
+}}
 
-func init() {
-	rootCmd.AddCommand(piBootstrapCmd)
-}
+func init() { rootCmd.AddCommand(piBootstrapCmd) }
 
+// currentPiBootstrap exposes every subscription-granted Pi transport to Pi,
+// not a VC-selected active provider. Pi's native model picker owns selection.
 func currentPiBootstrap() (piBootstrap, error) {
-	token, err := auth.LoadAndMigrate()
+	token, _, err := auth.Load()
 	if err != nil || strings.TrimSpace(token) == "" {
-		return piBootstrap{}, fmt.Errorf("Pi provider bootstrap requires `vc login`")
+		return piBootstrap{}, fmt.Errorf("Pi bootstrap requires `vc login`")
 	}
 	cfg := config.OSResolve()
 	infos, err := fetchProvidersLive(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
-		return piBootstrap{}, fmt.Errorf("refresh Pi provider grants: %w", err)
+		return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
 	}
-	grants := make([]compat.Grant, 0, len(infos))
+	out := piBootstrap{Version: 1, RelayURL: fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost), AuthToken: token}
 	for _, info := range infos {
-		grants = append(grants, compat.Grant{ID: info.ID, Name: info.Name, Type: info.Type})
-	}
-	active := provider.Load()
-	class := compat.ClassifyProvider(active, provider.LoadLabel(), grants)
-	out := piBootstrap{
-		Version:   1,
-		RelayURL:  fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost),
-		AuthToken: token,
-	}
-	switch class {
-	case compat.ProviderChatGPT:
-		// RelayProvider must still be present in the current grant response.
-		// An explicit type is authoritative; only typeless legacy grants use
-		// ClassifyProvider's id/name/label compatibility fallback.
-		for _, grant := range grants {
-			grantType := strings.ToLower(strings.TrimSpace(grant.Type))
-			if active.Kind == provider.RelayProvider && grant.ID == active.ID && (grantType == "" || grantType == "openai-codex-oauth") {
-				out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: active.ID, Models: append([]string(nil), piVoidCodexModels...)})
-				break
-			}
+		switch strings.ToLower(strings.TrimSpace(info.Type)) {
+		case "openai-codex-oauth":
+			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: info.ID, Models: append([]string(nil), piVoidCodexModels...)})
+		case "deepseek":
+			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "deepseek", RelayProviderID: info.ID, Models: append([]string(nil), piVoidDeepSeekModels...)})
 		}
-	case compat.ProviderDeepSeek:
-		out.Providers = append(out.Providers, piBootstrapProvider{Kind: "deepseek", RelayProviderID: "deepseek", Models: append([]string(nil), piVoidDeepSeekModels...)})
 	}
 	if len(out.Providers) == 0 {
-		return piBootstrap{}, fmt.Errorf("active provider is not in the current compatible grants")
+		return piBootstrap{}, fmt.Errorf("no supported Pi transport in current subscription")
 	}
 	return out, nil
 }

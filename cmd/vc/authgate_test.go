@@ -38,6 +38,26 @@ func TestAuthGate_ValidToken(t *testing.T) {
 	}
 }
 
+func TestAuthGateIgnoresFreshCacheAfterRevocation(t *testing.T) {
+	var revoked bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if revoked {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"email":"before@example.test","pct":1}`))
+	}))
+	defer srv.Close()
+	if _, err := cachedFetchMe(srv.URL, "same-token", srv.Client()); err != nil {
+		t.Fatal(err)
+	}
+	revoked = true
+	if _, _, err := authGate("same-token", srv.URL, srv.Client()); err == nil {
+		t.Fatal("fresh cached identity admitted revoked token")
+	}
+}
+
 // TestAuthGate_RejectedToken verifies that a 401 from the auth server returns
 // a "Session token rejected" error and does not expose raw HTTP details.
 func TestAuthGate_RejectedToken(t *testing.T) {
@@ -58,18 +78,11 @@ func TestAuthGate_RejectedToken(t *testing.T) {
 	}
 }
 
-func TestAuthGate_IdentityTokenIgnoresLegacyMeRejection(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
+func TestAuthGate_IdentityTokenFailsClosedOnLiveRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
 	defer srv.Close()
-
-	_, reached, err := authGate("session-secret.verifier-secret", srv.URL, srv.Client())
-	if err != nil {
-		t.Fatalf("identity token must reach authoritative relay introspection: %v", err)
-	}
-	if reached {
-		t.Fatal("legacy me endpoint must not be reported as authoritative for identity token")
+	if _, _, err := authGate("session-secret.verifier-secret", srv.URL, srv.Client()); err == nil {
+		t.Fatal("live 401 must deny an identity-shaped token")
 	}
 }
 
@@ -86,33 +99,18 @@ func TestAuthGate_MalformedDottedTokenStillFailsClosed(t *testing.T) {
 	}
 }
 
-// TestAuthGate_NetworkError verifies that a network error does NOT block spawn —
-// transient auth-server blips must not lock the user out.
-func TestAuthGate_NetworkError(t *testing.T) {
-	// Point at a port that refuses connections.
+// TestAuthGate_NetworkAndServerErrorsDenyAdmission: without a live response,
+// vc cannot safely admit a session based on stale identity or budget data.
+func TestAuthGate_NetworkAndServerErrorsDenyAdmission(t *testing.T) {
 	_, reached, err := authGate("any-token", "http://127.0.0.1:1", &http.Client{})
-	if err != nil {
-		t.Fatalf("expected nil for network error (non-blocking), got %v", err)
+	if err == nil || reached {
+		t.Fatalf("network result err=%v reached=%v, want deny", err, reached)
 	}
-	if reached {
-		t.Error("expected reached=false for network error")
-	}
-}
-
-// TestAuthGate_ServerError verifies that a 5xx from the auth server does NOT
-// block spawn — server-side errors must not lock the user out.
-func TestAuthGate_ServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }))
 	defer srv.Close()
-
-	_, reached, err := authGate("any-token", srv.URL, srv.Client())
-	if err != nil {
-		t.Fatalf("expected nil for server error (non-blocking), got %v", err)
-	}
-	if reached {
-		t.Error("expected reached=false for server error")
+	_, reached, err = authGate("any-token", srv.URL, srv.Client())
+	if err == nil || reached {
+		t.Fatalf("server result err=%v reached=%v, want deny", err, reached)
 	}
 }
 

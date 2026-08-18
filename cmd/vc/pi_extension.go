@@ -104,20 +104,9 @@ function registerDesktopLifecycle(pi: ExtensionAPI): void {
 
 function loadBootstrap(): Bootstrap | undefined {
 	try {
-		const kind = process.env.VC_PI_PROVIDER_KIND || (process.env.VC_RELAY_PROVIDER_ID === "deepseek" ? "deepseek" : "codex");
-		if (process.env.VC_RELAY_URL && process.env.VC_AUTH_TOKEN && process.env.VC_RELAY_PROVIDER_ID && (kind === "codex" || kind === "deepseek")) {
-			return {
-				version: 1,
-				relayUrl: process.env.VC_RELAY_URL,
-				authToken: process.env.VC_AUTH_TOKEN,
-				providers: [{
-					kind,
-					relayProviderId: process.env.VC_RELAY_PROVIDER_ID,
-					models: kind === "codex" ? [CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna"] : [DEEPSEEK_MODEL_ID, "deepseek/deepseek-v4-flash"],
-				}],
-			};
-		}
-		const raw = execFileSync("vc", ["pi-bootstrap"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
+		const executable = process.env.VC_BOOTSTRAP_EXECUTABLE;
+		if (!executable || !path.isAbsolute(executable)) throw new Error("trusted vc bootstrap executable unavailable");
+		const raw = execFileSync(executable, ["pi-bootstrap"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
 		const value = JSON.parse(raw) as Bootstrap;
 		if (value.version !== 1 || !value.relayUrl || !value.authToken || !Array.isArray(value.providers)) throw new Error("invalid bootstrap response");
 		return value;

@@ -6,9 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-
-	"github.com/makscee/void-code/internal/compat"
-	"github.com/makscee/void-code/internal/provider"
 )
 
 type managedWebSearchState string
@@ -270,27 +267,4 @@ func inspectManagedPackageSetting(packagePath string) (bool, error) {
 		}
 	}
 	return matches == 1, nil
-}
-
-func checkManagedWebSearch() checkResult {
-	if isFalse(os.Getenv("VC_PI_MANAGED_WEB_SEARCH")) {
-		return checkResult{name: "web search", status: "!", message: "web search: unavailable (opted out)"}
-	}
-	eligible := compat.ClassifyProvider(provider.Load(), provider.LoadLabel(), nil) == compat.ProviderChatGPT
-	path := managedWebSearchPackagePath()
-	current, foreign, packageErr := inspectManagedWebSearchPackage(path)
-	registered, settingsErr := inspectManagedPackageSetting(path)
-	broken := packageErr != nil || settingsErr != nil || foreign || (current && !registered) || (!current && registered)
-	if broken || (eligible && !current) {
-		result := checkResult{name: "web search", status: "✗", message: "web search: broken or not installed"}
-		if eligible {
-			result.guidance = []string{"run `vc doctor --fix` to safely reconcile the void-code-owned package and exact Pi settings registration"}
-			result.fix = func() error { _, err := reconcileManagedWebSearch(true); return err }
-		}
-		return result
-	}
-	if !eligible {
-		return checkResult{name: "web search", status: "!", message: "web search: unavailable (managed ChatGPT provider not selected)"}
-	}
-	return checkResult{name: "web search", status: "✓", message: "web search: installed (web_search, fetch_content, get_search_content)"}
 }

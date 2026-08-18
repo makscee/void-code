@@ -12,7 +12,7 @@ var (
 	// versionFlag is set by the --version flag on rootCmd.
 	versionFlag bool
 	// rawModeFlag is set by --raw; skips the title/menu screen and passes the
-	// controlling tty straight to the active harness for tmux send-keys / daemon use.
+	// controlling tty straight to Pi for tmux send-keys / daemon use.
 	rawModeFlag bool
 )
 
@@ -22,14 +22,14 @@ var brandStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#7C3AED"))
 
 // rootCmd is the entry-point Cobra command.  When invoked with no sub-command
-// arguments it spawns the active harness with relay env (handled in main.go).
+// arguments it launches Pi with VC-managed subscription transport (handled in main.go).
 var rootCmd = &cobra.Command{
-	Use:   "vc [flags] [-- harness-args...]",
-	Short: "void-code — relay harness for Claude Code, Codex, and Pi",
+	Use:   "vc [flags]",
+	Short: "void-code — subscription console for Pi",
 	Long: fmt.Sprintf(`%s
 
-vc launches the selected coding harness (Claude Code, OpenAI Codex, or Pi) with void-relay authentication.
-Running "vc" with no sub-command starts the active harness with relay env injected.
+vc launches Pi with your void-code subscription authentication.
+Running "vc" starts the Pi console; Pi owns model selection.
 
 Sub-commands:
   login    Authenticate interactively or with device flow
@@ -44,29 +44,22 @@ never hangs in scripts, daemons, or CI.
 
 Run "vc <command> --help" for sub-command details.`,
 		brandStyle.Render("void-code")),
-	Example: `  # Launch the active harness normally
+	Example: `  # Launch the Pi console
   vc
 
-  # Skip title screen — pass tty straight to the active harness (for tmux send-keys / daemon use)
-  vc --raw -- --session-id <id> --permission-mode bypassPermissions
+  # Skip title screen and hand the terminal to the managed Pi session
+  vc --raw
 
   # Never prompt; fail fast / print guidance instead of blocking (scripts, CI)
   vc --non-interactive doctor
 
-  # Pass flags directly to the active harness using -- (double-dash terminator)
-  vc -- --dangerously-skip-permissions
-  vc -- --debug --verbose
-
-  # vc flags before --, harness flags after
-  vc --version
-  vc -- --help`,
+  # Print VC's version
+  vc --version`,
 	// SilenceUsage hides the usage block on runtime errors — less noise for users.
 	SilenceUsage: true,
-	// ArbitraryArgs ensures any positional args are passed through to runSpawn
-	// (and on to the active harness) rather than cobra treating them as unknown subcommands.
-	// Without this, strings like "dev-VCD57-paste" cause cobra to say
-	// "unknown command" instead of forwarding the arg to the harness.
-	Args: cobra.ArbitraryArgs,
+	// Pi launch arguments are intentionally not a public VC surface. Model,
+	// provider, and permission choices remain in Pi's native UI.
+	Args: cobra.NoArgs,
 	// When no sub-command is matched, RunE (in main.go) handles the spawn.
 	RunE: runSpawn,
 }
@@ -74,7 +67,7 @@ Run "vc <command> --help" for sub-command details.`,
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&versionFlag, "version", false, "Print version and exit")
 	rootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "non-interactive", false, "Never prompt; print guidance and pick safe defaults (also implied when stdin is not a TTY)")
-	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to active harness (for tmux/daemon use)")
+	rootCmd.Flags().BoolVar(&rawModeFlag, "raw", false, "Skip title screen; pass tty straight to Pi (for tmux/daemon use)")
 	// Disable the auto-generated 'completion' sub-command — not needed for v0.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 }

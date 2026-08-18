@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/makscee/void-code/internal/auth"
-	"github.com/makscee/void-code/internal/provider"
 )
 
 func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) {
@@ -32,9 +32,6 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	if err := auth.Save("protected-token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Save(provider.Provider{Kind: provider.RelayProvider, ID: "chatgpt-granted"}); err != nil {
-		t.Fatal(err)
-	}
 
 	got, err := currentPiBootstrap()
 	if err != nil {
@@ -43,7 +40,7 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
-	if len(got.Providers) != 1 || got.Providers[0].Kind != "codex" || got.Providers[0].RelayProviderID != "chatgpt-granted" {
+	if len(got.Providers) != 2 || got.Providers[0].RelayProviderID != "chatgpt-granted" || got.Providers[1].RelayProviderID != "chatgpt-other" {
 		t.Fatalf("providers = %#v", got.Providers)
 	}
 	if len(got.Providers[0].Models) != len(piVoidCodexModels) {
@@ -59,7 +56,7 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	}
 }
 
-func TestCurrentPiBootstrapRejectsExplicitlyIncompatibleCurrentGrant(t *testing.T) {
+func TestCurrentPiBootstrapRejectsUnsupportedCurrentGrant(t *testing.T) {
 	cases := []struct {
 		name  string
 		id    string
@@ -85,14 +82,6 @@ func TestCurrentPiBootstrapRejectsExplicitlyIncompatibleCurrentGrant(t *testing.
 			if err := auth.Save("protected-token"); err != nil {
 				t.Fatal(err)
 			}
-			if err := provider.Save(provider.Provider{Kind: provider.RelayProvider, ID: tc.id}); err != nil {
-				t.Fatal(err)
-			}
-			if tc.label != "" {
-				if err := provider.SaveLabel(tc.label); err != nil {
-					t.Fatal(err)
-				}
-			}
 
 			if got, err := currentPiBootstrap(); err == nil {
 				t.Fatalf("explicitly incompatible grant yielded bootstrap: %#v", got.Providers)
@@ -113,19 +102,15 @@ func TestCurrentPiBootstrapRejectsRevokedActiveGrant(t *testing.T) {
 	if err := auth.Save("protected-token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Save(provider.Provider{Kind: provider.RelayProvider, ID: "revoked-chatgpt"}); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := currentPiBootstrap(); err == nil {
 		t.Fatal("revoked active provider unexpectedly bootstrapped")
 	}
 }
 
-func TestManagedLaunchArgsDoNotExplicitlyDoubleLoadProvider(t *testing.T) {
-	got := buildPiVoidCodexArgs([]string{"-p", "hello"}, "")
-	for _, arg := range got {
-		if arg == "-e" {
-			t.Fatalf("managed standard extension was also passed explicitly: %#v", got)
-		}
+func TestPiArgsPreserveDesktopSessionLifecycle(t *testing.T) {
+	got := buildPiArgs([]string{"--session-id", "session-1"}, "/managed.ts")
+	want := []string{"-e", "/managed.ts", "--session-id", "session-1"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }

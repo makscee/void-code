@@ -124,6 +124,10 @@ if (-not $env:VC_LANG) {
 
 $vcDir  = Join-Path $env:USERPROFILE '.void-code'
 $binDir = Join-Path $vcDir 'bin'
+# Pi is installed below VC's runtime. On Windows npm generates this .cmd package
+# entrypoint; vc resolves and launches the same artifact rather than PATH `pi`.
+$piRuntimeDir = Join-Path $vcDir 'runtime\pi'
+$piEntry = Join-Path $piRuntimeDir 'node_modules\.bin\pi.cmd'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 # 1. Download vc.exe
@@ -494,6 +498,7 @@ function Repair-CodexNativeOptional {
 
 function Test-AgentHealthy {
     param([string]$Binary)
+    if ($Binary -eq 'pi') { return (Test-Path -LiteralPath $piEntry -PathType Leaf) }
     if ($Binary -eq 'codex') { return (Test-CodexHealthy) }
     return ($null -ne (Get-Command $Binary -ErrorAction SilentlyContinue))
 }
@@ -524,6 +529,16 @@ function Install-NpmAgent {
     }
 
     Write-Host "vc: installing $Package ($Label) via $NpmCommand…" -ForegroundColor Cyan
+    if ($Binary -eq 'pi') {
+        New-Item -ItemType Directory -Force -Path $piRuntimeDir | Out-Null
+        & $NpmCommand --prefix $piRuntimeDir install --no-save @NpmInstallRetryArgs $Package
+        if ($LASTEXITCODE -eq 0 -and (Test-AgentHealthy -Binary 'pi')) {
+            Write-Host "vc: $Package installed in VC managed runtime" -ForegroundColor Green
+            return $true
+        }
+        Write-Host "vc: managed Pi runtime install failed" -ForegroundColor Yellow
+        return $false
+    }
     if (Invoke-NpmInstallGlobal -NpmCommand $NpmCommand -Package $Package) {
         if ($Binary -eq 'codex') {
             if ((Test-CodexHealthy) -or (Repair-CodexNativeOptional -NpmCommand $NpmCommand)) {

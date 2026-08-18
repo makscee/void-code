@@ -33,16 +33,7 @@ to ~/.void-code/token with mode 0600.`,
 
 func init() { rootCmd.AddCommand(loginCmd) }
 
-const legacyMigrationInstruction = "Legacy VC credential detected. Contact the operator for migration, then complete the normal device login."
-
-func printLegacyMigrationInstruction(writer io.Writer) {
-	if auth.LegacyTokenExists() {
-		fmt.Fprintln(writer, legacyMigrationInstruction)
-	}
-}
-
 func runLogin(_ *cobra.Command, _ []string) error {
-	printLegacyMigrationInstruction(os.Stderr)
 	return runDeviceFlow(config.OSResolve())
 }
 

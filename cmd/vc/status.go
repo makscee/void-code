@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -11,168 +9,65 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
-	"github.com/makscee/void-code/internal/harnesschoice"
-	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/spf13/cobra"
 )
 
-var statusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show auth, relay, and version status",
-	Long:  `Print the current authentication state, relay endpoint, and vc version.`,
-	RunE:  runStatus,
-}
+var statusCmd = &cobra.Command{Use: "status", Short: "Show subscription, relay, and version status", Long: "Verify the current void-code subscription and show relay and version status.", RunE: runStatus}
 
-func init() {
-	rootCmd.AddCommand(statusCmd)
-}
+func init() { rootCmd.AddCommand(statusCmd) }
 
 var labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
 var valueStyle = lipgloss.NewStyle().Bold(true)
 var errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
 
-// meResponse is the subset of GET /v1/auth/me we care about.
-type meResponse struct {
-	Slug  string `json:"slug"`
-	Email string `json:"email"`
-}
-
+// runStatus never treats the presence of a token file as authentication. The
+// subscription endpoint is the authority for identity, budget, and rejection.
 func runStatus(_ *cobra.Command, _ []string) error {
 	cfg := config.OSResolve()
-
-	// Print version and relay unconditionally.
 	fmt.Printf("%s %s\n", labelStyle.Render("version:"), valueStyle.Render(version.Version))
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
-	fmt.Printf("%s %s\n", labelStyle.Render("provider:"), valueStyle.Render(provider.LoadLabel()))
-	activeHarness := harnesschoice.Load()
-	fmt.Printf("%s %s\n", labelStyle.Render("harness:"), valueStyle.Render(activeHarness.Label()))
-	fmt.Printf("%s %s\n", labelStyle.Render("matrix: "), valueStyle.Render("Claude=DeepSeek/ChatGPT, Codex=ChatGPT, Pi=DeepSeek/ChatGPT"))
-
-	// Load token with legacy cv fallback and silent migration.
-	token, migrated, loadErr := auth.Load()
-	if loadErr != nil {
+	fmt.Printf("%s %s\n", labelStyle.Render("runtime:"), valueStyle.Render("Pi"))
+	token, _, err := auth.Load()
+	if err != nil || strings.TrimSpace(token) == "" {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("not logged in"))
-		fmt.Printf("%s %s\n", labelStyle.Render("token:  "), errorStyle.Render("no token at ~/.void-code/token (or ~/.claudev/token)"))
 		return nil
 	}
-
-	token = strings.TrimSpace(token)
-	if token == "" {
-		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token file empty"))
-		return nil
-	}
-
-	tokenLabel := "~/.void-code/token"
-	if migrated {
-		tokenLabel = "~/.claudev/token (legacy cv — will migrate on next spawn)"
-	}
-
-	// Call /v1/auth/me to get identity.
-	identity, err := fetchMe(cfg.AuthHost, token)
+	me, err := auth.FetchMe(cfg.AuthHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
-		// Token present but /me failed — show partial info without failing hard.
-		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token present but verify failed: "+err.Error()))
-		fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenLabel))
+		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token present but verification failed: "+err.Error()))
 		return nil
 	}
-
-	// Display name: prefer slug, fall back to email, fall back to generic.
-	displayName := identity.Slug
-	if displayName == "" {
-		displayName = identity.Email
+	identity := me.UserID
+	if me.Email != "" {
+		identity = me.Email
 	}
-	if displayName == "" {
-		displayName = "(unknown)"
+	if identity == "" {
+		identity = "(unknown)"
 	}
-
-	fmt.Printf("%s %s\n", labelStyle.Render("auth:   "),
-		valueStyle.Render("logged in as "+displayName))
-	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render(tokenLabel))
-
-	// VCD-49: fetch budget info from /v1/vc/me (pct + reset_at only — no dollar values).
-	// Degrade-safe: if FetchMe fails or pct absent/nil, skip the budget line silently.
-	vcMeClient := &http.Client{Timeout: authProbeTimeout}
-	if me, err := cachedFetchMe(cfg.AuthHost, token, vcMeClient); err == nil && me.Pct != nil {
-		line := formatBudgetLine(*me.Pct, me.ResetAt)
-		fmt.Printf("%s %s\n", labelStyle.Render("budget: "), valueStyle.Render(line))
+	fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), valueStyle.Render("logged in as "+identity))
+	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render("~/.void-code/token"))
+	if me.Pct != nil {
+		fmt.Printf("%s %s\n", labelStyle.Render("budget: "), valueStyle.Render(formatBudgetLine(*me.Pct, me.ResetAt)))
 	}
-
 	return nil
 }
 
-// formatBudgetLine formats the budget status line shown in `vc status`.
-// Operator constraint (2026-05-30): percentages only — NO dollar values.
-// Format: "N% used — resets Jun 1" (or just "N% used" when resetAt absent).
 func formatBudgetLine(pct float64, resetAt string) string {
-	base := fmt.Sprintf("%.0f%% used", pct)
 	if resetAt == "" {
-		return base
+		return fmt.Sprintf("%.0f%% used", pct)
 	}
-	// Parse reset date to produce "Mon D" (e.g. "Jun 1").
-	resetStr := fmtResetDate(resetAt)
-	return fmt.Sprintf("%s — resets %s", base, resetStr)
+	return fmt.Sprintf("%.0f%% used — resets %s", pct, fmtResetDate(resetAt))
 }
-
-// fmtResetDate parses an ISO-8601 date string and returns "Mon D" (e.g. "Jun 1").
-// Falls back to the first 10 chars (YYYY-MM-DD) on parse error.
 func fmtResetDate(resetAt string) string {
-	t, err := time.Parse(time.RFC3339, resetAt)
-	if err != nil {
-		// Try date-only fallback.
-		t, err = time.Parse("2006-01-02", resetAt[:min(10, len(resetAt))])
-		if err != nil {
-			if len(resetAt) >= 10 {
-				return resetAt[:10]
-			}
-			return resetAt
-		}
+	if t, err := time.Parse(time.RFC3339, resetAt); err == nil {
+		return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
 	}
-	return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
-}
-
-// fetchMe calls GET /v1/auth/me and returns the user's slug + email.
-func fetchMe(authHost, token string) (meResponse, error) {
-	if cached, ok := readAuthCache[meResponse]("auth-me", authHost, token, time.Now()); ok {
-		return cached, nil
+	if t, err := time.Parse("2006-01-02", resetAt[:min(10, len(resetAt))]); err == nil {
+		return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
 	}
-	if err := readAuthTransient("auth-me", authHost, token); err != nil {
-		return meResponse{}, err
+	if len(resetAt) >= 10 {
+		return resetAt[:10]
 	}
-	url := strings.TrimRight(authHost, "/") + "/v1/auth/me"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return meResponse{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	client := &http.Client{Timeout: authProbeTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		writeAuthTransient("auth-me", authHost, token, err)
-		return meResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		err := fmt.Errorf("auth/me returned HTTP %d", resp.StatusCode)
-		if resp.StatusCode == http.StatusUnauthorized {
-			clearAuthCache("auth-me", authHost, token)
-		} else {
-			writeAuthTransient("auth-me", authHost, token, err)
-		}
-		return meResponse{}, err
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return meResponse{}, err
-	}
-
-	var me meResponse
-	if err := json.Unmarshal(body, &me); err != nil {
-		return meResponse{}, err
-	}
-	writeAuthCache("auth-me", authHost, token, me, time.Now())
-	return me, nil
+	return resetAt
 }
