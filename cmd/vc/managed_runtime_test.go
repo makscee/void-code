@@ -10,7 +10,7 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 )
 
-// TestRunSpawnNeverExecutesPathPiWithCredentials guards the authority boundary:
+// TestRunSpawnNeverExecutesPathPiWithCredentials guards deterministic runtime selection:
 // a PATH-controlled pi must never run after VC admits a token-bearing session.
 func TestRunSpawnNeverExecutesPathPiWithCredentials(t *testing.T) {
 	if testing.Short() {

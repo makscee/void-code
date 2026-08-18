@@ -81,6 +81,51 @@ func TestStableReleaseSyncsInstallersAndBinariesToVoidAuth(t *testing.T) {
 	}
 }
 
+func TestShellInstallerProvisionsManagedPiDespiteHealthyPathPi(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the shell installer with command fixtures")
+	}
+	home, mockBin := t.TempDir(), t.TempDir()
+	writeMock := func(name, source string) {
+		t.Helper()
+		path := filepath.Join(mockBin, name)
+		if err := os.WriteFile(path, []byte(source), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMock("pi", "#!/bin/sh\nexit 0\n")
+	writeMock("node", "#!/bin/sh\n[ \"$1\" = --version ] && echo v22.0.0\n")
+	writeMock("curl", "#!/bin/sh\nout=\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then out=$2; shift 2; continue; fi\n  shift\ndone\n[ -z \"$out\" ] || { mkdir -p \"$(dirname \"$out\")\"; printf fixture > \"$out\"; }\n")
+	writeMock("npm", "#!/bin/sh\nprefix=\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --prefix ]; then prefix=$2; shift 2; continue; fi\n  shift\ndone\nmkdir -p \"$prefix/node_modules/@earendil-works/pi-coding-agent/dist\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$prefix/node_modules/@earendil-works/pi-coding-agent/dist/cli.js\"\nchmod 700 \"$prefix/node_modules/@earendil-works/pi-coding-agent/dist/cli.js\"\nprintf invoked > \"$HOME/npm-was-called\"\n")
+
+	cmd := exec.Command("sh", "install.sh")
+	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+mockBin+":/usr/bin:/bin", "VC_SKIP_DOWNLOAD=1", "VC_INSTALL_YES=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("installer failed: %v\n%s", err, output)
+	}
+	entry := filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("healthy PATH pi incorrectly skipped managed provisioning: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(home, "npm-was-called")); err != nil {
+		t.Fatalf("installer did not call managed npm install despite healthy PATH pi: %v", err)
+	}
+}
+
+func TestPowerShellPiContractMatchesWindowsResolverArtifact(t *testing.T) {
+	content := readInstaller(t, "install.ps1")
+	for _, required := range []string{
+		"$piEntry = Join-Path $piRuntimeDir 'node_modules\\.bin\\pi.cmd'",
+		"Test-Path -LiteralPath $piEntry -PathType Leaf",
+		"& $NpmCommand --prefix $piRuntimeDir install --no-save",
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("PowerShell installer is missing Windows Pi artifact contract %q", required)
+		}
+	}
+}
+
 func TestShellInstallerDryRunDoesNotWrite(t *testing.T) {
 	home := t.TempDir()
 	before, err := os.ReadDir(home)

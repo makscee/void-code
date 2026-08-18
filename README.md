@@ -39,9 +39,13 @@ vc update             # self-update
 | `VC_AUTH_HOST` | `https://auth.makscee.ru` | auth base URL |
 | `VC_RELAY_CA` | _(embedded)_ | relay CA PEM path |
 
-## Token storage
+## Runtime and token trust model
 
-`~/.void-code/token` (mode 0600). `vc logout` wipes it.
+VC launches only its fixed Pi package entrypoint below `~/.void-code/runtime/pi`, never a `pi` selected from `PATH`. The installer checks that same platform entrypoint (Unix `dist/cli.js`; Windows npm's `.bin/pi.cmd`). This prevents accidental or less-authority PATH/symlink redirection; it is not executable provenance or a race-safe defense against the same OS user. That user can already replace files under `~/.void-code` and read the token.
+
+On Windows npm's generated `.cmd` shim uses the user-installed Node runtime. VC does not claim to bundle or verify Node because current packaging does not install a managed Node executable.
+
+`~/.void-code/token` is mode 0600. `vc logout` wipes it.
 
 ## Release artifacts
 

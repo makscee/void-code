@@ -124,9 +124,10 @@ if (-not $env:VC_LANG) {
 
 $vcDir  = Join-Path $env:USERPROFILE '.void-code'
 $binDir = Join-Path $vcDir 'bin'
-# Pi is a VC-managed runtime, so vc never launches an arbitrary PATH shim.
+# Pi is installed below VC's runtime. On Windows npm generates this .cmd package
+# entrypoint; vc resolves and launches the same artifact rather than PATH `pi`.
 $piRuntimeDir = Join-Path $vcDir 'runtime\pi'
-$piEntry = Join-Path $piRuntimeDir 'node_modules\@earendil-works\pi-coding-agent\dist\cli.js'
+$piEntry = Join-Path $piRuntimeDir 'node_modules\.bin\pi.cmd'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 # 1. Download vc.exe

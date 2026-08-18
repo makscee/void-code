@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+func TestManagedPiPathUsesPlatformPackageEntrypoint(t *testing.T) {
+	home := filepath.Join("test home", "user")
+	for _, tc := range []struct {
+		goos string
+		want string
+	}{
+		{"linux", filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")},
+		{"darwin", filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")},
+		{"windows", filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", ".bin", "pi.cmd")},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			if got := managedPiPathForOS(home, tc.goos); got != tc.want {
+				t.Fatalf("managedPiPathForOS() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveUsesManagedRuntimeNotPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -32,6 +50,31 @@ func TestResolveUsesManagedRuntimeNotPath(t *testing.T) {
 	}
 	if got != path {
 		t.Fatalf("Resolve() = %q, want managed path %q", got, path)
+	}
+}
+
+func TestResolveRejectsSymlinkedRuntimeParent(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(outside, "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")
+	if err := os.WriteFile(entry, []byte("managed"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, ".void-code")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Resolve(); err == nil {
+		t.Fatal("Resolve accepted a managed runtime below a symlinked parent")
 	}
 }
 
