@@ -13,7 +13,7 @@ describe('packaged renderer entry', () => {
     expect(html).toContain('<script type="module" src="index.js"></script>');
     expect(html).not.toContain('xterm.js');
     expect(html).toContain('id="recent-toggle" type="button" aria-controls="recent" aria-expanded="false"');
-    expect(html).toContain('id="recent-close" type="button" aria-label="Close Recent Chats"');
+    expect(html).toContain('id="recent-close" type="button" data-l10n-aria="Close Recent Chats" aria-label=""');
     expect(css).toContain('clamp(240px,26vw,320px)');
     expect(css).toContain('@media(max-width:760px)');
     expect(stack).toContain("from '@xterm/xterm'");
@@ -33,7 +33,7 @@ describe('packaged renderer entry', () => {
     expect(renderer).toContain('closeFocusReturned');
     expect(renderer).toContain('escapeFocusReturned');
     expect(renderer).toContain('resumeFocusTransferred');
-    expect(renderer).toContain("resume.setAttribute('aria-label', `Resume ${tab.title}`)");
+    expect(renderer).toContain("resume.setAttribute('aria-label', t('Resume {0}', localizeChatTitle(tab.title)))");
     expect(probe).not.toContain('missingFont.result.assertions.realVisibleColor');
     expect(probe).toContain('recentGeometry: baseline.result.recentGeometry');
   });

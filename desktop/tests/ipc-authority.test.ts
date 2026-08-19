@@ -3,7 +3,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { IPC } from '../src/shared/preload-contract';
 
-const notifications = new Set([IPC.subscribe, IPC.unsubscribe]);
+const notifications = new Set([IPC.subscribe, IPC.unsubscribe, IPC.localeCurrent, IPC.appVersion]);
 
 function registeredHandlers(source: ts.SourceFile): Map<string, ts.ArrowFunction | ts.FunctionExpression> {
   const handlers = new Map<string, ts.ArrowFunction | ts.FunctionExpression>();
@@ -41,7 +41,7 @@ describe('IPC authority wiring', () => {
     const handlers = registeredHandlers(source);
 
     for (const [name, channel] of Object.entries(IPC)) {
-      if ([IPC.output, IPC.exit, IPC.lifecycle].includes(channel)) continue;
+      if ([IPC.output, IPC.exit, IPC.lifecycle, IPC.authEvent, IPC.updateStatusEvent].includes(channel)) continue;
       const handler = handlers.get(name);
       expect(handler, `${channel} is structurally registered`).toBeDefined();
       expect(firstEffectIsGuard(handler!), `${channel} guards before effects`).toBe(true);

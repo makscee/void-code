@@ -4,7 +4,7 @@ import { RECOVERY_GUIDANCE } from '../src/renderer/recovery';
 
 describe('stable pilot recovery guidance', () => {
   it('covers every required coarse recovery state with an action', () => {
-    expect(RECOVERY_GUIDANCE.AUTH_PREFLIGHT_REQUIRED.detail).toMatch(/operator.*sign-in.*network.*guided VC login/i);
+    expect(RECOVERY_GUIDANCE.AUTH_PREFLIGHT_REQUIRED.detail).toMatch(/Sign In.*browser authorization.*network/i);
     expect(RECOVERY_GUIDANCE.SESSION_START_FAILED.detail).toMatch(/sign-in.*network.*Restart.*Support Report/i);
     expect(RECOVERY_GUIDANCE.RUNTIME_EXITED.detail).toMatch(/Restart.*no shell.*Support Report/i);
     expect(RECOVERY_GUIDANCE.WORKSPACE_MISSING.detail).toMatch(/Locate.*remove.*fallback folder/i);
@@ -24,8 +24,8 @@ describe('stable pilot recovery guidance', () => {
     expect(renderer).not.toContain('recoveryPathElement.textContent = view.recoveryPath');
     expect(renderer).toContain("else if (selected?.exited)");
     expect(renderer).toContain("showEnded(code === 'SESSION_START_FAILED' || code === 'SESSION_MISSING' || code === 'RUNTIME_EXITED'");
-    expect(renderer).toContain("folderElement.textContent = recovering ? 'Workspace unavailable'");
-    expect(html).toContain('The previously selected folder cannot be found.');
+    expect(renderer).toContain("folderElement.textContent = recovering ? t('Workspace unavailable')");
+    expect(renderer).toContain("recoveryPathElement.textContent = recovering ? t('The previously selected folder cannot be found.')");
     expect(html).toContain('It excludes sign-in data, paths, file or chat content, terminal output and environment variables.');
   });
 });
