@@ -1,7 +1,7 @@
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash } from './resource-assembly-lib.mjs';
+import { assertPiSourcePins, assertPiTreePin, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile } from './resource-assembly-lib.mjs';
 
 if (process.arch !== 'x64') throw new Error('Windows x64 resource assembly requires an x64 build host');
 async function materializeTreeLinks(root) {
@@ -77,14 +77,15 @@ try {
   if (!clipboardEntries.includes('clipboard-win32-x64-msvc') || clipboardEntries.some((name) => name !== 'clipboard-win32-x64-msvc')) throw new Error(`private Pi target dependencies mismatch: ${clipboardEntries.join(',')}`);
   await hoistPiBundledDependencies(path.join(staging, 'pi'));
   await materializeTreeLinks(path.join(staging, 'pi'));
+  const piTreeSha256 = await assertPiTreePin(path.join(staging, 'pi'), win.pi);
   await assertWindowsInstallablePaths(staging);
   const piPackage = JSON.parse(await readFile(path.join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'));
   const manifest = {
     schema: 1,
     platform: 'win32-x64',
-    vc: { version: process.platform === 'win32' ? execFileSync(path.join(staging, 'vc/vc.exe'), ['--version'], { encoding: 'utf8' }).trim() : win.vc.version, sourceCommit: win.vc.sourceCommit, path: 'vc/vc.exe', sha256: win.vc.sha256 },
+    vc: { version: process.platform === 'win32' ? execFileSync(path.join(staging, 'vc/vc.exe'), ['--version'], { encoding: 'utf8' }).trim() : win.vc.version, sourceCommit: win.vc.sourceCommit, sourceTree: win.vc.sourceTree, path: 'vc/vc.exe', sha256: win.vc.sha256 },
     node: { version: nodeVersion, source: win.node.source, sourceArchiveSha256: win.node.sourceArchiveSha256, path: 'node/node.exe', sha256: nodeHash, npm: { version: JSON.parse(await readFile(path.join(staging, 'node/node_modules/npm/package.json'), 'utf8')).version } },
-    pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },
+    pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: piTreeSha256 },
     fixture: { path: 'fixture/round-trip.js', sha256: await shaFile(path.join(staging, 'fixture/round-trip.js')) },
   };
   await writeFile(path.join(staging, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

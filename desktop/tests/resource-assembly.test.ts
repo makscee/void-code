@@ -20,7 +20,9 @@ describe('resource source pins', () => {
   it('pins the Windows vc runtime to the latest CLI source revision', () => {
     const repo = path.resolve('..');
     const latestCliCommit = execFileSync('git', ['log', '-1', '--format=%H', '--', 'cmd/vc'], { cwd: repo, encoding: 'utf8' }).trim();
+    const pinnedTree = execFileSync('git', ['rev-parse', `${pins.windows.vc.sourceCommit}^{tree}`], { cwd: repo, encoding: 'utf8' }).trim();
     expect(pins.windows.vc.sourceCommit).toBe(latestCliCommit);
+    expect(pins.windows.vc.sourceTree).toBe(pinnedTree);
   });
 
   it.skipIf(process.platform !== 'darwin')('extracts authenticated Node and its private npm from the exact pinned official archive', async () => {
@@ -103,6 +105,7 @@ describe('resource source pins', () => {
     expect(script).toContain("'--os=win32', '--cpu=x64'");
     expect(script).toContain("clipboard-win32-x64-msvc");
     expect(script).toContain('private Pi target dependencies mismatch');
+    expect(script).toContain("assertPiTreePin(path.join(staging, 'pi'), win.pi)");
   });
 
   it('rejects a Pi tree changed after reconstruction', async () => {

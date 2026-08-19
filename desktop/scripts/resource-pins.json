@@ -14,8 +14,13 @@
       "sourceArchiveSha256": "7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29"
     },
     "vc": {
-      "sourceCommit": "83a8c2fade7822517fc461ea2ddba601839eba90",
-      "sha256": "5b8de963faf518135758b39f4608ca3ecc53b2f994b63154b0a034f4f0479f9f"
+      "sourceCommit": "48b41bc2e989ce0888cdf501bad45b8dce6eeeee",
+      "sourceTree": "f4ddc15738eb88ecb12ca99377c2caa5e97fcafc",
+      "version": "vc desktop-48b41bc",
+      "sha256": "9018c7794ba52a30146c30cbe90abdccbfe3c94e32763c505db277228e1661d3"
+    },
+    "pi": {
+      "treeSha256": "d735a1026090e145994e466176b68c958ab236ab09b372d8eb7283c253fa45f6"
     }
   },
   "pi": {
