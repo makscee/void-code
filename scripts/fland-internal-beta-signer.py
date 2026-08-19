@@ -11,8 +11,10 @@ RESULT = '/run/vc-internal-beta-signer/result.json'
 PAYLOAD = '/run/vc-internal-beta-signer/payload'
 SIGNATURE = '/run/vc-internal-beta-signer/signature'
 HELPER = '/usr/local/libexec/vc-internal-beta-signer-helper'
-USED = ROOT + '/used'
+OPERATION_BINDING = ROOT + '/used/beta.5-sequence-5.payload-sha256'
 KEY_ID = 'internal-beta-2026-08'
+MAX_SAFE_INTEGER = 9_007_199_254_740_991
+MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024
 PREDECESSOR_SHA256 = '6e2073dd8b6dae2f07adf915d6ea895f2e33e6362851c6777de6067a456d08fd'
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 B64URL = re.compile(r'^[A-Za-z0-9_-]{2,}$')
@@ -68,6 +70,29 @@ def atomic_new(path, data, mode=0o600):
         try: os.unlink(temporary)
         except FileNotFoundError: pass
 
+def validate_payload(value):
+    exact(value, ['architecture','channel','expiresAt','immutableUrl','installerUrl','keyId','notBefore','platform','publishedAt','schema','sequence','sha256','sha512','size','version'])
+    if value['schema'] != 'vc-windows-update-v1' or value['channel'] != 'closed-beta' or value['keyId'] != KEY_ID or value['version'] != '0.1.3-beta.5' or value['platform'] != 'win32' or value['architecture'] != 'x64': die('payload identity rejected')
+    if type(value['sequence']) is not int or value['sequence'] != 5 or value['sequence'] > MAX_SAFE_INTEGER or type(value['size']) is not int or value['size'] < 1 or value['size'] > MAX_INSTALLER_BYTES or not isinstance(value['sha256'], str) or not SHA256.fullmatch(value['sha256']) or not isinstance(value['sha512'], str) or not B64_512.fullmatch(value['sha512']): die('payload artifact rejected')
+    version = value['version']; filename = f'Void-Code-{version}-windows-x64.exe'
+    if value['installerUrl'] != f'https://vc.makscee.ru/download/windows/{filename}' or value['immutableUrl'] != f'https://github.com/makscee/void-code/releases/download/desktop-v{version}/{filename}': die('payload URLs rejected')
+    published, notbefore, expiry = (canonical_time(value[k]) for k in ('publishedAt','notBefore','expiresAt'))
+    if published > notbefore or notbefore > expiry or (expiry - published).total_seconds() > 604800: die('payload time rejected')
+    if expiry <= datetime.now(timezone.utc): die('payload expired')
+
+
+def bind_operation(path, digest):
+    encoded = (digest + '\n').encode()
+    try:
+        atomic_new(path, encoded)
+        return
+    except FileExistsError:
+        pass
+    secure_file(path)
+    with open(path, 'rb') as binding:
+        if binding.read(66) != encoded: die('operation payload mismatch')
+
+
 def initialize():
     die('initialization disabled: provision the enrolled key only through the attended external ceremony')
 
@@ -78,16 +103,10 @@ def sign():
     exact(request, ['app','channel','fromArtifactSha256','fromVersion','keyId','payload','schema'])
     if request['schema'] != 'vc-internal-beta-sign-request-v1' or request['app'] != 'Void Code' or request['channel'] != 'closed-beta' or request['fromVersion'] != '0.1.3-beta.4' or request['keyId'] != KEY_ID or request['fromArtifactSha256'] != PREDECESSOR_SHA256: die('request rejected')
     payload = b64decode(request['payload']); value = strict_json(payload)
-    exact(value, ['architecture','channel','expiresAt','immutableUrl','installerUrl','keyId','notBefore','platform','publishedAt','schema','sequence','sha256','sha512','size','version'])
-    if value['schema'] != 'vc-windows-update-v1' or value['channel'] != 'closed-beta' or value['keyId'] != KEY_ID or value['version'] != '0.1.3-beta.5' or value['platform'] != 'win32' or value['architecture'] != 'x64': die('payload identity rejected')
-    if not isinstance(value['sequence'], int) or value['sequence'] != 5 or not isinstance(value['size'], int) or value['size'] < 1 or not isinstance(value['sha256'], str) or not SHA256.fullmatch(value['sha256']) or not isinstance(value['sha512'], str) or not B64_512.fullmatch(value['sha512']): die('payload artifact rejected')
-    version = value['version']; filename = f'Void-Code-{version}-windows-x64.exe'
-    if value['installerUrl'] != f'https://vc.makscee.ru/download/windows/{filename}' or value['immutableUrl'] != f'https://github.com/makscee/void-code/releases/download/desktop-v{version}/{filename}': die('payload URLs rejected')
-    published, notbefore, expiry = (canonical_time(value[k]) for k in ('publishedAt','notBefore','expiresAt'))
-    if published > notbefore or notbefore > expiry or (expiry - published).total_seconds() > 604800: die('payload time rejected')
-    if expiry <= datetime.now(timezone.utc): die('payload expired')
-    digest = hashlib.sha256(payload).hexdigest(); used = USED + '/' + digest
-    if os.path.exists(used) or os.path.lexists(PAYLOAD) or os.path.lexists(SIGNATURE) or os.path.lexists(RESULT): die('payload already signed')
+    validate_payload(value)
+    digest = hashlib.sha256(payload).hexdigest()
+    bind_operation(OPERATION_BINDING, digest)
+    if os.path.lexists(PAYLOAD) or os.path.lexists(SIGNATURE) or os.path.lexists(RESULT): die('payload already signed')
     try:
         atomic_new(PAYLOAD, payload)
         subprocess.run([HELPER], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -114,7 +133,7 @@ if __name__ == '__main__':
     try: main()
     except ValueError as error:
         # Fixed, value-free rejection labels only; never echo request/key/path data.
-        known = {'schema rejected', 'duplicate member', 'encoding rejected', 'time rejected', 'root-owned input required', 'request rejected', 'payload identity rejected', 'payload artifact rejected', 'payload URLs rejected', 'payload time rejected', 'payload expired', 'payload already signed', 'signer revoked', 'root required'}
+        known = {'schema rejected', 'duplicate member', 'encoding rejected', 'time rejected', 'root-owned input required', 'request rejected', 'payload identity rejected', 'payload artifact rejected', 'payload URLs rejected', 'payload time rejected', 'payload expired', 'operation payload mismatch', 'payload already signed', 'signer revoked', 'root required'}
         sys.stderr.write(f"rejected:{error if str(error) in known else 'internal-validation'}\n")
         sys.exit(1)
     except subprocess.CalledProcessError:

@@ -38,7 +38,7 @@ class StrictJsonParser {
     for (const [literal, value] of [['true', true], ['false', false], ['null', null]] as const) {
       if (this.text.startsWith(literal, this.index)) { this.index += literal.length; return value; }
     }
-    const number = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(this.text.slice(this.index));
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(this.text.slice(this.index));
     if (!number || !Number.isFinite(Number(number[0]))) throw new Error('invalid JSON'); this.index += number[0].length; return Number(number[0]);
   }
   private string(): string {

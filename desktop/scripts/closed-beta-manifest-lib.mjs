@@ -6,6 +6,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SHA512 = /^(?:[A-Za-z0-9+/]{4}){21}[A-Za-z0-9+/]{2}==$/;
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const MAX_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024;
 
 function canonicalDate(value, label) {
   if (typeof value !== 'string' || !ISO_UTC.test(value) || new Date(value).toISOString() !== value) throw new Error(`${label} must be canonical UTC ISO-8601 with milliseconds`);
@@ -25,7 +26,7 @@ export function buildClosedBetaPayload(input) {
   if (typeof keyId !== 'string' || !KEY_ID.test(keyId)) throw new Error('keyId invalid');
   const sha256 = requireField(input, 'sha256'); const sha512 = requireField(input, 'sha512'); const size = requireField(input, 'size'); const sequence = requireField(input, 'sequence');
   if (typeof sha256 !== 'string' || !SHA256.test(sha256) || typeof sha512 !== 'string' || !SHA512.test(sha512)) throw new Error('artifact hash invalid');
-  if (!Number.isSafeInteger(size) || size < 1 || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error('size or sequence invalid');
+  if (!Number.isSafeInteger(size) || size < 1 || size > MAX_INSTALLER_BYTES || !Number.isSafeInteger(sequence) || sequence < 1) throw new Error('size or sequence invalid');
   const published = canonicalDate(requireField(input, 'publishedAt'), 'publishedAt');
   const notBefore = canonicalDate(requireField(input, 'notBefore'), 'notBefore');
   const expires = canonicalDate(requireField(input, 'expiresAt'), 'expiresAt');

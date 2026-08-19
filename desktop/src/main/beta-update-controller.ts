@@ -48,6 +48,10 @@ export class BetaUpdateController {
       const verified = this.options.verifyEnvelopeForTestOnlyPendingCeremony?.(envelopeBytes) ?? verifyEd25519Envelope(envelopeBytes, productionBetaKey);
       const state = await this.options.stateStore.load();
       const manifest = evaluateBetaPayload(verified, { currentVersion: this.options.currentVersion, platform: this.options.platform, architecture: this.options.architecture, now: this.options.now?.() ?? new Date() }, state);
+      if (manifest.version === this.options.currentVersion) {
+        this.manifest = undefined;
+        return this.publish({ state: 'up-to-date', currentVersion: this.options.currentVersion, canRetry: false });
+      }
       this.options.updater.authorize({ artifactUrl: manifest.installerUrl, immutableUrl: manifest.immutableUrl, size: manifest.size });
       const generated = await this.options.updater.checkForUpdates(); if (generated.version !== manifest.version || generated.files.length !== 1) throw new Error('generated metadata mismatch');
       const file = generated.files[0]; if (file.url !== manifest.installerUrl || file.sha512 !== manifest.sha512 || file.size !== manifest.size) throw new Error('generated artifact mismatch');

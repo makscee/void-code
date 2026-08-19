@@ -106,6 +106,37 @@ describe('closed-beta payload policy', () => {
     }
   });
 
+  it('rejects malformed numeric prefixes and trailing token forms at the current parser index', () => {
+    const value = payload();
+    const reordered = JSON.stringify({
+      schema: value.schema, channel: value.channel, keyId: value.keyId, version: value.version,
+      platform: value.platform, architecture: value.architecture,
+      sequence: value.sequence, sha256: value.sha256, sha512: value.sha512,
+      installerUrl: value.installerUrl, immutableUrl: value.immutableUrl, size: value.size,
+      publishedAt: value.publishedAt, notBefore: value.notBefore, expiresAt: value.expiresAt,
+    });
+    const malformed = [
+      reordered.replace('"sequence":2', '"sequence":xxx'),
+      reordered.replace('"sequence":2', '"sequence":+2'),
+      reordered.replace('"sequence":2', '"sequence":01'),
+      reordered.replace('"sequence":2', '"sequence":2.'),
+      reordered.replace('"sequence":2', '"sequence":2e'),
+      reordered.replace('"sequence":2', '"sequence":2x'),
+    ];
+    for (const text of malformed) {
+      const bytes = Buffer.from(text);
+      expect(() => evaluateBetaPayload({ payloadBytes: bytes, keyId: value.keyId, digest: createHash('sha256').update(bytes).digest('hex') }, context)).toThrow(/invalid JSON/);
+    }
+  });
+
+  it('enforces safe integer sequence and the inclusive 1 byte through 2 GiB size range', () => {
+    expect(evaluateBetaPayload(verified(payload({ size: 1, sequence: Number.MAX_SAFE_INTEGER })), context)).toMatchObject({ size: 1, sequence: Number.MAX_SAFE_INTEGER });
+    expect(evaluateBetaPayload(verified(payload({ size: 2_147_483_648 })), context)).toMatchObject({ size: 2_147_483_648 });
+    for (const change of [
+      { size: true }, { size: 2_147_483_649 }, { sequence: true }, { sequence: Number.MAX_SAFE_INTEGER + 1 },
+    ]) expect(() => evaluateBetaPayload(verified(payload(change)), context)).toThrow(/numeric bound rejected/);
+  });
+
   it('fails closed across deterministic malformed payload samples', () => {
     const samples: unknown[] = [null, [], '', 1, {}, ...Array.from({ length: 32 }, (_, index) => ({ ...payload(), [`x${index}`]: index }))];
     for (const sample of samples) expect(() => evaluateBetaPayload(verified(sample), context)).toThrow();

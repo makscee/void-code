@@ -24,6 +24,14 @@ describe('closed-beta ceremony artifact tooling', () => {
     expect(() => buildClosedBetaPayload({ ...input('0.1.3-beta.3', 3), sha256: 'A'.repeat(64) })).toThrow();
   });
 
+  it('enforces safe integer sequence and the inclusive 1 byte through 2 GiB size range', () => {
+    expect(JSON.parse(buildClosedBetaPayload({ ...input('0.1.3-beta.5', Number.MAX_SAFE_INTEGER), size: 1 }).toString())).toMatchObject({ size: 1, sequence: Number.MAX_SAFE_INTEGER });
+    expect(JSON.parse(buildClosedBetaPayload({ ...input('0.1.3-beta.5', 5), size: 2_147_483_648 }).toString())).toMatchObject({ size: 2_147_483_648 });
+    for (const change of [
+      { size: true }, { size: 0 }, { size: 2_147_483_649 }, { sequence: true }, { sequence: 0 }, { sequence: Number.MAX_SAFE_INTEGER + 1 },
+    ]) expect(() => buildClosedBetaPayload({ ...input('0.1.3-beta.5', 5), ...change })).toThrow(/size or sequence invalid/);
+  });
+
   it('assembles only a signer-produced 64-byte signature without altering exact payload bytes', () => {
     const payload = buildClosedBetaPayload(input('0.1.3-beta.3', 3));
     const vector = JSON.parse(readFileSync(new URL('./fixtures/ed25519-rfc8032-test-2.json', import.meta.url), 'utf8')) as { signatureBase64url: string };

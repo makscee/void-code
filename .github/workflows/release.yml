@@ -16,8 +16,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: .go-version
           cache: true
@@ -46,8 +46,10 @@ jobs:
         run: npm --prefix desktop ci
       - name: Lint, test, and build desktop source
         run: npm --prefix desktop run lint && npm --prefix desktop test && npm --prefix desktop run build
-      - name: Test locked fixed-policy signer helper
-        run: cargo test --locked --manifest-path scripts/internal-beta-signer-helper/Cargo.toml
+      - name: Test fixed-policy signers
+        run: |
+          python3 -m unittest scripts/test_fland_internal_beta_signer.py
+          cargo test --locked --manifest-path scripts/internal-beta-signer-helper/Cargo.toml
 
   windows-installer-powershell51:
     name: Windows installer (PowerShell 5.1)
@@ -124,10 +126,10 @@ jobs:
             artifact: vc-windows-arm64.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: .go-version
           cache: true
@@ -154,7 +156,7 @@ jobs:
     needs: [build, windows-installer-powershell51]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -217,7 +219,7 @@ jobs:
             dist/SHA256SUMS
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             dist/vc-darwin-amd64
@@ -240,17 +242,17 @@ jobs:
     # contents:write on makscee/void-auth.
     steps:
       - name: Checkout void-code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Checkout void-auth
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: makscee/void-auth
           token: ${{ secrets.VOID_AUTH_PUSH_TOKEN }}
           path: void-auth
 
       - name: Download release artifacts
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f # v1.13
         with:
           repository: makscee/void-code
           tag: ${{ github.ref_name }}

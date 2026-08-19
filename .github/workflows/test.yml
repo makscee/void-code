@@ -41,8 +41,10 @@ jobs:
         run: npm --prefix desktop ci
       - name: Lint, test, and build desktop source
         run: npm --prefix desktop run lint && npm --prefix desktop test && npm --prefix desktop run build
-      - name: Test locked fixed-policy signer helper
-        run: cargo test --locked --manifest-path scripts/internal-beta-signer-helper/Cargo.toml
+      - name: Test fixed-policy signers
+        run: |
+          python3 -m unittest scripts/test_fland_internal_beta_signer.py
+          cargo test --locked --manifest-path scripts/internal-beta-signer-helper/Cargo.toml
 
   windows-installer-powershell51:
     name: Windows installer (PowerShell 5.1)

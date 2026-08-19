@@ -60,6 +60,39 @@ describe('closed-beta controller chain', () => {
     await expect(subject(adapter(), stateStore({ load: vi.fn().mockResolvedValue(accepted) }), { verifyEnvelopeForTestOnlyPendingCeremony: vi.fn().mockReturnValue(older) }).check()).resolves.toMatchObject({ state: 'unavailable' });
   });
 
+  it('offers beta.5 to beta.4 but terminally reports the identical installed beta.5 as up-to-date', async () => {
+    const beta5Payload = {
+      ...payload, version: '0.1.3-beta.5', sequence: 5,
+      installerUrl: 'https://vc.makscee.ru/download/windows/Void-Code-0.1.3-beta.5-windows-x64.exe',
+      immutableUrl: 'https://github.com/makscee/void-code/releases/download/desktop-v0.1.3-beta.5/Void-Code-0.1.3-beta.5-windows-x64.exe',
+    };
+    const beta5Bytes = Buffer.from(JSON.stringify(beta5Payload));
+    const beta5Verified = { payloadBytes: beta5Bytes, keyId: beta5Payload.keyId, digest: createHash('sha256').update(beta5Bytes).digest('hex') };
+    const installedState = { schema: 1 as const, channel: 'closed-beta' as const, version: beta5Payload.version, sequence: beta5Payload.sequence, manifestDigest: beta5Verified.digest, keyId: beta5Payload.keyId };
+    const availableUpdater = adapter({
+      checkForUpdates: vi.fn().mockResolvedValue({ version: beta5Payload.version, files: [{ url: beta5Payload.installerUrl, sha512: beta5Payload.sha512, size: beta5Payload.size }] }),
+      downloadUpdate: vi.fn().mockRejectedValueOnce(new Error('interrupted install')).mockResolvedValueOnce(['/private/cache/update.exe']),
+    });
+    const retryable = subject(availableUpdater, stateStore({ load: vi.fn().mockResolvedValue(installedState) }), {
+      currentVersion: '0.1.3-beta.4', verifyEnvelopeForTestOnlyPendingCeremony: vi.fn().mockReturnValue(beta5Verified),
+    });
+    await expect(retryable.check()).resolves.toMatchObject({ state: 'available', availableVersion: beta5Payload.version });
+    await expect(retryable.updateNow()).resolves.toBe(false);
+    expect(retryable.status()).toMatchObject({ state: 'failed', canRetry: true, availableVersion: beta5Payload.version });
+    await expect(retryable.updateNow()).resolves.toBe(true);
+    expect(availableUpdater.downloadUpdate).toHaveBeenCalledTimes(2);
+
+    const installedUpdater = adapter();
+    const installed = subject(installedUpdater, stateStore({ load: vi.fn().mockResolvedValue(installedState) }), {
+      currentVersion: beta5Payload.version, verifyEnvelopeForTestOnlyPendingCeremony: vi.fn().mockReturnValue(beta5Verified),
+    });
+    await expect(installed.check()).resolves.toEqual({ state: 'up-to-date', currentVersion: beta5Payload.version, canRetry: false });
+    await expect(installed.updateNow()).resolves.toBe(false);
+    expect(installedUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(installedUpdater.downloadUpdate).not.toHaveBeenCalled();
+    expect(installedUpdater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
   it('allows install at the inclusive signed validity-window boundaries', async () => {
     let now = new Date(payload.notBefore); const updater = adapter(); const controller = subject(updater, stateStore(), { now: () => now });
     await expect(controller.check()).resolves.toMatchObject({ state: 'available' });

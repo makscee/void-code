@@ -1,4 +1,7 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
 use ed25519_dalek::{pkcs8::DecodePrivateKey, Signer, SigningKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -19,9 +22,13 @@ const PUBLIC: &str = "/var/lib/vc-internal-beta-signer/public.json";
 const PAYLOAD: &str = "/run/vc-internal-beta-signer/payload";
 const OUT: &str = "/run/vc-internal-beta-signer/signature";
 const USED: &str = "/var/lib/vc-internal-beta-signer/used";
+const OPERATION_BINDING_FILE: &str = "beta.5-sequence-5.payload-sha256";
 const MAX_KEY_BYTES: u64 = 16 * 1024;
 const MAX_PUBLIC_BYTES: u64 = 4 * 1024;
 const MAX_PAYLOAD_BYTES: u64 = 64 * 1024;
+const MAX_INSTALLER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_MANIFEST_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const PINNED_KEY_ID: &str = "internal-beta-2026-08";
 const PINNED_PUBLIC_KEY: &str = "rLWIrvTJV3Sv1pDk-FaYGCNadFEU_7pPD7sBvb_bfAc";
 
@@ -63,6 +70,32 @@ struct PublicRecord {
     public_key: String,
     #[serde(rename = "fingerprintSha256")]
     fingerprint: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PayloadRecord {
+    schema: String,
+    channel: String,
+    #[serde(rename = "keyId")]
+    key_id: String,
+    version: String,
+    platform: String,
+    architecture: String,
+    sequence: u64,
+    #[serde(rename = "installerUrl")]
+    installer_url: String,
+    #[serde(rename = "immutableUrl")]
+    immutable_url: String,
+    size: u64,
+    sha256: String,
+    sha512: String,
+    #[serde(rename = "publishedAt")]
+    published_at: String,
+    #[serde(rename = "notBefore")]
+    not_before: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: String,
 }
 
 struct Paths {
@@ -229,9 +262,125 @@ fn no_arguments(arguments: impl Iterator<Item = OsString>) -> bool {
     arguments.count() == 1
 }
 
-fn mark_payload_used(paths: &Paths, payload: &[u8]) -> Result<()> {
-    let digest = format!("{:x}", Sha256::digest(payload));
-    atomic_new_output(&paths.used.join(digest), b"signed\n")
+fn decimal(bytes: &[u8]) -> Result<i64> {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
+        return reject(Failure::Payload);
+    }
+    bytes.iter().try_fold(0_i64, |value, byte| {
+        value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(i64::from(byte - b'0')))
+            .ok_or(Failure::Payload)
+    })
+}
+
+fn leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn canonical_time_ms(value: &str) -> Result<i64> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 24
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'.'
+        || bytes[23] != b'Z'
+    {
+        return reject(Failure::Payload);
+    }
+    let year = decimal(&bytes[0..4])?;
+    let month = decimal(&bytes[5..7])?;
+    let day = decimal(&bytes[8..10])?;
+    let hour = decimal(&bytes[11..13])?;
+    let minute = decimal(&bytes[14..16])?;
+    let second = decimal(&bytes[17..19])?;
+    let millisecond = decimal(&bytes[20..23])?;
+    if year < 1 || !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
+        return reject(Failure::Payload);
+    }
+    let month_days = [
+        31,
+        if leap_year(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if day < 1 || day > month_days[(month - 1) as usize] {
+        return reject(Failure::Payload);
+    }
+    let prior_year = year - 1;
+    let days_before_year = 365 * prior_year + prior_year / 4 - prior_year / 100 + prior_year / 400;
+    let epoch_prior_year = 1969;
+    let days_before_epoch = 365 * epoch_prior_year + epoch_prior_year / 4 - epoch_prior_year / 100
+        + epoch_prior_year / 400;
+    let days_before_month: i64 = month_days[..(month - 1) as usize].iter().sum();
+    let days = days_before_year - days_before_epoch + days_before_month + day - 1;
+    (((days * 24 + hour) * 60 + minute) * 60 + second)
+        .checked_mul(1000)
+        .and_then(|value| value.checked_add(millisecond))
+        .ok_or(Failure::Payload)
+}
+
+fn validate_payload(payload: &[u8]) -> Result<()> {
+    let record: PayloadRecord = serde_json::from_slice(payload).map_err(|_| Failure::Payload)?;
+    let filename = "Void-Code-0.1.3-beta.5-windows-x64.exe";
+    let sha512 = STANDARD
+        .decode(&record.sha512)
+        .map_err(|_| Failure::Payload)?;
+    let published = canonical_time_ms(&record.published_at)?;
+    let not_before = canonical_time_ms(&record.not_before)?;
+    let expires = canonical_time_ms(&record.expires_at)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Failure::Internal)?;
+    let now_ms = i64::try_from(now.as_millis()).map_err(|_| Failure::Internal)?;
+    if record.schema != "vc-windows-update-v1"
+        || record.channel != "closed-beta"
+        || record.key_id != PINNED_KEY_ID
+        || record.version != "0.1.3-beta.5"
+        || record.platform != "win32"
+        || record.architecture != "x64"
+        || record.sequence != 5
+        || record.sequence > MAX_SAFE_INTEGER
+        || record.size < 1
+        || record.size > MAX_INSTALLER_BYTES
+        || record.sha256.len() != 64
+        || !record.sha256.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || sha512.len() != 64
+        || STANDARD.encode(&sha512) != record.sha512
+        || record.installer_url != format!("https://vc.makscee.ru/download/windows/{filename}")
+        || record.immutable_url != format!("https://github.com/makscee/void-code/releases/download/desktop-v0.1.3-beta.5/{filename}")
+        || published > not_before
+        || not_before > expires
+        || expires - published > MAX_MANIFEST_LIFETIME_MS
+        || expires <= now_ms
+    {
+        return reject(Failure::Payload);
+    }
+    Ok(())
+}
+
+fn bind_operation(paths: &Paths, payload: &[u8]) -> Result<()> {
+    let binding = paths.used.join(OPERATION_BINDING_FILE);
+    let expected = format!("{:x}\n", Sha256::digest(payload));
+    if atomic_new_output(&binding, expected.as_bytes()).is_ok() {
+        return Ok(());
+    }
+    let existing = read_checked(&binding, 65, Failure::Payload)?;
+    if existing != expected.as_bytes() {
+        return reject(Failure::Payload);
+    }
+    Ok(())
 }
 
 fn run(paths: &Paths) -> Result<()> {
@@ -251,8 +400,9 @@ fn run(paths: &Paths) -> Result<()> {
     if payload.is_empty() {
         return reject(Failure::Payload);
     }
+    validate_payload(&payload)?;
     output_absent(&paths.output)?;
-    mark_payload_used(paths, &payload)?;
+    bind_operation(paths, &payload)?;
     let signature = signing_key.sign(&payload).to_bytes();
     atomic_new_output(&paths.output, &signature)
 }
@@ -297,7 +447,7 @@ mod tests {
         );
         fs::write(&public, record).expect("write public");
         fs::set_permissions(&public, fs::Permissions::from_mode(0o600)).expect("mode public");
-        fs::write(&payload, b"exact payload").expect("write payload");
+        fs::write(&payload, fixture_payload(1)).expect("write payload");
         fs::set_permissions(&payload, fs::Permissions::from_mode(0o600)).expect("mode payload");
         let used = temp.path().join("used");
         fs::create_dir(&used).expect("used directory");
@@ -309,6 +459,14 @@ mod tests {
             output,
             used,
         }
+    }
+
+    fn fixture_payload(size: u64) -> Vec<u8> {
+        format!(
+            "{{\"schema\":\"vc-windows-update-v1\",\"channel\":\"closed-beta\",\"keyId\":\"{PINNED_KEY_ID}\",\"version\":\"0.1.3-beta.5\",\"platform\":\"win32\",\"architecture\":\"x64\",\"sequence\":5,\"installerUrl\":\"https://vc.makscee.ru/download/windows/Void-Code-0.1.3-beta.5-windows-x64.exe\",\"immutableUrl\":\"https://github.com/makscee/void-code/releases/download/desktop-v0.1.3-beta.5/Void-Code-0.1.3-beta.5-windows-x64.exe\",\"size\":{size},\"sha256\":\"{}\",\"sha512\":\"{}\",\"publishedAt\":\"2099-01-01T00:00:00.000Z\",\"notBefore\":\"2099-01-01T00:00:00.000Z\",\"expiresAt\":\"2099-01-08T00:00:00.000Z\"}}",
+            "a".repeat(64),
+            STANDARD.encode([1_u8; 64]),
+        ).into_bytes()
     }
 
     // The real pinned key cannot be generated by a test fixture. These tests exercise the
@@ -323,8 +481,9 @@ mod tests {
         let record: PublicRecord = serde_json::from_slice(&public).map_err(|_| Failure::Public)?;
         validate_public_record(&public, &derived, &record.public_key)?;
         let payload = read_checked(&paths.payload, MAX_PAYLOAD_BYTES, Failure::Payload)?;
+        validate_payload(&payload)?;
         output_absent(&paths.output)?;
-        mark_payload_used(paths, &payload)?;
+        bind_operation(paths, &payload)?;
         atomic_new_output(&paths.output, &signing_key.sign(&payload).to_bytes())
     }
 
@@ -394,7 +553,51 @@ mod tests {
     }
 
     #[test]
-    fn rejects_replay_existing_or_symlink_output_and_cleans_failed_temporary_output() {
+    fn validates_fixed_identity_and_numeric_boundaries() {
+        assert!(validate_payload(&fixture_payload(1)).is_ok());
+        assert!(validate_payload(&fixture_payload(MAX_INSTALLER_BYTES)).is_ok());
+        assert!(validate_payload(&fixture_payload(MAX_INSTALLER_BYTES + 1)).is_err());
+        for malformed in [
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("\"size\":1", "\"size\":true"),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("\"sequence\":5", "\"sequence\":9007199254740992"),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("0.1.3-beta.5", "0.1.3-beta.6"),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("2099-01-01T00:00:00.000Z", "2099-02-30T00:00:00.000Z"),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("2099-01-08T00:00:00.000Z", "2020-01-08T00:00:00.000Z"),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace(
+                    "\"publishedAt\":\"2099-01-01T00:00:00.000Z\"",
+                    "\"publishedAt\":\"2099-01-01T00:00:00Z\"",
+                ),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace(
+                    "\"publishedAt\":\"2099-01-01T00:00:00.000Z\"",
+                    "\"publishedAt\":\"2099-01-02T00:00:00.000Z\"",
+                ),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("2099-01-08T00:00:00.000Z", "2099-01-08T00:00:00.001Z"),
+            String::from_utf8(fixture_payload(1))
+                .expect("utf8")
+                .replace("2099-", "2020-"),
+        ] {
+            assert!(validate_payload(malformed.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn binds_one_operation_across_restart_rejects_equivocation_and_cleans_outputs() {
         if unsafe { libc::geteuid() } != 0 {
             return;
         }
@@ -405,8 +608,22 @@ mod tests {
         assert!(run_fixture(&fixture).is_err());
         fs::remove_file(&fixture.output).expect("remove existing output");
         run_fixture(&fixture).expect("first sign");
-        fs::remove_file(&fixture.output).expect("remove signed output");
-        assert!(run_fixture(&fixture).is_err(), "replay was accepted");
+        let first_signature = fs::read(&fixture.output).expect("first signature");
+        fs::remove_file(&fixture.output).expect("consume signed output");
+        run_fixture(&fixture).expect("identical payload remains deterministic after restart");
+        assert_eq!(
+            fs::read(&fixture.output).expect("second signature"),
+            first_signature
+        );
+        fs::remove_file(&fixture.output).expect("consume repeated output");
+        fs::write(&fixture.payload, fixture_payload(2)).expect("distinct same-operation payload");
+        fs::set_permissions(&fixture.payload, fs::Permissions::from_mode(0o600))
+            .expect("payload mode");
+        assert!(
+            run_fixture(&fixture).is_err(),
+            "same-identity equivocation was accepted"
+        );
+        assert!(!fixture.output.exists(), "equivocation left output");
         let symlink_temp = TempDir::new().expect("symlink temp");
         fs::set_permissions(symlink_temp.path(), fs::Permissions::from_mode(0o700))
             .expect("mode dir");
