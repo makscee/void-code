@@ -61,6 +61,14 @@ describe('decided pilot package identity', () => {
     expect(read('src/main/electron-updater-adapter.ts')).not.toContain('verifyUpdateCodeSignature = false');
   });
 
+  it('binds the fixed signer policy to the beta.4 to beta.5 transition', () => {
+    const signer = readFileSync(new URL('../../scripts/fland-internal-beta-signer.py', import.meta.url), 'utf8');
+    expect(signer).toContain("request['fromVersion'] != '0.1.3-beta.4'");
+    expect(signer).toContain("value['version'] != '0.1.3-beta.5'");
+    expect(signer).toContain("value['sequence'] != 5");
+    expect(signer).not.toContain("value['version'] != '0.1.3-beta.4'");
+  });
+
   it('retires the frozen review-failed 0.1.1 identity and reserves the post-fix candidate identity', () => {
     const contract = read('docs/stable-update-contract.md');
     expect(contract).toContain('0.1.1: `RETIRED_INTERNAL_REVIEW_FAILED`');

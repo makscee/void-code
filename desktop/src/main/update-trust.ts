@@ -22,11 +22,9 @@ export function compiledUpdateTrustMode(appVersion: string): UpdateTrustMode {
 
 interface ProductionBetaKey { keyId: string; rawPublicKey: Buffer }
 /*
- * PENDING PROTECTED KEY CEREMONY: this fixed source allowlist is intentionally
- * empty. A ceremony-owned change may add public keys here after independent
- * review. Never accept keys from a manifest, environment, argv, IPC, or disk.
- * Rotation adds a new fixed entry; revocation removes the old entry in a new
- * application build. No manifest can be accepted while this remains empty.
+ * Fixed source allowlist enrolled by the internal-beta key ceremony. Never
+ * accept keys from a manifest, environment, argv, IPC, or disk. Rotation adds
+ * a new fixed entry; revocation removes the old entry in a reviewed build.
  */
 const PRODUCTION_BETA_KEYS: readonly ProductionBetaKey[] = Object.freeze([
   // INTERNAL-BETA ONLY: fland root-only authority; never valid for stable/public releases.
