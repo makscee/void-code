@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, preloadSessionId } from '../shared/preload-contract';
-import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
+import type { ChatSemanticStatus, DesktopAuthEvent, ExitEvent, Locale, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
 function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
@@ -39,6 +39,7 @@ function teardown(): void {
   }
 }
 const api: TerminalApi = {
+  appVersion: () => ipcRenderer.sendSync(IPC.appVersion) as string,
   start: (request) => ipcRenderer.invoke(IPC.start, request),
   input: (request) => ipcRenderer.invoke(IPC.input, request),
   resize: (request) => ipcRenderer.invoke(IPC.resize, request),
@@ -47,9 +48,34 @@ const api: TerminalApi = {
   lifecycleStatus: (request) => ipcRenderer.invoke(IPC.lifecycleStatus, request),
   chooseFolder: () => ipcRenderer.invoke(IPC.chooseFolder),
   openLink: (url) => ipcRenderer.invoke(IPC.openLink, { url }),
+  auth: Object.freeze({
+    status: () => ipcRenderer.invoke(IPC.authStatus),
+    start: () => ipcRenderer.invoke(IPC.authStart),
+    onEvent: (listener: (event: DesktopAuthEvent) => void) => {
+      if (typeof listener !== 'function') throw new Error('listener must be a function');
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: DesktopAuthEvent) => listener(payload);
+      ipcRenderer.on(IPC.authEvent, wrapped);
+      return () => ipcRenderer.removeListener(IPC.authEvent, wrapped);
+    },
+  }),
   support: Object.freeze({
     copy: (request) => ipcRenderer.invoke(IPC.supportCopy, request),
     save: (request) => ipcRenderer.invoke(IPC.supportSave, request),
+  }),
+  locale: Object.freeze({
+    current: () => ipcRenderer.sendSync(IPC.localeCurrent) as Locale,
+    set: (locale: Locale) => ipcRenderer.invoke(IPC.localeSet, { locale }),
+  }),
+  update: Object.freeze({
+    status: () => ipcRenderer.invoke(IPC.updateStatus),
+    check: () => ipcRenderer.invoke(IPC.updateCheck),
+    install: () => ipcRenderer.invoke(IPC.updateInstall),
+    onStatus: (listener) => {
+      if (typeof listener !== 'function') throw new Error('listener must be a function');
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof listener>[0]) => listener(payload);
+      ipcRenderer.on(IPC.updateStatusEvent, wrapped);
+      return () => ipcRenderer.removeListener(IPC.updateStatusEvent, wrapped);
+    },
   }),
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),

@@ -1,11 +1,31 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import type { RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
+import { renderUpdateStatus, unavailableUpdateStatus } from './update-view';
+import { configureLocale, persistLocaleSelection, translate as t } from './localization';
+import type { DesktopAuthEvent, DesktopAuthState, RecoveryCode, RuntimeSupportState, SupportRequest, StableUpdateStatus } from '../shared/contract';
+const locale = window.voidTerminal.locale.current();
+configureLocale(locale);
+document.documentElement.lang = locale;
+for (const element of document.querySelectorAll<HTMLElement>('[data-l10n]')) element.textContent = t(element.dataset.l10n!);
+for (const element of document.querySelectorAll<HTMLElement>('[data-l10n-aria]')) element.setAttribute('aria-label', t(element.dataset.l10nAria!));
+const signInElement = document.querySelector<HTMLElement>('#sign-in')!;
+const signInButton = document.querySelector<HTMLButtonElement>('#sign-in-start')!;
+const signInWaitingElement = document.querySelector<HTMLElement>('#sign-in-waiting')!;
+const signInCodeElement = document.querySelector<HTMLElement>('#sign-in-code')!;
+const signInErrorElement = document.querySelector<HTMLElement>('#sign-in-error')!;
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
 const newChatButton = document.querySelector<HTMLButtonElement>('#new-chat')!;
+const aboutToggleButton = document.querySelector<HTMLButtonElement>('#about-toggle')!;
+const aboutPanel = document.querySelector<HTMLElement>('#about-panel')!;
+const aboutCloseButton = document.querySelector<HTMLButtonElement>('#about-close')!;
+const localeSelect = document.querySelector<HTMLSelectElement>('#locale-select')!;
+const updateCurrentElement = document.querySelector<HTMLElement>('#update-current')!;
+const updateStatusElement = document.querySelector<HTMLElement>('#update-status')!;
+const updateCheckButton = document.querySelector<HTMLButtonElement>('#update-check')!;
+const updateDownloadButton = document.querySelector<HTMLButtonElement>('#update-download')!;
 const supportToggleButton = document.querySelector<HTMLButtonElement>('#support-toggle')!;
 const supportPanel = document.querySelector<HTMLElement>('#support-panel')!;
 const supportCopyButton = document.querySelector<HTMLButtonElement>('#support-copy')!;
@@ -36,13 +56,15 @@ const runtimes = new Map<string, Runtime>();
 const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
+let authState: DesktopAuthState = 'sign_in_required';
+let signingIn = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
 function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
   currentRecovery = code; runtime.recoveryCode = code;
   const guidance = RECOVERY_GUIDANCE[code];
-  endedHeading.textContent = guidance.heading; endedDetail.textContent = guidance.detail;
+  endedHeading.textContent = t(guidance.heading); endedDetail.textContent = t(guidance.detail);
   restartButton.hidden = !guidance.canRestart; endedElement.hidden = false;
 }
 function supportContext(): SupportRequest {
@@ -50,6 +72,14 @@ function supportContext(): SupportRequest {
   const recoveryCode = runtime?.recoveryCode ?? currentRecovery;
   const state: RuntimeSupportState = recoveryCode === 'SESSION_START_FAILED' ? 'start_failed' : runtime?.exited ? 'ended' : runtime ? 'running' : 'not_started';
   return { runtime: state, recoveryCode };
+}
+function setAboutOpen(open: boolean): void {
+  aboutPanel.hidden = !open; aboutToggleButton.setAttribute('aria-expanded', String(open));
+  if (open) updateCheckButton.focus(); else aboutToggleButton.focus();
+}
+function showUpdateStatus(status: StableUpdateStatus): void {
+  renderUpdateStatus({ current: updateCurrentElement, status: updateStatusElement, action: updateDownloadButton }, status, t);
+  updateCheckButton.disabled = ['checking', 'downloading', 'verifying', 'installing'].includes(status.state);
 }
 function setSupportOpen(open: boolean): void {
   supportPanel.hidden = !open; supportToggleButton.setAttribute('aria-expanded', String(open));
@@ -82,6 +112,7 @@ function dispose(id: string): void {
 }
 async function stop(id: string): Promise<void> { try { await window.voidTerminal.stop({ sessionId: id }); } catch { /* sleeping or exited */ } dispose(id); }
 function selectedTab(): RendererTabRecord | undefined { return view.workspace?.tabs.find((tab) => tab.id === view.workspace?.selectedId); }
+function localizeChatTitle(title: string): string { const match = /^Chat (\d+)$/.exec(title); return match ? t('Chat {0}', match[1]) : title; }
 
 async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promise<void> {
   const workspace = view.workspace; if (!workspace || view.recoveryPath || runtimes.has(tab.id)) return;
@@ -94,7 +125,7 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   try {
     currentRecovery = 'NONE';
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
-    if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
+    if (started.showSharedFilesWarning) announce(t('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.'));
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
     offExit = window.voidTerminal.onExit(tab.id, () => {
       runtime.exited = true;
@@ -114,23 +145,34 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
 }
 
 function render(): void {
+  const authenticated = authState === 'ready';
+  signInElement.hidden = authenticated;
+  document.body.classList.toggle('sign-in-required', !authenticated);
+  signInButton.disabled = signingIn;
+  if (!authenticated) {
+    emptyElement.hidden = true; preflightElement.hidden = true; recoveryElement.hidden = true; tabsElement.hidden = true;
+    recentToggleButton.hidden = true; newChatButton.hidden = true; chooseButton.hidden = true; endedElement.hidden = true;
+    for (const runtime of runtimes.values()) runtime.container.hidden = true;
+    return;
+  }
   const focusedRecentControl = recentOpen && recentElement.contains(document.activeElement);
   const focusedRecentChatId = document.activeElement instanceof HTMLButtonElement ? document.activeElement.closest<HTMLElement>('.recent-row')?.dataset.chatId : undefined;
   const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
-  folderElement.textContent = recovering ? 'Workspace unavailable' : workspace?.path ?? 'No folder selected';
+  folderElement.textContent = recovering ? t('Workspace unavailable') : workspace?.path ?? t('No folder selected');
   chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
   emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || Boolean(workspace.selectedId); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
-  recoveryPathElement.textContent = recovering ? 'The previously selected folder cannot be found.' : '';
+  recoveryPathElement.textContent = recovering ? t('The previously selected folder cannot be found.') : '';
   tabsElement.replaceChildren(); recentListElement.replaceChildren();
   if (!workspace || recovering) { currentRecovery = recovering ? 'WORKSPACE_MISSING' : 'AUTH_PREFLIGHT_REQUIRED'; recentToggleButton.hidden = true; setRecentOpen(false, false); endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; fitAfterLayout(); return; }
   const active = workspace.tabs.filter((tab) => tab.location === 'active'); const recent = workspace.tabs.filter((tab) => tab.location === 'recent');
   for (const tab of active) {
     const item = document.createElement('div'); item.className = `tab${tab.id === workspace.selectedId ? ' selected' : ''}`;
     const status = chatStatuses.get(tab.id);
-    const badge = status ? `${status.state === 'running' ? 'Running' : status.state === 'working' ? 'Working' : 'Ready'}${status.unread ? ' •' : ''}` : (runtimes.has(tab.id) ? 'Running' : 'Sleeping');
-    const select = document.createElement('button'); select.textContent = `${tab.title}  ${badge}`; select.title = status?.diagnostic ?? (runtimes.has(tab.id) ? 'Chat process active' : 'Sleeping — select to resume');
+    const title = localizeChatTitle(tab.title);
+    const badge = status ? `${status.state === 'running' ? t('Running') : status.state === 'working' ? t('Working') : t('Ready')}${status.unread ? ' •' : ''}` : (runtimes.has(tab.id) ? t('Running') : t('Sleeping'));
+    const select = document.createElement('button'); select.textContent = `${title}  ${badge}`; select.title = status ? badge.replace(' •', '') : (runtimes.has(tab.id) ? t('Chat process active') : t('Sleeping — select to resume'));
     select.addEventListener('click', () => { void selectChat(tab.id); });
-    const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', `Close ${tab.title}`); close.addEventListener('click', () => { void closeChat(tab.id); });
+    const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', t('Close {0}', title)); close.addEventListener('click', () => { void closeChat(tab.id); });
     item.append(select, close); tabsElement.append(item);
   }
   for (const runtime of runtimes.values()) runtime.container.hidden = true;
@@ -142,10 +184,10 @@ function render(): void {
   } else { endedElement.hidden = !workspace.selectedId; currentRecovery = workspace.selectedId ? 'NONE' : 'AUTH_PREFLIGHT_REQUIRED'; }
   recentToggleButton.hidden = recent.length === 0;
   recentToggleButton.disabled = recent.length === 0;
-  recentToggleButton.textContent = `Recent Chats (${recent.length})`;
-  recentToggleButton.setAttribute('aria-label', `Recent Chats, ${recent.length} chat${recent.length === 1 ? '' : 's'}`);
+  recentToggleButton.textContent = t('Recent Chats ({0})', recent.length);
+  recentToggleButton.setAttribute('aria-label', t('Recent Chats, {0} chats', recent.length));
   if (recent.length === 0) setRecentOpen(false, false); else recentElement.hidden = !recentOpen;
-  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; row.dataset.chatId = tab.id; const title = document.createElement('span'); title.textContent = tab.title; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.setAttribute('aria-label', `Resume ${tab.title}`); resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
+  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; row.dataset.chatId = tab.id; const title = document.createElement('span'); title.textContent = localizeChatTitle(tab.title); const resume = document.createElement('button'); resume.textContent = t('Resume'); resume.setAttribute('aria-label', t('Resume {0}', localizeChatTitle(tab.title))); resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
   if (focusedRecentChatId && recentOpen) {
     const resume = [...recentListElement.querySelectorAll<HTMLButtonElement>('.recent-row button')].find((button) => button.closest<HTMLElement>('.recent-row')?.dataset.chatId === focusedRecentChatId);
     resume?.focus({ preventScroll: true });
@@ -157,14 +199,34 @@ async function closeChat(id: string): Promise<void> { await stop(id); view = awa
 async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {
   const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
-  announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions. Before the first chat, ask your operator to confirm existing VC sign-in and network access.'); render();
+  announce(t('Trusted folder: Pi can read and change files in this folder using your operating-system permissions.')); render();
 }
 
+const offAuthEvent = window.voidTerminal.auth.onEvent((event: DesktopAuthEvent) => {
+  if (event.type === 'authorization') {
+    signInCodeElement.textContent = event.userCode; signInWaitingElement.hidden = false;
+    void window.voidTerminal.openLink(event.verificationUrl);
+  } else if (event.type === 'complete') { authState = 'ready'; signingIn = false; signInErrorElement.hidden = true; render(); }
+});
+signInButton.addEventListener('click', async () => {
+  signingIn = true; signInErrorElement.hidden = true; signInWaitingElement.hidden = true; render();
+  try { authState = await window.voidTerminal.auth.start(); } catch { authState = 'sign_in_required'; signInErrorElement.hidden = false; }
+  signingIn = false; render();
+});
+const offUpdateStatus = window.voidTerminal.update.onStatus(showUpdateStatus);
+void window.voidTerminal.update.status().then(showUpdateStatus).catch(() => showUpdateStatus(unavailableUpdateStatus(window.voidTerminal.appVersion())));
+window.addEventListener('beforeunload', () => { offAuthEvent(); offUpdateStatus(); }, { once: true });
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
+aboutToggleButton.addEventListener('click', () => { setAboutOpen(aboutPanel.hidden); });
+aboutCloseButton.addEventListener('click', () => { setAboutOpen(false); });
+localeSelect.value = locale;
+localeSelect.addEventListener('change', () => { void persistLocaleSelection(localeSelect, locale, (selected) => window.voidTerminal.locale.set(selected), () => location.reload(), announce, t); });
+updateCheckButton.addEventListener('click', () => { void window.voidTerminal.update.check().then(showUpdateStatus); });
+updateDownloadButton.addEventListener('click', () => { void window.voidTerminal.update.install(); });
 supportToggleButton.addEventListener('click', () => { setSupportOpen(supportPanel.hidden); });
 supportCloseButton.addEventListener('click', () => { setSupportOpen(false); });
-supportCopyButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.copy(supportContext()); announce(result.action === 'copied' ? 'Support Report copied. Review it before sharing.' : 'Support Report was not copied.'); });
-supportSaveButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.save(supportContext()); announce(result.action === 'saved' ? 'Support Report saved. Review it before sharing.' : 'Support Report save cancelled.'); });
+supportCopyButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.copy(supportContext()); announce(result.action === 'copied' ? t('Support Report copied. Review it before sharing.') : t('Support Report was not copied.')); });
+supportSaveButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.save(supportContext()); announce(result.action === 'saved' ? t('Support Report saved. Review it before sharing.') : t('Support Report save cancelled.')); });
 recentToggleButton.addEventListener('click', () => { setRecentOpen(!recentOpen); });
 recentCloseButton.addEventListener('click', () => { setRecentOpen(false); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && recentOpen) { event.preventDefault(); setRecentOpen(false); } });
@@ -385,8 +447,8 @@ async function productionProbe(): Promise<void> {
   document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify(result)}`;
 }
 
-void window.voidTerminal.workspace.load().then(async (loaded) => {
-  view = loaded; render();
-  if (new URLSearchParams(location.search).get('productionTerminalProbe') === '1') await productionProbe();
-  else { const tab = selectedTab(); if (tab && !view.recoveryPath) await launch(tab, 'resume'); render(); }
+void Promise.all([window.voidTerminal.workspace.load(), window.voidTerminal.auth.status()]).then(async ([loaded, state]) => {
+  view = loaded; authState = state; render();
+  if (new URLSearchParams(location.search).get('productionTerminalProbe') === '1') { authState = 'ready'; render(); await productionProbe(); }
+  else { const tab = selectedTab(); if (tab && !view.recoveryPath && authState === 'ready') await launch(tab, 'resume'); render(); }
 }).catch(() => { document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify({ ok: false, errorCode: 'WORKSPACE_LOAD_FAILED' })}`; });

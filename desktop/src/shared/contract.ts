@@ -1,6 +1,8 @@
 import path from 'node:path';
 export { IPC } from './preload-contract';
 
+export type Locale = 'ru' | 'en';
+export interface LocaleRequest { locale: Locale }
 export type SessionId = string;
 export type SubscriptionKind = 'output' | 'exit' | 'status';
 export type SessionStatus = 'running' | 'stopped' | 'exited';
@@ -29,8 +31,22 @@ export type RuntimeSupportState = 'not_started' | 'running' | 'ended' | 'start_f
 export type RecoveryCode = 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'SESSION_START_FAILED' | 'RUNTIME_EXITED' | 'WORKSPACE_MISSING' | 'SESSION_MISSING';
 export interface SupportRequest { runtime: RuntimeSupportState; recoveryCode: RecoveryCode }
 export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
+export type DesktopAuthState = 'ready' | 'sign_in_required';
+export type StableUpdateStatus =
+  | { state: 'checking'; currentVersion: string; canRetry: false }
+  | { state: 'up-to-date'; currentVersion: string; canRetry: false }
+  | { state: 'available'; currentVersion: string; availableVersion: string; canRetry: false }
+  | { state: 'downloading'; currentVersion: string; availableVersion: string; percent: number; transferred: number; total: number; canRetry: false }
+  | { state: 'verifying' | 'installing'; currentVersion: string; availableVersion: string; canRetry: false }
+  | { state: 'failed'; currentVersion: string; availableVersion?: string; canRetry: true }
+  | { state: 'unavailable'; currentVersion: string; canRetry: true };
+export type DesktopAuthEvent =
+  | { type: 'status'; state: DesktopAuthState }
+  | { type: 'authorization'; verificationUrl: string; userCode: string; expiresIn: number }
+  | { type: 'complete'; state: 'ready' };
 
 export interface TerminalApi {
+  appVersion(): string;
   start(request: StartRequest): Promise<StartReply>;
   input(request: InputRequest): Promise<void>;
   resize(request: ResizeRequest): Promise<void>;
@@ -39,9 +55,24 @@ export interface TerminalApi {
   lifecycleStatus(request: SessionRequest): Promise<ChatStatusReply>;
   chooseFolder(): Promise<string | null>;
   openLink(url: string): Promise<void>;
+  auth: {
+    status(): Promise<DesktopAuthState>;
+    start(): Promise<DesktopAuthState>;
+    onEvent(listener: (event: DesktopAuthEvent) => void): Unsubscribe;
+  };
   support: {
     copy(request: SupportRequest): Promise<SupportResult>;
     save(request: SupportRequest): Promise<SupportResult>;
+  };
+  locale: {
+    current(): Locale;
+    set(locale: Locale): Promise<Locale>;
+  };
+  update: {
+    status(): Promise<StableUpdateStatus>;
+    check(): Promise<StableUpdateStatus>;
+    install(): Promise<boolean>;
+    onStatus(listener: (status: StableUpdateStatus) => void): Unsubscribe;
   };
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;
@@ -87,6 +118,11 @@ export function startRequest(value: unknown): StartRequest {
   if (object.mode !== 'create' && object.mode !== 'resume') throw new Error('invalid session mode');
   if (typeof object.cwd !== 'string' || !isAbsoluteWorkspacePath(object.cwd) || Buffer.byteLength(object.cwd, 'utf8') > 4096) throw new Error('invalid cwd');
   return { sessionId: sessionId(object.sessionId), cwd: object.cwd, mode: object.mode };
+}
+export function localeRequest(value: unknown): Locale {
+  const object = ownedObject(value, ['locale']);
+  if (object.locale !== 'ru' && object.locale !== 'en') throw new Error('unsupported locale');
+  return object.locale;
 }
 export function supportRequest(value: unknown): SupportRequest {
   const object = ownedObject(value, ['runtime', 'recoveryCode']);

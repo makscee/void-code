@@ -5,7 +5,10 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, chatRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { config as configureL10n, t } from '@vscode/l10n';
+import englishMessages from '../renderer/l10n/en.json';
+import russianMessages from '../renderer/l10n/ru.json';
+import { IPC, chatRequest, inputRequest, linkRequest, localeRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
@@ -18,9 +21,19 @@ import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
+import { DesktopAuthController } from './desktop-auth';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from './startup-lifecycle';
 import type { StartupStageError } from './startup-lifecycle';
+import type { StableUpdateStatus } from '../shared/contract';
+import { BetaUpdateController } from './beta-update-controller';
+import { BetaStateStore } from './beta-state';
+import { CeremonyLockedStableController, compiledUpdateTrustMode } from './update-trust';
+import { beginStartupUpdateCheck } from './update-startup';
+import { createElectronUpdaterAdapter } from './electron-updater-adapter';
+import { configureLocaleBeforeReady } from './locale-store';
+import type { LocaleStore } from './locale-store';
 
+configureL10n({ contents: russianMessages });
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
 const smokeOutput = smokeArgument?.slice('--void-smoke-output='.length);
 const productionProbeArgument = process.argv.find((argument) => argument.startsWith('--void-production-terminal-output='));
@@ -33,6 +46,9 @@ const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 const missingRendererTest = missingRendererRequested(process.argv, process.env.VOID_STARTUP_TEST_MISSING_RENDERER, existsSync(path.join(app.getPath('userData'), '.void-startup-test-missing-renderer')));
 let manager: SessionManager;
 let workspace: WorkspaceStore;
+let desktopAuth: DesktopAuthController;
+let stableUpdate: { status(): StableUpdateStatus; check(): Promise<StableUpdateStatus>; updateNow(): Promise<boolean> };
+let localeStore: LocaleStore;
 let mainWindow: BrowserWindow | undefined;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
@@ -57,6 +73,9 @@ function assertRenderer(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function registerIpc(): void {
+  ipcMain.on(IPC.appVersion, (event) => { assertRenderer(event); event.returnValue = app.getVersion(); });
+  ipcMain.on(IPC.localeCurrent, (event) => { assertRenderer(event); event.returnValue = localeStore.current(); });
+  ipcMain.handle(IPC.localeSet, (event, raw: unknown) => { assertRenderer(event); return localeStore.set(localeRequest(raw)); });
   ipcMain.handle(IPC.start, (event, raw: unknown) => { assertRenderer(event);
     const request = startRequest(raw);
     if (!('fixture' in request)) workspace.assertLaunch(request.sessionId, request.cwd);
@@ -68,15 +87,26 @@ function registerIpc(): void {
   ipcMain.handle(IPC.status, (event, raw: unknown) => { assertRenderer(event); const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.status(event.sender.id, request.sessionId) }; });
   ipcMain.handle(IPC.lifecycleStatus, (event, raw: unknown) => { assertRenderer(event); const request = sessionRequest(raw); return { sessionId: request.sessionId, status: manager.lifecycleStatus(event.sender.id, request.sessionId) }; });
   ipcMain.handle(IPC.chooseFolder, async (event) => { assertRenderer(event); const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] }); return result.canceled ? null : result.filePaths[0]; });
+  ipcMain.handle(IPC.authStatus, (event) => { assertRenderer(event); return desktopAuth.status(); });
+  ipcMain.handle(IPC.updateStatus, (event) => { assertRenderer(event); return stableUpdate.status(); });
+  ipcMain.handle(IPC.updateCheck, (event) => { assertRenderer(event); return stableUpdate.check(); });
+  ipcMain.handle(IPC.updateInstall, (event) => { assertRenderer(event); return stableUpdate.updateNow(); });
+  ipcMain.handle(IPC.authStart, async (event) => { assertRenderer(event);
+    return desktopAuth.start((update) => { if (!event.sender.isDestroyed()) event.sender.send(IPC.authEvent, update); });
+  });
   ipcMain.handle(IPC.workspaceLoad, (event) => { assertRenderer(event); return workspace.view(); });
   ipcMain.handle(IPC.workspaceChoose, async (event) => { assertRenderer(event);
+    if (await desktopAuth.status() !== 'ready') throw new Error('sign in required');
     const current = workspace.view();
     if (current.workspace && !current.recoveryPath) throw new Error('this window already owns a folder');
     const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : workspace.setFolder(result.filePaths[0]);
   });
   ipcMain.handle(IPC.workspaceRemove, (event) => { assertRenderer(event); return workspace.removeWorkspace(); });
-  ipcMain.handle(IPC.workspaceNewChat, (event) => { assertRenderer(event); return { view: workspace.newChat(randomUUID()) }; });
+  ipcMain.handle(IPC.workspaceNewChat, async (event) => { assertRenderer(event);
+    if (await desktopAuth.status() !== 'ready') throw new Error('sign in required');
+    return { view: workspace.newChat(randomUUID()) };
+  });
   ipcMain.handle(IPC.workspaceSelect, (event, raw: unknown) => { assertRenderer(event);
     const selected = chatRequest(raw).sessionId;
     const view = workspace.select(selected);
@@ -182,9 +212,26 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 async function bootstrap(): Promise<void> {
-  await startupStage('readiness', () => app.whenReady());
+  localeStore = await startupStage('readiness', () => configureLocaleBeforeReady(
+    app.getPath('userData'),
+    (locale) => configureL10n({ contents: locale === 'ru' ? russianMessages : englishMessages }),
+    () => app.whenReady(),
+  ));
   const runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
   workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
+  desktopAuth = new DesktopAuthController(runtime);
+  const updateOptions = {
+    currentVersion: app.getVersion(), platform: process.platform, architecture: process.arch,
+    fetch: async (url: string, options: { signal: AbortSignal; redirect: 'error' }) => {
+      const response = await fetch(url, { ...options, credentials: 'omit' });
+      return { ok: response.ok, body: response.body as unknown as AsyncIterable<Uint8Array> | null };
+    },
+    updater: createElectronUpdaterAdapter(async () => { if (mainWindow) manager?.teardownOwner(mainWindow.webContents.id); }),
+    onStatus: (status: StableUpdateStatus) => { if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send(IPC.updateStatusEvent, status); },
+  };
+  stableUpdate = compiledUpdateTrustMode(app.getVersion()) === 'closed-beta'
+    ? new BetaUpdateController({ ...updateOptions, stateStore: new BetaStateStore(app.getPath('userData')) })
+    : new CeremonyLockedStableController(app.getVersion());
   if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
   const statusChannels = new StatusChannelStore(
     path.join(app.getPath('userData'), 'status-channels'),
@@ -193,6 +240,7 @@ async function bootstrap(): Promise<void> {
   );
   manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
   registerIpc(); await createWindow();
+  beginStartupUpdateCheck(() => stableUpdate.check());
 }
 
 function failStartup(failure: StartupStageError): void {
@@ -200,8 +248,8 @@ function failStartup(failure: StartupStageError): void {
   try { writeStartupDiagnostic(userData, startupDiagnostic(failure.stage, failure.original, app.getVersion())); } catch { /* the native error remains available if durable storage fails */ }
   try {
     if (!process.argv.includes('--void-startup-test-no-dialog')) dialog.showErrorBox(
-      'Void Code could not start',
-      startupDialogMessage(),
+      t('Void Code could not start'),
+      startupDialogMessage(t),
     );
   } catch { /* startup still terminates if the native error cannot be presented */ }
   try { manager?.teardownAll(); } catch { /* startup still terminates if cleanup reports an error */ }
@@ -213,5 +261,5 @@ else {
   app.on('second-instance', () => focusExistingWindow(mainWindow));
   void runBootstrap(bootstrap, failStartup);
 }
-app.on('before-quit', () => { manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
+app.on('before-quit', () => { desktopAuth?.cancel(); manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
 app.on('window-all-closed', () => app.quit());

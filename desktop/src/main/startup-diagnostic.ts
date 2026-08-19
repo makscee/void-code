@@ -42,8 +42,8 @@ export function startupDiagnostic(stage: StartupStage, error: unknown, appVersio
   return { schema: 1, code: 'STARTUP_FAILED', occurredAt, stage, appVersion, platform: `${process.platform}-${process.arch}`, error: { name, message, stack: safeStack(error) } };
 }
 
-export function startupDialogMessage(): string {
-  return 'Void Code could not open. Reinstall the application and try again. A startup-error.json diagnostic was saved in Void Code application data.';
+export function startupDialogMessage(t: (message: string) => string = (message) => message): string {
+  return t('Void Code could not open. Reinstall the application and try again. A startup-error.json diagnostic was saved in Void Code application data.');
 }
 
 export function writeStartupDiagnostic(userData: string, diagnostic: StartupDiagnostic): string {

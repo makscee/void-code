@@ -87,11 +87,11 @@ export function treeSha256(root: string): string {
   const parent = path.dirname(root); const canonicalParent = checkedRoot(parent);
   return checkedTreeSha256(root, parent, canonicalParent);
 }
-export function resolvePrivateRuntime(root: string): PrivateRuntime {
+export function resolvePrivateRuntime(root: string, targetPlatform?: RuntimeManifest['platform']): PrivateRuntime {
   if (root.includes('app.asar')) throw new Error('private executables must be outside asar');
   const canonicalRoot = checkedRoot(root);
   const manifest = JSON.parse(checkedRead(root, canonicalRoot, 'manifest.json').toString('utf8')) as RuntimeManifest;
-  const expectedPlatform = process.platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
+  const expectedPlatform = targetPlatform ?? (process.platform === 'win32' ? 'win32-x64' : 'darwin-arm64');
   if (manifest.schema !== 1 || manifest.platform !== expectedPlatform) throw new Error('unsupported private runtime manifest');
   const vc = checkedPath(root, canonicalRoot, manifest.vc.path, 'file');
   const node = checkedPath(root, canonicalRoot, manifest.node.path, 'file');

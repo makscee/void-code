@@ -8,9 +8,9 @@ In PowerShell:
 irm https://auth.makscee.ru/vc/install.ps1 | iex
 ```
 
-This downloads `vc.exe`, installs it to `%USERPROFILE%\.void-code\bin\`, configures your user PATH, and provisions Pi support.
+This downloads `vc.exe`, installs it to `%USERPROFILE%\.void-code\bin\`, repairs your user PATH, refreshes the current PowerShell PATH, and provisions managed Pi support.
 
-> **Open a new terminal** after the installer finishes — the PATH update only takes effect in new windows. If VS Code was open during installation, fully exit all VS Code windows and `Code.exe` processes, then reopen it.
+> If you installed from VS Code and the installer warns about stale PATH state, fully exit all VS Code windows and `Code.exe` processes, then reopen VS Code. The installer never closes VS Code automatically.
 
 ## Log in and launch
 
@@ -23,9 +23,20 @@ VC opens Pi with your void-code subscription. Pi's native interface selects mode
 
 ## Troubleshooting
 
-- **`vc` not found:** Restart PowerShell, or run `& "$env:USERPROFILE\.void-code\bin\vc.exe" status`.
-- **Pi unavailable:** rerun the installer, then run `vc doctor`.
-- **Subscription verification:** run `vc status`; it verifies the token with the subscription service.
+**`vc` is not recognized:**
+Do not reinstall or log in again. Run the installed binary directly:
+
+```powershell
+& "$env:USERPROFILE\.void-code\bin\vc.exe" status
+```
+
+If VS Code was open during installation, fully exit all VS Code windows and `Code.exe` processes, then reopen VS Code and try `vc` again.
+
+**Pi is unavailable:**
+Run `vc doctor`. VC validates and launches its managed Pi runtime rather than trusting an unrelated `pi` command on PATH.
+
+**Subscription verification:**
+Run `vc status`; it verifies the token with the subscription service.
 
 ---
 

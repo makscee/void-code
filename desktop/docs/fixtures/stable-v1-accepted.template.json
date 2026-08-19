@@ -1,0 +1,16 @@
+{
+  "_templateNotice": "INVALID TEMPLATE — DO NOT PUBLISH; unsigned 0.1.2 has no certificate-derived publisher; replace placeholders and remove this field only after signed immutable asset and generated updater metadata proof",
+  "schemaVersion": 1,
+  "status": "accepted",
+  "version": "0.1.2",
+  "platform": "win32",
+  "architecture": "x64",
+  "feedUrl": "https://vc.makscee.ru/download/windows/",
+  "artifactUrl": "https://vc.makscee.ru/download/windows/Void-Code-0.1.2-windows-x64.exe",
+  "immutableUrl": "https://github.com/makscee/void-code/releases/download/desktop-v0.1.2/Void-Code-0.1.2-windows-x64.exe",
+  "sha256": "REPLACE_WITH_PROVEN_64_CHARACTER_LOWERCASE_SHA256",
+  "sha512": "REPLACE_WITH_PROVEN_BASE64_SHA512",
+  "size": "REPLACE_WITH_PROVEN_POSITIVE_INTEGER_BYTE_COUNT",
+  "publisherName": "REPLACE_WITH_CERTIFICATE_DERIVED_PUBLISHER",
+  "publishedAt": "REPLACE_WITH_CANONICAL_UTC_PUBLICATION_TIME"
+}

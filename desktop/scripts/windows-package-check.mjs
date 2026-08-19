@@ -5,6 +5,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { treeHash } from './resource-assembly-lib.mjs';
+import { assertLocalizationEntries, assertWindowsUpdaterMetadata } from './packaged-check-lib.mjs';
+import { verifyWindowsSignatures } from './windows-signing-check.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows package check requires Windows x64');
 
@@ -44,12 +46,23 @@ const cleanupStep = async (name, action) => {
 
 try {
   const require = createRequire(import.meta.url);
+  const asar = require('@electron/asar');
+  const sourcePackage = JSON.parse(await readFile(path.resolve('package.json'), 'utf8'));
+  const electronPackage = JSON.parse(await readFile(require.resolve('electron/package.json'), 'utf8'));
+  const electronVersion = sourcePackage.devDependencies?.electron;
+  if (sourcePackage.version !== '0.1.3-beta.5' || electronVersion !== '41.10.3' || electronPackage.version !== electronVersion) throw new Error('desktop package/Electron source identity mismatch');
   const release = path.resolve('release');
   const unpacked = path.join(release, 'win-unpacked');
   const resources = path.join(unpacked, 'resources');
   const runtime = path.join(resources, 'private-runtime');
-  const sensitivity = process.env.VC14_CHECK_SENSITIVITY;
+  const appAsar = path.join(resources, 'app.asar');
+  const installerName = `Void-Code-${sourcePackage.version}-windows-x64.exe`;
+  const installer = path.join(release, installerName);
+  const expectedPublisherName = process.env.VC_DESKTOP_EXPECTED_PUBLISHER;
   powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+  verifyWindowsSignatures({ installer, appExecutable: path.join(unpacked, 'Void Code.exe'), expectedPublisher: expectedPublisherName, powershell });
+  assertLocalizationEntries(asar.listPackage(appAsar));
+  const sensitivity = process.env.VC14_CHECK_SENSITIVITY;
   processQuery = `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.CommandLine -like '*${runtime.replaceAll("'", "''")}*' -or $_.ExecutablePath -like '*${unpacked.replaceAll("'", "''")}*') }`;
   const inventoryScript = `${processQuery} | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress`;
   let injectInventoryFailure = sensitivity === 'inventory-command-failure';
@@ -66,6 +79,7 @@ try {
   const ptyRoot = path.join(resources, 'app.asar.unpacked/node_modules/node-pty');
   const pty = require(ptyRoot);
   const sha = async (file) => createHash('sha256').update(await readFile(file)).digest('hex');
+  const sha512 = async (file) => createHash('sha512').update(await readFile(file)).digest('base64');
 
   let sensitivityPassed = false;
   try { assertSize('110x37'); } catch { sensitivityPassed = true; }
@@ -121,11 +135,13 @@ try {
     vc: execFileSync(path.join(runtime, manifest.vc.path), ['--version'], { encoding: 'utf8', env: { PATH: `${process.env.SystemRoot}\\System32` } }).trim(),
     pi: piIdentity,
   };
-  const installer = path.join(release, 'Void-Code-0.1.0-windows-x64.exe');
+  const appUpdateText = await readFile(path.join(resources, 'app-update.yml'), 'utf8');
+  const latestText = await readFile(path.join(release, 'latest.yml'), 'utf8');
+  assertWindowsUpdaterMetadata({ appUpdateText, latestText, version: sourcePackage.version, installerName, size: (await readFile(installer)).byteLength, sha512: await sha512(installer), expectedPublisherName });
   const nativePty = path.join(ptyRoot, 'prebuilds/win32-x64/pty.node');
   const result = {
-    package: { electron: '39.2.6', xterm: '6.0.0', nodePty: '1.1.0' }, privateVersions,
-    hashes: { installer: await sha(installer), appAsar: await sha(path.join(resources, 'app.asar')), nativePty: await sha(nativePty), vc: manifest.vc.sha256, node: manifest.node.sha256, piTree: manifest.pi.treeSha256 },
+    package: { version: sourcePackage.version, electron: electronVersion, xterm: sourcePackage.dependencies['@xterm/xterm'], nodePty: sourcePackage.dependencies['node-pty'] }, privateVersions,
+    hashes: { installer: await sha(installer), appAsar: await sha(appAsar), localeEn: createHash('sha256').update(asar.extractFile(appAsar, 'dist/renderer/l10n/en.json')).digest('hex'), localeRu: createHash('sha256').update(asar.extractFile(appAsar, 'dist/renderer/l10n/ru.json')).digest('hex'), l10nNotice: createHash('sha256').update(asar.extractFile(appAsar, 'dist/THIRD_PARTY_NOTICES.md')).digest('hex'), nativePty: await sha(nativePty), vc: manifest.vc.sha256, node: manifest.node.sha256, piTree: manifest.pi.treeSha256 },
     boundaries: { platform: manifest.platform, privateRuntimeOutsideAsar: true, nativeModuleOutsideAsar: true, restrictedPath: `${process.env.SystemRoot}\\System32`, electronRunAsNode: false, externalTerminalOrWsl: false },
     fixtures: runs, resizeMismatchSensitivity: sensitivityPassed,
   };

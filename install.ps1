@@ -32,6 +32,168 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# BEGIN VC PATH HELPERS
+function ConvertTo-VCNormalizedPathEntry {
+    param([string]$Entry)
+
+    if ($null -eq $Entry) { return '' }
+    $trimmed = $Entry.Trim()
+    $unquoted = $trimmed.Trim([char[]]@([char]34))
+    $expanded = [Environment]::ExpandEnvironmentVariables($unquoted)
+    $normalized = $expanded.Replace([char]47, [char]92)
+    while ($normalized.Length -gt 3 -and ($normalized.EndsWith([string][char]92) -or $normalized.EndsWith([string][char]47))) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 1)
+    }
+    return $normalized
+}
+
+function Test-VCPathEntryEqual {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    $leftNormalized = ConvertTo-VCNormalizedPathEntry $Left
+    $rightNormalized = ConvertTo-VCNormalizedPathEntry $Right
+    return [string]::Equals($leftNormalized, $rightNormalized, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Merge-VCPathEntry {
+    param(
+        [AllowNull()][string]$PathValue,
+        [string]$RequiredEntry
+    )
+
+    if ([string]::IsNullOrEmpty($PathValue)) { return $RequiredEntry }
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $found = $false
+    foreach ($entry in [regex]::Split($PathValue, ';')) {
+        if (Test-VCPathEntryEqual -Left $entry -Right $RequiredEntry) {
+            if (-not $found) {
+                [void]$result.Add($RequiredEntry)
+                $found = $true
+            }
+        } else {
+            [void]$result.Add($entry)
+        }
+    }
+    if (-not $found) { [void]$result.Add($RequiredEntry) }
+    return ($result -join ';')
+}
+
+function Set-VCUserPathEntry {
+    param([string]$RequiredEntry)
+
+    $current = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $updated = Merge-VCPathEntry -PathValue $current -RequiredEntry $RequiredEntry
+    if (-not [string]::Equals($current, $updated, [StringComparison]::Ordinal)) {
+        # SetEnvironmentVariable writes the complete User PATH and, unlike setx,
+        # does not apply setx.exe's historical expansion/truncation behavior.
+        [Environment]::SetEnvironmentVariable('PATH', $updated, 'User')
+        return $true
+    }
+    return $false
+}
+
+function Join-VCProcessPath {
+    param(
+        [AllowNull()][string]$MachinePath,
+        [AllowNull()][string]$UserPath
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrEmpty($MachinePath)) { [void]$parts.Add($MachinePath) }
+    if (-not [string]::IsNullOrEmpty($UserPath)) { [void]$parts.Add($UserPath) }
+    return ($parts -join ';')
+}
+
+function Refresh-VCProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $env:PATH = Join-VCProcessPath -MachinePath $machinePath -UserPath $userPath
+}
+
+function Send-VCEnvironmentChange {
+    param(
+        [scriptblock]$BroadcastAction = $null,
+        [switch]$Quiet
+    )
+
+    try {
+        if ($null -ne $BroadcastAction) {
+            [void](& $BroadcastAction)
+        } else {
+            if ($null -eq ('VC.NativeMethods' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace VC {
+    public static class NativeMethods {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd, uint Msg, IntPtr wParam, string lParam,
+            uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+    }
+}
+'@
+            }
+            $result = [IntPtr]::Zero
+            $HWND_BROADCAST = [IntPtr]0xffff
+            $WM_SETTINGCHANGE = 0x001A
+            $SMTO_ABORTIFHUNG = 0x0002
+            $sendResult = [VC.NativeMethods]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [IntPtr]::Zero, 'Environment', $SMTO_ABORTIFHUNG, 2000, [ref]$result)
+            if ($sendResult -eq [IntPtr]::Zero) {
+                $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                throw "WM_SETTINGCHANGE broadcast failed (Win32 error $errorCode)"
+            }
+        }
+        return $true
+    } catch {
+        if (-not $Quiet) {
+            Write-Host "vc: PATH was saved, but Windows environment notification failed: $_" -ForegroundColor Yellow
+        }
+        return $false
+    }
+}
+
+function Test-VCVSCodeStaleRisk {
+    try {
+        if (Get-Process -Name 'Code','Code - Insiders','Code-Insiders' -ErrorAction SilentlyContinue) { return $true }
+
+        $currentProcessId = $PID
+        for ($depth = 0; $depth -lt 16 -and $currentProcessId; $depth++) {
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId=$currentProcessId" -ErrorAction Stop
+            if ($null -eq $process) { break }
+            if ($process.Name -ieq 'Code.exe' -or $process.Name -ieq 'Code - Insiders.exe') { return $true }
+            $currentProcessId = $process.ParentProcessId
+        }
+    } catch {
+        # Process ancestry is advisory only; PATH repair must still succeed.
+    }
+    return $false
+}
+
+function Get-VCPathGuidance {
+    param(
+        [bool]$VCResolvable,
+        [bool]$VSCodeStaleRisk
+    )
+
+    $messages = New-Object System.Collections.Generic.List[string]
+    if ($VSCodeStaleRisk) {
+        [void]$messages.Add('VS Code may still have its old inherited PATH.')
+        [void]$messages.Add('Fully exit all VS Code windows and Code.exe processes, then reopen VS Code.')
+        [void]$messages.Add('The installer will not close VS Code automatically.')
+    }
+    if (-not $VCResolvable) {
+        [void]$messages.Add('Bare vc is not available in this shell.')
+        [void]$messages.Add('Direct fallback: & "$env:USERPROFILE\.void-code\bin\vc.exe" status')
+    }
+    return $messages.ToArray()
+}
+# END VC PATH HELPERS
+
 function Get-VCInstallFlag {
     param(
         [string]$Name,
@@ -158,6 +320,21 @@ if (Test-Path $target) { Move-Item -Force $target $old }
 Move-Item -Force $tmp $target
 Write-Host "==> installing to $target" -ForegroundColor Green
 
+# Verify the canonical installed binary directly without reading or changing auth.
+try {
+    $directVersion = & $target --version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
+    Write-Host "==> verified installed binary: $directVersion" -ForegroundColor Green
+} catch {
+    $verificationError = $_
+    Remove-Item -Force $target -ErrorAction SilentlyContinue
+    if (Test-Path $old) {
+        Move-Item -Force $old $target
+        throw "vc: installed binary failed direct verification; restored the previous vc.exe: $verificationError"
+    }
+    throw "vc: installed binary failed direct verification at ${target}: $verificationError"
+}
+
 # 2. Download relay CA (public cert). This is useful for relay-backed agents,
 # but it must never prevent vc.exe itself from installing. Windows PowerShell's
 # Invoke-WebRequest can occasionally wait indefinitely during this small fetch,
@@ -200,14 +377,14 @@ if ($env:VC_TRUST_RELAY_CA -eq '1') {
     Write-Host "==> relay CA saved (OS trust skipped; set VC_TRUST_RELAY_CA=1 to opt in)" -ForegroundColor Green
 }
 
-# Add ~/.void-code/bin to user PATH if not already there (idempotent)
-$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-if ($userPath -notlike "*$binDir*") {
-    $newPath = if ($userPath) { "$userPath;$binDir" } else { $binDir }
-    [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
-    Write-Host "==> added $binDir to user PATH (open a new terminal to pick up)" -ForegroundColor Green
+# Keep exactly one normalized canonical vc bin entry in User PATH. Comparisons
+# are exact per PATH element and case-insensitive; unrelated entries are untouched.
+$vcPathChanged = Set-VCUserPathEntry -RequiredEntry $binDir
+if ($vcPathChanged) {
+    Write-Host "==> repaired $binDir in user PATH" -ForegroundColor Green
 }
-if ($env:PATH -notlike "*$binDir*") { $env:PATH = "$env:PATH;$binDir" }
+Refresh-VCProcessPath
+[void](Send-VCEnvironmentChange)
 
 # 3. Bootstrap node if absent or below minimum required version when an agent is selected.
 $AnyAgentSelected = $InstallPi -or $InstallClaude -or $InstallCodex
@@ -567,13 +744,12 @@ $codexAgentOk = Install-NpmAgent -Binary 'codex' -Package '@openai/codex' -Label
 # Add npm global dir (AppData\Roaming\npm) to user PATH so npm-installed agent shims are reachable
 # in new terminals. This is the default npm global prefix on Windows.
 $npmGlobalDir = Join-Path $env:APPDATA 'npm'
-$userPathAfter = [Environment]::GetEnvironmentVariable('PATH', 'User')
-if ($userPathAfter -notlike "*$npmGlobalDir*") {
-    $newUserPath = if ($userPathAfter) { "$userPathAfter;$npmGlobalDir" } else { $npmGlobalDir }
-    [Environment]::SetEnvironmentVariable('PATH', $newUserPath, 'User')
-    Write-Host "==> added npm global binary directory to user PATH (open a new terminal to pick up)" -ForegroundColor Green
+$npmPathChanged = Set-VCUserPathEntry -RequiredEntry $npmGlobalDir
+if ($npmPathChanged) {
+    Write-Host "==> added npm global binary directory to user PATH" -ForegroundColor Green
+    [void](Send-VCEnvironmentChange)
 }
-if ($env:PATH -notlike "*$npmGlobalDir*") { $env:PATH = "$env:PATH;$npmGlobalDir" }
+Refresh-VCProcessPath
 
 # Persist VC_LANG to ~/.void-code/config so vc can read it on first run.
 $configFile = Join-Path $vcDir 'config'
@@ -586,13 +762,16 @@ if (Test-Path $configFile) {
     $langLine | Set-Content $configFile
 }
 
-# Post-install UX
-# Refresh PATH so we can resolve the binaries we just installed.
-$machinePathFinal = [System.Environment]::GetEnvironmentVariable('PATH','Machine')
-$userPathFinal = [System.Environment]::GetEnvironmentVariable('PATH','User')
-$env:PATH = "$machinePathFinal;$userPathFinal"
+# Post-install UX. Refresh this process from the complete Machine + User
+# registry PATH values and verify bare-command resolution reaches this install.
+Refresh-VCProcessPath
 
-$vcResolvable = $null -ne (Get-Command vc -ErrorAction SilentlyContinue)
+$vcCommand = Get-Command vc -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$vcResolvable = ($null -ne $vcCommand) -and (Test-VCPathEntryEqual -Left $vcCommand.Source -Right $target)
+if ($vcResolvable) {
+    Write-Host "==> verified current-shell command: vc -> $($vcCommand.Source)" -ForegroundColor Green
+}
+$vsCodeStaleRisk = Test-VCVSCodeStaleRisk
 $piInstalled = Test-AgentHealthy -Binary 'pi'
 $claudeInstalled = Test-AgentHealthy -Binary 'claude'
 $codexInstalled = Test-AgentHealthy -Binary 'codex'
@@ -605,11 +784,10 @@ Write-Host ""
 Write-Host "NEXT STEPS:" -ForegroundColor White
 
 $step = 1
-if (-not $vcResolvable) {
-    Write-Host ""
-    Write-Host "  $step. Open a NEW terminal (vc and npm PATH updates are picked up there)" -ForegroundColor Yellow
-    $step++
+foreach ($pathMessage in @(Get-VCPathGuidance -VCResolvable $vcResolvable -VSCodeStaleRisk $vsCodeStaleRisk)) {
+    Write-Host "  $pathMessage" -ForegroundColor Yellow
 }
+if (-not $vcResolvable -or $vsCodeStaleRisk) { Write-Host "" }
 if ($InstallPi -and -not $piInstalled) {
     Write-Host ""
     Write-Host "  $step. Install Pi: $(Format-NpmInstallGlobal '@earendil-works/pi-coding-agent')" -ForegroundColor Yellow
