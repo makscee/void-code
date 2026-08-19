@@ -101,11 +101,13 @@ describe('resource source pins', () => {
   });
 
   it('assembles Pi optional dependencies for Windows x64 even on a non-Windows host', async () => {
+    const packageJson = JSON.parse(await readFile(path.resolve('package.json'), 'utf8')) as { scripts: Record<string, string> };
     const script = await readFile(path.resolve('scripts/assemble-windows-resources.mjs'), 'utf8');
     expect(script).toContain("'--os=win32', '--cpu=x64'");
     expect(script).toContain("clipboard-win32-x64-msvc");
     expect(script).toContain('private Pi target dependencies mismatch');
     expect(script).toContain("assertPiTreePin(path.join(staging, 'pi'), win.pi)");
+    expect(packageJson.scripts['package:win']).toContain('verify-resources.mjs resources/staged/manifest.json resources/staged win32-x64');
   });
 
   it('rejects a Pi tree changed after reconstruction', async () => {
