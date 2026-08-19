@@ -60,6 +60,23 @@ describe('renderer-owned terminal sessions', () => {
     expect(process.killed).toBe(true); expect(delivered).toEqual([]);
     expect(() => manager.input(1, 'one', 'stale')).toThrow('unknown session');
   });
+  it('waits for owned process exit before updater teardown completes', async () => {
+    const process = new FakeProcess(); const manager = new SessionManager(() => process, () => undefined);
+    manager.start(1, start('one'));
+    let completed = false;
+    const teardown = manager.teardownOwnerAndWait(1, 100).then(() => { completed = true; });
+    await Promise.resolve();
+    expect(process.killed).toBe(true); expect(completed).toBe(false);
+    process.emitExit(0);
+    await teardown;
+    expect(completed).toBe(true); expect(() => manager.status(1, 'one')).toThrow('unknown session');
+  });
+  it('fails updater teardown while an owned process remains alive', async () => {
+    const process = new FakeProcess(); const manager = new SessionManager(() => process, () => undefined);
+    manager.start(1, start('one'));
+    await expect(manager.teardownOwnerAndWait(1, 1)).rejects.toThrow('owned session did not exit');
+    expect(() => manager.status(1, 'one')).not.toThrow();
+  });
   it('stop tears down subscriptions and makes later messages stale', () => {
     const process = new FakeProcess(); const delivered: unknown[] = [];
     const manager = new SessionManager(() => process, (...args) => delivered.push(args));

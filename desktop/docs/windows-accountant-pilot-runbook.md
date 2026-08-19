@@ -1,5 +1,7 @@
 # Void Code 0.1.2 — signed one-click Windows acceptance runbook
 
+> **Stable-track reference only.** This is not the current package identity or acceptance evidence. The current source package is `0.1.3-beta.5` on the separately signed closed-beta manifest path; do not apply this blocked stable-track procedure to it.
+
 **Audience:** Maks and the Windows acceptance operator. **Target:** Windows 10/11 x64, per-user install. This is an operator procedure, not a claim that acceptance ran.
 
 ## Gate and evidence rules

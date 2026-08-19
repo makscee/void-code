@@ -226,7 +226,7 @@ async function bootstrap(): Promise<void> {
       const response = await fetch(url, { ...options, credentials: 'omit' });
       return { ok: response.ok, body: response.body as unknown as AsyncIterable<Uint8Array> | null };
     },
-    updater: createElectronUpdaterAdapter(async () => { if (mainWindow) manager?.teardownOwner(mainWindow.webContents.id); }),
+    updater: createElectronUpdaterAdapter(async () => { if (mainWindow && manager) await manager.teardownOwnerAndWait(mainWindow.webContents.id); }),
     onStatus: (status: StableUpdateStatus) => { if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send(IPC.updateStatusEvent, status); },
   };
   stableUpdate = compiledUpdateTrustMode(app.getVersion()) === 'closed-beta'

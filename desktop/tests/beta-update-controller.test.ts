@@ -28,7 +28,7 @@ function subject(updater = adapter(), store = stateStore(), overrides: Record<st
 }
 
 describe('closed-beta controller chain', () => {
-  it('persists accepted metadata before publishing available, then downloads, rechecks after cleanup, and launches', async () => {
+  it('persists accepted metadata only after download verification and owned-process cleanup, then launches', async () => {
     const events: string[] = []; const updater = adapter({
       cleanupOwnedSessions: vi.fn(async () => { events.push('cleanup'); }),
       size: vi.fn().mockResolvedValue(42), sha256: vi.fn().mockResolvedValue(payload.sha256),
@@ -37,7 +37,7 @@ describe('closed-beta controller chain', () => {
     const store = stateStore({ save: vi.fn(async () => { events.push('save'); }) });
     const controller = subject(updater, store, { onStatus: (status: { state: string }) => { if (status.state === 'available') events.push('available'); } });
     await expect(controller.check()).resolves.toMatchObject({ state: 'available', availableVersion: payload.version });
-    expect(events).toEqual(['save', 'available']);
+    expect(events).toEqual(['available']);
     expect(updater.configure).toHaveBeenCalledWith(expect.objectContaining({ allowPrerelease: true, allowDowngrade: false }));
     expect(updater.packageConfiguration).not.toHaveBeenCalled();
     await expect(controller.updateNow()).resolves.toBe(true);
@@ -45,14 +45,14 @@ describe('closed-beta controller chain', () => {
     expect(store.save).toHaveBeenCalledTimes(1);
     expect(store.save).toHaveBeenCalledWith(expect.objectContaining({ version: payload.version, sequence: 2, manifestDigest: verified.digest, keyId: payload.keyId }));
     expect(updater.size).toHaveBeenCalledTimes(2); expect(updater.sha256).toHaveBeenCalledTimes(2);
-    expect(events).toEqual(['save', 'available', 'cleanup', 'launch']);
+    expect(events).toEqual(['available', 'cleanup', 'save', 'launch']);
   });
 
-  it('keeps exact accepted manifests retryable after restart but rejects an older signed manifest even when no download began', async () => {
+  it('does not strand a client that only checked, while persisted installed state still rejects an older signed manifest', async () => {
     const accepted = { schema: 1 as const, channel: 'closed-beta' as const, version: payload.version, sequence: payload.sequence, manifestDigest: verified.digest, keyId: payload.keyId };
     const firstStore = stateStore(); const first = subject(adapter(), firstStore); await expect(first.check()).resolves.toMatchObject({ state: 'available' });
-    expect(firstStore.save).toHaveBeenCalledWith(accepted);
-    await expect(subject(adapter(), stateStore({ load: vi.fn().mockResolvedValue(accepted) })).check()).resolves.toMatchObject({ state: 'available' });
+    expect(firstStore.save).not.toHaveBeenCalled();
+    await expect(subject(adapter(), stateStore()).check()).resolves.toMatchObject({ state: 'available' });
     const olderBytes = Buffer.from(JSON.stringify({ ...payload, version: '0.1.3-beta.1', sequence: 1,
       installerUrl: 'https://vc.makscee.ru/download/windows/Void-Code-0.1.3-beta.1-windows-x64.exe',
       immutableUrl: 'https://github.com/makscee/void-code/releases/download/desktop-v0.1.3-beta.1/Void-Code-0.1.3-beta.1-windows-x64.exe' }));
@@ -106,11 +106,12 @@ describe('closed-beta controller chain', () => {
     expect(updater.authorize).toHaveBeenLastCalledWith({ artifactUrl: payload.installerUrl, immutableUrl: payload.immutableUrl, size: payload.size });
   });
 
-  it('fails closed before publishing available when accepted-state persistence fails', async () => {
+  it('fails closed before launch when accepted-state persistence fails', async () => {
     const statuses: string[] = []; const updater = adapter();
     const controller = subject(updater, stateStore({ save: vi.fn().mockRejectedValue(new Error('disk')) }), { onStatus: (status: { state: string }) => statuses.push(status.state) });
-    await expect(controller.check()).resolves.toMatchObject({ state: 'unavailable' });
-    expect(statuses).not.toContain('available'); expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    await expect(controller.check()).resolves.toMatchObject({ state: 'available' });
+    await expect(controller.updateNow()).resolves.toBe(false);
+    expect(statuses).not.toContain('installing'); expect(updater.downloadUpdate).toHaveBeenCalledTimes(1); expect(updater.quitAndInstall).not.toHaveBeenCalled();
   });
 
   it('requests only the fixed beta endpoint with redirects disabled', async () => {

@@ -1,5 +1,7 @@
 # Stable Desktop one-click update contract v1
 
+> **Stable-track reference only.** The current source/package identity is `0.1.3-beta.5`, governed by the closed-beta Ed25519 path. The blocked 0.1.2 material below is neither the current candidate nor evidence that signing or installed E2E ran.
+
 VC Desktop reads the bounded canonical JSON at `https://vc.makscee.ru/desktop/stable-v1.json`. Pending publication is exactly:
 
 ```json

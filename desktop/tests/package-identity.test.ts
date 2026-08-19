@@ -66,11 +66,17 @@ describe('decided pilot package identity', () => {
     expect(signer).toContain("request['fromVersion'] != '0.1.3-beta.4'");
     expect(signer).toContain("value['version'] != '0.1.3-beta.5'");
     expect(signer).toContain("value['sequence'] != 5");
+    expect(signer).toContain("PREDECESSOR_SHA256 = '6e2073dd8b6dae2f07adf915d6ea895f2e33e6362851c6777de6067a456d08fd'");
+    expect(signer).toContain("request['fromArtifactSha256'] != PREDECESSOR_SHA256");
+    expect(signer).toContain('initialization disabled: provision the enrolled key only through the attended external ceremony');
     expect(signer).not.toContain("value['version'] != '0.1.3-beta.4'");
+    expect(signer).not.toContain("'genpkey'");
   });
 
   it('retires the frozen review-failed 0.1.1 identity and reserves the post-fix candidate identity', () => {
     const contract = read('docs/stable-update-contract.md');
+    expect(contract).toContain('Stable-track reference only');
+    expect(contract).toContain('current source/package identity is `0.1.3-beta.5`');
     expect(contract).toContain('0.1.1: `RETIRED_INTERNAL_REVIEW_FAILED`');
     expect(contract).toContain('unsigned');
     expect(contract).toContain('S1');

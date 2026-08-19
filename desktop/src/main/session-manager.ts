@@ -95,13 +95,38 @@ export class SessionManager {
         this.destroySession(sessionId, session);
       }
     }
-    for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId) this.subscriptions.delete(id);
-    this.disclosedOwners.delete(ownerId);
-    this.statusChannels?.closeOwner(ownerId);
+    this.finishOwnerTeardown(ownerId);
+  }
+  async teardownOwnerAndWait(ownerId: number, timeoutMs = 5_000): Promise<void> {
+    const owned = [...this.sessions.entries()].filter(([, session]) => session.ownerId === ownerId);
+    await Promise.all(owned.map(([sessionId, session]) => {
+      if (session.status === 'exited') return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          disposable.dispose();
+          if (error) reject(error); else resolve();
+        };
+        const disposable = session.process.onExit(() => finish());
+        const timer = setTimeout(() => finish(new Error(`owned session did not exit: ${sessionId}`)), timeoutMs);
+        timer.unref();
+        try { session.process.kill(); } catch { finish(new Error(`owned session could not be stopped: ${sessionId}`)); }
+      });
+    }));
+    for (const [sessionId, session] of owned) this.destroySession(sessionId, session);
+    this.finishOwnerTeardown(ownerId);
   }
   teardownAll(): void {
     for (const session of [...this.sessions.values()]) this.teardownOwner(session.ownerId);
     this.statusChannels?.closeAll();
+  }
+  private finishOwnerTeardown(ownerId: number): void {
+    for (const [id, subscription] of this.subscriptions) if (subscription.ownerId === ownerId) this.subscriptions.delete(id);
+    this.disclosedOwners.delete(ownerId);
+    this.statusChannels?.closeOwner(ownerId);
   }
   private liveRuntimeCount(ownerId: number): number {
     return [...this.sessions.values()].filter((session) => session.ownerId === ownerId && session.real && session.status === 'running').length;

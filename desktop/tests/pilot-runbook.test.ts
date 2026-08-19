@@ -5,6 +5,8 @@ const runbook = readFileSync(new URL('../docs/windows-accountant-pilot-runbook.m
 
 describe('signed 0.1.2 Russian-default one-click acceptance runbook', () => {
   it('requires exact signed frozen identities and rejects unsigned release acceptance', () => {
+    expect(runbook).toContain('Stable-track reference only');
+    expect(runbook).toContain('current source package is `0.1.3-beta.5`');
     for (const phrase of ['Void-Code-0.1.2-windows-x64.exe', 'older separately signed build', 'Get-FileHash', 'Get-AuthenticodeSignature', 'AuthentiCode-signed'.replace('AuthentiCode', 'Authenticode'), 'exact approved publisher', 'blocked candidate', 'Signing authority']) expect(runbook).toContain(phrase);
     expect(runbook).not.toContain('SMARTSCREEN_UNSIGNED PASS');
     expect(runbook).not.toContain('MOTW_PRESENT PASS');

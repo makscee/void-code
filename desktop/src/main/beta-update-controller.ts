@@ -51,7 +51,6 @@ export class BetaUpdateController {
       this.options.updater.authorize({ artifactUrl: manifest.installerUrl, immutableUrl: manifest.immutableUrl, size: manifest.size });
       const generated = await this.options.updater.checkForUpdates(); if (generated.version !== manifest.version || generated.files.length !== 1) throw new Error('generated metadata mismatch');
       const file = generated.files[0]; if (file.url !== manifest.installerUrl || file.sha512 !== manifest.sha512 || file.size !== manifest.size) throw new Error('generated artifact mismatch');
-      await this.options.stateStore.save({ schema: 1, channel: 'closed-beta', version: manifest.version, sequence: manifest.sequence, manifestDigest: manifest.manifestDigest, keyId: manifest.keyId });
       this.manifest = manifest; return this.publish({ state: 'available', currentVersion: this.options.currentVersion, availableVersion: manifest.version, canRetry: false });
     } catch { this.manifest = undefined; this.options.updater.authorize(); return this.publish({ state: 'unavailable', currentVersion: this.options.currentVersion, canRetry: true }); } finally { this.clearScheduledTimeout(timer); }
   }
@@ -70,6 +69,7 @@ export class BetaUpdateController {
       if (await updater.size(artifact) !== manifest.size || await updater.sha256(artifact) !== manifest.sha256) throw new Error('artifact changed before launch');
       const launchTime = this.options.now?.() ?? new Date();
       if (launchTime < new Date(manifest.notBefore) || launchTime > new Date(manifest.expiresAt)) throw new Error('manifest validity window elapsed before launch');
+      await this.options.stateStore.save({ schema: 1, channel: 'closed-beta', version: manifest.version, sequence: manifest.sequence, manifestDigest: manifest.manifestDigest, keyId: manifest.keyId });
       this.publish({ state: 'installing', currentVersion: this.options.currentVersion, availableVersion: manifest.version, canRetry: false }); updater.quitAndInstall(true, true); return true;
     } catch { if (artifact) await updater.remove(artifact).catch(() => undefined); await updater.cleanupPartials().catch(() => undefined); this.publish({ state: 'failed', currentVersion: this.options.currentVersion, availableVersion: manifest.version, canRetry: true }); return false; } finally { this.busy = false; }
   }

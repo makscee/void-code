@@ -13,7 +13,7 @@ SIGNATURE = '/run/vc-internal-beta-signer/signature'
 HELPER = '/usr/local/libexec/vc-internal-beta-signer-helper'
 USED = ROOT + '/used'
 KEY_ID = 'internal-beta-2026-08'
-PUB_PREFIX = bytes.fromhex('302a300506032b6570032100')
+PREDECESSOR_SHA256 = '6e2073dd8b6dae2f07adf915d6ea895f2e33e6362851c6777de6067a456d08fd'
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 B64URL = re.compile(r'^[A-Za-z0-9_-]{2,}$')
 B64_512 = re.compile(r'^(?:[A-Za-z0-9+/]{4}){21}[A-Za-z0-9+/]{2}==$')
@@ -69,29 +69,14 @@ def atomic_new(path, data, mode=0o600):
         except FileNotFoundError: pass
 
 def initialize():
-    if os.geteuid() != 0: die('root required')
-    os.umask(0o077); os.makedirs(ROOT, mode=0o700, exist_ok=False); os.makedirs(USED, mode=0o700)
-    try:
-        temp = ROOT + '/private.tmp'
-        subprocess.run(['/usr/bin/openssl', 'genpkey', '-algorithm', 'ED25519', '-out', temp], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.chmod(temp, 0o600); os.replace(temp, KEY)
-        der = subprocess.run(['/usr/bin/openssl', 'pkey', '-in', KEY, '-pubout', '-outform', 'DER'], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
-        if len(der) != 44 or not der.startswith(PUB_PREFIX): die('public key derivation rejected')
-        raw = der[-32:]; public = {'schema': 'vc-internal-beta-public-v1', 'keyId': KEY_ID, 'purpose': 'INTERNAL-BETA-ONLY', 'publicKeyBase64url': base64.urlsafe_b64encode(raw).rstrip(b'=').decode(), 'fingerprintSha256': hashlib.sha256(raw).hexdigest()}
-        atomic(PUBLIC, (json.dumps(public, separators=(',', ':')) + '\n').encode())
-        atomic(ROOT + '/BACKUP-RECOVERY-POLICY.txt', b'INTERNAL-BETA ONLY. No automatic export or deletion. Retain root-only key until independent evidence and separately attended offline backup/recovery custody record exist. Loss or compromise requires a new key, reviewed app allowlist update, and revocation of this key. Stable/public use is forbidden.\n', 0o600)
-        print(json.dumps(public, separators=(',', ':')))
-    except Exception:
-        try: subprocess.run(['/usr/bin/shred', '-u', temp], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception: pass
-        raise
+    die('initialization disabled: provision the enrolled key only through the attended external ceremony')
 
 def sign():
     if os.geteuid() != 0: die('root required')
     os.umask(0o077); secure_file(KEY); secure_file(PUBLIC); secure_file(REQUEST)
     request = strict_json(open(REQUEST, 'rb').read())
     exact(request, ['app','channel','fromArtifactSha256','fromVersion','keyId','payload','schema'])
-    if request['schema'] != 'vc-internal-beta-sign-request-v1' or request['app'] != 'Void Code' or request['channel'] != 'closed-beta' or request['fromVersion'] != '0.1.3-beta.4' or request['keyId'] != KEY_ID or not isinstance(request['fromArtifactSha256'], str) or not SHA256.fullmatch(request['fromArtifactSha256']): die('request rejected')
+    if request['schema'] != 'vc-internal-beta-sign-request-v1' or request['app'] != 'Void Code' or request['channel'] != 'closed-beta' or request['fromVersion'] != '0.1.3-beta.4' or request['keyId'] != KEY_ID or request['fromArtifactSha256'] != PREDECESSOR_SHA256: die('request rejected')
     payload = b64decode(request['payload']); value = strict_json(payload)
     exact(value, ['architecture','channel','expiresAt','immutableUrl','installerUrl','keyId','notBefore','platform','publishedAt','schema','sequence','sha256','sha512','size','version'])
     if value['schema'] != 'vc-windows-update-v1' or value['channel'] != 'closed-beta' or value['keyId'] != KEY_ID or value['version'] != '0.1.3-beta.5' or value['platform'] != 'win32' or value['architecture'] != 'x64': die('payload identity rejected')
