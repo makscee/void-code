@@ -22,7 +22,11 @@ async function fetchPublishedSums({ repository, releaseTag }) {
   // alarm. Retry the transport, never the verdict.
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const response = await fetch(url, { redirect: 'follow' });
+      // Without a per-attempt deadline the retry does not cover the third
+      // outcome: a connection that neither answers nor fails. Node's defaults
+      // would sit for five minutes an attempt, and silence reads as neither
+      // "the pin is wrong" nor "the network is down".
+      const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(15_000) });
       if (response.ok) return await response.text();
       if (response.status < 500) {
         throw new Error(`cannot read published checksums: ${url} returned ${response.status} ${response.statusText}`);
