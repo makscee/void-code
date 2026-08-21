@@ -200,6 +200,28 @@ describe('runLogin', () => {
     expect(diagnostics.length).toBeGreaterThanOrEqual(2);
   });
 
+  // A bare non-object JSON value (null, a number, a string, an array) parses without error,
+  // then a naive `parsed.event` read on it either throws (null) or is simply undefined —
+  // either way it must land as a diagnostic like any other unrecognised line, never crash
+  // the line handler and never silently vanish, and the stream must keep delivering real
+  // events afterward.
+  it.each([
+    ['a bare JSON null', 'null'],
+    ['a bare JSON number', '42'],
+    ['a bare JSON string', '"hello"'],
+    ['a JSON array', '["prompt"]'],
+  ])('treats %s arriving on stdout as a diagnostic, not a crash, and keeps the login going', async (_label, raw) => {
+    const child = new FakeChild();
+    const events: LoginEvent[] = [];
+    const diagnostics: string[] = [];
+    const promise = runLogin('/private/vc', fixedSpawner(child), (event) => events.push(event), () => {}, (message) => diagnostics.push(message));
+    child.stdout.emit('data', `${raw}\n${PROMPT_LINE}${AUTHORIZED_LINE}`);
+    child.end(0);
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(events).toEqual(EXPECTED_LOGIN_EVENTS);
+    expect(diagnostics.length).toBeGreaterThan(0);
+  });
+
   it('ends the login in a defined way when the process exits non-zero after only a prompt', async () => {
     const child = new FakeChild();
     const events: LoginEvent[] = [];
