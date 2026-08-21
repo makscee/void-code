@@ -15,7 +15,7 @@ export interface AuthChildProcess {
 export type AuthSpawner = (vcPath: string, args: string[]) => AuthChildProcess;
 
 export interface AuthStatus {
-  authState: string;
+  authState: 'signed_in' | 'signed_out' | 'invalid_credential';
   identity?: string;
   pct?: number;
   resetAt?: string;
@@ -23,7 +23,19 @@ export interface AuthStatus {
 }
 export type StatusResult =
   | { ok: true; status: AuthStatus }
-  | { ok: false; reason: 'exit_nonzero' | 'empty_output' | 'invalid_json' };
+  | { ok: false; reason: 'exit_nonzero' | 'empty_output' | 'invalid_json' | 'invalid_status' };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// JSON.parse succeeding only proves vc printed *some* well-formed JSON — not that it printed a
+// status. A schema regression in vc (renamed field, unrecognised authState) must fail loudly
+// here rather than pass a garbage object through as ok:true, which reads to the UI exactly like
+// signed_out.
+function isValidStatusShape(value: unknown): value is { authState: AuthStatus['authState'] } & Record<string, unknown> {
+  return isPlainObject(value) && (value.authState === 'signed_in' || value.authState === 'signed_out' || value.authState === 'invalid_credential');
+}
 
 export type LoginEvent =
   | { event: 'prompt'; userCode: string; verificationUrl: string; expiresInSeconds: number }
@@ -40,16 +52,20 @@ export function readAuthStatus(vcPath: string, spawn: AuthSpawner): Promise<Stat
       if (code !== 0) { resolve({ ok: false, reason: 'exit_nonzero' }); return; }
       const text = output.trim();
       if (text.length === 0) { resolve({ ok: false, reason: 'empty_output' }); return; }
-      let parsed: Record<string, unknown>;
+      let parsed: unknown;
       try {
-        parsed = JSON.parse(text) as Record<string, unknown>;
+        parsed = JSON.parse(text);
       } catch {
         resolve({ ok: false, reason: 'invalid_json' });
         return;
       }
-      const { error, ...rest } = parsed;
-      const status = typeof error === 'string' ? { ...rest, reason: KNOWN_STATUS_ERRORS[error] ?? UNKNOWN_STATUS_ERROR } : rest;
-      resolve({ ok: true, status: status as unknown as AuthStatus });
+      if (!isValidStatusShape(parsed)) { resolve({ ok: false, reason: 'invalid_status' }); return; }
+      const status: AuthStatus = { authState: parsed.authState };
+      if (typeof parsed.identity === 'string') status.identity = parsed.identity;
+      if (typeof parsed.pct === 'number') status.pct = parsed.pct;
+      if (typeof parsed.resetAt === 'string') status.resetAt = parsed.resetAt;
+      if (typeof parsed.error === 'string') status.reason = KNOWN_STATUS_ERRORS[parsed.error] ?? UNKNOWN_STATUS_ERROR;
+      resolve({ ok: true, status });
     });
   });
 }
@@ -86,23 +102,26 @@ export function runLogin(
 
     const handleLine = (line: string): void => {
       if (line.trim().length === 0) return;
-      let parsed: Record<string, unknown>;
+      let parsed: unknown;
       try {
-        parsed = JSON.parse(line) as Record<string, unknown>;
+        parsed = JSON.parse(line);
       } catch {
         onDiagnostic?.(`malformed login output: ${line}`);
         return;
       }
-      if (parsed.event === 'prompt') {
-        const event = parsed as unknown as { event: 'prompt'; userCode: string; verificationUrl: string; expiresInSeconds: number };
+      // Valid JSON is not the same guarantee as a known event: a plain object, a renamed
+      // field, or an event word vc has never sent must fall through to diagnostics rather
+      // than reach onEvent, where a window would branch on it as if it were real progress.
+      if (!isPlainObject(parsed)) { onDiagnostic?.(`malformed login output: ${line}`); return; }
+      if (parsed.event === 'prompt' && typeof parsed.userCode === 'string' && typeof parsed.verificationUrl === 'string' && typeof parsed.expiresInSeconds === 'number') {
+        const event: LoginEvent = { event: 'prompt', userCode: parsed.userCode, verificationUrl: parsed.verificationUrl, expiresInSeconds: parsed.expiresInSeconds };
         onEvent(event);
         onOpenUrl(event.verificationUrl);
       } else if (parsed.event === 'authorized') {
         onEvent({ event: 'authorized' });
-      } else if (parsed.event === 'error') {
-        const reason = String(parsed.reason);
-        errorReason = reason;
-        onEvent({ event: 'error', reason });
+      } else if (parsed.event === 'error' && typeof parsed.reason === 'string') {
+        errorReason = parsed.reason;
+        onEvent({ event: 'error', reason: parsed.reason });
       } else {
         onDiagnostic?.(`malformed login output: ${line}`);
       }
