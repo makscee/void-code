@@ -35,7 +35,7 @@ func runDeviceLoginJSON(deps deviceLoginDeps, out io.Writer) error {
 
 	start, err := deps.start()
 	if err != nil {
-		encoder.Encode(map[string]string{"event": "error", "reason": "start_failed"})
+		encoder.Encode(map[string]string{"event": "error", "reason": deviceLoginJSONStartReason(err)})
 		return err
 	}
 
@@ -104,6 +104,19 @@ func newDeviceLoginDeps(cfg config.Config) deviceLoginDeps {
 			return deviceBrowserURL(cfg.AuthHost, verificationPath)
 		},
 	}
+}
+
+// deviceLoginJSONStartReason maps a device-start failure to the stable word
+// the desktop branches on. Rate limiting is the one start failure a person
+// can act on (wait and retry), so it gets the same word the poll path uses
+// for the same condition; every other start failure keeps the generic
+// "start_failed" word, since we don't yet know a distinct action to tell the
+// user about it.
+func deviceLoginJSONStartReason(err error) string {
+	if errors.Is(err, auth.ErrDeviceRateLimited) {
+		return "rate_limited"
+	}
+	return "start_failed"
 }
 
 // deviceLoginJSONReason maps a poll failure to the stable word the desktop
