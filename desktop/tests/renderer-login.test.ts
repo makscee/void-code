@@ -145,6 +145,60 @@ describe('a chat start failure re-checks auth before choosing the generic failur
   });
 });
 
+describe('a chat that exits (not a start failure) is routed through the same auth check as a start failure', () => {
+  // A dead credential does not always surface as a spawn failure — `vc desktop-session` can spawn
+  // fine and then exit with a non-zero code, which today lands only in onExit's RUNTIME_EXITED path
+  // and never reaches routeStartFailure at all. The fix is to route onExit through the same decision
+  // as launch()'s catch block: re-read auth fresh, then call routeStartFailure and only fall back to
+  // the generic RUNTIME_EXITED screen on the 'generic' route — reusing routeStartFailure itself
+  // (already keyed on a freshly re-read AuthScreen, see auth-view.test.ts) rather than inventing a
+  // second decision function, since "a chat that just ended, and I don't know why" is the same
+  // question whether the ending was a spawn failure or a process exit.
+  const onExitBlock = renderer.match(/onExit\(tab\.id,\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{[\s\S]{0,900}?\n\s*\}\);/)?.[0] ?? '';
+
+  it('locates the onExit handler registered inside launch()', () => {
+    expect(onExitBlock, 'could not find the onExit(tab.id, ...) handler in launch()').not.toBe('');
+  });
+
+  it('imports and uses routeStartFailure — not a second, parallel decision function', () => {
+    expect(onExitBlock, 'onExit handler does not call routeStartFailure').toMatch(/routeStartFailure\(/);
+  });
+
+  it('re-reads auth status inside the handler itself — not the authScreen value captured when the chat started', () => {
+    // A credential can die mid-session. Reading the outer `authScreen` variable synchronously here
+    // would act on whatever was true when the chat launched (or after the last unrelated event),
+    // which is exactly the "cached status" defect routeStartFailure's own re-check exists to avoid.
+    const freshReadMatch = onExitBlock.match(/await\s+(?:recheckAuthStatus\(\)|window\.voidTerminal\.auth\.status\(\))/);
+    expect(freshReadMatch, 'onExit handler does not await a fresh auth status read').not.toBeNull();
+    const routeCallIndex = onExitBlock.indexOf('routeStartFailure(');
+    expect(routeCallIndex, 'onExit handler does not call routeStartFailure').toBeGreaterThan(-1);
+    // The fresh read must happen before the routing decision uses it, not after.
+    expect(freshReadMatch!.index!).toBeLessThan(routeCallIndex);
+  });
+
+  it('only shows the generic stopped screen for the generic route — an exit while signed in is a real fault and must still land on RUNTIME_EXITED, not be swallowed by an unconditional sign-in redirect', () => {
+    // This is the other side of the trap: a lazy fix could route every exit to sign-in regardless of
+    // routeStartFailure's answer. Requiring the literal discriminant, and requiring showEnded to sit
+    // after it in the source, closes that the same way the existing catch-block test does.
+    expect(onExitBlock).toMatch(/\.screen\s*===\s*['"]generic['"]/);
+    const conditionIndex = onExitBlock.search(/\.screen\s*===\s*['"]generic['"]/);
+    const showEndedIndex = onExitBlock.indexOf("showEnded('RUNTIME_EXITED'");
+    expect(showEndedIndex, "onExit handler does not call showEnded('RUNTIME_EXITED', ...) at all").toBeGreaterThan(-1);
+    expect(showEndedIndex).toBeGreaterThan(conditionIndex);
+  });
+
+  it('routes the non-generic case through the same flag the start-failure path already uses, not a second one render() has to also learn about', () => {
+    // render() already has a working branch for `selected?.exited && signinOnStartFailure` (used by
+    // the catch-block path). Reusing that flag here means no change to render() is needed — a fresh
+    // parallel flag would silently do nothing until render() was also taught about it.
+    expect(onExitBlock).toMatch(/signinOnStartFailure\s*=\s*true/);
+  });
+
+  it('still only touches the visible UI for the currently selected tab — a background chat exiting must not steal focus onto the sign-in screen', () => {
+    expect(onExitBlock).toMatch(/view\.workspace\?\.selectedId\s*===\s*tab\.id/);
+  });
+});
+
 describe('preload surface: auth is merged into the one guarded, smoke-checked global', () => {
   // The packaged smoke check (src/renderer/smoke.ts) only ever reads Object.keys(window.voidTerminal).
   // A second top-level global is invisible to it — a guard that cannot see half the exposed surface
