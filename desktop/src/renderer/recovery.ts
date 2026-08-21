@@ -11,12 +11,12 @@ export const RECOVERY_GUIDANCE: Readonly<Record<RecoveryCode, RecoveryGuidance>>
   },
   SESSION_START_FAILED: {
     heading: 'Chat could not start',
-    detail: 'Ask your operator to verify existing VC sign-in and network access, then try Restart. If it still fails, copy or save a Support Report.',
+    detail: 'If your sign-in has expired, sign in again; otherwise check your network connection, then try Restart. Still stuck? Save a Support Report.',
     canRestart: true,
   },
   RUNTIME_EXITED: {
     heading: 'Chat stopped',
-    detail: 'Restart resumes this chat; no shell was opened. If it stops again, ask your operator to verify sign-in and network access and save a Support Report.',
+    detail: 'Restart resumes this chat; no shell was opened. If it keeps stopping, check your network connection, then save a Support Report.',
     canRestart: true,
   },
   WORKSPACE_MISSING: {

@@ -209,7 +209,7 @@ async function closeChat(id: string): Promise<void> { await stop(id); view = awa
 async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {
   const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
-  announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions. Before the first chat, ask your operator to confirm existing VC sign-in and network access.'); render();
+  announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions.'); render();
 }
 
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
