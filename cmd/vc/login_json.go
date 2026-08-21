@@ -39,10 +39,14 @@ func runDeviceLoginJSON(deps deviceLoginDeps, out io.Writer) error {
 		return err
 	}
 
-	if err := encoder.Encode(map[string]string{
-		"event":           "prompt",
-		"userCode":        start.UserCode,
-		"verificationUrl": deps.browserURL(start.VerificationPath),
+	// map[string]string can't carry ExpiresIn as a number, which is how this
+	// field went missing from the shipped binary in the first place: the
+	// map type made it uncompilable to include, not merely easy to forget.
+	if err := encoder.Encode(map[string]interface{}{
+		"event":            "prompt",
+		"userCode":         start.UserCode,
+		"verificationUrl":  deps.browserURL(start.VerificationPath),
+		"expiresInSeconds": start.ExpiresIn,
 	}); err != nil {
 		return err
 	}
