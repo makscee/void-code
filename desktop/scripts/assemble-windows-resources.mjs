@@ -25,7 +25,7 @@ const nodeArchivePath = path.join(desktop, 'runtime/cache/node', nodeArchive);
 const vcSource = path.join(desktop, 'runtime/cache/vc/vc.exe');
 if (win.node.source !== `https://nodejs.org/dist/${win.node.version}/${nodeArchive}`) throw new Error('private Windows Node source identifier mismatch');
 if (await shaFile(nodeArchivePath) !== win.node.sourceArchiveSha256) throw new Error('private Windows Node archive hash mismatch');
-if (await shaFile(vcSource) !== win.vc.sha256) throw new Error('private Windows vc hash mismatch');
+if (await shaFile(vcSource) !== win.vc.sha256) throw new Error(`Windows vc digest mismatch: ${vcSource} is not ${win.vc.assetName} from ${win.vc.repository} ${win.vc.releaseTag}`);
 
 const piSource = process.env.VOID_DESKTOP_PI_SOURCE ?? path.join(desktop, 'runtime/pi');
 await assertPiSourcePins(piSource, pins.pi);
@@ -73,7 +73,7 @@ try {
   const manifest = {
     schema: 1,
     platform: 'win32-x64',
-    vc: { version: execFileSync(path.join(staging, 'vc/vc.exe'), ['--version'], { encoding: 'utf8' }).trim(), sourceCommit: win.vc.sourceCommit, path: 'vc/vc.exe', sha256: win.vc.sha256 },
+    vc: { version: execFileSync(path.join(staging, 'vc/vc.exe'), ['--version'], { encoding: 'utf8' }).trim(), sourceCommit: win.vc.cliSourceCommit, releaseTag: win.vc.releaseTag, releaseCommit: win.vc.releaseCommit, path: 'vc/vc.exe', sha256: win.vc.sha256 },
     node: { version: nodeVersion, source: win.node.source, sourceArchiveSha256: win.node.sourceArchiveSha256, path: 'node/node.exe', sha256: nodeHash, npm: { version: execFileSync(stagedNode, [privateNpm, '--version'], { encoding: 'utf8' }).trim() } },
     pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },
     fixture: { path: 'fixture/round-trip.js', sha256: await shaFile(path.join(staging, 'fixture/round-trip.js')) },
