@@ -38,7 +38,7 @@ function isValidStatusShape(value: unknown): value is { authState: AuthStatus['a
 }
 
 export type LoginEvent =
-  | { event: 'prompt'; userCode: string; verificationUrl: string; expiresInSeconds: number }
+  | { event: 'prompt'; userCode: string; verificationUrl: string; expiresInSeconds?: number }
   | { event: 'authorized' }
   | { event: 'error'; reason: string };
 export type LoginResult = { ok: true } | { ok: false; reason: string };
@@ -113,8 +113,12 @@ export function runLogin(
       // field, or an event word vc has never sent must fall through to diagnostics rather
       // than reach onEvent, where a window would branch on it as if it were real progress.
       if (!isPlainObject(parsed)) { onDiagnostic?.(`malformed login output: ${line}`); return; }
-      if (parsed.event === 'prompt' && typeof parsed.userCode === 'string' && typeof parsed.verificationUrl === 'string' && typeof parsed.expiresInSeconds === 'number') {
-        const event: LoginEvent = { event: 'prompt', userCode: parsed.userCode, verificationUrl: parsed.verificationUrl, expiresInSeconds: parsed.expiresInSeconds };
+      // expiresInSeconds only drives the on-screen countdown — the shipped binary does not
+      // always send it, and losing it must cost the countdown, not the whole prompt. userCode
+      // and verificationUrl are what a person actually acts on, so those stay required.
+      if (parsed.event === 'prompt' && typeof parsed.userCode === 'string' && typeof parsed.verificationUrl === 'string' && (parsed.expiresInSeconds === undefined || typeof parsed.expiresInSeconds === 'number')) {
+        const event: LoginEvent = { event: 'prompt', userCode: parsed.userCode, verificationUrl: parsed.verificationUrl };
+        if (typeof parsed.expiresInSeconds === 'number') event.expiresInSeconds = parsed.expiresInSeconds;
         onEvent(event);
         onOpenUrl(event.verificationUrl);
       } else if (parsed.event === 'authorized') {

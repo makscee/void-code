@@ -70,10 +70,13 @@ function renderAuthScreens(): void {
   signinStartButton.textContent = authScreen === 'invalid_credential' ? 'Sign in again' : 'Sign in';
   if (loginPhase.phase === 'code') {
     signinCodeValueElement.textContent = loginPhase.userCode;
-    const remaining = codeSecondsRemaining(loginPhase, Math.floor((Date.now() - codeStartedAt) / 1000));
-    signinCodeStatusElement.textContent = isCodeExpired(loginPhase, Math.floor((Date.now() - codeStartedAt) / 1000))
+    const elapsed = Math.floor((Date.now() - codeStartedAt) / 1000);
+    const remaining = codeSecondsRemaining(loginPhase, elapsed);
+    // An unknown lifetime (vc sent no expiresInSeconds) must not be shown as a countdown to a
+    // fabricated moment — say what's true instead: the code is there to use, with no known deadline.
+    signinCodeStatusElement.textContent = isCodeExpired(loginPhase, elapsed)
       ? 'This code expired. Click Sign in to get a new one.'
-      : `Expires in ${remaining}s.`;
+      : remaining === undefined ? 'Enter this code to finish signing in.' : `Expires in ${remaining}s.`;
   }
 }
 function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {

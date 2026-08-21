@@ -13,7 +13,9 @@ export function screenForStatus(status: AuthStatus | null): AuthScreen {
   return 'signed_out';
 }
 
-export interface CodePrompt { userCode: string; verificationUrl: string; expiresInSeconds: number }
+// expiresInSeconds is absent when vc doesn't send a lifetime — the code and URL are still real
+// and actionable without it; only the countdown has nothing to show.
+export interface CodePrompt { userCode: string; verificationUrl: string; expiresInSeconds?: number }
 
 export type LoginPhase =
   | { phase: 'idle' }
@@ -53,10 +55,17 @@ export function canStartLogin(phase: LoginPhase): boolean {
   return phase.phase !== 'code';
 }
 
-export function codeSecondsRemaining(prompt: CodePrompt, elapsedSeconds: number): number {
+// undefined, not a fabricated 0/-1/Infinity, when the lifetime is unknown — a caller drawing a
+// countdown must be forced to notice there is nothing to count down, not shown a number that
+// means nothing.
+export function codeSecondsRemaining(prompt: CodePrompt, elapsedSeconds: number): number | undefined {
+  if (prompt.expiresInSeconds === undefined) return undefined;
   return Math.max(0, prompt.expiresInSeconds - elapsedSeconds);
 }
 
+// Never reports expired when there is no basis to say so — defaulting to "expired" would hide a
+// still-usable code exactly the way the original defect hid the whole prompt.
 export function isCodeExpired(prompt: CodePrompt, elapsedSeconds: number): boolean {
+  if (prompt.expiresInSeconds === undefined) return false;
   return elapsedSeconds >= prompt.expiresInSeconds;
 }
