@@ -59,6 +59,33 @@ func (f *fakeDeviceServer) deps(out *bytes.Buffer) deviceLoginDeps {
 	}
 }
 
+// assertExactKeys pins the complete shape of one emitted event: not just that
+// the keys a test currently cares about are present, but that no other key
+// is. A field silently dropped (the bug this file exists to catch) shrinks
+// the set; a field silently added shows up here too, so whoever adds one on
+// purpose has to update this list and, in doing so, say so.
+func assertExactKeys(t *testing.T, event map[string]any, want ...string) {
+	t.Helper()
+	gotSet := make(map[string]bool, len(event))
+	for k := range event {
+		gotSet[k] = true
+	}
+	wantSet := make(map[string]bool, len(want))
+	for _, k := range want {
+		wantSet[k] = true
+	}
+	for k := range gotSet {
+		if !wantSet[k] {
+			t.Errorf("event %v has unexpected key %q not in pinned shape %v", event, k, want)
+		}
+	}
+	for k := range wantSet {
+		if !gotSet[k] {
+			t.Errorf("event %v is missing pinned key %q", event, k)
+		}
+	}
+}
+
 func events(t *testing.T, out *bytes.Buffer) []map[string]any {
 	t.Helper()
 	var parsed []map[string]any
@@ -278,4 +305,116 @@ func TestDeviceLoginJSONReportsStartRateLimitDistinctFromGenericFailure(t *testi
 	if reason, _ := last["reason"].(string); reason != "rate_limited" {
 		t.Errorf("reason = %q, want rate_limited", reason)
 	}
+}
+
+// The desktop rejects the whole prompt line without this field: it requires a
+// numeric lifetime to know when to give up waiting on its own, and a JSON
+// decoder reading a struct field typed as a number errors out on anything
+// else in that slot, string included. A prompt built through map[string]string
+// cannot carry a number at all, so this also pins the field's presence: a
+// build that drops it because the value "doesn't fit" the map fails here
+// rather than shipping a line the desktop discards as malformed.
+func TestDeviceLoginJSONPromptCarriesExpiresInAsANumber(t *testing.T) {
+	server := &fakeDeviceServer{
+		start:   auth.DeviceStartResult{DeviceCode: "dev-code-1", UserCode: "DJAHWRAF", VerificationPath: "/device", ExpiresIn: 1800, Interval: 5},
+		pollRes: auth.DevicePollResult{Token: "session.token"},
+	}
+	var out bytes.Buffer
+
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := events(t, &out)[0]
+	expiresIn, ok := prompt["expiresInSeconds"].(float64)
+	if !ok {
+		t.Fatalf("expiresInSeconds = %#v (%T), want a JSON number", prompt["expiresInSeconds"], prompt["expiresInSeconds"])
+	}
+	if expiresIn != 1800 {
+		t.Errorf("expiresInSeconds = %v, want 1800 (auth.DeviceStartResult.ExpiresIn, not an invented value)", expiresIn)
+	}
+}
+
+// The lifetime must come from the start result, not from a constant that
+// happens to match the fixture above. A different ExpiresIn on the same
+// fixture shape catches an implementation that hardcodes 1800 or reuses
+// Interval instead of reading the field the flow already receives.
+func TestDeviceLoginJSONPromptExpiresInTracksStartResultNotAConstant(t *testing.T) {
+	server := &fakeDeviceServer{
+		start:   auth.DeviceStartResult{DeviceCode: "dev-code-1", UserCode: "ZZZZ9999", VerificationPath: "/device", ExpiresIn: 42, Interval: 5},
+		pollRes: auth.DevicePollResult{Token: "session.token"},
+	}
+	var out bytes.Buffer
+
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prompt := events(t, &out)[0]
+	expiresIn, ok := prompt["expiresInSeconds"].(float64)
+	if !ok {
+		t.Fatalf("expiresInSeconds = %#v (%T), want a JSON number", prompt["expiresInSeconds"], prompt["expiresInSeconds"])
+	}
+	if expiresIn != 42 {
+		t.Errorf("expiresInSeconds = %v, want 42", expiresIn)
+	}
+}
+
+// Every field the prompt event carries, and no more. This is the test that
+// would have caught the original bug independent of anyone thinking to
+// assert expiresInSeconds by name: any prompt field silently dropped shrinks
+// this set. A future field added on purpose must be added to this list too —
+// that's the point, not a maintenance cost to route around.
+func TestDeviceLoginJSONPromptEventHasExactShape(t *testing.T) {
+	server := &fakeDeviceServer{
+		start:   auth.DeviceStartResult{DeviceCode: "dev-code-1", UserCode: "AAAA1111", VerificationPath: "/device", ExpiresIn: 600, Interval: 5},
+		pollRes: auth.DevicePollResult{Token: "session.token"},
+	}
+	var out bytes.Buffer
+
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertExactKeys(t, events(t, &out)[0], "event", "userCode", "verificationUrl", "expiresInSeconds")
+}
+
+// The authorized event today carries nothing beyond its name, and there is no
+// pending report of a field being needed on it. Pinning the empty shape means
+// a field added here — accidentally or not — has to be a deliberate edit to
+// this test, the same guarantee the prompt event now has.
+func TestDeviceLoginJSONAuthorizedEventHasExactShape(t *testing.T) {
+	server := &fakeDeviceServer{
+		start:   auth.DeviceStartResult{DeviceCode: "dev-code-1", UserCode: "AAAA1111", VerificationPath: "/device", ExpiresIn: 600, Interval: 5},
+		pollRes: auth.DevicePollResult{Token: "session.token"},
+	}
+	var out bytes.Buffer
+
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := events(t, &out)
+	assertExactKeys(t, got[len(got)-1], "event")
+}
+
+// The error event's reason word is the only thing the desktop branches on
+// beyond the event name itself (see deviceLoginJSONReason and
+// deviceLoginJSONStartReason above); pin that pair so a third field cannot
+// join it, or one of the two drop out, without this test forcing the change
+// to be named.
+func TestDeviceLoginJSONErrorEventHasExactShape(t *testing.T) {
+	server := &fakeDeviceServer{
+		start:    auth.DeviceStartResult{DeviceCode: "dev-code-1", UserCode: "AAAA1111", VerificationPath: "/device", ExpiresIn: 600, Interval: 5},
+		pollErrs: []error{auth.ErrDeviceExpired},
+	}
+	var out bytes.Buffer
+
+	err := runDeviceLoginJSON(server.deps(&out), &out)
+	if err == nil {
+		t.Fatal("expected an error when the pairing code expires")
+	}
+
+	got := events(t, &out)
+	assertExactKeys(t, got[len(got)-1], "event", "reason")
 }
