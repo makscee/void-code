@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AuthChildProcess, AuthSpawner, LoginEvent } from '../src/main/auth-session';
 import { readAuthStatus, runLogin } from '../src/main/auth-session';
@@ -240,5 +242,78 @@ describe('runLogin', () => {
     child.end(1);
     await expect(promise).resolves.toEqual({ ok: false, reason: 'expired' });
     expect(events).toEqual([EXPECTED_LOGIN_EVENTS[0], { event: 'error', reason: 'expired' }]);
+  });
+
+  // Regression for the real defect: a person clicked "Sign in", vc printed a valid prompt line,
+  // and it was thrown away because expiresInSeconds was absent — the binary never emits it. The
+  // code and URL are what a person acts on; the lifetime only drives a countdown. Losing the
+  // countdown must cost the countdown, not the whole login.
+  describe('a prompt with no expiresInSeconds (unknown code lifetime)', () => {
+    // tests/fixtures-login-prompt-no-expiry.txt is a byte-for-byte capture of a real line printed
+    // by `vc login --json` — not a hand-written fixture. Every prior fixture in this file was
+    // typed by someone imagining the output, and every one of them included expiresInSeconds,
+    // which is exactly how this defect passed every existing test while the product was broken.
+    // Read it from disk rather than inlining it so the provenance (a recorded artefact, not an
+    // invented literal) stays visible to whoever edits this file next.
+    const REAL_PROMPT_LINE_NO_EXPIRY = readFileSync(
+      path.join(__dirname, 'fixtures-login-prompt-no-expiry.txt'),
+      'utf8',
+    );
+
+    it('still surfaces the code and URL — an actionable prompt must not be discarded for a missing lifetime', async () => {
+      const child = new FakeChild();
+      const opened: string[] = [];
+      const events: LoginEvent[] = [];
+      const diagnostics: string[] = [];
+      const promise = runLogin(
+        '/private/vc',
+        fixedSpawner(child),
+        (event) => events.push(event),
+        (url) => opened.push(url),
+        (message) => diagnostics.push(message),
+      );
+      child.stdout.emit('data', REAL_PROMPT_LINE_NO_EXPIRY);
+      child.end(0);
+      await promise;
+
+      // The unknown lifetime must be a distinguishable absence, not a fabricated number — nothing
+      // here invents a value that would show a person a countdown to a moment that means nothing.
+      expect(events).toHaveLength(1);
+      const [event] = events;
+      expect(event).toMatchObject({
+        event: 'prompt',
+        userCode: 'DJAHWRAF',
+        verificationUrl: 'https://auth.makscee.ru/device',
+      });
+      expect((event as { expiresInSeconds?: number }).expiresInSeconds).toBeUndefined();
+      // Still a real, actionable prompt: the URL still gets opened for the person.
+      expect(opened).toEqual(['https://auth.makscee.ru/device']);
+      // And it is real progress, not a fallback path — it must not also masquerade as a diagnostic.
+      expect(diagnostics).toEqual([]);
+    });
+
+    // The tolerance is for the missing field only. A prompt still missing what a person actually
+    // needs to act — the code, or the place to enter it — stays rejected: loosening the check
+    // until everything is accepted would trade one silent failure for another.
+    it.each([
+      ['no userCode', '{"event":"prompt","verificationUrl":"https://auth.makscee.ru/device"}\n'],
+      ['no verificationUrl', '{"event":"prompt","userCode":"DJAHWRAF"}\n'],
+    ])('still rejects a prompt with %s, even with expiresInSeconds absent', async (_label, raw) => {
+      const child = new FakeChild();
+      const events: LoginEvent[] = [];
+      const diagnostics: string[] = [];
+      const promise = runLogin(
+        '/private/vc',
+        fixedSpawner(child),
+        (event) => events.push(event),
+        () => {},
+        (message) => diagnostics.push(message),
+      );
+      child.stdout.emit('data', raw);
+      child.end(0);
+      await promise;
+      expect(events).toEqual([]);
+      expect(diagnostics.length).toBeGreaterThan(0);
+    });
   });
 });
