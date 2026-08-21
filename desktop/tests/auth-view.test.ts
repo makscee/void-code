@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canStartLogin, codeSecondsRemaining, isCodeExpired, reduceLoginPush, requiresStatusRecheck, screenForStatus,
+  canStartLogin, codeSecondsRemaining, isCodeExpired, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus,
   type LoginPhase,
 } from '../src/renderer/auth-view';
 import type { AuthStatus } from '../src/main/auth-session';
@@ -89,6 +89,29 @@ describe('canStartLogin — clicking twice must not start two logins', () => {
 
   it('refuses while a login is already in flight, i.e. once a code is on screen', () => {
     expect(canStartLogin({ phase: 'code', ...prompt })).toBe(false);
+  });
+});
+
+describe('routeStartFailure — a chat that fails to start must re-check auth before choosing a screen', () => {
+  // A returning person with an expired credential launches straight into `vc desktop-session`,
+  // which refuses. Without this routing they land on the generic "chat could not start" screen —
+  // the one screen built for their exact problem is the one they never see. routeStartFailure is
+  // the decision itself, fed a *freshly re-read* AuthScreen by the caller; it does not read status.
+
+  it('signed_in keeps the generic failure screen — a start failure while signed in is a real fault, not an auth problem', () => {
+    // Routing everyone to sign-in on any start failure would hide genuine faults behind a login
+    // prompt. That is the same defect in the other direction, and this case is what rejects it.
+    expect(routeStartFailure('signed_in')).toEqual({ screen: 'generic' });
+  });
+
+  it('signed_out routes to the signed-out sign-in screen, not the generic failure', () => {
+    expect(routeStartFailure('signed_out')).toEqual({ screen: 'signin', authScreen: 'signed_out' });
+  });
+
+  it('invalid_credential routes to its own screen — conflating it with signed_out would tell someone whose token merely expired to go through fresh sign-in copy that doesn\'t match their situation', () => {
+    const route = routeStartFailure('invalid_credential');
+    expect(route).toEqual({ screen: 'signin', authScreen: 'invalid_credential' });
+    expect(route).not.toEqual(routeStartFailure('signed_out'));
   });
 });
 

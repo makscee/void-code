@@ -103,6 +103,48 @@ describe('index.ts is actually wired to the pure auth-view state machine, not re
   });
 });
 
+describe('a chat start failure re-checks auth before choosing the generic failure or a sign-in screen', () => {
+  // launch()'s single catch block (there is exactly one `catch (error)` in this file — see the
+  // "officialXterm"-style greps above) is where SESSION_START_FAILED / SESSION_MISSING already
+  // get decided. That is also where the auth re-check and routing decision have to live.
+  const catchBlock = renderer.match(/catch \(error\) \{[\s\S]{0,800}?\n {2}\}\n\}/)?.[0] ?? '';
+
+  it('locates the single catch block in launch()', () => {
+    expect(catchBlock, 'could not find the catch (error) block in launch()').not.toBe('');
+  });
+
+  it('imports and uses routeStartFailure from auth-view rather than re-deriving the decision inline', () => {
+    expect(renderer).toMatch(/from ['"]\.\/auth-view['"]/);
+    expect(renderer).toContain('routeStartFailure');
+    expect(catchBlock).toMatch(/routeStartFailure\(/);
+  });
+
+  it('re-reads auth status inside the catch block itself — not the authScreen value captured before the failed start', () => {
+    // recheckAuthStatus() and window.voidTerminal.auth.status() are the only two things in this
+    // file that actually ask vc again; reading the outer `authScreen` variable without an await
+    // here would act on whatever was true at app start (or after the last unrelated event), which
+    // is exactly the "cached status" defect this routing exists to avoid.
+    const freshReadMatch = catchBlock.match(/await\s+(?:recheckAuthStatus\(\)|window\.voidTerminal\.auth\.status\(\))/);
+    expect(freshReadMatch, 'catch block does not await a fresh auth status read').not.toBeNull();
+    const routeCallIndex = catchBlock.indexOf('routeStartFailure(');
+    expect(routeCallIndex, 'catch block does not call routeStartFailure').toBeGreaterThan(-1);
+    // The fresh read must happen before the routing decision uses it, not after.
+    expect(freshReadMatch!.index!).toBeLessThan(routeCallIndex);
+  });
+
+  it('only shows the generic failure screen for the generic route — a start failure while not signed in must not also flash "chat could not start"', () => {
+    // routeStartFailure's own contract (pinned in auth-view.test.ts) returns screen: 'generic' vs
+    // screen: 'signin'. A lazy fix could call routeStartFailure only to ignore its result and call
+    // showEnded unconditionally either way; requiring the literal discriminant here closes that.
+    expect(catchBlock).toMatch(/\.screen\s*===\s*['"]generic['"]/);
+    // showEnded must appear inside that conditional, not before/regardless of it.
+    const conditionIndex = catchBlock.search(/\.screen\s*===\s*['"]generic['"]/);
+    const showEndedIndex = catchBlock.indexOf('showEnded(');
+    expect(showEndedIndex, 'catch block does not call showEnded at all').toBeGreaterThan(-1);
+    expect(showEndedIndex).toBeGreaterThan(conditionIndex);
+  });
+});
+
 describe('preload surface: auth is merged into the one guarded, smoke-checked global', () => {
   // The packaged smoke check (src/renderer/smoke.ts) only ever reads Object.keys(window.voidTerminal).
   // A second top-level global is invisible to it — a guard that cannot see half the exposed surface
