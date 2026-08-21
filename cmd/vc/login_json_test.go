@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,36 @@ func TestDeviceLoginJSONReportsStartFailureAsAnEvent(t *testing.T) {
 	}
 	if reason, _ := last["reason"].(string); reason != "start_failed" {
 		t.Errorf("reason = %q, want start_failed", reason)
+	}
+}
+
+// A rate limit at start is the one start failure a person can act on: wait
+// and retry. Collapsed into "start_failed" it looks identical to a start that
+// will never succeed, so the desktop has nothing to tell the user beyond
+// "something went wrong" — which is the bug report this pins against. The
+// poll path already has a stable word for the same condition
+// (deviceLoginJSONReason maps auth.ErrDeviceRateLimited to "rate_limited");
+// the start path must report the same condition with the same word, or a
+// desktop that branches on one reason string would need a second, redundant
+// mapping to catch the other.
+func TestDeviceLoginJSONReportsStartRateLimitDistinctFromGenericFailure(t *testing.T) {
+	server := &fakeDeviceServer{startErr: fmt.Errorf("start: %w", auth.ErrDeviceRateLimited)}
+	var out bytes.Buffer
+
+	err := runDeviceLoginJSON(server.deps(&out), &out)
+	if err == nil {
+		t.Fatal("expected an error when the device start is rate limited")
+	}
+
+	got := events(t, &out)
+	if len(got) == 0 {
+		t.Fatal("no events written; the desktop reader has nothing to parse")
+	}
+	last := got[len(got)-1]
+	if last["event"] != "error" {
+		t.Fatalf("last event = %v, want error", last["event"])
+	}
+	if reason, _ := last["reason"].(string); reason != "rate_limited" {
+		t.Errorf("reason = %q, want rate_limited", reason)
 	}
 }
