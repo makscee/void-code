@@ -6,7 +6,7 @@ export const RECOVERY_GUIDANCE: Readonly<Record<RecoveryCode, RecoveryGuidance>>
   NONE: { heading: '', detail: '', canRestart: false },
   AUTH_PREFLIGHT_REQUIRED: {
     heading: 'Before your first chat',
-    detail: 'Ask your operator to confirm that existing VC sign-in and network access are ready. If sign-in is missing, complete the guided VC login outside this app, then start a new chat.',
+    detail: 'Sign in directly from inside this app — start the guided sign-in below and make sure you have network access, then start a new chat.',
     canRestart: false,
   },
   SESSION_START_FAILED: {

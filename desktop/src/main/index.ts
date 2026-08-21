@@ -10,6 +10,9 @@ import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
 import type { PrivateRuntime } from './resources';
+import { readAuthStatus } from './auth-session';
+import { startAuthLogin } from './auth-ipc';
+import { spawnAuthProcess } from './auth-spawn';
 import { SessionManager, wrapPty } from './session-manager';
 import { StatusChannelStore } from './status-channel';
 import { buildSupportReport, copySupportReport, saveSupportReport } from './support-report';
@@ -34,6 +37,7 @@ const missingRendererTest = missingRendererRequested(process.argv, process.env.V
 let manager: SessionManager;
 let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
+let runtime: PrivateRuntime;
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   return wrapPty(spawnDesktopRequest(runtime, request, pty.spawn, authority));
@@ -95,6 +99,13 @@ function registerIpc(): void {
       async () => { const result = await dialog.showSaveDialog({ defaultPath: `Void-Code-Support-${stamp}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] }); return result.canceled ? null : result.filePath ?? null; },
       (file, text) => writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 }),
     );
+  });
+  ipcMain.handle(IPC.authStatus, (event) => { assertRenderer(event); return readAuthStatus(runtime.vc, spawnAuthProcess); });
+  ipcMain.handle(IPC.authLoginStart, (event) => { assertRenderer(event);
+    const ownerId = event.sender.id;
+    const loginId = randomUUID();
+    startAuthLogin(loginId, runtime.vc, spawnAuthProcess, (push) => { webContents.fromId(ownerId)?.send(IPC.authLoginEvent, push); }, (url) => { void shell.openExternal(url); });
+    return { loginId };
   });
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { assertRenderer(event); manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
   ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { assertRenderer(event); try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
@@ -183,7 +194,7 @@ async function createWindow(): Promise<BrowserWindow> {
 
 async function bootstrap(): Promise<void> {
   await startupStage('readiness', () => app.whenReady());
-  const runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
+  runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
   workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
   if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
   const statusChannels = new StatusChannelStore(
