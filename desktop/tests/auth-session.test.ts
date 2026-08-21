@@ -87,6 +87,28 @@ describe('readAuthStatus', () => {
     child.end(0);
     await expect(promise).resolves.toEqual({ ok: false, reason: 'invalid_json' });
   });
+
+  // Valid JSON is not the same guarantee as a valid status: a regression that prints a
+  // well-formed but unrecognised object must not be handed to the UI as ok:true — that is
+  // the same "signed_out shown for someone signed in" bug, just from a different fault.
+  // A distinct reason from 'invalid_json' matters because "not JSON at all" (a crash, a
+  // stray log line) and "JSON but not a status" (a schema regression in vc) are different
+  // bugs to chase, and the support report should say which one happened.
+  it.each([
+    ['an object with no authState at all', '{}\n'],
+    ['an authState that is not one of the three known words', '{"authState":"nonsense"}\n'],
+    ['a JSON object typo of the field name', '{"auth_state":"signed_in"}\n'],
+    ['a bare JSON null', 'null\n'],
+    ['a bare JSON string', '"signed_in"\n'],
+    ['a bare JSON number', '42\n'],
+    ['a JSON array', '["signed_in"]\n'],
+  ])('fails in a defined way, never reporting ok:true, on %s', async (_label, raw) => {
+    const child = new FakeChild();
+    const promise = readAuthStatus('/private/vc', fixedSpawner(child));
+    child.stdout.emit('data', raw);
+    child.end(0);
+    await expect(promise).resolves.toEqual({ ok: false, reason: 'invalid_status' });
+  });
 });
 
 describe('runLogin', () => {
@@ -161,6 +183,21 @@ describe('runLogin', () => {
     expect(events).toEqual(EXPECTED_LOGIN_EVENTS);
     expect(diagnostics.length).toBeGreaterThan(0);
     expect(diagnostics.some((message) => message.includes('NOT VALID JSON'))).toBe(true);
+  });
+
+  // Same class of gap as readAuthStatus, checked on the login side: a line can be valid JSON
+  // and still not be a known login event (missing "event", or an "event" word vc has never
+  // sent before). It must land as a diagnostic, not as a LoginEvent the UI would branch on.
+  it('treats syntactically valid JSON with no recognised event as a diagnostic, not a LoginEvent', async () => {
+    const child = new FakeChild();
+    const events: LoginEvent[] = [];
+    const diagnostics: string[] = [];
+    const promise = runLogin('/private/vc', fixedSpawner(child), (event) => events.push(event), () => {}, (message) => diagnostics.push(message));
+    child.stdout.emit('data', `{"foo":"bar"}\n{"event":"denied"}\n${PROMPT_LINE}${AUTHORIZED_LINE}`);
+    child.end(0);
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(events).toEqual(EXPECTED_LOGIN_EVENTS);
+    expect(diagnostics.length).toBeGreaterThanOrEqual(2);
   });
 
   it('ends the login in a defined way when the process exits non-zero after only a prompt', async () => {
