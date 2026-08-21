@@ -1,7 +1,8 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import type { RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
+import { canStartLogin, codeSecondsRemaining, isCodeExpired, reduceLoginPush, requiresStatusRecheck, screenForStatus, type LoginPhase } from './auth-view';
+import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
@@ -30,6 +31,13 @@ const endedHeading = document.querySelector<HTMLElement>('#ended-heading')!;
 const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
+const signinSignedOutElement = document.querySelector<HTMLElement>('#signin-signed-out')!;
+const signinInvalidElement = document.querySelector<HTMLElement>('#signin-invalid')!;
+const signinCodeElement = document.querySelector<HTMLElement>('#signin-code')!;
+const signinCodeValueElement = document.querySelector<HTMLElement>('#signin-code-value')!;
+const signinCodeStatusElement = document.querySelector<HTMLElement>('#signin-code-status')!;
+const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
+const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
 
 type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean; recoveryCode?: RecoveryCode };
 const runtimes = new Map<string, Runtime>();
@@ -37,6 +45,11 @@ const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
+let authScreen: 'signed_in' | 'signed_out' | 'invalid_credential' = 'signed_out';
+let loginPhase: LoginPhase = { phase: 'idle' };
+let currentLoginId: string | undefined;
+let codeStartedAt = 0;
+let codeTimer: ReturnType<typeof setInterval> | undefined;
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
 function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
@@ -44,6 +57,42 @@ function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED
   const guidance = RECOVERY_GUIDANCE[code];
   endedHeading.textContent = guidance.heading; endedDetail.textContent = guidance.detail;
   restartButton.hidden = !guidance.canRestart; endedElement.hidden = false;
+}
+function stopCodeTimer(): void { if (codeTimer !== undefined) { clearInterval(codeTimer); codeTimer = undefined; } }
+function renderAuthScreens(): void {
+  const showingCode = loginPhase.phase === 'code';
+  signinSignedOutElement.hidden = showingCode || authScreen !== 'signed_out';
+  signinInvalidElement.hidden = showingCode || authScreen !== 'invalid_credential';
+  signinCodeElement.hidden = !showingCode;
+  signinReadyElement.hidden = showingCode || authScreen !== 'signed_in';
+  signinStartButton.hidden = authScreen === 'signed_in' || showingCode;
+  signinStartButton.disabled = !canStartLogin(loginPhase);
+  signinStartButton.textContent = authScreen === 'invalid_credential' ? 'Sign in again' : 'Sign in';
+  if (loginPhase.phase === 'code') {
+    signinCodeValueElement.textContent = loginPhase.userCode;
+    const remaining = codeSecondsRemaining(loginPhase, Math.floor((Date.now() - codeStartedAt) / 1000));
+    signinCodeStatusElement.textContent = isCodeExpired(loginPhase, Math.floor((Date.now() - codeStartedAt) / 1000))
+      ? 'This code expired. Click Sign in to get a new one.'
+      : `Expires in ${remaining}s.`;
+  }
+}
+function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
+  authScreen = screenForStatus(result.ok ? result.status : null);
+  renderAuthScreens();
+}
+async function loadAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
+async function recheckAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
+async function handleLoginPush(event: AuthLoginPush): Promise<void> {
+  if (event.loginId !== currentLoginId) return;
+  if (event.event === 'prompt') void window.voidTerminal.openLink(event.verificationUrl);
+  loginPhase = reduceLoginPush(loginPhase, event);
+  if (loginPhase.phase === 'code') { codeStartedAt = Date.now(); stopCodeTimer(); codeTimer = setInterval(renderAuthScreens, 1000); } else stopCodeTimer();
+  renderAuthScreens();
+  if (requiresStatusRecheck(loginPhase)) await recheckAuthStatus();
+}
+async function startSignIn(): Promise<void> {
+  const { loginId } = await window.voidTerminal.auth.loginStart();
+  currentLoginId = loginId;
 }
 function supportContext(): SupportRequest {
   const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined;
@@ -172,6 +221,11 @@ removeWorkspaceButton.addEventListener('click', async () => { for (const id of [
 newChatButton.addEventListener('click', async () => { const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
 restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
+signinStartButton.addEventListener('click', () => {
+  if (!canStartLogin(loginPhase)) return;
+  void startSignIn();
+});
+window.voidTerminal.auth.onLoginEvent((event) => { void handleLoginPush(event); });
 new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(mainElement);
 
 type ByteFacts = { bytes: number; chunks: number; escBytes: number };
@@ -385,6 +439,7 @@ async function productionProbe(): Promise<void> {
   document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify(result)}`;
 }
 
+void loadAuthStatus();
 void window.voidTerminal.workspace.load().then(async (loaded) => {
   view = loaded; render();
   if (new URLSearchParams(location.search).get('productionTerminalProbe') === '1') await productionProbe();

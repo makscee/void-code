@@ -30,6 +30,11 @@ function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind:
     ipcRenderer.send(IPC.unsubscribe, existing.request);
   };
 }
+function onPush<T>(channel: string, listener: (event: T) => void): Unsubscribe {
+  const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => listener(payload as T);
+  ipcRenderer.on(channel, wrapped);
+  return () => ipcRenderer.removeListener(channel, wrapped);
+}
 function teardown(): void {
   for (const id of [...active.keys()]) {
     const existing = active.get(id);
@@ -66,25 +71,13 @@ const api: TerminalApi = {
     close: (id) => ipcRenderer.invoke(IPC.workspaceClose, { sessionId: id }),
     resume: (id) => ipcRenderer.invoke(IPC.workspaceResume, { sessionId: id }),
   }),
+  auth: Object.freeze({
+    status: () => ipcRenderer.invoke(IPC.authStatus) as Promise<StatusResult>,
+    loginStart: () => ipcRenderer.invoke(IPC.authLoginStart) as Promise<{ loginId: string }>,
+    onLoginEvent: (listener) => onPush<AuthLoginPush>(IPC.authLoginEvent, listener),
+  }),
 };
 Object.freeze(api);
 
-interface AuthApi {
-  status(): Promise<StatusResult>;
-  loginStart(): Promise<{ loginId: string }>;
-  onLoginEvent(listener: (event: AuthLoginPush) => void): Unsubscribe;
-}
-const authApi: AuthApi = {
-  status: () => ipcRenderer.invoke(IPC.authStatus) as Promise<StatusResult>,
-  loginStart: () => ipcRenderer.invoke(IPC.authLoginStart) as Promise<{ loginId: string }>,
-  onLoginEvent: (listener) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => listener(payload as AuthLoginPush);
-    ipcRenderer.on(IPC.authLoginEvent, wrapped);
-    return () => ipcRenderer.removeListener(IPC.authLoginEvent, wrapped);
-  },
-};
-Object.freeze(authApi);
-
 window.addEventListener('beforeunload', teardown, { once: true });
 contextBridge.exposeInMainWorld('voidTerminal', api);
-contextBridge.exposeInMainWorld('voidAuth', authApi);

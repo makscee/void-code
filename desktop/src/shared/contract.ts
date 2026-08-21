@@ -1,5 +1,8 @@
 import path from 'node:path';
+import type { AuthStatus, StatusResult } from '../main/auth-session';
+import type { AuthLoginPush } from '../main/auth-ipc';
 export { IPC } from './preload-contract';
+export type { AuthStatus, StatusResult, AuthLoginPush };
 
 export type SessionId = string;
 export type SubscriptionKind = 'output' | 'exit' | 'status';
@@ -55,6 +58,11 @@ export interface TerminalApi {
     select(sessionId: SessionId): Promise<WorkspaceView>;
     close(sessionId: SessionId): Promise<WorkspaceView>;
     resume(sessionId: SessionId): Promise<WorkspaceView>;
+  };
+  auth: {
+    status(): Promise<StatusResult>;
+    loginStart(): Promise<{ loginId: string }>;
+    onLoginEvent(listener: (event: AuthLoginPush) => void): Unsubscribe;
   };
 }
 
