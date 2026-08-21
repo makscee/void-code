@@ -220,3 +220,30 @@ func TestDeviceLoginJSONDoesNotPollWhenStartFails(t *testing.T) {
 		t.Errorf("polled %d times after a failed start, want 0", server.polls)
 	}
 }
+
+// A start failure must reach the desktop on the same stream as every other
+// failure. Today it writes nothing: the caller gets a non-zero exit and no
+// event, so the window has nothing to parse and sits on a spinner. A stable
+// reason word matters as much as the event itself — a bare {"event":"error"}
+// gives the reader nothing to branch on, the way "expired" does for expiry.
+func TestDeviceLoginJSONReportsStartFailureAsAnEvent(t *testing.T) {
+	server := &fakeDeviceServer{startErr: errors.New("upstream 503")}
+	var out bytes.Buffer
+
+	err := runDeviceLoginJSON(server.deps(&out), &out)
+	if err == nil {
+		t.Fatal("expected an error when the device start fails")
+	}
+
+	got := events(t, &out)
+	if len(got) == 0 {
+		t.Fatal("no events written; the desktop reader has nothing to parse")
+	}
+	last := got[len(got)-1]
+	if last["event"] != "error" {
+		t.Fatalf("last event = %v, want error", last["event"])
+	}
+	if reason, _ := last["reason"].(string); reason != "start_failed" {
+		t.Errorf("reason = %q, want start_failed", reason)
+	}
+}
