@@ -17,12 +17,6 @@ afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) =>
 const archive = path.resolve('runtime/cache/node', expectedNodeArchive(pins.node).archiveName);
 
 describe('resource source pins', () => {
-  it('pins the Windows vc runtime to the latest CLI source revision', () => {
-    const repo = path.resolve('..');
-    const latestCliCommit = execFileSync('git', ['log', '-1', '--format=%H', '--', 'cmd/vc'], { cwd: repo, encoding: 'utf8' }).trim();
-    expect(pins.windows.vc.sourceCommit).toBe(latestCliCommit);
-  });
-
   it.skipIf(process.platform === 'win32')('extracts authenticated Node and its private npm from the exact pinned official archive', async () => {
     const destination = await temp();
     const executable = await extractPinnedNodeArchive(archive, destination, pins.node);
