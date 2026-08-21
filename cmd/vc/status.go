@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -15,7 +17,16 @@ import (
 
 var statusCmd = &cobra.Command{Use: "status", Short: "Show subscription, relay, and version status", Long: "Verify the current void-code subscription and show relay and version status.", RunE: runStatus}
 
-func init() { rootCmd.AddCommand(statusCmd) }
+func init() {
+	statusCmd.Flags().Bool("json", false, "emit auth state as a single JSON object instead of the human-readable status (for callers with no terminal, e.g. the desktop app)")
+	rootCmd.AddCommand(statusCmd)
+}
+
+// statusJSONRunner is an indirection so tests can swap the destination
+// runStatus dispatches to without making a network call.
+var statusJSONRunner = func(cfg config.Config, out io.Writer) error {
+	return runStatusJSON(cfg, out)
+}
 
 var labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
 var valueStyle = lipgloss.NewStyle().Bold(true)
@@ -23,7 +34,12 @@ var errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
 
 // runStatus never treats the presence of a token file as authentication. The
 // subscription endpoint is the authority for identity, budget, and rejection.
-func runStatus(_ *cobra.Command, _ []string) error {
+func runStatus(cmd *cobra.Command, _ []string) error {
+	if cmd != nil {
+		if jsonFlag, err := cmd.Flags().GetBool("json"); err == nil && jsonFlag {
+			return statusJSONRunner(config.OSResolve(), os.Stdout)
+		}
+	}
 	cfg := config.OSResolve()
 	fmt.Printf("%s %s\n", labelStyle.Render("version:"), valueStyle.Render(version.Version))
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
