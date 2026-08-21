@@ -31,6 +31,7 @@ func runDeviceLoginJSON(deps deviceLoginDeps, out io.Writer) error {
 
 	start, err := deps.start()
 	if err != nil {
+		encoder.Encode(map[string]string{"event": "error", "reason": "start_failed"})
 		return err
 	}
 
