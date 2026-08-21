@@ -28,9 +28,14 @@ type fakeDeviceServer struct {
 	polls     int
 	installed string
 	slept     []time.Duration
+	// What had been written at the moment the credential was stored. The order
+	// of those two is the whole contract: a desktop acting on `authorized`
+	// before the token exists starts a chat that fails for a reason the user
+	// was just told did not happen.
+	outputAtInstall string
 }
 
-func (f *fakeDeviceServer) deps() deviceLoginDeps {
+func (f *fakeDeviceServer) deps(out *bytes.Buffer) deviceLoginDeps {
 	return deviceLoginDeps{
 		start: func() (auth.DeviceStartResult, error) { return f.start, f.startErr },
 		poll: func(string) (auth.DevicePollResult, error) {
@@ -42,7 +47,11 @@ func (f *fakeDeviceServer) deps() deviceLoginDeps {
 			}
 			return f.pollRes, nil
 		},
-		install:    func(token string) error { f.installed = token; return nil },
+		install: func(token string) error {
+			f.installed = token
+			f.outputAtInstall = out.String()
+			return nil
+		},
 		sleep:      func(d time.Duration) { f.slept = append(f.slept, d) },
 		now:        func() time.Time { return time.Unix(0, 0) },
 		browserURL: func(path string) string { return "https://auth.example.test" + path },
@@ -75,7 +84,7 @@ func TestDeviceLoginJSONEmitsPromptFromStartResult(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	if err := runDeviceLoginJSON(server.deps(), &out); err != nil {
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -104,7 +113,7 @@ func TestDeviceLoginJSONEmitsAuthorizedAndInstallsToken(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	if err := runDeviceLoginJSON(server.deps(), &out); err != nil {
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -115,6 +124,9 @@ func TestDeviceLoginJSONEmitsAuthorizedAndInstallsToken(t *testing.T) {
 	}
 	if server.installed != "session.token" {
 		t.Errorf("installed token = %q, want session.token", server.installed)
+	}
+	if strings.Contains(server.outputAtInstall, "authorized") {
+		t.Error("authorized was emitted before the token was stored")
 	}
 }
 
@@ -129,7 +141,7 @@ func TestDeviceLoginJSONKeepsPollingWhileAuthorizationIsPending(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	if err := runDeviceLoginJSON(server.deps(), &out); err != nil {
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -157,7 +169,7 @@ func TestDeviceLoginJSONBacksOffWhenServerAsksToSlowDown(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	if err := runDeviceLoginJSON(server.deps(), &out); err != nil {
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -178,7 +190,7 @@ func TestDeviceLoginJSONReportsExpiryAsAnEventAndAnError(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	err := runDeviceLoginJSON(server.deps(), &out)
+	err := runDeviceLoginJSON(server.deps(&out), &out)
 	if err == nil {
 		t.Fatal("expected an error when the pairing code expires")
 	}
@@ -201,7 +213,7 @@ func TestDeviceLoginJSONDoesNotPollWhenStartFails(t *testing.T) {
 	server := &fakeDeviceServer{startErr: errors.New("upstream 503")}
 	var out bytes.Buffer
 
-	if err := runDeviceLoginJSON(server.deps(), &out); err == nil {
+	if err := runDeviceLoginJSON(server.deps(&out), &out); err == nil {
 		t.Fatal("expected an error when the device start fails")
 	}
 	if server.polls != 0 {
