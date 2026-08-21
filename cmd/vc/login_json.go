@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
+	"runtime"
 	"time"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/config"
 )
 
 // deviceLoginDeps is runDeviceFlow's device-authorization flow with every network
@@ -75,6 +79,31 @@ func runDeviceLoginJSON(deps deviceLoginDeps, out io.Writer) error {
 
 	encoder.Encode(map[string]string{"event": "error", "reason": "timeout"})
 	return fmt.Errorf("pairing flow timed out")
+}
+
+// newDeviceLoginDeps wires deviceLoginDeps to the real identity service and
+// credential store, using the same auth host and same credential path
+// (installDeviceCredential -> auth.Save) as the interactive device flow, so
+// the desktop's JSON login lands in the exact place vc login already does.
+func newDeviceLoginDeps(cfg config.Config) deviceLoginDeps {
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+
+	return deviceLoginDeps{
+		start: func() (auth.DeviceStartResult, error) {
+			return auth.DeviceStart(cfg.AuthHost, voidCodeDeviceLabel(runtime.GOOS), httpClient)
+		},
+		poll: func(deviceCode string) (auth.DevicePollResult, error) {
+			return auth.DevicePoll(cfg.AuthHost, deviceCode, httpClient)
+		},
+		install: func(token string) error {
+			return installDeviceCredential(cfg.AuthHost, token, httpClient, os.Stderr)
+		},
+		sleep: time.Sleep,
+		now:   time.Now,
+		browserURL: func(verificationPath string) string {
+			return deviceBrowserURL(cfg.AuthHost, verificationPath)
+		},
+	}
 }
 
 // deviceLoginJSONReason maps a poll failure to the stable word the desktop
