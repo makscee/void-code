@@ -55,6 +55,19 @@ export function canStartLogin(phase: LoginPhase): boolean {
   return phase.phase !== 'code';
 }
 
+export type StartFailureRoute = { screen: 'generic' } | { screen: 'signin'; authScreen: AuthScreen };
+
+// A chat that fails to start while signed in is a real fault — routing it to a login prompt would
+// hide that fault behind a screen that has nothing to do with it. A chat that fails to start while
+// signed out or credential-expired almost certainly failed *because* of that, and the generic
+// "chat could not start" screen is the one screen that was never built for this exact person.
+// Takes an already-fresh AuthScreen rather than reading status itself — the caller must re-check
+// before routing, since the screen at the moment the chat was selected can be stale by the time it
+// actually fails.
+export function routeStartFailure(authScreen: AuthScreen): StartFailureRoute {
+  return authScreen === 'signed_in' ? { screen: 'generic' } : { screen: 'signin', authScreen };
+}
+
 // undefined, not a fabricated 0/-1/Infinity, when the lifetime is unknown — a caller drawing a
 // countdown must be forced to notice there is nothing to count down, not shown a number that
 // means nothing.

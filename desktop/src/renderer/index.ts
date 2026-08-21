@@ -1,7 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import { canStartLogin, codeSecondsRemaining, isCodeExpired, reduceLoginPush, requiresStatusRecheck, screenForStatus, type LoginPhase } from './auth-view';
+import { canStartLogin, codeSecondsRemaining, isCodeExpired, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
@@ -50,6 +50,10 @@ let loginPhase: LoginPhase = { phase: 'idle' };
 let currentLoginId: string | undefined;
 let codeStartedAt = 0;
 let codeTimer: ReturnType<typeof setInterval> | undefined;
+// True only for the currently-selected chat, between a start failure routed to 'signin' and the
+// next launch attempt — it is what keeps the sign-in screens visible in place of the generic
+// "chat could not start" screen, overriding the usual "a chat is selected" preflight-hides rule.
+let signinOnStartFailure = false;
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
 function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
@@ -145,6 +149,7 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false, recoveryCode: 'NONE' as RecoveryCode }) as Runtime; runtimes.set(tab.id, runtime);
   try {
     currentRecovery = 'NONE';
+    signinOnStartFailure = false;
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
@@ -160,8 +165,19 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     if (!container.hidden) terminal.focus();
   } catch (error) {
     runtime.exited = true; container.hidden = true;
-    const code = error instanceof Error && error.message.includes('SESSION_MISSING') ? 'SESSION_MISSING' : 'SESSION_START_FAILED';
-    showEnded(code, runtime);
+    await recheckAuthStatus();
+    const route = routeStartFailure(authScreen);
+    if (route.screen === 'generic') {
+      const code = error instanceof Error && error.message.includes('SESSION_MISSING') ? 'SESSION_MISSING' : 'SESSION_START_FAILED';
+      showEnded(code, runtime);
+    } else {
+      // A start failure while not signed in is (almost certainly) an auth problem, not a runtime
+      // fault — show the sign-in screen for the state just re-read, not the generic ended screen.
+      signinOnStartFailure = true;
+      endedElement.hidden = true;
+      preflightElement.hidden = false;
+      renderAuthScreens();
+    }
   }
 }
 
@@ -171,7 +187,7 @@ function render(): void {
   const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
   folderElement.textContent = recovering ? 'Workspace unavailable' : workspace?.path ?? 'No folder selected';
   chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
-  emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || Boolean(workspace.selectedId); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
+  emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || (Boolean(workspace.selectedId) && !signinOnStartFailure); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
   recoveryPathElement.textContent = recovering ? 'The previously selected folder cannot be found.' : '';
   tabsElement.replaceChildren(); recentListElement.replaceChildren();
   if (!workspace || recovering) { currentRecovery = recovering ? 'WORKSPACE_MISSING' : 'AUTH_PREFLIGHT_REQUIRED'; recentToggleButton.hidden = true; setRecentOpen(false, false); endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; fitAfterLayout(); return; }
@@ -188,6 +204,7 @@ function render(): void {
   for (const runtime of runtimes.values()) runtime.container.hidden = true;
   const selected = workspace.selectedId ? runtimes.get(workspace.selectedId) : undefined;
   if (selected && !selected.exited) { currentRecovery = 'NONE'; selected.container.hidden = false; if (!focusedRecentControl) selected.terminal.focus(); endedElement.hidden = true; }
+  else if (selected?.exited && signinOnStartFailure) { endedElement.hidden = true; renderAuthScreens(); }
   else if (selected?.exited) {
     const code = selected.recoveryCode;
     showEnded(code === 'SESSION_START_FAILED' || code === 'SESSION_MISSING' || code === 'RUNTIME_EXITED' ? code : 'RUNTIME_EXITED', selected);
