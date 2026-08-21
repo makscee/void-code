@@ -67,4 +67,19 @@ go build -ldflags "-X github.com/makscee/void-code/internal/version.Version=dev"
 go test ./...
 ```
 
+### Verifying the Windows pin
+
+The Windows resource pin names bytes that ship to users, so it states where they
+came from: a release, the commit it was built from, and the CLI revision inside
+it. Check it against what the release actually published:
+
+```bash
+cd desktop
+npm run qualify:windows-pin
+```
+
+It reads the release's `SHA256SUMS` over plain HTTPS — no CLI to install and no
+token to hold, because whoever doubts the pin should be able to check it without
+credentials. Run it whenever the pin or the release changes.
+
 See [console simplification notes](docs/console-simplification-deletion-map.md).
