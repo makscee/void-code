@@ -13,6 +13,7 @@ import type { PrivateRuntime } from './resources';
 import { readAuthStatus } from './auth-session';
 import { startAuthLogin } from './auth-ipc';
 import { spawnAuthProcess } from './auth-spawn';
+import { createLoginDiagnosticsStore } from './auth-diagnostics';
 import { SessionManager, wrapPty } from './session-manager';
 import { StatusChannelStore } from './status-channel';
 import { buildSupportReport, copySupportReport, saveSupportReport } from './support-report';
@@ -38,6 +39,7 @@ let manager: SessionManager;
 let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
 let runtime: PrivateRuntime;
+const loginDiagnostics = createLoginDiagnosticsStore();
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   return wrapPty(spawnDesktopRequest(runtime, request, pty.spawn, authority));
@@ -104,7 +106,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.authLoginStart, (event) => { assertRenderer(event);
     const ownerId = event.sender.id;
     const loginId = randomUUID();
-    startAuthLogin(loginId, runtime.vc, spawnAuthProcess, (push) => { webContents.fromId(ownerId)?.send(IPC.authLoginEvent, push); }, (url) => { void shell.openExternal(url); });
+    startAuthLogin(loginId, runtime.vc, spawnAuthProcess, (push) => { webContents.fromId(ownerId)?.send(IPC.authLoginEvent, push); }, (url) => { void shell.openExternal(url); }, (message) => loginDiagnostics.record(loginId, message));
     return { loginId };
   });
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { assertRenderer(event); manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
