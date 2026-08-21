@@ -37,7 +37,16 @@ func TestResolveUsesManagedRuntimeNotPath(t *testing.T) {
 	}
 	t.Setenv("PATH", malicious)
 
-	path := managedPiPath(home)
+	// Resolve canonicalizes the home directory with filepath.EvalSymlinks before
+	// building the managed path, so the expectation must be canonical too. On
+	// macOS t.TempDir() lives under /var/folders and /var is a symlink to
+	// /private/var: comparing against the uncanonicalized path fails there while
+	// passing in Linux CI, which is why this went unnoticed.
+	canonicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := managedPiPath(canonicalHome)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
