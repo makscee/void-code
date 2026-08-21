@@ -315,5 +315,75 @@ describe('runLogin', () => {
       expect(events).toEqual([]);
       expect(diagnostics.length).toBeGreaterThan(0);
     });
+
+    // The tolerance above is for expiresInSeconds being *absent*. A prompt where the field is
+    // *present but the wrong type* is a different failure mode — vc emitted a lifetime, just
+    // not a number — and must be refused, not silently coerced. A mutation that replaced the
+    // type check with a bare `true` left every existing test green, because none of them ever
+    // sent a lifetime of the wrong shape.
+    it.each([
+      // A JSON encoder change that quotes numeric fields, or a value forwarded from a
+      // string-typed source upstream — the single most plausible real regression.
+      ['a quoted number', '{"event":"prompt","userCode":"DJAHWRAF","verificationUrl":"https://auth.makscee.ru/device","expiresInSeconds":"600"}\n'],
+      // Explicit null is what many JSON serializers emit for an optional field instead of
+      // omitting the key — distinct from "absent" and must not be treated the same way.
+      ['a null', '{"event":"prompt","userCode":"DJAHWRAF","verificationUrl":"https://auth.makscee.ru/device","expiresInSeconds":null}\n'],
+      // A structured value in place of a scalar — the shape a renamed/nested upstream field
+      // would take (e.g. {"seconds":600} instead of a bare number).
+      ['an object', '{"event":"prompt","userCode":"DJAHWRAF","verificationUrl":"https://auth.makscee.ru/device","expiresInSeconds":{"seconds":600}}\n'],
+    ])('rejects a prompt whose expiresInSeconds is present but not a number (%s), the same as any other malformed line', async (_label, raw) => {
+      const child = new FakeChild();
+      const events: LoginEvent[] = [];
+      const diagnostics: string[] = [];
+      const promise = runLogin(
+        '/private/vc',
+        fixedSpawner(child),
+        (event) => events.push(event),
+        () => {},
+        (message) => diagnostics.push(message),
+      );
+      child.stdout.emit('data', raw);
+      child.end(0);
+      await promise;
+      // Not just "excluded from EXPECTED_LOGIN_EVENTS" — actively absent, and routed to
+      // diagnostics like any other line the module doesn't trust.
+      expect(events).toEqual([]);
+      expect(diagnostics.length).toBeGreaterThan(0);
+    });
+  });
+
+  // Same class of guard as expiresInSeconds above, checked on the neighbouring 'error' event:
+  // `parsed.event === 'error' && typeof parsed.reason === 'string'`. If that type check were
+  // ever weakened to accept any value, a malformed error line would be handed to onEvent (and
+  // used to resolve the login) carrying a reason that is not actually a string, instead of
+  // falling through to diagnostics like every other unrecognised line.
+  describe('an error event whose reason is present but not a string', () => {
+    it.each([
+      // The same "quoted vs. bare" drift a JSON encoder change could introduce, mirrored on
+      // the error side — except here the encoder went the other way, e.g. a numeric error code.
+      ['a number', '{"event":"error","reason":404}\n'],
+      // A structured payload where a plain message was expected (an upstream error object
+      // forwarded whole instead of its message field).
+      ['an object', '{"event":"error","reason":{"code":"expired"}}\n'],
+      ['a null', '{"event":"error","reason":null}\n'],
+    ])('treats %s reason as a diagnostic, not a LoginEvent, and does not resolve the login as that error', async (_label, raw) => {
+      const child = new FakeChild();
+      const events: LoginEvent[] = [];
+      const diagnostics: string[] = [];
+      const promise = runLogin(
+        '/private/vc',
+        fixedSpawner(child),
+        (event) => events.push(event),
+        () => {},
+        (message) => diagnostics.push(message),
+      );
+      child.stdout.emit('data', `${raw}${PROMPT_LINE}${AUTHORIZED_LINE}`);
+      child.end(0);
+      await expect(promise).resolves.toEqual({ ok: true });
+      // The malformed error line must not have resolved the login (errorReason must never
+      // have been set from it) — the stream continues and the real events still land.
+      expect(events).toEqual(EXPECTED_LOGIN_EVENTS);
+      expect(diagnostics.length).toBeGreaterThan(0);
+    });
   });
 });
