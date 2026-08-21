@@ -153,9 +153,18 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
-    offExit = window.voidTerminal.onExit(tab.id, () => {
+    offExit = window.voidTerminal.onExit(tab.id, async () => {
       runtime.exited = true;
-      if (view.workspace?.selectedId === tab.id) { container.hidden = true; showEnded('RUNTIME_EXITED', runtime); }
+      // vc can spawn fine and only refuse once running (a credential that died mid-session) —
+      // the same routing decision as a start failure applies here, on a status read taken now,
+      // not whatever authScreen was when this chat launched.
+      if (view.workspace?.selectedId === tab.id) {
+        container.hidden = true;
+        await recheckAuthStatus();
+        const route = routeStartFailure(authScreen);
+        if (route.screen === 'generic') showEnded('RUNTIME_EXITED', runtime);
+        else { signinOnStartFailure = true; endedElement.hidden = true; preflightElement.hidden = false; renderAuthScreens(); }
+      }
     });
     runtime.offOutput = offOutput; runtime.offExit = offExit;
     chatStatuses.set(tab.id, (await window.voidTerminal.lifecycleStatus({ sessionId: tab.id })).status);
