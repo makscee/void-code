@@ -63,6 +63,7 @@ export interface TerminalApi {
     status(): Promise<StatusResult>;
     loginStart(): Promise<{ loginId: string }>;
     onLoginEvent(listener: (event: AuthLoginPush) => void): Unsubscribe;
+    copyCode(code: string): Promise<void>;
   };
 }
 
@@ -127,4 +128,11 @@ export function linkRequest(value: unknown): string {
   const parsed = new URL(object.url);
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('invalid link protocol');
   return parsed.toString();
+}
+// A sign-in device code, not a SupportRequest — copySupportReport builds its own report from a
+// {runtime, recoveryCode} context and has no way to carry an arbitrary code string.
+export function codeCopyRequest(value: unknown): string {
+  const object = ownedObject(value, ['code']);
+  if (typeof object.code !== 'string' || object.code.length === 0 || object.code.length > 64) throw new Error('invalid code');
+  return object.code;
 }

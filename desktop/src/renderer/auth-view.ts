@@ -100,6 +100,18 @@ export function isCodeExpired(prompt: CodePrompt, elapsedSeconds: number): boole
   return elapsedSeconds >= prompt.expiresInSeconds;
 }
 
+// "M:SS", the shape a person actually reads as a countdown — not the raw seconds count
+// codeSecondsRemaining hands back. Blank, not a fabricated "0:00" clock, when the lifetime is
+// unknown: that is a separate real state (codeSecondsRemaining already returns undefined for
+// it) and this function must not paper over it with a clock that means nothing.
+export function formatCountdown(seconds: number | undefined): string {
+  if (seconds === undefined) return '';
+  const clamped = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(clamped / 60);
+  const remainingSeconds = clamped % 60;
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
 // Stable machine words vc reports (or this codebase synthesises) for a login that did not
 // succeed, turned into a sentence a person can act on. Every entry names the one thing this app
 // can actually offer back: sign in again — except rate_limited, which must say the opposite of

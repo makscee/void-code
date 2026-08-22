@@ -75,6 +75,7 @@ const api: TerminalApi = {
     status: () => ipcRenderer.invoke(IPC.authStatus) as Promise<StatusResult>,
     loginStart: () => ipcRenderer.invoke(IPC.authLoginStart) as Promise<{ loginId: string }>,
     onLoginEvent: (listener) => onPush<AuthLoginPush>(IPC.authLoginEvent, listener),
+    copyCode: (code) => ipcRenderer.invoke(IPC.authCodeCopy, { code }) as Promise<void>,
   }),
 };
 Object.freeze(api);

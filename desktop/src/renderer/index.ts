@@ -1,7 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import { beginLogin, canStartLogin, codeSecondsRemaining, isCodeExpired, loginStatusText, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, formatCountdown, isCodeExpired, loginStatusText, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
@@ -35,7 +35,10 @@ const signinSignedOutElement = document.querySelector<HTMLElement>('#signin-sign
 const signinInvalidElement = document.querySelector<HTMLElement>('#signin-invalid')!;
 const signinCodeElement = document.querySelector<HTMLElement>('#signin-code')!;
 const signinCodeValueElement = document.querySelector<HTMLElement>('#signin-code-value')!;
+const signinCodeCopyButton = document.querySelector<HTMLButtonElement>('#signin-code-copy')!;
 const signinCodeStatusElement = document.querySelector<HTMLElement>('#signin-code-status')!;
+const signinLinkElement = document.querySelector<HTMLElement>('#signin-link')!;
+const signinLinkOpenButton = document.querySelector<HTMLButtonElement>('#signin-link-open')!;
 const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
 const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
 const signinStatusElement = document.querySelector<HTMLElement>('#signin-status')!;
@@ -76,13 +79,14 @@ function renderAuthScreens(): void {
   signinStatusElement.textContent = loginStatusText(loginPhase);
   if (loginPhase.phase === 'code') {
     signinCodeValueElement.textContent = loginPhase.userCode;
+    signinLinkElement.textContent = loginPhase.verificationUrl;
     const elapsed = Math.floor((Date.now() - codeStartedAt) / 1000);
     const remaining = codeSecondsRemaining(loginPhase, elapsed);
     // An unknown lifetime (vc sent no expiresInSeconds) must not be shown as a countdown to a
     // fabricated moment — say what's true instead: the code is there to use, with no known deadline.
     signinCodeStatusElement.textContent = isCodeExpired(loginPhase, elapsed)
       ? 'This code expired. Click Sign in to get a new one.'
-      : remaining === undefined ? 'Enter this code to finish signing in.' : `Expires in ${remaining}s.`;
+      : remaining === undefined ? 'Enter this code to finish signing in.' : `${formatCountdown(remaining)} left`;
   }
 }
 function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
@@ -257,6 +261,23 @@ signinStartButton.addEventListener('click', () => {
   loginPhase = beginLogin(loginPhase);
   renderAuthScreens();
   void startSignIn();
+});
+signinLinkOpenButton.addEventListener('click', () => {
+  if (loginPhase.phase !== 'code') return;
+  void window.voidTerminal.openLink(loginPhase.verificationUrl);
+});
+signinCodeCopyButton.addEventListener('click', () => {
+  if (loginPhase.phase !== 'code') return;
+  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => announce('Code copied.'));
+});
+signinCodeValueElement.addEventListener('click', () => {
+  if (loginPhase.phase !== 'code') return;
+  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => announce('Code copied.'));
+});
+signinCodeValueElement.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  signinCodeValueElement.click();
 });
 window.voidTerminal.auth.onLoginEvent((event) => { void handleLoginPush(event); });
 new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(mainElement);
