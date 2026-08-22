@@ -1,7 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import { canStartLogin, codeSecondsRemaining, isCodeExpired, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, isCodeExpired, loginStatusText, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
@@ -38,6 +38,7 @@ const signinCodeValueElement = document.querySelector<HTMLElement>('#signin-code
 const signinCodeStatusElement = document.querySelector<HTMLElement>('#signin-code-status')!;
 const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
 const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
+const signinStatusElement = document.querySelector<HTMLElement>('#signin-status')!;
 
 type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean; recoveryCode?: RecoveryCode };
 const runtimes = new Map<string, Runtime>();
@@ -71,7 +72,8 @@ function renderAuthScreens(): void {
   signinReadyElement.hidden = showingCode || authScreen !== 'signed_in';
   signinStartButton.hidden = authScreen === 'signed_in' || showingCode;
   signinStartButton.disabled = !canStartLogin(loginPhase);
-  signinStartButton.textContent = authScreen === 'invalid_credential' ? 'Sign in again' : 'Sign in';
+  signinStartButton.textContent = signInButtonLabel(loginPhase, authScreen);
+  signinStatusElement.textContent = loginStatusText(loginPhase);
   if (loginPhase.phase === 'code') {
     signinCodeValueElement.textContent = loginPhase.userCode;
     const elapsed = Math.floor((Date.now() - codeStartedAt) / 1000);
@@ -252,6 +254,8 @@ restartButton.addEventListener('click', async () => { const tab = selectedTab();
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
 signinStartButton.addEventListener('click', () => {
   if (!canStartLogin(loginPhase)) return;
+  loginPhase = beginLogin(loginPhase);
+  renderAuthScreens();
   void startSignIn();
 });
 window.voidTerminal.auth.onLoginEvent((event) => { void handleLoginPush(event); });
