@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { RECOVERY_GUIDANCE } from '../src/renderer/recovery';
+import { describeLoginFailure } from '../src/renderer/auth-view';
 
 // This product has no operator: a person who is stuck reads this copy with no one else to turn
 // to. Copy that tells them to find another human, or to open a terminal and run a command, tells
@@ -55,5 +56,15 @@ describe('no copy sends a person to an operator or a terminal', () => {
   it('the static shell (index.html) never hands the problem to a human or a shell', () => {
     const html = readFileSync(new URL('../src/renderer/index.html', import.meta.url), 'utf8');
     expect(violations('src/renderer/index.html', html)).toEqual([]);
+  });
+
+  it('the sign-in failure sentence (describeLoginFailure) never hands the problem to a human or a shell', () => {
+    // This copy is generated at runtime from a reason word, not present as a string literal
+    // anywhere the three scans above would find it — a raw-vc-error passthrough here would slip
+    // straight past every other check in this file and land on screen as e.g. "not logged in —
+    // run: vc login", the exact defect this whole feature exists to remove.
+    const reasons = ['rate_limited', 'start_failed', 'expired', 'denied', 'spawn_failed', 'exited_unexpectedly', 'some_reason_never_seen_before'];
+    const found = reasons.flatMap((reason) => violations(`describeLoginFailure('${reason}')`, describeLoginFailure(reason)));
+    expect(found).toEqual([]);
   });
 });
