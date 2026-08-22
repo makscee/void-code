@@ -143,11 +143,16 @@ describe('loginStatusText — the one place that says what is going on right now
     expect(text.length).toBeGreaterThan(0);
   });
 
-  it('has something to say while a code is on screen, distinct from starting', () => {
-    const codeText = loginStatusText({ phase: 'code', ...prompt });
-    const startingText = loginStatusText({ phase: 'starting' });
-    expect(codeText.length).toBeGreaterThan(0);
-    expect(codeText).not.toBe(startingText);
+  // Changed from the original behaviour, which had this return a non-empty "Waiting for you to
+  // finish signing in." sentence: the code screen's own step 3 (#signin-code-status, driven
+  // separately by renderAuthScreens) already says "Come back here once you're signed in." plus
+  // the live countdown/expiry text once a code is showing. This status line sits below the whole
+  // three-step screen — repeating the same "come back and wait" message there is exactly what
+  // made the screen read as five rows instead of three steps, which the owner rejected. Nothing
+  // left for this separate line to say during the code phase is the correct answer, not a
+  // rephrasing of the same sentence.
+  it('has nothing to say while a code is on screen — step 3 of the code screen already carries the wait-and-return message', () => {
+    expect(loginStatusText({ phase: 'code', ...prompt })).toBe('');
   });
 
   it('says signed in for both authorized and the closed_ok race, and it is the same wording', () => {

@@ -90,7 +90,27 @@ describe('index.ts is actually wired to the pure auth-view state machine, not re
     expect(renderer).not.toContain('window.open(');
     // openLink is the same channel .../shared/contract.ts already restricts to http(s) — reusing it
     // means the sign-in URL gets that validation for free instead of a fresh, unaudited path.
-    expect(renderer).toMatch(/window\.voidTerminal\.(?:auth\.)?openLink\(\s*(?:event\.)?verificationUrl/);
+    // Sourced from loginPhase.verificationUrl (read by the Open button's click handler, pinned
+    // exactly in tests/signin-code-screen.test.ts), not from the prompt event directly — see the
+    // no-auto-open test below for why a call keyed off `event.verificationUrl` is now rejected.
+    expect(renderer).toMatch(/window\.voidTerminal\.(?:auth\.)?openLink\(\s*loginPhase\.verificationUrl/);
+  });
+
+  // Changed from the original behaviour, which had handleLoginPush call openLink the instant a
+  // 'prompt' push arrived — a browser tab appearing on its own, with no click behind it. The
+  // owner watched this happen and rejected it explicitly ("Не надо авто открытие все должно быть
+  // по клику" — no auto-opening, everything must be by click). openLink may now be reached only
+  // from a click handler; the prompt handler's job is limited to putting the URL and a working
+  // Open button on screen, not acting on the person's behalf.
+  it('does not open the verification URL by itself when a login prompt arrives — only a click may', () => {
+    const pushHandler = renderer.match(/async function handleLoginPush\([\s\S]{0,1200}?\n\}/)?.[0] ?? '';
+    expect(pushHandler, 'could not locate handleLoginPush').not.toBe('');
+    expect(pushHandler, 'handleLoginPush still calls openLink — a prompt push must not open anything by itself').not.toMatch(/openLink\(/);
+    // Every call to openLink in the whole file must therefore live inside a click handler — this
+    // repo has exactly one such call site left (the Open button; the other openLink use is the
+    // unrelated recent-chat-entry click in createProductTerminal's `activate`, also click-gated).
+    const openLinkCalls = renderer.match(/openLink\(/g)?.length ?? 0;
+    expect(openLinkCalls, 'expected exactly the two click-gated openLink call sites (Open button, recent-entry activate)').toBe(2);
   });
 
   it('re-reads auth status after a login reaches a phase that requires it, instead of trusting the push alone', () => {

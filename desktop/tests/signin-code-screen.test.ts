@@ -149,17 +149,53 @@ describe('the code can be copied — by the Copy button and by clicking the code
     expect(renderer).not.toMatch(/navigator\.clipboard/);
   });
 
-  it('the person is told the copy happened, through the same announce() mechanism the existing Support Report copy button uses', () => {
-    for (const name of ['signinCodeCopyButton', 'signinCodeValueElement']) {
-      const handlerBlock = renderer.match(new RegExp(`${name}\\.addEventListener\\('click',[\\s\\S]{0,400}?\\}\\);`))?.[0] ?? '';
-      const copyIndex = handlerBlock.indexOf('copyCode(');
-      const announceIndex = handlerBlock.indexOf('announce(');
-      expect(copyIndex, `${name}: no copyCode call`).toBeGreaterThan(-1);
-      expect(announceIndex, `${name}: copy never announced to the person`).toBeGreaterThan(-1);
-      expect(announceIndex).toBeGreaterThan(copyIndex);
-      const announceCall = handlerBlock.slice(announceIndex, announceIndex + 200);
-      expect(announceCall.toLowerCase(), `${name}: announce() text does not mention "copied"`).toMatch(/copied/);
-    }
+  // Changed from the original behaviour, which routed the copy confirmation through announce()
+  // alone — a full-width bar painted under the header, at the top of the window. The owner's
+  // point 3: the person's eye is on the code in the middle of the screen, about to leave for the
+  // browser, and the confirmation has to be where the action was, not somewhere they have to look
+  // away from the code to see. "Near the code" is pinned here as a source-level fact: a dedicated
+  // status element that lives inside step 2's own <li> (the same list item as #signin-code-value
+  // and the Copy button), not the top-of-window #notice element announce() writes to. A lazy
+  // implementation could satisfy "confirmation exists somewhere" by writing into
+  // #signin-code-status in step 3 (already on screen, already wired to the countdown) — that is
+  // rejected below by scoping the search to step 2's own <li>, not the whole code section.
+  describe('the copy confirmation reaches the person near the code, not only in the top banner', () => {
+    it('step 2 carries its own confirmation element, distinct from #signin-code-status (step 3) and #notice (top banner)', () => {
+      const step2 = codeSection.match(/<li id="signin-step-code"[\s\S]*?<\/li>/)?.[0] ?? '';
+      expect(step2, 'could not locate #signin-step-code').not.toBe('');
+      expect(step2, 'step 2 has no #signin-code-copy-status element').toMatch(/id="signin-code-copy-status"/);
+      // Must not be the same element as step 3's countdown status — that would mean the
+      // confirmation is still landing away from the code, just renamed.
+      const step3 = codeSection.match(/<li id="signin-step-wait"[\s\S]*?<\/li>/)?.[0] ?? '';
+      expect(step3, 'could not locate #signin-step-wait').not.toBe('');
+      expect(step3).not.toMatch(/id="signin-code-copy-status"/);
+    });
+
+    it('index.ts selects #signin-code-copy-status as its own element', () => {
+      expect(renderer, 'index.ts does not select #signin-code-copy-status').toMatch(/querySelector<HTMLElement>\('#signin-code-copy-status'\)/);
+    });
+
+    it('both copy handlers write the confirmation into the near-the-code element after the copy resolves, and no longer route it through the top-of-window announce()', () => {
+      for (const name of ['signinCodeCopyButton', 'signinCodeValueElement']) {
+        const handlerBlock = renderer.match(new RegExp(`${name}\\.addEventListener\\('click',[\\s\\S]{0,400}?\\}\\);`))?.[0] ?? '';
+        expect(handlerBlock, `no click handler block found for ${name}`).not.toBe('');
+        const copyIndex = handlerBlock.indexOf('copyCode(');
+        expect(copyIndex, `${name}: no copyCode call`).toBeGreaterThan(-1);
+        // Whatever variable name index.ts gave the #signin-code-copy-status element, it must be
+        // assigned .textContent after the copy call resolves — not before, which would claim the
+        // copy happened before the IPC round trip returned.
+        const textAssignMatch = handlerBlock.match(/(\w+)\.textContent\s*=\s*(['"`])[^'"`]*copied[^'"`]*\2/i);
+        expect(textAssignMatch, `${name}: no .textContent assignment mentioning "copied" found`).not.toBeNull();
+        const assignIndex = handlerBlock.indexOf(textAssignMatch![0]);
+        expect(assignIndex, `${name}: confirmation text is assigned before copyCode() is called`).toBeGreaterThan(copyIndex);
+        // The element the handler writes into must resolve back to #signin-code-copy-status, not
+        // #notice/announce() and not #signin-code-status (step 3's countdown element) relabelled.
+        const varName = textAssignMatch![1];
+        expect(varName, `${name}: writes the confirmation onto noticeElement/announce() instead of the near-the-code element`).not.toBe('noticeElement');
+        expect(renderer, `index.ts never binds a variable named ${varName} to #signin-code-copy-status`)
+          .toMatch(new RegExp(`const ${varName}\\s*=\\s*document\\.querySelector<HTMLElement>\\('#signin-code-copy-status'\\)`));
+      }
+    });
   });
 });
 
