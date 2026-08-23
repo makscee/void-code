@@ -67,4 +67,39 @@ go build -ldflags "-X github.com/makscee/void-code/internal/version.Version=dev"
 go test ./...
 ```
 
+### Desktop
+
+The desktop test suite reads the pinned Node archive from an ignored local cache,
+so a fresh clone needs one bootstrap step before `npm test` can pass:
+
+```bash
+cd desktop
+npm ci
+npm run setup   # fetches the pinned Node archive and verifies its SHA-256
+npm run build
+npm test
+```
+
+`npm run setup` takes both the URL and the expected digest from
+`desktop/scripts/resource-pins.json`, so bumping the pin moves every consumer at
+once. It is idempotent: an authentic cached archive is left alone, a corrupted one
+is replaced, and bytes whose digest does not match the pin are rejected without
+entering the cache. `provision-pinned-pi-smoke.sh` calls the same command, so CI
+and a developer machine populate the cache through one code path.
+
+### Verifying the Windows pin
+
+The Windows resource pin names bytes that ship to users, so it states where they
+came from: a release, the commit it was built from, and the CLI revision inside
+it. Check it against what the release actually published:
+
+```bash
+cd desktop
+npm run qualify:windows-pin
+```
+
+It reads the release's `SHA256SUMS` over plain HTTPS — no CLI to install and no
+token to hold, because whoever doubts the pin should be able to check it without
+credentials. Run it whenever the pin or the release changes.
+
 See [console simplification notes](docs/console-simplification-deletion-map.md).

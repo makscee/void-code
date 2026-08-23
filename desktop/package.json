@@ -5,6 +5,7 @@
   "description": "Guided Void Code desktop pilot",
   "main": "dist/main/index.js",
   "scripts": {
+    "setup": "node scripts/fetch-pinned-node.mjs",
     "clean": "node scripts/clean.mjs",
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:preload && npm run bundle:renderer",
     "lint": "eslint src tests scripts",
@@ -25,7 +26,8 @@
     "check:win-package": "npm run clean && npm run lint && npm run test && npm run package:win && node scripts/windows-package-check.mjs && node scripts/packaged-window-check.mjs && node scripts/packaged-startup-failure-check.mjs",
     "candidate:generate": "node scripts/candidate-manifest.mjs generate",
     "candidate:check": "node scripts/candidate-manifest.mjs check",
-    "check:pinned-pi-smoke": "node scripts/check-pinned-pi-smoke.mjs"
+    "check:pinned-pi-smoke": "node scripts/check-pinned-pi-smoke.mjs",
+    "qualify:windows-pin": "node scripts/verify-windows-pin.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.2.8",

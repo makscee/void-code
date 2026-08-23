@@ -14,8 +14,13 @@
       "sourceArchiveSha256": "7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29"
     },
     "vc": {
-      "sourceCommit": "83a8c2fade7822517fc461ea2ddba601839eba90",
-      "sha256": "5b8de963faf518135758b39f4608ca3ecc53b2f994b63154b0a034f4f0479f9f"
+      "provenance": "github-release",
+      "repository": "makscee/void-code",
+      "releaseTag": "v0.2.47",
+      "releaseCommit": "1242ec0091ba75052fcd130588ec6165e8288f8b",
+      "cliSourceCommit": "58497cadf16c5f7e3755308f9c3887a4065830ea",
+      "assetName": "vc-windows-amd64.exe",
+      "sha256": "00ae01d69475460a3234f8bc2c26121a396c0b7b01bb43c58510c8061cc2f15b"
     }
   },
   "pi": {
