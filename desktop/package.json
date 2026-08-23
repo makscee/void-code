@@ -5,6 +5,7 @@
   "description": "Guided Void Code desktop pilot",
   "main": "dist/main/index.js",
   "scripts": {
+    "setup": "node scripts/fetch-pinned-node.mjs",
     "clean": "node scripts/clean.mjs",
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs && npm run bundle:preload && npm run bundle:renderer",
     "lint": "eslint src tests scripts",
