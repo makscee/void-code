@@ -2,19 +2,31 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import pins from '../scripts/resource-pins.json';
 import packageJson from '../package.json';
+import { asList, asMap, asText, parseWorkflow, type YamlMap, type YamlValue } from './workflow-yaml';
+import { conditionHolds, BRANCH_EVENTS, PLAIN_TAG } from './workflow-expressions';
 
-// The goal is a link a person can click. CI now builds the macOS app
-// (`desktop-mac-app` in test.yml) and leaves it as a run artifact; there is no
-// Windows equivalent anywhere -- no job in any workflow runs on a `windows-*`
-// runner. This file states the shape of the job that fixes that: on every
-// branch push, build the Windows installer and leave it as a run artifact.
+// The goal is a link a person can click. This file states the shape of the work
+// that produces one for Windows: on every branch push, build the NSIS installer
+// and leave it as a run artifact.
 //
-// It states just as firmly what the job must NOT become. Publishing installers
-// and cutting releases are forbidden to us, and tags are Maksim's. So the job
-// lives in test.yml -- which fires on branch pushes and pull requests -- and
-// never in release.yml or canary-release.yml, which fire on tags. The absence
-// of any release action, of `gh release`, of tag creation, and of write
-// permission is asserted, not assumed.
+// The steps that do it are written down ONCE, in the reusable workflow
+// .github/workflows/desktop-windows-app.yml, and both callers reach them
+// through `uses:` -- test.yml on every branch push, release.yml behind its
+// opt-in gate. They were briefly written down twice, one copy in each place,
+// which meant CI checked one description of packaging while a release built
+// from another; the two would have drifted, and the drift would have shown up
+// in the installer nobody ran CI against. So this file pins the call on the
+// test.yml side and the steps on the reusable side, each exactly once.
+//
+// It states just as firmly what the packaging must NOT become. Publishing
+// installers and cutting releases are forbidden to us, and tags are Maksim's --
+// and an installer is the single most publishable thing this repository
+// produces. So the file holding the steps is reachable only by `workflow_call`
+// -- no tag, no event of its own can start it -- and the absence of any release
+// action, of `gh release`, of tag creation, and of write permission is
+// asserted, not assumed. Whether release.yml's gate is really off by default is
+// evaluated in release-desktop-optin-workflow.test.ts; here only its presence
+// is pinned.
 //
 // What this file cannot do: it cannot run GitHub Actions. It fixes the FORM of
 // the workflow -- that the job exists, where it lives, what it builds with,
@@ -23,167 +35,11 @@ import packageJson from '../package.json';
 // That remains unverified, deliberately and visibly.
 
 // ---------------------------------------------------------------------------
-// A reader for the workflow subset these files are written in.
-//
-// js-yaml sits in node_modules only as a transitive dependency of eslint and
-// electron-builder; a test that reaches for it would break the day either one
-// drops it. So the subset is read here, and -- as with the npm provenance rule
-// next door -- the reader is first shown to read a fixture correctly, before
+// The workflow reader is shared: tests/workflow-yaml.ts. It is a reader, not a
+// validator, so it is shown to read this fixture -- the shapes this file cares
+// about, a Windows runner and a job-level shell among them -- correctly, before
 // any claim is made about the real files.
-//
-// This is the same reader mac-app-artifact-workflow.test.ts carries. It is
-// exported here so that copy can become `import { parseWorkflow, asMap, asList,
-// asText } from './windows-app-artifact-workflow.test';` and the duplicate can
-// go; that edit belongs to whoever owns the mac file, not to this one.
 // ---------------------------------------------------------------------------
-
-type YamlValue = string | YamlValue[] | { [key: string]: YamlValue };
-type YamlMap = { [key: string]: YamlValue };
-
-function stripComment(line: string) {
-  let quote = '';
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (quote) {
-      if (character === quote) quote = '';
-      continue;
-    }
-    if (character === "'" || character === '"') { quote = character; continue; }
-    if (character === '#' && (index === 0 || /\s/.test(line[index - 1]))) return line.slice(0, index);
-  }
-  return line;
-}
-
-const indentOf = (line: string) => line.length - line.trimStart().length;
-const isBlank = (line: string) => stripComment(line).trim() === '';
-
-function unquote(text: string) {
-  const trimmed = text.trim();
-  if (/^'[^]*'$/.test(trimmed)) return trimmed.slice(1, -1).replace(/''/g, "'");
-  if (/^"[^]*"$/.test(trimmed)) return trimmed.slice(1, -1).replace(/\\(.)/g, '$1');
-  return trimmed;
-}
-
-function flowSequence(text: string): YamlValue[] {
-  const inner = text.trim().slice(1, -1).trim();
-  return inner === '' ? [] : inner.split(',').map((item) => unquote(item));
-}
-
-// `run: |` and `cache-dependency-path: |`. Comment syntax does not apply inside
-// a block scalar: a `#` line there is content, usually a shell comment.
-function blockScalar(lines: string[], start: number, parentIndent: number, style: string): [string, number] {
-  const collected: string[] = [];
-  let bodyIndent = -1;
-  let index = start;
-  for (; index < lines.length; index += 1) {
-    if (lines[index].trim() === '') { collected.push(''); continue; }
-    if (indentOf(lines[index]) <= parentIndent) break;
-    if (bodyIndent < 0) bodyIndent = indentOf(lines[index]);
-    collected.push(lines[index].slice(bodyIndent));
-  }
-  while (collected.length > 0 && collected[collected.length - 1] === '') collected.pop();
-  return [collected.join(style.startsWith('>') ? ' ' : '\n'), index];
-}
-
-function nextContent(lines: string[], from: number) {
-  let index = from;
-  while (index < lines.length && isBlank(lines[index])) index += 1;
-  return index;
-}
-
-function parseNode(lines: string[], start: number, indent: number): [YamlValue, number] {
-  const index = nextContent(lines, start);
-  if (index >= lines.length) return ['', index];
-  return /^-(\s|$)/.test(stripComment(lines[index]).trim())
-    ? parseSequence(lines, index, indent)
-    : parseMapping(lines, index, indent);
-}
-
-function parseSequence(lines: string[], start: number, indent: number): [YamlValue[], number] {
-  const items: YamlValue[] = [];
-  let index = start;
-  while (index < lines.length) {
-    if (isBlank(lines[index])) { index += 1; continue; }
-    const content = stripComment(lines[index]).trimEnd();
-    if (indentOf(content) < indent) break;
-    const bare = content.trimStart();
-    if (!/^-(\s|$)/.test(bare)) break;
-    const after = bare.slice(1);
-    const column = indentOf(content) + 1 + (after.length - after.trimStart().length);
-    const value = after.trim();
-    if (value === '') {
-      const probe = nextContent(lines, index + 1);
-      const [nested, next] = parseNode(lines, probe, probe < lines.length ? indentOf(stripComment(lines[probe])) : column);
-      items.push(nested);
-      index = next;
-      continue;
-    }
-    // `- uses: x` opens a mapping whose later keys sit under the dash, so the
-    // dash is rewritten as padding and the mapping is read from that column.
-    if (/^(?:"[^"]*"|'[^']*'|[A-Za-z0-9_.$-]+)\s*:(\s|$)/.test(value)) {
-      const patched = lines.slice();
-      patched[index] = ' '.repeat(column) + value;
-      const [mapping, next] = parseMapping(patched, index, column);
-      items.push(mapping);
-      index = next;
-      continue;
-    }
-    items.push(value.startsWith('[') ? flowSequence(value) : unquote(value));
-    index += 1;
-  }
-  return [items, index];
-}
-
-function parseMapping(lines: string[], start: number, indent: number): [YamlMap, number] {
-  const mapping: YamlMap = {};
-  let index = start;
-  while (index < lines.length) {
-    if (isBlank(lines[index])) { index += 1; continue; }
-    const content = stripComment(lines[index]).trimEnd();
-    if (indentOf(content) < indent) break;
-    if (indentOf(content) > indent) throw new Error(`unexpected indent on workflow line ${index + 1}: ${content}`);
-    const bare = content.trimStart();
-    if (/^-(\s|$)/.test(bare)) break;
-    const entry = /^("[^"]*"|'[^']*'|[^:]+?)\s*:(?:\s+([^]*))?$/.exec(bare);
-    if (!entry) throw new Error(`cannot read workflow line ${index + 1}: ${content}`);
-    const key = unquote(entry[1]);
-    const value = (entry[2] ?? '').trim();
-    if (/^[|>][-+]?\d*$/.test(value)) {
-      const [text, next] = blockScalar(lines, index + 1, indentOf(content), value);
-      mapping[key] = text;
-      index = next;
-      continue;
-    }
-    if (value !== '') {
-      mapping[key] = value.startsWith('[') ? flowSequence(value) : unquote(value);
-      index += 1;
-      continue;
-    }
-    const probe = nextContent(lines, index + 1);
-    const childIndent = probe < lines.length ? indentOf(stripComment(lines[probe])) : -1;
-    const childIsOwnSequence = childIndent === indentOf(content) && /^-(\s|$)/.test(stripComment(lines[probe]).trim());
-    if (childIndent > indentOf(content) || childIsOwnSequence) {
-      const [nested, next] = parseNode(lines, probe, childIndent);
-      mapping[key] = nested;
-      index = next;
-      continue;
-    }
-    mapping[key] = '';
-    index += 1;
-  }
-  return [mapping, index];
-}
-
-export function parseWorkflow(text: string): YamlMap {
-  const [value] = parseMapping(text.replace(/\r\n/g, '\n').split('\n'), 0, 0);
-  return value;
-}
-
-export const asMap = (value: YamlValue | undefined): YamlMap =>
-  value === undefined || typeof value === 'string' || Array.isArray(value) ? {} : value;
-export const asList = (value: YamlValue | undefined): YamlValue[] =>
-  value === undefined ? [] : Array.isArray(value) ? value : [value];
-export const asText = (value: YamlValue | undefined): string => (typeof value === 'string' ? value : '');
 
 const readerFixture = `
 name: Fixture
@@ -435,28 +291,77 @@ describe('the Windows shell rule', () => {
 
 // ---------------------------------------------------------------------------
 // The real workflows.
+//
+// There is one description of Windows packaging and it lives in
+// .github/workflows/desktop-windows-app.yml. test.yml and release.yml both
+// reach it through `uses:`; neither repeats its steps. That is the whole point
+// of the arrangement: the steps CI exercises on every branch push are, byte for
+// byte, the steps a release builds with, because they are the same seven lines
+// in the same file. Two copies would be free to drift, and the copy that drifts
+// is always the one nobody runs.
+//
+// So the steps below are asserted once, against the reusable workflow, and
+// test.yml is asserted to CALL it rather than to contain it.
 // ---------------------------------------------------------------------------
 
 const workflowText = (name: string) => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
 const workflow = (name: string) => parseWorkflow(workflowText(name));
 
-const testWorkflow = workflow('test.yml');
-const packagesForWindows = (job: YamlValue) =>
-  asList(asMap(job).steps).map(asMap).some((step) => /\bpackage:win\b/.test(asText(step.run)));
-const packagingJobs = Object.entries(asMap(testWorkflow.jobs)).filter(([, job]) => packagesForWindows(job));
+const REUSABLE = 'desktop-windows-app.yml';
+const MAC_REUSABLE = 'desktop-mac-app.yml';
+const CALL = `./.github/workflows/${REUSABLE}`;
 
-const missing = 'no job in .github/workflows/test.yml runs `npm run package:win`';
+const testWorkflow = workflow('test.yml');
+const reusableWorkflow = workflow(REUSABLE);
+
+const stepsOf = (job: YamlValue) => asList(asMap(job).steps).map(asMap);
+const packagesForWindows = (job: YamlValue) => stepsOf(job).some((step) => /\bpackage:win\b/.test(asText(step.run)));
+// `uses: ./.github/workflows/x.yml` -- a ref may be appended, and is not what
+// identifies the file.
+const localCall = (job: YamlValue) => {
+  const uses = asText(asMap(job).uses).split('@')[0];
+  return uses.startsWith('./.github/workflows/') ? uses.slice('./.github/workflows/'.length) : '';
+};
+const callsTheReusableWorkflow = (job: YamlValue) => `./.github/workflows/${localCall(job)}` === CALL;
+
+// Any route from a job to the packaging steps, whether it holds them itself or
+// calls a workflow in this repository that does. A rule that only read a job's
+// own steps would answer "no packaging here" about a file whose whole desktop
+// half is one `uses:` line.
+const reachesPackaging = (job: YamlValue): boolean => {
+  if (packagesForWindows(job)) return true;
+  const called = localCall(job);
+  return called !== '' && Object.values(asMap(workflow(called).jobs)).some(packagesForWindows);
+};
+
+const namesOf = (workflowFile: YamlMap, predicate: (job: YamlValue) => boolean) =>
+  Object.entries(asMap(workflowFile.jobs)).filter(([, job]) => predicate(job)).map(([name]) => name);
+
+// ---------------------------------------------------------------------------
+// The reusable workflow: the only place the packaging steps are written down.
+// ---------------------------------------------------------------------------
+
+const packagingJobs = Object.entries(asMap(reusableWorkflow.jobs)).filter(([, job]) => packagesForWindows(job));
+
+const missing = `no job in .github/workflows/${REUSABLE} runs \`npm run package:win\``;
 const found = packagingJobs.length === 1;
 const packagingJob = asMap(packagingJobs[0]?.[1]);
 const steps = asList(packagingJob.steps).map(asMap);
-const jobShell = asText(asMap(asMap(packagingJob.defaults).run).shell) || asText(asMap(asMap(testWorkflow.defaults).run).shell);
+const jobShell = asText(asMap(asMap(packagingJob.defaults).run).shell) || asText(asMap(asMap(reusableWorkflow.defaults).run).shell);
 const transcript = steps.map((step) => `${asText(step.uses)}\n${asText(step.run)}`).join('\n \n');
 const packagingIndex = steps.findIndex((step) => /\bpackage:win\b/.test(asText(step.run)));
 const uploadIndex = steps.findIndex((step) => /actions\/upload-artifact/.test(asText(step.uses)));
 const uploadStep = asMap(steps[uploadIndex]?.with);
 const reason = (verdict: string) => (found ? verdict : missing);
 
-describe('test.yml builds the Windows installer and leaves it as a run artifact', () => {
+// A reusable workflow may declare permissions on the job or on the file; the
+// file-level block applies to every job in it, so either satisfies the rule and
+// neither being present does not.
+const effectivePermissions = Object.keys(asMap(packagingJob.permissions)).length > 0
+  ? asMap(packagingJob.permissions)
+  : asMap(reusableWorkflow.permissions);
+
+describe(`${REUSABLE} builds the Windows installer and leaves it as a run artifact`, () => {
   it('has exactly one job that packages the desktop app for Windows', () => {
     expect(packagingJobs.map(([name]) => name).join(', ') || missing).not.toBe(missing);
     expect(packagingJobs).toHaveLength(1);
@@ -511,18 +416,27 @@ describe('test.yml builds the Windows installer and leaves it as a run artifact'
     // sha256 in resource-pins.json and the assembly throws on a mismatch, so a
     // job that goes straight from installing to packaging cannot succeed.
     // `npm run setup` does not help: it fetches the darwin archive.
+    //
+    // "Some step that is not an install" would be satisfied by `echo hi`, so
+    // the step has to be recognisable as the provisioning one: it reads
+    // scripts/resource-pins.json, which is where the URLs and the digests are.
+    // The mac file names its provisioning script outright; this is the same
+    // demand, made of a step written inline. A future provisioner that fetches
+    // the pins some other way would need this rule rewritten, deliberately --
+    // which is the point.
     const before = steps.slice(0, packagingIndex < 0 ? 0 : packagingIndex).map((step) => asText(step.run)).filter(Boolean);
-    const provisioning = before.filter((script) => !/^\s*npm\s+(?:ci|run\s+build)\b/.test(script.trim()) || commandCount(script) > 1);
+    const provisioning = before.filter((script) => /resource-pins\.json/.test(script));
     expect(reason(packagingIndex < 0 ? 'no `npm run package:win` step'
       : provisioning.length > 0 ? 'provisioned first'
-        : 'nothing between the install and the packaging fetches the pinned vc.exe and the pinned Windows Node archive'))
+        : 'nothing between the install and the packaging reads scripts/resource-pins.json to fetch the pinned vc.exe and the pinned Windows Node archive'))
       .toBe('provisioned first');
   });
 
   it('does not retype a pinned digest that resource-pins.json already holds', () => {
     // Two copies of a hash drift, and the copy in the workflow is the one
-    // nobody updates. Whatever the provisioning step is, it has to read the pin.
-    const text = workflowText('test.yml');
+    // nobody updates. Whatever the provisioning step is, it has to read the
+    // pin. Both files, because the digest could be retyped in either one.
+    const text = `${workflowText('test.yml')}\n${workflowText(REUSABLE)}`;
     const copied = [pins.windows.vc.sha256, pins.windows.node.sourceArchiveSha256].filter((digest) => text.includes(digest));
     expect(reason(copied.join(', ') || 'no digest copied into the workflow')).toBe('no digest copied into the workflow');
   });
@@ -540,7 +454,14 @@ describe('test.yml builds the Windows installer and leaves it as a run artifact'
 
   it('runs the packaging step inside desktop/, where that script lives', () => {
     const step = asMap(steps[packagingIndex]);
-    const located = /(?:^|\W)desktop(?:\W|$)/.test(`${asText(step['working-directory'])} ${asText(step.run)}`);
+    // The word "desktop" appearing somewhere in the script is not the same as
+    // running there: the step has to declare the directory, cd into it, or hand
+    // it to npm.
+    const directory = asText(asMap(step)['working-directory']).trim();
+    const script = asText(asMap(step).run);
+    const located = directory === 'desktop'
+      || /\bcd\s+desktop\b/.test(script)
+      || /\bnpm\b[^\n]*\s(?:--prefix|-C)\s+desktop\b/.test(script);
     expect(reason(located ? 'in desktop/' : 'runs from the repository root, where package:win does not exist')).toBe('in desktop/');
   });
 
@@ -554,8 +475,21 @@ describe('test.yml builds the Windows installer and leaves it as a run artifact'
 });
 
 describe('the Windows artifact is the installer electron-builder actually writes', () => {
+  // The name is derived from desktop/package.json, never retyped. Two spellings
+  // keep that promise: the derived path itself, and the same path with the
+  // VERSION -- and only the version -- replaced by a glob, so a version bump
+  // does not turn into a job that uploads nothing. Everything else about the
+  // name has to agree with the config character for character, which is what
+  // makes a renamed artifact a red test rather than an empty download.
+  const derived = `desktop/${installerPath}`;
+  const versionGlobbed = derived.replace(packageJson.version, '*');
+
   it('uploads the NSIS installer at the path the build config derives', () => {
-    expect(reason(asText(uploadStep.path) || 'no actions/upload-artifact step')).toBe(`desktop/${installerPath}`);
+    const path = asText(uploadStep.path);
+    expect(reason(path === '' ? 'no actions/upload-artifact step'
+      : path === derived || path === versionGlobbed ? 'the path the build config derives'
+        : `${path}, where the config derives ${derived}`))
+      .toBe('the path the build config derives');
   });
 
   it('does not upload the unpacked application directory', () => {
@@ -575,7 +509,9 @@ describe('the Windows artifact is the installer electron-builder actually writes
 
   it('fails the run rather than uploading nothing when the installer is not there', () => {
     // Without this, a renamed output path turns into a green run with an empty
-    // artifact -- the failure mode that wastes a day before anyone notices.
+    // artifact -- the failure mode that wastes a day before anyone notices. It
+    // is what makes the globbed spelling above safe: a glob that matched
+    // nothing fails the job instead of publishing an empty artifact.
     expect(reason(asText(uploadStep['if-no-files-found']) || 'if-no-files-found is unset, so a missing installer only warns')).toBe('error');
   });
 
@@ -585,14 +521,77 @@ describe('the Windows artifact is the installer electron-builder actually writes
   });
 
   it('does not collide with the macOS artifact name', () => {
-    const macJob = Object.values(asMap(testWorkflow.jobs)).find((job) => asList(asMap(job).steps).map(asMap).some((step) => /\bpackage:mac\b/.test(asText(step.run))));
-    const macName = asText(asMap(asList(asMap(macJob).steps).map(asMap).find((step) => /actions\/upload-artifact/.test(asText(step.uses)))?.with).name);
-    expect(reason(asText(uploadStep.name) === macName ? `both jobs upload an artifact called ${macName}` : 'distinct artifact names')).toBe('distinct artifact names');
+    // Both reusable workflows are called from the same run of test.yml and from
+    // the same release run; two uploads under one name is one artifact and a
+    // lost build.
+    const macWorkflow = workflow(MAC_REUSABLE);
+    const macJob = Object.values(asMap(macWorkflow.jobs)).find((job) => stepsOf(job).some((step) => /\bpackage:mac\b/.test(asText(step.run))));
+    const macName = asText(asMap(stepsOf(asMap(macJob)).find((step) => /actions\/upload-artifact/.test(asText(step.uses)))?.with).name);
+    expect(reason(macName === '' ? `no upload step in ${MAC_REUSABLE} to compare against`
+      : asText(uploadStep.name) === macName ? `both workflows upload an artifact called ${macName}`
+        : 'distinct artifact names'))
+      .toBe('distinct artifact names');
   });
 
-  it('runs on every branch push, not behind a ref condition', () => {
-    const condition = asText(packagingJob.if);
-    expect(reason(/github\.(?:ref|event_name)/.test(condition) ? `gated on a ref: ${condition}` : 'unconditional')).toBe('unconditional');
+  it('declares no condition of its own, so the caller alone decides when it runs', () => {
+    // release.yml gates its CALL behind the opt-in variable. Any condition in
+    // here would be a second switch, invisible from either caller -- so the
+    // check is the absence of one, not a judgement about what it says. `if:`
+    // anything, even `${{ true }}`, is a finding.
+    const condition = asText(packagingJob.if).trim();
+    expect(reason(condition === '' ? 'no condition' : `the job carries \`if: ${condition}\``)).toBe('no condition');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One description, two callers.
+// ---------------------------------------------------------------------------
+
+const callingJobs = namesOf(testWorkflow, callsTheReusableWorkflow);
+const inlinePackagers = namesOf(testWorkflow, packagesForWindows);
+const callingJob = asMap(Object.entries(asMap(testWorkflow.jobs)).find(([, job]) => callsTheReusableWorkflow(job))?.[1]);
+
+describe('test.yml checks the same description of packaging that release.yml builds from', () => {
+  it(`reaches Windows packaging by calling ${REUSABLE}`, () => {
+    expect(callingJobs.join(', ') || `no job in .github/workflows/test.yml has \`uses: ${CALL}\``)
+      .not.toBe(`no job in .github/workflows/test.yml has \`uses: ${CALL}\``);
+    expect(callingJobs).toHaveLength(1);
+  });
+
+  it('does not repeat the packaging steps inline as well', () => {
+    // The defect this replaces: seven steps in test.yml and the same seven in
+    // the reusable workflow, so CI checked one description of packaging while
+    // the release built from the other.
+    expect(inlinePackagers.join(', ') || 'nothing inline')
+      .toBe('nothing inline');
+  });
+
+  it('runs on every event test.yml fires on, evaluated and not pattern-matched', () => {
+    // The condition is worked out, not read for suspicious words. `if: ${{
+    // false }}` names neither a ref nor a variable and would have passed a rule
+    // that looked for those, while the app was never built on any branch at
+    // all. An expression the evaluator cannot read raises instead of coming out
+    // false, so an unreadable gate cannot pass for an absent one either.
+    const condition = asText(callingJob.if);
+    const off = BRANCH_EVENTS.filter(([, context]) => !conditionHolds(condition, context)).map(([event]) => event);
+    expect(callingJobs.length === 0 ? `no job in test.yml calls ${REUSABLE}`
+      : off.length > 0 ? `\`if: ${condition}\` comes out false on ${off.join(', ')}` : 'runs on all of them')
+      .toBe('runs on all of them');
+  });
+
+  it('release.yml calls the very same file', () => {
+    // Not a similar one, and not a copy: the same path. This is what makes the
+    // green run on a branch evidence about the release build.
+    const callers = namesOf(workflow('release.yml'), callsTheReusableWorkflow);
+    expect(callers.join(', ') || `no job in .github/workflows/release.yml has \`uses: ${CALL}\``)
+      .not.toBe(`no job in .github/workflows/release.yml has \`uses: ${CALL}\``);
+  });
+
+  it(`${REUSABLE} can be started only by a caller, never by an event of its own`, () => {
+    // A file that packages an installer must not also be a file a tag can
+    // start. Its only trigger is workflow_call, so the decision to run it is
+    // always taken in test.yml or release.yml, where the gates are visible.
+    expect(Object.keys(asMap(reusableWorkflow.on))).toEqual(['workflow_call']);
   });
 });
 
@@ -616,15 +615,16 @@ describe('the Windows artifact job publishes nothing', () => {
   });
 
   it('asks for read-only permissions, so publishing is refused by the token and not merely by us', () => {
-    const permissions = asMap(packagingJob.permissions);
-    const writes = Object.entries(permissions).filter(([, value]) => asText(value) === 'write');
-    expect(reason(Object.keys(permissions).length === 0 ? 'the job declares no permissions block' : writes.map(([scope]) => scope).join(', ') || 'read-only'))
+    const writes = Object.entries(effectivePermissions).filter(([, value]) => asText(value) === 'write');
+    expect(reason(Object.keys(effectivePermissions).length === 0 ? 'neither the job nor the workflow declares a permissions block' : writes.map(([scope]) => scope).join(', ') || 'read-only'))
       .toBe('read-only');
-    expect(reason(asText(permissions.contents) || 'contents is unset')).toBe('read');
+    expect(reason(asText(effectivePermissions.contents) || 'contents is unset')).toBe('read');
   });
 
-  it.each(forbidden)('the whole of test.yml contains no %s', (_name, pattern) => {
-    expect(pattern.test(workflowText('test.yml'))).toBe(false);
+  it.each(forbidden)('neither test.yml nor the workflow it calls contains %s', (_name, pattern) => {
+    // Both files, because either one could smuggle a publish into the same run.
+    expect([`test.yml: ${pattern.test(workflowText('test.yml'))}`, `${REUSABLE}: ${pattern.test(workflowText(REUSABLE))}`])
+      .toEqual([`test.yml: ${false}`, `${REUSABLE}: ${false}`]);
   });
 });
 
@@ -636,10 +636,34 @@ describe('Windows packaging stays out of the tag-triggered workflows', () => {
     expect(asList(asMap(triggers.push)['branches-ignore'])).toContain('main');
   });
 
-  it.each(['release.yml', 'canary-release.yml'])('%s stays tag-triggered and gains no Windows packaging', (name) => {
-    const released = workflow(name);
+  it('canary-release.yml stays tag-triggered and reaches no Windows packaging at all', () => {
+    const canary = workflow('canary-release.yml');
+    expect(asList(asMap(asMap(canary.on).push).tags).length).toBeGreaterThan(0);
+    expect(namesOf(canary, reachesPackaging)).toEqual([]);
+    expect(namesOf(canary, (job) => /^windows-/.test(asText(asMap(job)['runs-on'])))).toEqual([]);
+  });
+
+  it('release.yml stays tag-triggered, and every route it has to packaging is off with nothing set', () => {
+    // What it may NOT have is packaging steps of its own, or a Windows runner
+    // of its own -- either would be a third description, unreachable from any
+    // branch push. What it may have is a call, and every call has to carry a
+    // condition. Whether that condition is really off by default is EVALUATED
+    // next door, in release-desktop-optin-workflow.test.ts; only its presence
+    // is pinned here.
+    const released = workflow('release.yml');
     expect(asList(asMap(asMap(released.on).push).tags).length).toBeGreaterThan(0);
-    expect(Object.entries(asMap(released.jobs)).filter(([, job]) => packagesForWindows(job)).map(([job]) => job)).toEqual([]);
-    expect(Object.entries(asMap(released.jobs)).filter(([, job]) => /^windows-/.test(asText(asMap(job)['runs-on']))).map(([job]) => job)).toEqual([]);
+    expect(namesOf(released, packagesForWindows)).toEqual([]);
+    expect(namesOf(released, (job) => /^windows-/.test(asText(asMap(job)['runs-on'])))).toEqual([]);
+    // Every route it has to packaging must be OFF under a plain tag with
+    // nothing set -- evaluated, so a condition that gates nothing counts as no
+    // gate. That the gate can also be turned ON, and that a dead one therefore
+    // cannot pass for a live one, is evaluated next door in
+    // release-desktop-optin-workflow.test.ts.
+    const routes = Object.entries(asMap(released.jobs)).filter(([, job]) => reachesPackaging(job));
+    const on = routes.filter(([, job]) => conditionHolds(asText(asMap(job).if), PLAIN_TAG)).map(([name]) => name);
+    expect(routes.length === 0 ? 'release.yml has no route to packaging at all'
+      : on.length > 0 ? `${on.join(', ')} runs on an ordinary tag`
+        : 'every route is off with nothing set')
+      .toBe('every route is off with nothing set');
   });
 });
