@@ -67,6 +67,9 @@ function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED
   restartButton.hidden = !guidance.canRestart; endedElement.hidden = false;
 }
 function stopCodeTimer(): void { if (codeTimer !== undefined) { clearInterval(codeTimer); codeTimer = undefined; } }
+// The status line's colour is a statement about the phase, not about its text: switching the
+// class on `loginStatusText(...) !== ''` would re-couple the colour to the copy and paint any
+// future non-error sentence on this line red.
 function renderAuthScreens(): void {
   const showingCode = loginPhase.phase === 'code';
   signinSignedOutElement.hidden = showingCode || authScreen !== 'signed_out';
@@ -77,16 +80,16 @@ function renderAuthScreens(): void {
   signinStartButton.disabled = !canStartLogin(loginPhase);
   signinStartButton.textContent = signInButtonLabel(loginPhase, authScreen);
   signinStatusElement.textContent = loginStatusText(loginPhase);
+  signinStatusElement.classList.toggle('error', loginPhase.phase === 'error');
   if (loginPhase.phase === 'code') {
     signinCodeValueElement.textContent = loginPhase.userCode;
     signinLinkElement.textContent = loginPhase.verificationUrl;
     const elapsed = Math.floor((Date.now() - codeStartedAt) / 1000);
     const remaining = codeSecondsRemaining(loginPhase, elapsed);
-    // An unknown lifetime (vc sent no expiresInSeconds) must not be shown as a countdown to a
-    // fabricated moment — say what's true instead: the code is there to use, with no known deadline.
+    // An unknown lifetime (no expiresInSeconds) is not a countdown to a fabricated moment.
     signinCodeStatusElement.textContent = isCodeExpired(loginPhase, elapsed)
       ? 'This code expired. Click Sign in to get a new one.'
-      : remaining === undefined ? 'Enter this code to finish signing in.' : `${formatCountdown(remaining)} left`;
+      : remaining === undefined ? 'Enter this code to finish signing in.' : formatCountdown(remaining);
   }
 }
 function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
@@ -97,9 +100,8 @@ async function loadAuthStatus(): Promise<void> { applyAuthStatus(await window.vo
 async function recheckAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
 async function handleLoginPush(event: AuthLoginPush): Promise<void> {
   if (event.loginId !== currentLoginId) return;
-  if (event.event === 'prompt') void window.voidTerminal.openLink(event.verificationUrl);
   loginPhase = reduceLoginPush(loginPhase, event);
-  if (loginPhase.phase === 'code') { codeStartedAt = Date.now(); stopCodeTimer(); codeTimer = setInterval(renderAuthScreens, 1000); } else stopCodeTimer();
+  if (loginPhase.phase === 'code') { codeStartedAt = Date.now(); clearTimeout(copiedLabelTimer); signinCodeCopyButton.textContent = 'Copy'; stopCodeTimer(); codeTimer = setInterval(renderAuthScreens, 1000); } else stopCodeTimer();
   renderAuthScreens();
   if (requiresStatusRecheck(loginPhase)) await recheckAuthStatus();
 }
@@ -266,13 +268,23 @@ signinLinkOpenButton.addEventListener('click', () => {
   if (loginPhase.phase !== 'code') return;
   void window.voidTerminal.openLink(loginPhase.verificationUrl);
 });
+// The copy confirmation lives on the button itself: its label becomes "Copied" once the clipboard
+// write has actually come back, then returns to "Copy" so a second copy reads as a second copy.
+// The pending timer is cleared first — otherwise the first copy's timer wipes the second one's
+// confirmation a moment after it appeared.
+let copiedLabelTimer: ReturnType<typeof setTimeout> | undefined;
+function showCodeCopied(): void {
+  clearTimeout(copiedLabelTimer);
+  signinCodeCopyButton.textContent = 'Copied';
+  copiedLabelTimer = setTimeout(() => { signinCodeCopyButton.textContent = 'Copy'; }, 1500);
+}
 signinCodeCopyButton.addEventListener('click', () => {
   if (loginPhase.phase !== 'code') return;
-  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => announce('Code copied.'));
+  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => { showCodeCopied(); });
 });
 signinCodeValueElement.addEventListener('click', () => {
   if (loginPhase.phase !== 'code') return;
-  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => announce('Code copied.'));
+  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => { showCodeCopied(); });
 });
 signinCodeValueElement.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return;

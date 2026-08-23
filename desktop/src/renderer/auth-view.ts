@@ -134,19 +134,12 @@ export function describeLoginFailure(reason: string): string {
   return LOGIN_FAILURE_MESSAGES[reason] ?? UNKNOWN_LOGIN_FAILURE;
 }
 
-// The one place that says what is going on right now, for the status line next to the button —
-// distinct from the code screen's own countdown text, which only exists once a code is showing.
+// The status line under the button, and the only phase that has anything to put there is 'error'.
+// Every other phase is already stated by something the person is looking at: the button itself
+// says "Signing in…" while starting, the code screen carries its own countdown, and after a
+// successful login the screen behind the button re-reads status and says "You're signed in" —
+// so a second line repeating any of them just made one panel read as several rows of the same
+// sentence. A failure has no such other place to appear, which is why it keeps this line.
 export function loginStatusText(phase: LoginPhase): string {
-  switch (phase.phase) {
-    case 'idle': return '';
-    case 'starting': return 'Signing in…';
-    case 'code': return 'Waiting for you to finish signing in.';
-    case 'authorized':
-    case 'closed_ok':
-      return 'Signed in.';
-    case 'error':
-      return describeLoginFailure(phase.reason);
-    default:
-      return '';
-  }
+  return phase.phase === 'error' ? describeLoginFailure(phase.reason) : '';
 }
