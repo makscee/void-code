@@ -86,3 +86,106 @@ jobs:
           name: void-code-mac-arm64
           path: desktop/release/void-code-mac-arm64.zip
           if-no-files-found: error
+
+  desktop-windows-app:
+    name: Desktop Windows installer artifact
+    runs-on: windows-latest
+    # A run artifact only: no release, no tag, no publication. Read-only
+    # permissions so the token refuses publishing even if a step tried. An
+    # installer is the most publishable thing this repository builds, so the
+    # rule matters more here than anywhere else.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        # A Windows runner runs steps in PowerShell by default, and PowerShell
+        # does not stop at the first failing external command: GitHub appends
+        # only `exit $LASTEXITCODE`, so a step of several commands reports the
+        # exit code of its LAST one and swallows every failure before it. A
+        # download that failed would go green here and the packaging step would
+        # then die on a digest mismatch. bash is run as
+        # `bash --noprofile --norc -eo pipefail`, which stops at the first
+        # failure, so every multi-command step below is declared to it.
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            desktop/runtime/pi/package-lock.json
+      - name: Install the desktop dependencies from the lockfile
+        working-directory: desktop
+        run: npm ci
+      - name: Fetch the pinned Windows resources, verifying every digest
+        working-directory: desktop
+        # scripts/assemble-windows-resources.mjs reads two files that no
+        # checkout carries and no install creates -- runtime/cache/vc/vc.exe and
+        # the pinned win-x64 Node archive -- and refuses to assemble unless each
+        # matches the digest scripts/resource-pins.json holds for it. `npm run
+        # setup` is no help: it fetches the darwin archive.
+        #
+        # Every URL and every digest is read out of resource-pins.json as the
+        # step runs. A digest typed into this file would be a second source of
+        # truth, and the one nobody remembers to update. Downloaded bytes stay
+        # in memory until their digest matches, so a bad download cannot leave a
+        # poisoned file behind in the cache.
+        run: |
+          node --input-type=module --eval '
+            import { createHash } from "node:crypto";
+            import { mkdir, readFile, writeFile } from "node:fs/promises";
+            import path from "node:path";
+
+            const pins = JSON.parse(await readFile("scripts/resource-pins.json", "utf8")).windows;
+            const wanted = [
+              {
+                url: pins.node.source,
+                sha256: pins.node.sourceArchiveSha256,
+                into: path.join("runtime/cache/node", path.basename(pins.node.source)),
+              },
+              {
+                url: `https://github.com/${pins.vc.repository}/releases/download/${pins.vc.releaseTag}/${pins.vc.assetName}`,
+                sha256: pins.vc.sha256,
+                into: "runtime/cache/vc/vc.exe",
+              },
+            ];
+
+            for (const item of wanted) {
+              const response = await fetch(item.url, { redirect: "follow" });
+              if (!response.ok) throw new Error(`${item.url} answered ${response.status} ${response.statusText}`);
+              const bytes = Buffer.from(await response.arrayBuffer());
+              const digest = createHash("sha256").update(bytes).digest("hex");
+              if (digest !== item.sha256) throw new Error(`${item.url} produced ${digest}, the pin expects ${item.sha256}`);
+              await mkdir(path.dirname(item.into), { recursive: true });
+              await writeFile(item.into, bytes);
+              console.log(`verified ${item.into} against the pin`);
+            }
+          '
+      - name: Package the Windows installer
+        working-directory: desktop
+        # Through the npm script, never electron-builder by hand: package:win is
+        # build, then scripts/assemble-windows-resources.mjs, then
+        # electron-builder --win --x64. Calling the builder directly would skip
+        # the assembly, and the assembly is what stages the private runtime the
+        # app cannot start without.
+        run: npm run package:win
+      - name: Upload the Windows installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        # The name is electron-builder's, assembled from desktop/package.json:
+        # directories.output, win.target (nsis -> .exe), version, the --x64 of
+        # package:win, and build.nsis.artifactName. Change any of those and this
+        # path has to follow; windows-app-artifact-workflow.test.ts derives the
+        # name from that config and fails when the two disagree, so the drift
+        # cannot reach CI as a green run with an empty artifact.
+        with:
+          name: void-code-windows-x64-installer
+          path: desktop/release/Void-Code-0.1.0-windows-x64.exe
+          if-no-files-found: error
