@@ -12,7 +12,7 @@ import (
 )
 
 // runStatusJSON resolves auth state the same way runStatus does — auth.Load,
-// then auth.FetchMe against cfg.AuthHost — and writes exactly one JSON object
+// then auth.FetchMe against cfg.AccessCheckHost — and writes exactly one JSON object
 // to out. It builds the object from the raw values, not from status.go's
 // lipgloss-rendered strings: those carry ANSI escape codes that a GUI would
 // display literally.
@@ -25,7 +25,7 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 		return json.NewEncoder(out).Encode(obj)
 	}
 
-	me, err := auth.FetchMe(cfg.AuthHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
+	me, err := auth.FetchMe(cfg.AccessCheckHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		// A refused-access answer is its own state: the credential worked, so
 		// sending the human back to the sign-in screen is advice that cannot

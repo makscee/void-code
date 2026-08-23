@@ -49,7 +49,9 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("not logged in"))
 		return nil
 	}
-	me, err := auth.FetchMe(cfg.AuthHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
+	// Same authority as `vc status --json`: one token must not get two verdicts
+	// depending on which form of the command a human happened to run.
+	me, err := auth.FetchMe(cfg.AccessCheckHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("token present but verification failed: "+err.Error()))
 		return nil

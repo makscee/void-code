@@ -5,6 +5,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,11 @@ const (
 	EnvAuthHost  = "VC_AUTH_HOST"  // base URL override for void-auth
 	EnvCode      = "VC_CODE"       // access code for Flow 1a (login --code)
 	EnvLang      = "VC_LANG"       // UI language: "en" (default) or "ru"
+
+	// EnvAccessCheckHost overrides the base URL of the service that answers
+	// the access check — "who am I, and am I let in". Unset means the sign-in
+	// host, so a plain `vc` behaves exactly as it did before this existed.
+	EnvAccessCheckHost = "VC_ACCESS_CHECK_HOST"
 )
 
 // Defaults — DNS names, not raw IPs (grill decision A8/A10).
@@ -34,6 +40,16 @@ type Config struct {
 	AuthHost    string // base URL, no trailing slash
 	CAOverride  string // empty = use cached/embedded
 	Lang        string // "en" or "ru"
+
+	// AccessCheckHost is the base URL asked "who am I, and am I let in"
+	// (today: GET /v1/vc/me). It defaults to AuthHost and is separate from it
+	// because in production the two are different services: the check is
+	// honoured by Relay and refused by the legacy checker behind the sign-in
+	// host, while the device-authorization routes and the provider list exist
+	// only behind the sign-in host. The name states the role, not the route —
+	// the same choice ErrAccessNotGranted made next door, for the same reason.
+	// Base URL, no trailing slash.
+	AccessCheckHost string
 }
 
 // Resolve builds Config from env, falling back to compiled defaults.
@@ -60,6 +76,14 @@ func Resolve(getenv func(string) string) Config {
 		authHost = DefaultAuthHost
 	}
 
+	// The check follows the RESOLVED sign-in host, not the compiled constant:
+	// pointing the whole CLI at a stand with VC_AUTH_HOST alone must not leave
+	// the check talking to production.
+	accessCheckHost := authHost
+	if override, ok := usableBaseURL(getenv(EnvAccessCheckHost)); ok {
+		accessCheckHost = override
+	}
+
 	lang := getenv(EnvLang)
 	if lang == "" {
 		lang = DefaultLang
@@ -75,7 +99,32 @@ func Resolve(getenv func(string) string) Config {
 		AuthHost:    authHost,
 		CAOverride:  getenv(EnvRelayCA),
 		Lang:        lang,
+
+		AccessCheckHost: accessCheckHost,
 	}
+}
+
+// usableBaseURL reports whether value is a base URL a caller can concatenate a
+// path onto, returning it without its trailing slash.
+//
+// Blank is not a choice anyone made — every other VC_* override reads "" as
+// unset, and so does this one. Everything else is refused rather than repaired:
+// the request built from this host carries a bearer token, and falling back to
+// a host we know works beats sending the credential at a URL vc cannot build a
+// request from. Callers concatenate ("host" + "/v1/vc/me"), so a trailing slash
+// would produce "//v1/vc/me", and a path, a query or a fragment cannot survive
+// the concatenation at all.
+func usableBaseURL(value string) (string, bool) {
+	trimmed := strings.TrimRight(strings.TrimSpace(value), "/")
+	if trimmed == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	return trimmed, true
 }
 
 // OSResolve calls Resolve with os.Getenv.
@@ -254,4 +303,3 @@ func IsStatusLineSkipped() bool {
 func ClearStatusLineSkipped() error {
 	return WriteConfigFile(map[string]string{statuslineSkippedKey: ""})
 }
-
