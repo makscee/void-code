@@ -1,14 +1,16 @@
 name: Desktop Windows installer build
 
-# The Windows half of an opt-in desktop release, and nothing else. It is
-# reachable only through `uses:` from release.yml, where a job condition decides
-# whether it runs at all; it cannot be started by an event of its own. It builds
-# and leaves a run artifact. Nothing here creates a release, writes a tag or
-# publishes: the single step that attaches anything to a release lives in
-# release.yml, behind the same switch, and the token here is read-only so the
-# refusal is the platform's and not merely ours. An installer is the most
-# publishable thing this repository builds, so that matters more here than
-# anywhere else.
+# The only description of Windows packaging there is. It is reachable only
+# through `uses:` -- from test.yml on every branch push, and from release.yml
+# behind the job condition that decides whether a release builds the desktop
+# installer at all; it cannot be started by an event of its own. Both callers
+# reaching the same file is the point: the steps CI exercises on a branch are,
+# byte for byte, the steps a release builds with. It builds and leaves a run
+# artifact. Nothing here creates a release, writes a tag or publishes: the
+# single step that attaches anything to a release lives in release.yml, behind
+# the same switch, and the token here is read-only so the refusal is the
+# platform's and not merely ours. An installer is the most publishable thing
+# this repository builds, so that matters more here than anywhere else.
 on:
   workflow_call:
 
@@ -104,12 +106,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         # The name is the packager's, assembled from desktop/package.json:
         # directories.output, win.target (nsis -> .exe), version, the --x64 of
-        # package:win, and build.nsis.artifactName. test.yml names it in full
-        # and windows-app-artifact-workflow.test.ts derives that name from the
-        # config, so drift there fails loudly. Here the version is globbed
-        # instead: this file is not covered by that derivation, and a version
-        # bump must not quietly upload nothing. `if-no-files-found: error`
-        # turns a glob that matched nothing into a failed job.
+        # package:win, and build.nsis.artifactName. It is never retyped:
+        # windows-app-artifact-workflow.test.ts derives it from that config and
+        # compares it against this line, so a renamed product, a changed target
+        # or a different arch is a red test rather than an empty download. Only
+        # the version is globbed, so a version bump does not turn into a job
+        # that uploads nothing, and `if-no-files-found: error` turns a glob that
+        # matched nothing into a failed job rather than an empty artifact.
         with:
           name: void-code-windows-x64-installer
           path: desktop/release/Void-Code-*-windows-x64.exe

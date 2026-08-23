@@ -1,12 +1,14 @@
 name: Desktop macOS app build
 
-# The macOS half of an opt-in desktop release, and nothing else. It is reachable
-# only through `uses:` from release.yml, where a job condition decides whether it
-# runs at all; it cannot be started by an event of its own. It builds and leaves
-# a run artifact. Nothing here creates a release, writes a tag or publishes: the
-# single step that attaches anything to a release lives in release.yml, behind
-# the same switch, and the token here is read-only so the refusal is the
-# platform's and not merely ours.
+# The only description of macOS packaging there is. It is reachable only through
+# `uses:` -- from test.yml on every branch push, and from release.yml behind the
+# job condition that decides whether a release builds the desktop app at all; it
+# cannot be started by an event of its own. Both callers reaching the same file
+# is the point: the steps CI exercises on a branch are, byte for byte, the steps
+# a release builds with. It builds and leaves a run artifact. Nothing here
+# creates a release, writes a tag or publishes: the single step that attaches
+# anything to a release lives in release.yml, behind the same switch, and the
+# token here is read-only so the refusal is the platform's and not merely ours.
 on:
   workflow_call:
 
