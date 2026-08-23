@@ -185,6 +185,68 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+  # ---------------------------------------------------------------------------
+  # The desktop half, and the one thing that has to stay true about it: with
+  # nothing set, none of this runs and none of it publishes. An ordinary tag
+  # produces exactly the jobs and exactly the assets it produced before these
+  # three jobs existed.
+  #
+  # The switch is the repository variable DESKTOP_RELEASE. Unset -- which is
+  # what merging this leaves -- every condition below is false, all three jobs
+  # are skipped, and no job the CLI release depends on waits on them: `build`
+  # needs test and the pinned Pi qualification, `release` needs build, and
+  # `publish-auth` -- self-update for every installed client -- needs release.
+  # None of those four names appears in a `needs:` here. The dependency runs the
+  # other way, so a desktop build that dies on a runner cannot withhold the CLI
+  # or the self-update.
+  #
+  # Publication is the last job only, it attaches to the release that already
+  # exists, and it is gated by the same variable.
+  # ---------------------------------------------------------------------------
+  desktop-mac-app:
+    name: Desktop macOS app
+    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
+    uses: ./.github/workflows/desktop-mac-app.yml
+
+  desktop-windows-app:
+    name: Desktop Windows installer
+    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
+    uses: ./.github/workflows/desktop-windows-app.yml
+
+  desktop-attach:
+    name: Attach the desktop builds to the release
+    needs: [release, desktop-mac-app, desktop-windows-app]
+    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the macOS app
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: void-code-mac-arm64
+          path: dist
+
+      - name: Download the Windows installer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: void-code-windows-x64-installer
+          path: dist
+
+      - name: Sign build provenance for the desktop builds
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: |
+            dist/void-code-mac-arm64.zip
+            dist/Void-Code-*-windows-x64.exe
+
+      - name: Attach them to the release that already exists
+        # `upload`, never `create`: the release was made by the `release` job on
+        # its own terms, and this adds two files to it. There is no checkout in
+        # this job, so gh is told the repository through the environment.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload ${{ github.ref_name }} dist/void-code-mac-arm64.zip dist/Void-Code-*-windows-x64.exe --clobber
+
   publish-auth:
     name: Sync release to void-auth
     needs: release

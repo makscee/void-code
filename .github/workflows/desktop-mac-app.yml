@@ -1,0 +1,58 @@
+name: Desktop macOS app build
+
+# The macOS half of an opt-in desktop release, and nothing else. It is reachable
+# only through `uses:` from release.yml, where a job condition decides whether it
+# runs at all; it cannot be started by an event of its own. It builds and leaves
+# a run artifact. Nothing here creates a release, writes a tag or publishes: the
+# single step that attaches anything to a release lives in release.yml, behind
+# the same switch, and the token here is read-only so the refusal is the
+# platform's and not merely ours.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package the macOS app
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            desktop/runtime/pi/package-lock.json
+      - name: Provision the pinned Pi runtime
+        run: desktop/scripts/provision-pinned-pi-smoke.sh
+      - name: Package the macOS app
+        # Through the npm script: package:mac is build, then the assembly, then
+        # the packager. Calling the packager directly would skip the assembly,
+        # and the assembly is what stages the private runtime the app cannot
+        # start without.
+        working-directory: desktop
+        run: npm run package:mac
+      - name: Archive the bundle with its symlinks intact
+        working-directory: desktop
+        # The .app carries symlinks in Contents/Frameworks; ditto -c -k stores
+        # them as links, and --keepParent keeps the .app wrapper itself. A plain
+        # zip collapses the links into copies and the app will not launch.
+        run: ditto -c -k --sequesterRsrc --keepParent "release/mac-arm64/Void Code.app" release/void-code-mac-arm64.zip
+      - name: Upload the macOS app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: void-code-mac-arm64
+          path: desktop/release/void-code-mac-arm64.zip
+          if-no-files-found: error
