@@ -20,11 +20,52 @@ const preload = readFileSync(new URL('../src/preload/index.ts', import.meta.url)
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 const preloadContract = readFileSync(new URL('../src/shared/preload-contract.ts', import.meta.url), 'utf8');
 const contract = readFileSync(new URL('../src/shared/contract.ts', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../src/renderer/index.css', import.meta.url), 'utf8');
 
 // The exact markup region this file cares about — everything the redesigned #signin-code screen
 // owns. Falls back to '' so every assertion below fails loudly (not with a cryptic regex miss)
 // if the container itself is missing or was renamed.
 const codeSection = html.match(/<div id="signin-code"[^>]*>[\s\S]*?<\/div>\s*(?=<div id="signin-ready")/)?.[0] ?? '';
+
+// A click handler as written in index.ts: everything from the addEventListener line down to the
+// `});` that closes it at column 0. Deliberately not the "first `});`" the older assertions in
+// this file use — a `.then(() => { ... });` continuation ends in `});` too, and stopping there
+// would cut off exactly the part that matters now.
+const clickHandler = (name: string): string =>
+  renderer.match(new RegExp(`${name}\\.addEventListener\\('click',[\\s\\S]{0,900}?\\n\\}\\);`))?.[0] ?? '';
+
+// The label the source actually puts on the button — a string literal, or an identifier bound to
+// one somewhere in the file. Resolving the identifier keeps `const COPIED = 'Copied'` from being
+// treated as "no label set", without accepting an arbitrary expression nobody can read here.
+const labelValue = (expression: string): string | undefined => {
+  const trimmed = expression.trim().replace(/;$/, '').trim();
+  const literal = trimmed.match(/^(['"`])([^'"`]*)\1$/);
+  if (literal) return literal[2];
+  if (!/^[A-Za-z_$][\w$]*$/.test(trimmed)) return undefined;
+  return renderer.match(new RegExp(`const ${trimmed}\\s*=\\s*(['"\`])([^'"\`]*)\\1`))?.[2];
+};
+
+const labelAssignments = (source: string): { text: string; value: string | undefined }[] =>
+  [...source.matchAll(/signinCodeCopyButton\.textContent\s*=\s*([^;\n]+)/g)]
+    .map((match) => ({ text: match[0], value: labelValue(match[1]) }));
+
+const copiedAssignment = (): string | null =>
+  labelAssignments(renderer).find((assignment) => assignment.value === 'Copied')?.text ?? null;
+
+// True when the segment sets the button label to "Copied" itself, or calls a function in this
+// file that does. The indirection is allowed on purpose: both trigger points sharing one helper
+// is the natural way to write this, and a test that forbade it would push the implementation to
+// duplicate the same three lines twice.
+const reachesCopiedLabel = (segment: string): boolean => {
+  if (labelAssignments(segment).some((assignment) => assignment.value === 'Copied')) return true;
+  for (const call of segment.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const body = renderer.match(new RegExp(`function ${call[1]}\\([\\s\\S]{0,600}?\\n\\}`))?.[0]
+      ?? renderer.match(new RegExp(`const ${call[1]}\\s*=\\s*\\([\\s\\S]{0,600}?\\n\\}`))?.[0]
+      ?? '';
+    if (body && labelAssignments(body).some((assignment) => assignment.value === 'Copied')) return true;
+  }
+  return false;
+};
 
 describe('the three steps exist as real structure, not one paragraph with numbers typed in', () => {
   it('locates the #signin-code container at all', () => {
@@ -149,52 +190,132 @@ describe('the code can be copied — by the Copy button and by clicking the code
     expect(renderer).not.toMatch(/navigator\.clipboard/);
   });
 
-  // Changed from the original behaviour, which routed the copy confirmation through announce()
-  // alone — a full-width bar painted under the header, at the top of the window. The owner's
-  // point 3: the person's eye is on the code in the middle of the screen, about to leave for the
-  // browser, and the confirmation has to be where the action was, not somewhere they have to look
-  // away from the code to see. "Near the code" is pinned here as a source-level fact: a dedicated
-  // status element that lives inside step 2's own <li> (the same list item as #signin-code-value
-  // and the Copy button), not the top-of-window #notice element announce() writes to. A lazy
-  // implementation could satisfy "confirmation exists somewhere" by writing into
-  // #signin-code-status in step 3 (already on screen, already wired to the countdown) — that is
-  // rejected below by scoping the search to step 2's own <li>, not the whole code section.
-  describe('the copy confirmation reaches the person near the code, not only in the top banner', () => {
-    it('step 2 carries its own confirmation element, distinct from #signin-code-status (step 3) and #notice (top banner)', () => {
+  // OWNER CHANGED THE DECISION (2026-08-23), this is not a fit to whatever got implemented.
+  // The previous round of this file required the opposite: a dedicated #signin-code-copy-status
+  // element living inside step 2's <li>, selected by index.ts, written to after the copy resolved.
+  // That element is cancelled. The confirmation moves into the Copy button itself: on a successful
+  // copy the button's own label becomes "Copied" for a short while and then goes back to "Copy".
+  // Nothing else on the screen says anything about the copy.
+  //
+  // Two things follow, and both are pinned below because each has an obvious cheap fake:
+  //   * the element is *gone*, not hidden — markup, renderer and stylesheet all have to lose it;
+  //   * the label *comes back*, so a second copy is legible as a second copy. A label that latches
+  //     on "Copied" forever is indistinguishable from a button that did nothing the second time.
+  describe('the separate confirmation line is gone from the screen, not merely hidden', () => {
+    it('index.html no longer carries #signin-code-copy-status anywhere', () => {
+      expect(html, 'index.html still ships the cancelled #signin-code-copy-status element').not.toMatch(/signin-code-copy-status/);
+    });
+
+    it('step 2 contains only the code and the Copy button — no second element left over to hold a confirmation under another name', () => {
       const step2 = codeSection.match(/<li id="signin-step-code"[\s\S]*?<\/li>/)?.[0] ?? '';
       expect(step2, 'could not locate #signin-step-code').not.toBe('');
-      expect(step2, 'step 2 has no #signin-code-copy-status element').toMatch(/id="signin-code-copy-status"/);
-      // Must not be the same element as step 3's countdown status — that would mean the
-      // confirmation is still landing away from the code, just renamed.
-      const step3 = codeSection.match(/<li id="signin-step-wait"[\s\S]*?<\/li>/)?.[0] ?? '';
-      expect(step3, 'could not locate #signin-step-wait').not.toBe('');
-      expect(step3).not.toMatch(/id="signin-code-copy-status"/);
+      // Renaming #signin-code-copy-status to #signin-copy-feedback would pass the assertion above
+      // while leaving exactly the line the owner cancelled on the screen. Pinning the id set, not
+      // one id, closes that.
+      const ids = (step2.match(/id="([^"]+)"/g) ?? []).map((attr) => attr.slice(4, -1));
+      expect(ids.sort(), `step 2 carries unexpected elements: ${ids.join(', ')}`)
+        .toEqual(['signin-code-copy', 'signin-code-value', 'signin-step-code']);
+      // A live region with no id would be the same line again, invisible to the id check.
+      expect(step2, 'step 2 still carries a role="status" live region — the cancelled confirmation line under another guise').not.toMatch(/role="status"/);
     });
 
-    it('index.ts selects #signin-code-copy-status as its own element', () => {
-      expect(renderer, 'index.ts does not select #signin-code-copy-status').toMatch(/querySelector<HTMLElement>\('#signin-code-copy-status'\)/);
+    it('index.css keeps no rule for the removed element — a rule that survives is either dead code or the element hidden by styles instead of deleted', () => {
+      expect(css, 'index.css still has a #signin-code-copy-status rule').not.toMatch(/signin-code-copy-status/);
     });
 
-    it('both copy handlers write the confirmation into the near-the-code element after the copy resolves, and no longer route it through the top-of-window announce()', () => {
+    it('index.ts no longer references the removed element at all', () => {
+      expect(renderer, 'index.ts still selects or writes to #signin-code-copy-status').not.toMatch(/signin-code-copy-status/i);
+      expect(renderer, 'index.ts still keeps the signinCodeCopyStatusElement binding').not.toMatch(/signinCodeCopyStatusElement/);
+    });
+
+    it('the confirmation is not pushed into the top banner or into step 3\'s countdown line instead', () => {
+      // Both are already on screen and already wired, so both are one-line ways to keep a
+      // confirmation somewhere while ignoring the instruction that it belongs in the button.
+      expect(renderer, 'the countdown element (#signin-code-status, step 3) is used to announce the copy')
+        .not.toMatch(/signinCodeStatusElement\.textContent\s*=\s*[^;]*[Cc]opied/);
       for (const name of ['signinCodeCopyButton', 'signinCodeValueElement']) {
-        const handlerBlock = renderer.match(new RegExp(`${name}\\.addEventListener\\('click',[\\s\\S]{0,400}?\\}\\);`))?.[0] ?? '';
+        const handlerBlock = clickHandler(name);
+        expect(handlerBlock, `${name}: the copy handler announces through the top-of-window banner`).not.toMatch(/announce\(|noticeElement/);
+      }
+      // Catches the confirmation being re-created as a fresh element under a new id anywhere on
+      // the screen — including outside step 2, where the id-set assertion above cannot see it.
+      // The only thing in index.ts allowed to say "copied" is the button's own label.
+      for (const assignment of renderer.matchAll(/(\w+)\.textContent\s*=\s*(['"`])[^'"`]*[Cc]opied[^'"`]*\2/g)) {
+        expect(assignment[1], `${assignment[0]} — the copy confirmation is written onto an element other than the Copy button`).toBe('signinCodeCopyButton');
+      }
+    });
+  });
+
+  describe('the Copy button says "Copied" once the copy has actually happened, and then says "Copy" again', () => {
+    it('the button ships as "Copy" in the markup — the confirmation is a state, not the resting label', () => {
+      const step2 = codeSection.match(/<li id="signin-step-code"[\s\S]*?<\/li>/)?.[0] ?? '';
+      const label = step2.match(/<button[^>]*id="signin-code-copy"[^>]*>([^<]*)<\/button>/)?.[1] ?? '';
+      expect(label.trim(), 'the Copy button does not ship with the label "Copy"').toBe('Copy');
+    });
+
+    it('index.ts sets the button\'s own label to "Copied"', () => {
+      expect(copiedAssignment(), 'nothing in index.ts assigns "Copied" to signinCodeCopyButton.textContent — the confirmation never reaches the button')
+        .not.toBeNull();
+    });
+
+    it('both trigger points — the Copy button and the code itself — put the label up only after copyCode() resolves', () => {
+      for (const name of ['signinCodeCopyButton', 'signinCodeValueElement']) {
+        const handlerBlock = clickHandler(name);
         expect(handlerBlock, `no click handler block found for ${name}`).not.toBe('');
         const copyIndex = handlerBlock.indexOf('copyCode(');
         expect(copyIndex, `${name}: no copyCode call`).toBeGreaterThan(-1);
-        // Whatever variable name index.ts gave the #signin-code-copy-status element, it must be
-        // assigned .textContent after the copy call resolves — not before, which would claim the
-        // copy happened before the IPC round trip returned.
-        const textAssignMatch = handlerBlock.match(/(\w+)\.textContent\s*=\s*(['"`])[^'"`]*copied[^'"`]*\2/i);
-        expect(textAssignMatch, `${name}: no .textContent assignment mentioning "copied" found`).not.toBeNull();
-        const assignIndex = handlerBlock.indexOf(textAssignMatch![0]);
-        expect(assignIndex, `${name}: confirmation text is assigned before copyCode() is called`).toBeGreaterThan(copyIndex);
-        // The element the handler writes into must resolve back to #signin-code-copy-status, not
-        // #notice/announce() and not #signin-code-status (step 3's countdown element) relabelled.
-        const varName = textAssignMatch![1];
-        expect(varName, `${name}: writes the confirmation onto noticeElement/announce() instead of the near-the-code element`).not.toBe('noticeElement');
-        expect(renderer, `index.ts never binds a variable named ${varName} to #signin-code-copy-status`)
-          .toMatch(new RegExp(`const ${varName}\\s*=\\s*document\\.querySelector<HTMLElement>\\('#signin-code-copy-status'\\)`));
+        const tail = handlerBlock.slice(copyIndex);
+        // Setting the label on the next statement after the call would relabel the button while
+        // the IPC round trip is still in flight — the button would say "Copied" even when the
+        // main-process clipboard write rejects. The continuation has to be sequenced on the
+        // promise.
+        expect(/\.then\(|await\s/.test(tail), `${name}: the label change is not sequenced after the copyCode() promise — it happens while the copy is still in flight`).toBe(true);
+        expect(reachesCopiedLabel(tail), `${name}: nothing on the resolved path of copyCode() sets the button label to "Copied"`).toBe(true);
       }
+    });
+
+    it('the label is put back to "Copy" on a timer, not left latched on "Copied"', () => {
+      const assignment = copiedAssignment();
+      expect(assignment, 'no "Copied" assignment to start from').not.toBeNull();
+      // The restore has to live on the same path, close to the assignment that set it — a
+      // "Copy" literal somewhere else in the file (the markup default, an unrelated helper) is
+      // not a restore.
+      const region = renderer.slice(renderer.indexOf(assignment!), renderer.indexOf(assignment!) + 600);
+      expect(region, 'the "Copied" label is never scheduled to go away — the button latches and a second copy looks like nothing happened')
+        .toMatch(/setTimeout\(/);
+      expect(labelAssignments(region).some((each) => each.value === 'Copy'), 'nothing on that path assigns the button label back to "Copy"').toBe(true);
+      const delay = Number(region.match(/setTimeout\([\s\S]{0,300}?,\s*(\d+)\s*\)/)?.[1] ?? NaN);
+      expect(Number.isFinite(delay), 'the restore timer has no literal delay to check').toBe(true);
+      // setTimeout(..., 0) technically restores the label and is worth nothing: the confirmation
+      // is gone before the next frame paints.
+      expect(delay, `the "Copied" label is restored after ${delay}ms — too short to be read`).toBeGreaterThanOrEqual(500);
+    });
+
+    it('a second copy does not get its confirmation cut short by the first copy\'s timer', () => {
+      // Copy, wait ~1s, copy again: the first timer is still pending and fires shortly after the
+      // second copy, wiping a confirmation that is a moment old. The timer handle has to be kept
+      // and cleared before a new one is armed.
+      const assignment = copiedAssignment();
+      expect(assignment, 'no "Copied" assignment to start from').not.toBeNull();
+      const start = renderer.indexOf(assignment!);
+      // Scoped to the restore timer itself: index.ts already has unrelated setTimeout/clearTimeout
+      // pairs in the production probes, and matching those would pass this test without a restore
+      // timer existing at all.
+      const region = renderer.slice(Math.max(0, start - 400), start + 600);
+      const handleMatch = region.match(/(\w+)\s*=\s*setTimeout\(/);
+      expect(handleMatch, 'the restore timer\'s handle is not kept anywhere, so it can never be cancelled').not.toBeNull();
+      const handle = handleMatch![1];
+      expect(renderer, `nothing clears ${handle} before arming a new restore timer — overlapping copies cut each other's confirmation short`)
+        .toMatch(new RegExp(`clearTimeout\\(\\s*${handle}`));
+    });
+
+    it('the keyboard path into the copy is still the click handler, so Enter/Space gets the same button feedback', () => {
+      const keyBlock = renderer.match(/signinCodeValueElement\.addEventListener\('keydown',[\s\S]{0,400}?\n\}\);/)?.[0] ?? '';
+      expect(keyBlock, 'the Enter/Space handler on #signin-code-value is gone').not.toBe('');
+      expect(keyBlock).toMatch(/event\.key !== 'Enter'/);
+      expect(keyBlock).toMatch(/event\.key !== ' '/);
+      expect(keyBlock, 'the keyboard path no longer goes through the click handler, so it would skip the button feedback')
+        .toMatch(/signinCodeValueElement\.click\(\)/);
     });
   });
 });

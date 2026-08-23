@@ -76,6 +76,48 @@ describe('signInButtonLabel — what the button says, given the phase and which 
   });
 });
 
+// GREEN TODAY, ON PURPOSE — read the report before deleting these. The behaviour they describe
+// ("the button must not stay stuck on 'Signing in…' and disabled once the login has failed") is
+// already true of these two functions as written: 'error' is neither 'starting' nor 'code', so
+// canStartLogin lets it through and signInButtonLabel falls to the ordinary wording. They are
+// pinned here anyway because they are the exact thing at risk from the change happening in this
+// same commit: once loginStatusText goes silent for 'starting', the shortest way to "put the
+// progress feedback back" is to widen the button's "Signing in…" branch or its disabled
+// condition beyond 'starting' — which lands the button on the failure screen still spinning.
+describe('the button recovers from a failed login — it is the way back, so it cannot stay stuck', () => {
+  it('accepts a click again once the login has failed, for every failure reason', () => {
+    for (const reason of [...KNOWN_REASONS, 'auth_backend_timeout_v3']) {
+      expect(canStartLogin({ phase: 'error', reason }), `error/${reason} still refuses a retry`).toBe(true);
+    }
+  });
+
+  it('drops "Signing in…" the moment the phase is no longer starting', () => {
+    // Asserted against the starting label itself rather than against the literal string, so
+    // rewording the in-flight label cannot leave a stale copy of it stranded on the error screen.
+    const inFlight = signInButtonLabel({ phase: 'starting' }, 'signed_out');
+    for (const screen of ['signed_out', 'invalid_credential'] as const) {
+      expect(signInButtonLabel({ phase: 'error', reason: 'rate_limited' }, screen)).not.toBe(inFlight);
+      expect(signInButtonLabel({ phase: 'error', reason: 'rate_limited' }, screen)).toMatch(/^Sign in( again)?$/);
+    }
+  });
+
+  it('says exactly what it would have said before the attempt — a failed try does not change which screen the person is on', () => {
+    for (const screen of ['signed_out', 'invalid_credential'] as const) {
+      expect(signInButtonLabel({ phase: 'error', reason: 'denied' }, screen)).toBe(signInButtonLabel({ phase: 'idle' }, screen));
+    }
+  });
+
+  it('leaves "in flight" meaning exactly the two phases where a login really is in flight', () => {
+    // The other half of the same guard: widening canStartLogin's refusal to cover 'error' would
+    // disable the only way back, and narrowing it would let a second login race the first.
+    const blocked = ([
+      { phase: 'idle' }, { phase: 'starting' }, { phase: 'code', ...prompt },
+      { phase: 'authorized' }, { phase: 'closed_ok' }, { phase: 'error', reason: 'denied' },
+    ] as LoginPhase[]).filter((phase) => !canStartLogin(phase)).map((phase) => phase.phase);
+    expect(blocked).toEqual(['starting', 'code']);
+  });
+});
+
 // The reasons below are the stable words this codebase itself produces or passes through
 // verbatim: 'denied' and 'expired' arrive from vc's own login --json 'error' event (passed
 // through as free text in runLogin, src/main/auth-session.ts:126-128 — vc chooses the word,
@@ -138,9 +180,35 @@ describe('loginStatusText — the one place that says what is going on right now
     expect(loginStatusText({ phase: 'idle' })).toBe('');
   });
 
-  it('says sign-in is starting, distinct from the idle no-op text', () => {
-    const text = loginStatusText({ phase: 'starting' });
-    expect(text.length).toBeGreaterThan(0);
+  // CHANGED INTENT (was: "says sign-in is starting, distinct from the idle no-op text", asserting
+  // a non-empty string). When this line was written the button had no 'starting' branch, so the
+  // status line was the only place progress could be shown. signInButtonLabel now says "Signing
+  // in…" on the button itself, and the two render one under the other (see renderAuthScreens:
+  // #signin-start's textContent, then #signin-status's textContent, adjacent in the DOM) — the
+  // same sentence twice, one screen reading as two rows of the same news. The owner's decision is
+  // that progress belongs on the button. This is not the implementation being fitted to: the
+  // button branch is asserted separately below and stays non-empty, so "show nothing anywhere"
+  // does not pass this suite.
+  it('has nothing to say while starting — the button itself carries "Signing in…"', () => {
+    expect(loginStatusText({ phase: 'starting' })).toBe('');
+  });
+
+  it('never repeats what the button is already saying, in any phase and on either screen', () => {
+    // The defect in one sentence: two elements saying the same words at the same time. Pinned as
+    // the relationship rather than as two independent string literals, so a later rewording of
+    // either side cannot quietly re-introduce the duplicate.
+    const phases: LoginPhase[] = [
+      { phase: 'idle' }, { phase: 'starting' }, { phase: 'code', ...prompt },
+      { phase: 'authorized' }, { phase: 'closed_ok' }, { phase: 'error', reason: 'denied' },
+    ];
+    for (const phase of phases) {
+      for (const screen of ['signed_out', 'invalid_credential', 'signed_in'] as const) {
+        const status = loginStatusText(phase);
+        if (status === '') continue;
+        expect(status, `status line duplicates the button label in phase ${phase.phase}`)
+          .not.toBe(signInButtonLabel(phase, screen));
+      }
+    }
   });
 
   // Changed from the original behaviour, which had this return a non-empty "Waiting for you to
@@ -155,11 +223,28 @@ describe('loginStatusText — the one place that says what is going on right now
     expect(loginStatusText({ phase: 'code', ...prompt })).toBe('');
   });
 
-  it('says signed in for both authorized and the closed_ok race, and it is the same wording', () => {
-    // Both mean "the login finished" from the person's point of view — the difference between
-    // them is only which vc event happened to arrive, not anything worth showing on screen.
-    expect(loginStatusText({ phase: 'authorized' })).toBe(loginStatusText({ phase: 'closed_ok' }));
-    expect(loginStatusText({ phase: 'authorized' }).length).toBeGreaterThan(0);
+  // CHANGED INTENT (was: "says signed in for both authorized and the closed_ok race", asserting
+  // 'Signed in.' — a non-empty string — for both). Neither phase is a fact about the person yet:
+  // requiresStatusRecheck() returns true for exactly these two because a push only carries vc's
+  // view, and handleLoginPush immediately re-reads status and re-renders. The screen that follows
+  // that re-read is #signin-ready ("You're signed in"), so the status line's "Signed in." was
+  // either a duplicate of that heading a moment later, or — when the re-read disagreed — a claim
+  // the app had just contradicted. Not a fit to the implementation: the error branch below still
+  // has to produce the full sentence, so emptying the whole function does not pass.
+  it('has nothing to say for authorized or the closed_ok race — the re-read decides, not the push', () => {
+    expect(loginStatusText({ phase: 'authorized' })).toBe('');
+    expect(loginStatusText({ phase: 'closed_ok' })).toBe('');
+  });
+
+  it('leaves the error phase as the only phase that puts anything on this line at all', () => {
+    // The closing of the obvious shortcut in the other direction: an implementation that makes
+    // loginStatusText return '' unconditionally passes every single-phase assertion above and
+    // silently drops the failure copy this whole line exists for.
+    const speaking = ([
+      { phase: 'idle' }, { phase: 'starting' }, { phase: 'code', ...prompt },
+      { phase: 'authorized' }, { phase: 'closed_ok' }, { phase: 'error', reason: 'rate_limited' },
+    ] as LoginPhase[]).filter((phase) => loginStatusText(phase) !== '').map((phase) => phase.phase);
+    expect(speaking).toEqual(['error']);
   });
 
   it('delegates the error phase to describeLoginFailure rather than inventing separate copy', () => {
