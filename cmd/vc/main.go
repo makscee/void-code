@@ -51,6 +51,25 @@ var (
 	currentLaunchDiagnostics = newLaunchDiagnostics(false, time.Now, io.Discard)
 )
 
+// welcomeGateSkippingSubCommands names the sub-commands that run instead of the
+// landing screen. A command missing from here is not merely un-prettified: on a
+// non-TTY stdin the gate fails the process before Cobra ever dispatches, so its
+// caller reads "auth failed" on stderr and exit 1 where its own output was
+// supposed to be.
+//
+// That is why access-request is on the list. The desktop spawns it precisely
+// when nobody is signed in or nobody has been granted access — which is the
+// exact condition the gate refuses on — and the whole point of the command is
+// that those two cases arrive as a state on stdout the button can read.
+//
+// The list is a package-level var rather than a local so a test can pin it
+// against the commands actually registered on rootCmd.
+var welcomeGateSkippingSubCommands = map[string]bool{
+	"login": true, "logout": true, "status": true, "update": true,
+	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
+	"desktop-session": true, "access-request": true,
+}
+
 func main() {
 	// Desktop owns a private runtime and performs no vc update work, including
 	// Windows cleanup left by an ordinary self-update.
@@ -86,8 +105,7 @@ func main() {
 	// Any keypress → logged-in: spawn Pi; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
 	// Skipped when --raw is set (jump straight to spawn, no TUI).
-	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true, "desktop-session": true}
-	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
+	hasSubCmd := len(os.Args) > 1 && welcomeGateSkippingSubCommands[os.Args[1]]
 	if !hasSubCmd && !hasRaw {
 		currentLaunchDiagnostics = newLaunchDiagnosticsFromEnv(time.Now, os.Stderr)
 		state, token, authHost, localSource := resolveLocalAuthStateWithSource()
