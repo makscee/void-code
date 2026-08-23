@@ -3,14 +3,30 @@ import type { AuthStatus } from '../main/auth-session';
 // The decision logic behind the sign-in button, kept out of index.ts on purpose: it has no DOM
 // dependency, so it can be tested by calling it directly instead of pattern-matched as text.
 
-export type AuthScreen = 'signed_in' | 'signed_out' | 'invalid_credential';
+export type AuthScreen = 'signed_in' | 'signed_out' | 'invalid_credential' | 'access_not_granted';
 
 // An unreadable status (vc failed, malformed, or the read simply hasn't completed yet) must
-// default to the screen that offers a sign-in action — never to signed_in, which nobody confirmed.
+// default to the screen that offers a sign-in action — never to signed_in, which nobody confirmed,
+// and never to access_not_granted, whose screen deliberately has no sign-in action at all: shown
+// to someone who is merely signed out, it would leave them with no way back in.
+// authState is read as a plain string rather than matched against main's union: this mapper is a
+// whitelist of its own, so it keeps working the same way whether or not that union has yet learned
+// a word vc has started printing — an unrecognised one still lands on signed_out.
 export function screenForStatus(status: AuthStatus | null): AuthScreen {
-  if (status?.authState === 'signed_in') return 'signed_in';
-  if (status?.authState === 'invalid_credential') return 'invalid_credential';
+  const authState: string | undefined = status?.authState;
+  if (authState === 'signed_in') return 'signed_in';
+  if (authState === 'invalid_credential') return 'invalid_credential';
+  if (authState === 'access_not_granted') return 'access_not_granted';
   return 'signed_out';
+}
+
+// Whether the shared Sign in button belongs on a given screen. Lives here, next to the mapper that
+// produces the screens, so the rule is testable without a DOM and so a fifth screen has exactly one
+// place to declare its answer — inline in the renderer, the default for anything new would silently
+// be "yes". "No" for access_not_granted is the point: that sign-in succeeds and changes nothing,
+// which teaches the person the wrong lesson every time they press it.
+export function offersSignIn(screen: AuthScreen): boolean {
+  return screen === 'signed_out' || screen === 'invalid_credential';
 }
 
 // expiresInSeconds is absent when vc doesn't send a lifetime — the code and URL are still real

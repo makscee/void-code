@@ -1,7 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import { beginLogin, canStartLogin, codeSecondsRemaining, formatCountdown, isCodeExpired, loginStatusText, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AuthScreen, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
@@ -33,6 +33,8 @@ const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
 const signinSignedOutElement = document.querySelector<HTMLElement>('#signin-signed-out')!;
 const signinInvalidElement = document.querySelector<HTMLElement>('#signin-invalid')!;
+const signinNoAccessElement = document.querySelector<HTMLElement>('#signin-no-access')!;
+const signinNoAccessRecheckButton = document.querySelector<HTMLButtonElement>('#signin-no-access-recheck')!;
 const signinCodeElement = document.querySelector<HTMLElement>('#signin-code')!;
 const signinCodeValueElement = document.querySelector<HTMLElement>('#signin-code-value')!;
 const signinCodeCopyButton = document.querySelector<HTMLButtonElement>('#signin-code-copy')!;
@@ -49,7 +51,7 @@ const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
-let authScreen: 'signed_in' | 'signed_out' | 'invalid_credential' = 'signed_out';
+let authScreen: AuthScreen = 'signed_out';
 let loginPhase: LoginPhase = { phase: 'idle' };
 let currentLoginId: string | undefined;
 let codeStartedAt = 0;
@@ -74,9 +76,10 @@ function renderAuthScreens(): void {
   const showingCode = loginPhase.phase === 'code';
   signinSignedOutElement.hidden = showingCode || authScreen !== 'signed_out';
   signinInvalidElement.hidden = showingCode || authScreen !== 'invalid_credential';
+  signinNoAccessElement.hidden = showingCode || authScreen !== 'access_not_granted';
   signinCodeElement.hidden = !showingCode;
   signinReadyElement.hidden = showingCode || authScreen !== 'signed_in';
-  signinStartButton.hidden = authScreen === 'signed_in' || showingCode;
+  signinStartButton.hidden = showingCode || !offersSignIn(authScreen);
   signinStartButton.disabled = !canStartLogin(loginPhase);
   signinStartButton.textContent = signInButtonLabel(loginPhase, authScreen);
   signinStatusElement.textContent = loginStatusText(loginPhase);
@@ -263,6 +266,16 @@ signinStartButton.addEventListener('click', () => {
   loginPhase = beginLogin(loginPhase);
   renderAuthScreens();
   void startSignIn();
+});
+// Access is granted elsewhere, on someone else's clock, while this app reads status exactly twice:
+// at startup and after a login resolves. Once a person is parked on that screen nothing would ever
+// look again, so re-reading status is the only honest action left — and it must stay a status read:
+// a sign-in from here succeeds and returns them to the very same screen. One read per press, with
+// the button held disabled for the duration so a second press cannot stack a second read on top.
+signinNoAccessRecheckButton.addEventListener('click', () => {
+  if (signinNoAccessRecheckButton.disabled) return;
+  signinNoAccessRecheckButton.disabled = true;
+  void recheckAuthStatus().finally(() => { signinNoAccessRecheckButton.disabled = false; });
 });
 signinLinkOpenButton.addEventListener('click', () => {
   if (loginPhase.phase !== 'code') return;

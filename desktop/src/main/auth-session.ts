@@ -14,8 +14,23 @@ export interface AuthChildProcess {
 }
 export type AuthSpawner = (vcPath: string, args: string[]) => AuthChildProcess;
 
+// The whole vocabulary vc is allowed to report, in one place: the type below and the shape check
+// further down are both derived from it, so widening one without the other is not possible.
+const AUTH_STATES = ['signed_in', 'signed_out', 'invalid_credential', 'access_not_granted'] as const;
+export type AuthState = (typeof AUTH_STATES)[number];
+
+// A refusal is answered *before* anyone is identified — the credential was fine, the account has no
+// access — so vc never asked "who is this" and does not read the body it got back. Any identity,
+// budget figure or reset date attached to a refusal therefore comes from the same service that just
+// said no, and nobody vouched for it. That rule is enforced here, at the process boundary, and not
+// left to the renderer: a future vc build (or a proxy that helpfully merges fields into the reply)
+// must not be able to put an unverified account fact on a screen. pct is the sharp one — a copied
+// `"pct":0` reads on screen as "0% of your budget used", a confident claim about an account the
+// server refused to discuss. Such a status carries exactly one fact out of this module: its state.
+const REFUSAL_STATES: readonly AuthState[] = ['access_not_granted'];
+
 export interface AuthStatus {
-  authState: 'signed_in' | 'signed_out' | 'invalid_credential';
+  authState: AuthState;
   identity?: string;
   pct?: number;
   resetAt?: string;
@@ -33,8 +48,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // status. A schema regression in vc (renamed field, unrecognised authState) must fail loudly
 // here rather than pass a garbage object through as ok:true, which reads to the UI exactly like
 // signed_out.
-function isValidStatusShape(value: unknown): value is { authState: AuthStatus['authState'] } & Record<string, unknown> {
-  return isPlainObject(value) && (value.authState === 'signed_in' || value.authState === 'signed_out' || value.authState === 'invalid_credential');
+// It stays a whitelist for exactly that reason: matching `typeof value.authState === 'string'`
+// would make room for access_not_granted and silently reopen the hole in the same line.
+function isAuthState(value: unknown): value is AuthState {
+  return typeof value === 'string' && (AUTH_STATES as readonly string[]).includes(value);
+}
+function isValidStatusShape(value: unknown): value is { authState: AuthState } & Record<string, unknown> {
+  return isPlainObject(value) && isAuthState(value.authState);
 }
 
 export type LoginEvent =
@@ -61,10 +81,16 @@ export function readAuthStatus(vcPath: string, spawn: AuthSpawner): Promise<Stat
       }
       if (!isValidStatusShape(parsed)) { resolve({ ok: false, reason: 'invalid_status' }); return; }
       const status: AuthStatus = { authState: parsed.authState };
-      if (typeof parsed.identity === 'string') status.identity = parsed.identity;
-      if (typeof parsed.pct === 'number') status.pct = parsed.pct;
-      if (typeof parsed.resetAt === 'string') status.resetAt = parsed.resetAt;
-      if (typeof parsed.error === 'string') status.reason = KNOWN_STATUS_ERRORS[parsed.error] ?? UNKNOWN_STATUS_ERROR;
+      // See REFUSAL_STATES: the state word is the whole payload of a refusal. `reason` is dropped
+      // with the rest — vc's sentence for this one names an operator the person has no way to
+      // reach, and the fallback word 'unknown_error' would be worse than silence here: it reports
+      // a fault where the system is working exactly as configured.
+      if (!REFUSAL_STATES.includes(parsed.authState)) {
+        if (typeof parsed.identity === 'string') status.identity = parsed.identity;
+        if (typeof parsed.pct === 'number') status.pct = parsed.pct;
+        if (typeof parsed.resetAt === 'string') status.resetAt = parsed.resetAt;
+        if (typeof parsed.error === 'string') status.reason = KNOWN_STATUS_ERRORS[parsed.error] ?? UNKNOWN_STATUS_ERROR;
+      }
       resolve({ ok: true, status });
     });
   });

@@ -10,6 +10,7 @@
   <section id="preflight" hidden>
     <div id="signin-panel"><div id="signin-signed-out"><h2>Sign in to start chatting</h2><p>You'll get a short code and a link. Open the link, enter the code, and you're in.</p></div>
     <div id="signin-invalid" hidden><h2>Sign in again</h2><p>Your sign-in has expired or was revoked. Sign in again to keep chatting — nothing else here changes.</p></div>
+    <div id="signin-no-access" hidden><h2>Access not granted yet</h2><p>Your sign-in worked — this account just doesn't have access to Void Code yet. Access is granted elsewhere, so there is nothing to redo here. Check again to see whether it has arrived.</p><button id="signin-no-access-recheck" type="button">Check again</button></div>
     <div id="signin-code" hidden><h2>Finish signing in</h2><ol id="signin-steps"><li id="signin-step-open"><p>Open this page: <span id="signin-link"></span></p><button id="signin-link-open" type="button">Open</button></li><li id="signin-step-code"><p>Enter this code: <code id="signin-code-value" role="button" tabindex="0"></code></p><button id="signin-code-copy" type="button">Copy</button></li><li id="signin-step-wait"><p>Come back here once you're signed in.</p></li></ol><p id="signin-code-status"></p></div>
     <div id="signin-ready" hidden><h2>You're signed in</h2><p>Click New Chat above to start.</p></div>
     <button id="signin-start" type="button">Sign in</button>
