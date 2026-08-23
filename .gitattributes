@@ -1,0 +1,14 @@
+# Files whose bytes desktop/scripts/resource-pins.json pins by sha256.
+#
+# A checkout is free to rewrite line endings on the way out: `core.autocrlf=true`
+# is set in the GitHub windows-latest runner image, and `core.eol=crlf` asks for
+# the same thing another way. The pins were taken over the committed bytes, so a
+# converted checkout hands the assembly different bytes and it refuses to build --
+# that is how the desktop-windows-app job died on run 32649036114 with
+# "private Pi package.json hash mismatch" on a tree nobody had touched.
+#
+# `-text` turns the conversion off for these paths in both directions, so what is
+# committed is what is checked out on every platform. Keep this list to paths the
+# pin file actually covers; desktop/tests/checkout-stable-pins.test.ts discovers
+# pinned files by digest and fails when a new one is not protected here.
+desktop/runtime/pi/** -text

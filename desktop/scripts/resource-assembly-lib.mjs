@@ -118,11 +118,21 @@ export async function assertNodePin(nodePath, pin) {
   if (version !== pin.version) throw new Error(`private Node version mismatch: ${version}`);
 }
 
+// A pin that fails has to say what it hashed and what it saw. The bytes on disk
+// are not always the bytes that were committed -- a checkout that converts line
+// endings changes them -- so "hash mismatch" alone leaves the reader unable to
+// tell a tampered file from a converted one without reproducing the hash by hand.
+async function assertPinnedBytes(file, expected, subject) {
+  const actual = await shaFile(file);
+  if (actual === expected) return;
+  throw new Error(`private Pi ${subject} hash mismatch: ${file} hashes to ${actual}, resource-pins.json holds ${expected}`);
+}
+
 export async function assertPiSourcePins(piSource, pin) {
   const packagePath = path.join(piSource, 'package.json');
   const lockPath = path.join(piSource, 'package-lock.json');
-  if (await shaFile(packagePath) !== pin.packageJsonSha256) throw new Error('private Pi package.json hash mismatch');
-  if (await shaFile(lockPath) !== pin.packageLockSha256) throw new Error('private Pi package-lock hash mismatch');
+  await assertPinnedBytes(packagePath, pin.packageJsonSha256, 'package.json');
+  await assertPinnedBytes(lockPath, pin.packageLockSha256, 'package-lock');
   const lock = JSON.parse(await readFile(lockPath, 'utf8'));
   const piPackage = lock.packages?.['node_modules/@earendil-works/pi-coding-agent'];
   if (piPackage?.version !== pin.version || piPackage?.integrity !== pin.packageIntegrity) throw new Error('private Pi lock integrity mismatch');
