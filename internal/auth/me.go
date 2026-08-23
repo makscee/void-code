@@ -51,6 +51,14 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return MeResult{}, ErrNotLoggedIn
 	}
+	// 402 means the opposite of 401: the token was accepted and the session
+	// verified, and the refusal is about access to the subject behind it. The
+	// body is a refusal payload, not a session — even when a deployment echoes
+	// a subject back, it is not an identity this service vouched for, so
+	// nothing is read out of it.
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return MeResult{}, ErrAccessNotGranted
+	}
 	if resp.StatusCode != http.StatusOK {
 		return MeResult{}, fmt.Errorf("vc/me returned status %d", resp.StatusCode)
 	}

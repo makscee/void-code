@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -26,6 +27,18 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 
 	me, err := auth.FetchMe(cfg.AuthHost, strings.TrimSpace(token), &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
+		// A refused-access answer is its own state: the credential worked, so
+		// sending the human back to the sign-in screen is advice that cannot
+		// help. The branch is taken on the sentinel, never on the message —
+		// a 401 whose text happens to mention the number is still a credential
+		// problem, and a refusal whose text never mentions it is still this.
+		// Everything else, transport failures included, stays where it was:
+		// "we could not get an answer" is not "the answer was no".
+		if errors.Is(err, auth.ErrAccessNotGranted) {
+			obj["authState"] = "access_not_granted"
+			obj["error"] = err.Error()
+			return json.NewEncoder(out).Encode(obj)
+		}
 		obj["authState"] = "invalid_credential"
 		obj["error"] = err.Error()
 		return json.NewEncoder(out).Encode(obj)

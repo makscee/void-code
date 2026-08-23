@@ -28,3 +28,16 @@ var (
 	ErrDeviceMalformed   = errors.New("malformed identity response")
 	ErrDeviceRateLimited = errors.New("device authorization rate limited")
 )
+
+// ErrAccessNotGranted is returned when a verifying service answers 402: the
+// token was accepted and the session verified, but nobody has granted the
+// subject behind it access yet. It is deliberately not ErrNotLoggedIn — the
+// sign-in already worked, so repeating it changes nothing; what is missing can
+// only be handed out by an operator.
+//
+// What "granted access" is made of on the server (a subscription row, an
+// operator grant, a trial) is an open product question, so neither the sentinel
+// nor its text names one. Relay's wire name for the same refusal,
+// budget_exceeded, is the cautionary example: it points at a monthly budget the
+// case has nothing to do with.
+var ErrAccessNotGranted = errors.New("access has not been granted to this account yet — an operator has to grant it")
