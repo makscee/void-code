@@ -219,33 +219,55 @@ jobs:
     if: ${{ vars.DESKTOP_RELEASE == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Download the macOS app
+      - name: Download every desktop build this run produced
+        # By pattern, never by name. Which builds exist is stated once -- the
+        # matrix in desktop-mac-app.yml, the upload step in
+        # desktop-windows-app.yml -- and this job asks for whatever that came to
+        # rather than keeping a second copy of the answer. The second copy is
+        # what the Intel row walked into: the matrix grew a row, the list here
+        # did not, and nothing went red -- the bundle was built for twenty
+        # minutes of runner time, uploaded as a run artifact nobody can reach,
+        # and left out of the release.
+        #
+        # `void-code-*` is the prefix every desktop upload already carries and no
+        # CLI artifact does -- those are `vc-*`, uploaded by the `build` matrix
+        # above and published by `release` -- so this reaches the desktop builds
+        # and only them. A new architecture arrives here on its own; a removed
+        # one leaves nothing behind pointing at it.
+        #
+        # merge-multiple is not decoration. Downloaded by pattern without it,
+        # each artifact lands in a directory named after itself and the glob
+        # below would match those directories instead of the files in them.
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: void-code-mac-arm64
-          path: dist
-
-      - name: Download the Windows installer
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: void-code-windows-x64-installer
-          path: dist
+          pattern: void-code-*
+          merge-multiple: true
+          path: desktop-installers
 
       - name: Sign build provenance for the desktop builds
+        # The same glob the attach step uses, over a directory holding nothing
+        # but what the download brought back, so what is signed and what is
+        # published cannot come apart. Signing a subset would be worse than
+        # signing none: the release would then carry attestations that look
+        # complete. The action fails when the path matches nothing, which is
+        # where a download that found no artifact stops -- before the release
+        # gains anything.
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
-          subject-path: |
-            dist/void-code-mac-arm64.zip
-            dist/Void-Code-*-windows-x64.exe
+          subject-path: desktop-installers/*
 
       - name: Attach them to the release that already exists
         # `upload`, never `create`: the release was made by the `release` job on
-        # its own terms, and this adds two files to it. There is no checkout in
-        # this job, so gh is told the repository through the environment.
+        # its own terms, and this adds the desktop builds to it. There is no
+        # checkout in this job, so gh is told the repository through the
+        # environment. A directory of its own, not the `dist` the `release` job
+        # stages the CLI in: this glob must not be able to reach a CLI asset,
+        # and a name saying what it holds is how a reader can tell that it
+        # cannot.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release upload ${{ github.ref_name }} dist/void-code-mac-arm64.zip dist/Void-Code-*-windows-x64.exe --clobber
+        run: gh release upload ${{ github.ref_name }} desktop-installers/* --clobber
 
   publish-auth:
     name: Sync release to void-auth
