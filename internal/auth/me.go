@@ -51,13 +51,25 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return MeResult{}, ErrNotLoggedIn
 	}
+	// 402 means the opposite of 401: the token was accepted and the session
+	// verified, and the refusal is about access to the subject behind it. The
+	// body is a refusal payload, not a session — even when a deployment echoes
+	// a subject back, it is not an identity this service vouched for, so
+	// nothing is read out of it.
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return MeResult{}, ErrAccessNotGranted
+	}
 	if resp.StatusCode != http.StatusOK {
 		return MeResult{}, fmt.Errorf("vc/me returned status %d", resp.StatusCode)
 	}
 
 	var r struct {
 		UserID string `json:"userId"`
-		Email  string `json:"email"`
+		// Relay's /v1/vc/me names the same value subject_id (void-relay
+		// src/vc-me.ts compares body.subject_id against user.userId), so both
+		// spellings are accepted as identity.
+		SubjectID string `json:"subject_id"`
+		Email     string `json:"email"`
 		// subDaysLeft intentionally ignored — VCD-65: sentinel from server, no gate.
 		Pct        *float64 `json:"pct"`
 		ResetAt    string   `json:"resetAt"`
@@ -66,12 +78,28 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
 	}
-	if strings.TrimSpace(r.UserID) == "" && strings.TrimSpace(r.Email) == "" {
+
+	// Trim once, up front: the trimmed values are both what gets checked and
+	// what gets returned, so no caller sees a value the checks did not see.
+	userID := strings.TrimSpace(r.UserID)
+	subjectID := strings.TrimSpace(r.SubjectID)
+	email := strings.TrimSpace(r.Email)
+
+	// Two identities that disagree are a contradiction, not a choice: picking a
+	// winner would log the user in as somebody the verifying service did not name.
+	if userID != "" && subjectID != "" && userID != subjectID {
+		return MeResult{}, fmt.Errorf("decoding vc/me response: conflicting identity: userId %q != subject_id %q", userID, subjectID)
+	}
+	identity := userID
+	if identity == "" {
+		identity = subjectID
+	}
+	if identity == "" && email == "" {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: missing identity")
 	}
 	return MeResult{
-		UserID:     r.UserID,
-		Email:      r.Email,
+		UserID:     identity,
+		Email:      email,
 		Pct:        r.Pct,
 		ResetAt:    r.ResetAt,
 		BalanceUsd: r.BalanceUsd,

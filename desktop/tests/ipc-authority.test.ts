@@ -41,7 +41,7 @@ describe('IPC authority wiring', () => {
     const handlers = registeredHandlers(source);
 
     for (const [name, channel] of Object.entries(IPC)) {
-      if ([IPC.output, IPC.exit, IPC.lifecycle].includes(channel)) continue;
+      if ([IPC.output, IPC.exit, IPC.lifecycle, IPC.authLoginEvent].includes(channel)) continue;
       const handler = handlers.get(name);
       expect(handler, `${channel} is structurally registered`).toBeDefined();
       expect(firstEffectIsGuard(handler!), `${channel} guards before effects`).toBe(true);

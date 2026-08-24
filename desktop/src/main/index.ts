@@ -5,11 +5,15 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, chatRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { IPC, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
 import type { PrivateRuntime } from './resources';
+import { readAuthStatus } from './auth-session';
+import { startAuthLogin } from './auth-ipc';
+import { spawnAuthProcess } from './auth-spawn';
+import { createLoginDiagnosticsStore } from './auth-diagnostics';
 import { SessionManager, wrapPty } from './session-manager';
 import { StatusChannelStore } from './status-channel';
 import { buildSupportReport, copySupportReport, saveSupportReport } from './support-report';
@@ -34,6 +38,8 @@ const missingRendererTest = missingRendererRequested(process.argv, process.env.V
 let manager: SessionManager;
 let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
+let runtime: PrivateRuntime;
+const loginDiagnostics = createLoginDiagnosticsStore();
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   return wrapPty(spawnDesktopRequest(runtime, request, pty.spawn, authority));
@@ -96,6 +102,14 @@ function registerIpc(): void {
       (file, text) => writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 }),
     );
   });
+  ipcMain.handle(IPC.authStatus, (event) => { assertRenderer(event); return readAuthStatus(runtime.vc, spawnAuthProcess); });
+  ipcMain.handle(IPC.authLoginStart, (event) => { assertRenderer(event);
+    const ownerId = event.sender.id;
+    const loginId = randomUUID();
+    startAuthLogin(loginId, runtime.vc, spawnAuthProcess, (push) => { webContents.fromId(ownerId)?.send(IPC.authLoginEvent, push); }, (url) => { void shell.openExternal(url); }, (message) => loginDiagnostics.record(loginId, message));
+    return { loginId };
+  });
+  ipcMain.handle(IPC.authCodeCopy, (event, raw: unknown) => { assertRenderer(event); clipboard.writeText(codeCopyRequest(raw)); });
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { assertRenderer(event); manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
   ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { assertRenderer(event); try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
 }
@@ -135,7 +149,7 @@ async function captureVisibleColors(window: BrowserWindow, raw: unknown) {
 async function createWindow(): Promise<BrowserWindow> {
   const window = await startupStage('window-creation', () => new BrowserWindow({
     title: 'Void Code', show: false, width: 1100, height: 760, backgroundColor: '#101216',
-    webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   }));
   // Renderer IPC begins during load, so authority must name this exact window before loading it.
   mainWindow = window;
@@ -183,7 +197,7 @@ async function createWindow(): Promise<BrowserWindow> {
 
 async function bootstrap(): Promise<void> {
   await startupStage('readiness', () => app.whenReady());
-  const runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
+  runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
   workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
   if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
   const statusChannels = new StatusChannelStore(

@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, preloadSessionId } from '../shared/preload-contract';
 import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
+import type { AuthLoginPush } from '../main/auth-ipc';
+import type { StatusResult } from '../main/auth-session';
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
 function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind: SubscriptionKind, id: SessionId, listener: (event: T) => void): Unsubscribe {
@@ -27,6 +29,11 @@ function subscribe<T extends OutputEvent | ExitEvent | ChatSemanticStatus>(kind:
     ipcRenderer.removeListener(existing.channel, existing.listener);
     ipcRenderer.send(IPC.unsubscribe, existing.request);
   };
+}
+function onPush<T>(channel: string, listener: (event: T) => void): Unsubscribe {
+  const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => listener(payload as T);
+  ipcRenderer.on(channel, wrapped);
+  return () => ipcRenderer.removeListener(channel, wrapped);
 }
 function teardown(): void {
   for (const id of [...active.keys()]) {
@@ -64,7 +71,14 @@ const api: TerminalApi = {
     close: (id) => ipcRenderer.invoke(IPC.workspaceClose, { sessionId: id }),
     resume: (id) => ipcRenderer.invoke(IPC.workspaceResume, { sessionId: id }),
   }),
+  auth: Object.freeze({
+    status: () => ipcRenderer.invoke(IPC.authStatus) as Promise<StatusResult>,
+    loginStart: () => ipcRenderer.invoke(IPC.authLoginStart) as Promise<{ loginId: string }>,
+    onLoginEvent: (listener) => onPush<AuthLoginPush>(IPC.authLoginEvent, listener),
+    copyCode: (code) => ipcRenderer.invoke(IPC.authCodeCopy, { code }) as Promise<void>,
+  }),
 };
 Object.freeze(api);
+
 window.addEventListener('beforeunload', teardown, { once: true });
 contextBridge.exposeInMainWorld('voidTerminal', api);

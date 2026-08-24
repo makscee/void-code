@@ -6,6 +6,7 @@ describe('desktopChildEnv', () => {
   it('constructs an exact Darwin allowlist', () => {
     expect(desktopChildEnv('darwin', { ...poison, HOME: '/Users/real', TMPDIR: '/private/tmp/real' }, '/app/private/node', { path: '/status', chatId: 'chat', generation: 3 })).toEqual({
       HOME: '/Users/real', TMPDIR: '/private/tmp/real', PATH: '/app/private:/usr/bin:/bin', TERM: 'xterm-256color', COLORTERM: 'truecolor',
+      VC_ACCESS_CHECK_HOST: 'https://relay.makscee.ru',
       VC_DESKTOP_STATUS_PATH: '/status', VC_DESKTOP_CHAT_ID: 'chat', VC_DESKTOP_STATUS_GENERATION: '3',
     });
   });
@@ -13,6 +14,7 @@ describe('desktopChildEnv', () => {
     expect(desktopChildEnv('win32', { ...poison, userprofile: 'C:\\Users\\real', SYSTEMROOT: 'D:\\Windows', temp: 'T:\\temp', tmp: 'T:\\tmp', homedrive: 'C:', homepath: '\\Users\\real' }, 'C:\\app\\node.exe')).toEqual({
       USERPROFILE: 'C:\\Users\\real', SystemRoot: 'D:\\Windows', TEMP: 'T:\\temp', TMP: 'T:\\tmp', HOMEDRIVE: 'C:', HOMEPATH: '\\Users\\real',
       PATH: 'C:\\app;D:\\Windows\\System32', TERM: 'xterm-256color', COLORTERM: 'truecolor',
+      VC_ACCESS_CHECK_HOST: 'https://relay.makscee.ru',
     });
   });
   it('rejects missing required homes, temp, or system root', () => {

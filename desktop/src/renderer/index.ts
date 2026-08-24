@@ -1,7 +1,8 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import type { RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
+import { beginLogin, canStartLogin, codeSecondsRemaining, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AuthScreen, type LoginPhase } from './auth-view';
+import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
@@ -30,6 +31,19 @@ const endedHeading = document.querySelector<HTMLElement>('#ended-heading')!;
 const endedDetail = document.querySelector<HTMLElement>('#ended-detail')!;
 const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
 const closeEndedButton = document.querySelector<HTMLButtonElement>('#close-ended')!;
+const signinSignedOutElement = document.querySelector<HTMLElement>('#signin-signed-out')!;
+const signinInvalidElement = document.querySelector<HTMLElement>('#signin-invalid')!;
+const signinNoAccessElement = document.querySelector<HTMLElement>('#signin-no-access')!;
+const signinNoAccessRecheckButton = document.querySelector<HTMLButtonElement>('#signin-no-access-recheck')!;
+const signinCodeElement = document.querySelector<HTMLElement>('#signin-code')!;
+const signinCodeValueElement = document.querySelector<HTMLElement>('#signin-code-value')!;
+const signinCodeCopyButton = document.querySelector<HTMLButtonElement>('#signin-code-copy')!;
+const signinCodeStatusElement = document.querySelector<HTMLElement>('#signin-code-status')!;
+const signinLinkElement = document.querySelector<HTMLElement>('#signin-link')!;
+const signinLinkOpenButton = document.querySelector<HTMLButtonElement>('#signin-link-open')!;
+const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
+const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
+const signinStatusElement = document.querySelector<HTMLElement>('#signin-status')!;
 
 type Runtime = ProductTerminal & { container: HTMLDivElement; offOutput: () => void; offExit: () => void; offStatus: () => void; exited: boolean; recoveryCode?: RecoveryCode };
 const runtimes = new Map<string, Runtime>();
@@ -37,6 +51,15 @@ const chatStatuses = new Map<string, RendererChatStatus>();
 let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
+let authScreen: AuthScreen = 'signed_out';
+let loginPhase: LoginPhase = { phase: 'idle' };
+let currentLoginId: string | undefined;
+let codeStartedAt = 0;
+let codeTimer: ReturnType<typeof setInterval> | undefined;
+// True only for the currently-selected chat, between a start failure routed to 'signin' and the
+// next launch attempt — it is what keeps the sign-in screens visible in place of the generic
+// "chat could not start" screen, overriding the usual "a chat is selected" preflight-hides rule.
+let signinOnStartFailure = false;
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
 function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
@@ -44,6 +67,50 @@ function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED
   const guidance = RECOVERY_GUIDANCE[code];
   endedHeading.textContent = guidance.heading; endedDetail.textContent = guidance.detail;
   restartButton.hidden = !guidance.canRestart; endedElement.hidden = false;
+}
+function stopCodeTimer(): void { if (codeTimer !== undefined) { clearInterval(codeTimer); codeTimer = undefined; } }
+// The status line's colour is a statement about the phase, not about its text: switching the
+// class on `loginStatusText(...) !== ''` would re-couple the colour to the copy and paint any
+// future non-error sentence on this line red.
+function renderAuthScreens(): void {
+  const showingCode = loginPhase.phase === 'code';
+  signinSignedOutElement.hidden = showingCode || authScreen !== 'signed_out';
+  signinInvalidElement.hidden = showingCode || authScreen !== 'invalid_credential';
+  signinNoAccessElement.hidden = showingCode || authScreen !== 'access_not_granted';
+  signinCodeElement.hidden = !showingCode;
+  signinReadyElement.hidden = showingCode || authScreen !== 'signed_in';
+  signinStartButton.hidden = showingCode || !offersSignIn(authScreen);
+  signinStartButton.disabled = !canStartLogin(loginPhase);
+  signinStartButton.textContent = signInButtonLabel(loginPhase, authScreen);
+  signinStatusElement.textContent = loginStatusText(loginPhase);
+  signinStatusElement.classList.toggle('error', loginPhase.phase === 'error');
+  if (loginPhase.phase === 'code') {
+    signinCodeValueElement.textContent = loginPhase.userCode;
+    signinLinkElement.textContent = loginPhase.verificationUrl;
+    const elapsed = Math.floor((Date.now() - codeStartedAt) / 1000);
+    const remaining = codeSecondsRemaining(loginPhase, elapsed);
+    // An unknown lifetime (no expiresInSeconds) is not a countdown to a fabricated moment.
+    signinCodeStatusElement.textContent = isCodeExpired(loginPhase, elapsed)
+      ? 'This code expired. Click Sign in to get a new one.'
+      : remaining === undefined ? 'Enter this code to finish signing in.' : formatCountdown(remaining);
+  }
+}
+function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
+  authScreen = screenForStatus(result.ok ? result.status : null);
+  renderAuthScreens();
+}
+async function loadAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
+async function recheckAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
+async function handleLoginPush(event: AuthLoginPush): Promise<void> {
+  if (event.loginId !== currentLoginId) return;
+  loginPhase = reduceLoginPush(loginPhase, event);
+  if (loginPhase.phase === 'code') { codeStartedAt = Date.now(); clearTimeout(copiedLabelTimer); signinCodeCopyButton.textContent = 'Copy'; stopCodeTimer(); codeTimer = setInterval(renderAuthScreens, 1000); } else stopCodeTimer();
+  renderAuthScreens();
+  if (requiresStatusRecheck(loginPhase)) await recheckAuthStatus();
+}
+async function startSignIn(): Promise<void> {
+  const { loginId } = await window.voidTerminal.auth.loginStart();
+  currentLoginId = loginId;
 }
 function supportContext(): SupportRequest {
   const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined;
@@ -93,12 +160,22 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false, recoveryCode: 'NONE' as RecoveryCode }) as Runtime; runtimes.set(tab.id, runtime);
   try {
     currentRecovery = 'NONE';
+    signinOnStartFailure = false;
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
-    offExit = window.voidTerminal.onExit(tab.id, () => {
+    offExit = window.voidTerminal.onExit(tab.id, async () => {
       runtime.exited = true;
-      if (view.workspace?.selectedId === tab.id) { container.hidden = true; showEnded('RUNTIME_EXITED', runtime); }
+      // vc can spawn fine and only refuse once running (a credential that died mid-session) —
+      // the same routing decision as a start failure applies here, on a status read taken now,
+      // not whatever authScreen was when this chat launched.
+      if (view.workspace?.selectedId === tab.id) {
+        container.hidden = true;
+        await recheckAuthStatus();
+        const route = routeStartFailure(authScreen);
+        if (route.screen === 'generic') showEnded('RUNTIME_EXITED', runtime);
+        else { signinOnStartFailure = true; endedElement.hidden = true; preflightElement.hidden = false; renderAuthScreens(); }
+      }
     });
     runtime.offOutput = offOutput; runtime.offExit = offExit;
     chatStatuses.set(tab.id, (await window.voidTerminal.lifecycleStatus({ sessionId: tab.id })).status);
@@ -108,8 +185,19 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     if (!container.hidden) terminal.focus();
   } catch (error) {
     runtime.exited = true; container.hidden = true;
-    const code = error instanceof Error && error.message.includes('SESSION_MISSING') ? 'SESSION_MISSING' : 'SESSION_START_FAILED';
-    showEnded(code, runtime);
+    await recheckAuthStatus();
+    const route = routeStartFailure(authScreen);
+    if (route.screen === 'generic') {
+      const code = error instanceof Error && error.message.includes('SESSION_MISSING') ? 'SESSION_MISSING' : 'SESSION_START_FAILED';
+      showEnded(code, runtime);
+    } else {
+      // A start failure while not signed in is (almost certainly) an auth problem, not a runtime
+      // fault — show the sign-in screen for the state just re-read, not the generic ended screen.
+      signinOnStartFailure = true;
+      endedElement.hidden = true;
+      preflightElement.hidden = false;
+      renderAuthScreens();
+    }
   }
 }
 
@@ -119,7 +207,7 @@ function render(): void {
   const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
   folderElement.textContent = recovering ? 'Workspace unavailable' : workspace?.path ?? 'No folder selected';
   chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
-  emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || Boolean(workspace.selectedId); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
+  emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || (Boolean(workspace.selectedId) && !signinOnStartFailure); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
   recoveryPathElement.textContent = recovering ? 'The previously selected folder cannot be found.' : '';
   tabsElement.replaceChildren(); recentListElement.replaceChildren();
   if (!workspace || recovering) { currentRecovery = recovering ? 'WORKSPACE_MISSING' : 'AUTH_PREFLIGHT_REQUIRED'; recentToggleButton.hidden = true; setRecentOpen(false, false); endedElement.hidden = true; for (const runtime of runtimes.values()) runtime.container.hidden = true; fitAfterLayout(); return; }
@@ -136,6 +224,7 @@ function render(): void {
   for (const runtime of runtimes.values()) runtime.container.hidden = true;
   const selected = workspace.selectedId ? runtimes.get(workspace.selectedId) : undefined;
   if (selected && !selected.exited) { currentRecovery = 'NONE'; selected.container.hidden = false; if (!focusedRecentControl) selected.terminal.focus(); endedElement.hidden = true; }
+  else if (selected?.exited && signinOnStartFailure) { endedElement.hidden = true; renderAuthScreens(); }
   else if (selected?.exited) {
     const code = selected.recoveryCode;
     showEnded(code === 'SESSION_START_FAILED' || code === 'SESSION_MISSING' || code === 'RUNTIME_EXITED' ? code : 'RUNTIME_EXITED', selected);
@@ -157,7 +246,7 @@ async function closeChat(id: string): Promise<void> { await stop(id); view = awa
 async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {
   const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
-  announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions. Before the first chat, ask your operator to confirm existing VC sign-in and network access.'); render();
+  announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions.'); render();
 }
 
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
@@ -172,6 +261,50 @@ removeWorkspaceButton.addEventListener('click', async () => { for (const id of [
 newChatButton.addEventListener('click', async () => { const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
 restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
+signinStartButton.addEventListener('click', () => {
+  if (!canStartLogin(loginPhase)) return;
+  loginPhase = beginLogin(loginPhase);
+  renderAuthScreens();
+  void startSignIn();
+});
+// Access is granted elsewhere, on someone else's clock, while this app reads status exactly twice:
+// at startup and after a login resolves. Once a person is parked on that screen nothing would ever
+// look again, so re-reading status is the only honest action left — and it must stay a status read:
+// a sign-in from here succeeds and returns them to the very same screen. One read per press, with
+// the button held disabled for the duration so a second press cannot stack a second read on top.
+signinNoAccessRecheckButton.addEventListener('click', () => {
+  if (signinNoAccessRecheckButton.disabled) return;
+  signinNoAccessRecheckButton.disabled = true;
+  void recheckAuthStatus().finally(() => { signinNoAccessRecheckButton.disabled = false; });
+});
+signinLinkOpenButton.addEventListener('click', () => {
+  if (loginPhase.phase !== 'code') return;
+  void window.voidTerminal.openLink(loginPhase.verificationUrl);
+});
+// The copy confirmation lives on the button itself: its label becomes "Copied" once the clipboard
+// write has actually come back, then returns to "Copy" so a second copy reads as a second copy.
+// The pending timer is cleared first — otherwise the first copy's timer wipes the second one's
+// confirmation a moment after it appeared.
+let copiedLabelTimer: ReturnType<typeof setTimeout> | undefined;
+function showCodeCopied(): void {
+  clearTimeout(copiedLabelTimer);
+  signinCodeCopyButton.textContent = 'Copied';
+  copiedLabelTimer = setTimeout(() => { signinCodeCopyButton.textContent = 'Copy'; }, 1500);
+}
+signinCodeCopyButton.addEventListener('click', () => {
+  if (loginPhase.phase !== 'code') return;
+  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => { showCodeCopied(); });
+});
+signinCodeValueElement.addEventListener('click', () => {
+  if (loginPhase.phase !== 'code') return;
+  void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => { showCodeCopied(); });
+});
+signinCodeValueElement.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  signinCodeValueElement.click();
+});
+window.voidTerminal.auth.onLoginEvent((event) => { void handleLoginPush(event); });
 new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(mainElement);
 
 type ByteFacts = { bytes: number; chunks: number; escBytes: number };
@@ -385,6 +518,7 @@ async function productionProbe(): Promise<void> {
   document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify(result)}`;
 }
 
+void loadAuthStatus();
 void window.voidTerminal.workspace.load().then(async (loaded) => {
   view = loaded; render();
   if (new URLSearchParams(location.search).get('productionTerminalProbe') === '1') await productionProbe();

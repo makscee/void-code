@@ -1,0 +1,1 @@
+{"event":"prompt","userCode":"DJAHWRAF","verificationUrl":"https://auth.makscee.ru/device"}

@@ -70,7 +70,10 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
 	}
 	cfg := deps.resolveConfig()
-	me, reached, err := deps.authGate(token, cfg.AuthHost, &http.Client{Timeout: authProbeTimeout})
+	// The access check, not sign-in: this asks who the token belongs to and
+	// whether they are let in, and in production that answer comes from a
+	// different service than the one serving the device-authorization routes.
+	me, reached, err := deps.authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
 	}

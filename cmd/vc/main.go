@@ -51,6 +51,25 @@ var (
 	currentLaunchDiagnostics = newLaunchDiagnostics(false, time.Now, io.Discard)
 )
 
+// welcomeGateSkippingSubCommands names the sub-commands that run instead of the
+// landing screen. A command missing from here is not merely un-prettified: on a
+// non-TTY stdin the gate fails the process before Cobra ever dispatches, so its
+// caller reads "auth failed" on stderr and exit 1 where its own output was
+// supposed to be.
+//
+// That is why access-request is on the list. The desktop spawns it precisely
+// when nobody is signed in or nobody has been granted access — which is the
+// exact condition the gate refuses on — and the whole point of the command is
+// that those two cases arrive as a state on stdout the button can read.
+//
+// The list is a package-level var rather than a local so a test can pin it
+// against the commands actually registered on rootCmd.
+var welcomeGateSkippingSubCommands = map[string]bool{
+	"login": true, "logout": true, "status": true, "update": true,
+	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
+	"desktop-session": true, "access-request": true,
+}
+
 func main() {
 	// Desktop owns a private runtime and performs no vc update work, including
 	// Windows cleanup left by an ordinary self-update.
@@ -86,8 +105,7 @@ func main() {
 	// Any keypress → logged-in: spawn Pi; logged-out: run login.
 	// Skipped for sub-commands (login/logout/status/update) so automation works.
 	// Skipped when --raw is set (jump straight to spawn, no TUI).
-	subCmds := map[string]bool{"login": true, "logout": true, "status": true, "update": true, "hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true, "desktop-session": true}
-	hasSubCmd := len(os.Args) > 1 && subCmds[os.Args[1]]
+	hasSubCmd := len(os.Args) > 1 && welcomeGateSkippingSubCommands[os.Args[1]]
 	if !hasSubCmd && !hasRaw {
 		currentLaunchDiagnostics = newLaunchDiagnosticsFromEnv(time.Now, os.Stderr)
 		state, token, authHost, localSource := resolveLocalAuthStateWithSource()
@@ -204,13 +222,18 @@ func refreshLaunchAfterLogin(deps launchPreflightDeps) (welcome.AuthState, strin
 	return state, token, authHost, startLaunchPreflight(token, authHost, false, deps)
 }
 
+// The host returned here is handed straight to startLaunchPreflight, which
+// passes it to authGate — so it is the access check's host, not sign-in's, in
+// both branches. A token-less launch returns it too: the preflight is started
+// either way, and a host that changes after login would make the started
+// preflight unreusable.
 func resolveLocalAuthStateWithSource() (welcome.AuthState, string, string, launchSource) {
 	token, _, err := auth.Load()
 	cfg := config.OSResolve()
 	if err != nil || strings.TrimSpace(token) == "" {
-		return welcome.AuthState{LoggedIn: false}, token, cfg.AuthHost, sourceLocal
+		return welcome.AuthState{LoggedIn: false}, token, cfg.AccessCheckHost, sourceLocal
 	}
-	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AuthHost, sourceLocal
+	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AccessCheckHost, sourceLocal
 }
 
 // resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
@@ -220,7 +243,7 @@ func resolveAuthState() welcome.AuthState {
 	if err != nil || strings.TrimSpace(token) == "" {
 		return welcome.AuthState{LoggedIn: false}
 	}
-	me, err := auth.FetchMe(config.OSResolve().AuthHost, token, &http.Client{Timeout: authProbeTimeout})
+	me, err := auth.FetchMe(config.OSResolve().AccessCheckHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return welcome.AuthState{LoggedIn: false, IdentityUnverified: true}
 	}
@@ -324,8 +347,10 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	token, _, _ := auth.Load()
 
 	// Admission is always live: cached identity and budget are only display hints,
-	// never permission to start a paid session.
-	me, reached, err := authGate(token, cfg.AuthHost, &http.Client{Timeout: authProbeTimeout})
+	// never permission to start a paid session. The question is the access check
+	// — who the token belongs to and whether they are let in — so it goes to the
+	// access-check host, the same one the desktop session gate asks.
+	me, reached, err := authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeRejected, sourceRejected)
 		currentLaunchDiagnostics.flush()
@@ -529,6 +554,7 @@ func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
 // Rules:
 //   - token absent → error (not logged in)
 //   - token present, auth server returns 401 → error (token rejected)
+//   - token present, access refused (402) → auth.ErrAccessNotGranted, unwrapped
 //   - token present, server reachable → returns (me, true, nil)
 //   - token present, network/server error → error — admission cannot be authoritative
 //
@@ -544,6 +570,14 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 	}
 	if errors.Is(err, auth.ErrNotLoggedIn) {
 		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+	}
+	// A refusal is not a failed check. Neither neighbour fits it: the credential
+	// worked, so sending the human back to sign-in cannot help, and the check was
+	// not unavailable — it ran and answered, so repeating it changes nothing.
+	// The sentinel travels unwrapped so callers branch on the outcome instead of
+	// on prose, and so the wording stays the one runStatusJSON already reports.
+	if errors.Is(err, auth.ErrAccessNotGranted) {
+		return auth.MeResult{}, false, err
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
 }

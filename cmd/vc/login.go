@@ -31,10 +31,26 @@ to ~/.void-code/token with mode 0600.`,
 	RunE: runLogin,
 }
 
-func init() { rootCmd.AddCommand(loginCmd) }
+func init() {
+	loginCmd.Flags().Bool("json", false, "emit device-flow progress as JSON lines instead of the interactive prompt (for callers with no terminal, e.g. the desktop app)")
+	rootCmd.AddCommand(loginCmd)
+}
 
-func runLogin(_ *cobra.Command, _ []string) error {
-	return runDeviceFlow(config.OSResolve())
+// deviceFlowRunner and deviceLoginJSONRunner are indirections so tests can swap
+// the destination runLogin dispatches to without making a network call.
+var deviceFlowRunner = runDeviceFlow
+
+var deviceLoginJSONRunner = func(cfg config.Config, out io.Writer) error {
+	return runDeviceLoginJSON(newDeviceLoginDeps(cfg), out)
+}
+
+func runLogin(cmd *cobra.Command, _ []string) error {
+	if cmd != nil {
+		if jsonFlag, err := cmd.Flags().GetBool("json"); err == nil && jsonFlag {
+			return deviceLoginJSONRunner(config.OSResolve(), os.Stdout)
+		}
+	}
+	return deviceFlowRunner(config.OSResolve())
 }
 
 // runLoginInteractive is called from main.go when the banner detects logged-out

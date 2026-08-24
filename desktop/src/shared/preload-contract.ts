@@ -5,6 +5,7 @@ export const IPC = {
   workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
   workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
   supportCopy: 'support:copy', supportSave: 'support:save',
+  authStatus: 'auth:status', authLoginStart: 'auth:login-start', authLoginEvent: 'auth:login-event', authCodeCopy: 'auth:code-copy',
 } as const;
 
 const FIXTURE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;

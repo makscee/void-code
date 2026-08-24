@@ -44,3 +44,25 @@ jobs:
             desktop/runtime/pi/package-lock.json
       - name: Provision and require exact pinned Pi smoke
         run: desktop/scripts/provision-pinned-pi-smoke.sh
+
+  # ---------------------------------------------------------------------------
+  # Desktop packaging is described in exactly one place per platform, and both
+  # callers reach it through `uses:`. Here, unconditionally: every branch push
+  # and every pull request builds the app and the installer. In release.yml the
+  # same two files are called behind the DESKTOP_RELEASE gate. That is what
+  # makes a green run on a branch evidence about the release build -- the steps
+  # are not similar, they are the same file. Two copies would be free to drift,
+  # and the copy that drifts is always the one nobody runs.
+  #
+  # Both called workflows declare read-only permissions of their own, are
+  # reachable only by `workflow_call`, and publish nothing: they leave a run
+  # artifact and stop. Nothing about that is re-stated here, because re-stating
+  # it here is the mistake this arrangement removes.
+  # ---------------------------------------------------------------------------
+  desktop-mac-app:
+    name: Desktop macOS app artifact
+    uses: ./.github/workflows/desktop-mac-app.yml
+
+  desktop-windows-app:
+    name: Desktop Windows installer artifact
+    uses: ./.github/workflows/desktop-windows-app.yml

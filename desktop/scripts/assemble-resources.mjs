@@ -65,7 +65,11 @@ try {
 
   await cp(path.join(piSource, 'package.json'), path.join(staging, 'pi/package.json'));
   await cp(path.join(piSource, 'package-lock.json'), path.join(staging, 'pi/package-lock.json'));
-  execFileSync('npm', ['ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], {
+  // `npm ci` output varies with the npm that runs it, and the tree is hashed
+  // against a pin -- so the npm is the one just staged from the pinned Node
+  // distribution, executed by that distribution's own node.
+  const stagedNpmCli = path.join(staging, 'node/lib/node_modules/npm/bin/npm-cli.js');
+  execFileSync(nodePath, [stagedNpmCli, 'ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: path.join(staging, 'pi'),
     env: process.env,
     stdio: 'inherit',

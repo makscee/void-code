@@ -4,7 +4,9 @@ import { RECOVERY_GUIDANCE } from '../src/renderer/recovery';
 
 describe('stable pilot recovery guidance', () => {
   it('covers every required coarse recovery state with an action', () => {
-    expect(RECOVERY_GUIDANCE.AUTH_PREFLIGHT_REQUIRED.detail).toMatch(/operator.*sign-in.*network.*guided VC login/i);
+    // A person can now sign in from inside the app, so the guidance must stop sending them to
+    // an operator and a terminal for the common case — that's the wall this step removes.
+    expect(RECOVERY_GUIDANCE.AUTH_PREFLIGHT_REQUIRED.detail).toMatch(/sign in.*directly.*network/i);
     expect(RECOVERY_GUIDANCE.SESSION_START_FAILED.detail).toMatch(/sign-in.*network.*Restart.*Support Report/i);
     expect(RECOVERY_GUIDANCE.RUNTIME_EXITED.detail).toMatch(/Restart.*no shell.*Support Report/i);
     expect(RECOVERY_GUIDANCE.WORKSPACE_MISSING.detail).toMatch(/Locate.*remove.*fallback folder/i);
