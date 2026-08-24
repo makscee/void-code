@@ -2,9 +2,30 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, realpathSync, type Stats } from 'node:fs';
 import path from 'node:path';
 
+// Every platform a private runtime is built for. The app accepts the manifest
+// written for the machine it is running on and no other: an Intel Mac that
+// accepted `darwin-arm64` would be starting an arm64 runtime, and one that
+// accepted nothing but `darwin-arm64` would refuse its own.
+const RUNTIME_PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'] as const;
+export type RuntimePlatform = (typeof RUNTIME_PLATFORMS)[number];
+
+/**
+ * The manifest platform a machine will accept, architecture included.
+ *
+ * A platform nothing is built for is refused by name rather than answered with
+ * something plausible: "we do not build that" and "the manifest does not match"
+ * send the reader to different places.
+ */
+export function expectedRuntimePlatform(platform: string, arch: string): RuntimePlatform {
+  const name = `${platform}-${arch}`;
+  const built = RUNTIME_PLATFORMS.find((candidate) => candidate === name);
+  if (built === undefined) throw new Error(`no private runtime is built for ${name}`);
+  return built;
+}
+
 export interface RuntimeManifest {
   schema: 1;
-  platform: 'darwin-arm64' | 'win32-x64';
+  platform: RuntimePlatform;
   vc: { version: string; sourceCommit: string; path: string; sha256: string };
   node: { version: string; path: string; sha256: string };
   pi: { version: string; entry: string; treeSha256: string };
@@ -91,7 +112,7 @@ export function resolvePrivateRuntime(root: string): PrivateRuntime {
   if (root.includes('app.asar')) throw new Error('private executables must be outside asar');
   const canonicalRoot = checkedRoot(root);
   const manifest = JSON.parse(checkedRead(root, canonicalRoot, 'manifest.json').toString('utf8')) as RuntimeManifest;
-  const expectedPlatform = process.platform === 'win32' ? 'win32-x64' : 'darwin-arm64';
+  const expectedPlatform = expectedRuntimePlatform(process.platform, process.arch);
   if (manifest.schema !== 1 || manifest.platform !== expectedPlatform) throw new Error('unsupported private runtime manifest');
   const vc = checkedPath(root, canonicalRoot, manifest.vc.path, 'file');
   const node = checkedPath(root, canonicalRoot, manifest.node.path, 'file');

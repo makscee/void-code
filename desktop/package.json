@@ -12,7 +12,7 @@
     "test": "vitest run",
     "assemble": "node scripts/assemble-resources.mjs",
     "verify-resources": "node scripts/verify-resources.mjs resources/staged/manifest.json resources/staged",
-    "package:mac": "npm run build && npm run assemble && electron-builder --dir --mac --arm64",
+    "package:mac": "npm run build && npm run assemble && electron-builder --dir --mac --${VOID_DESKTOP_MAC_ARCH:-arm64}",
     "package:win": "npm run build && node scripts/assemble-windows-resources.mjs && electron-builder --win --x64",
     "smoke:packaged": "node scripts/packaged-smoke.mjs && node scripts/packaged-window-check.mjs && node scripts/packaged-startup-failure-check.mjs",
     "check": "npm run clean && npm run lint && npm run test && npm run package:mac && npm run smoke:packaged",

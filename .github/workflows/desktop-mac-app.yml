@@ -9,6 +9,12 @@ name: Desktop macOS app build
 # creates a release, writes a tag or publishes: the single step that attaches
 # anything to a release lives in release.yml, behind the same switch, and the
 # token here is read-only so the refusal is the platform's and not merely ours.
+#
+# Both Mac architectures are built, as rows of one matrix rather than as a
+# second job: everything above is stated once and holds for every row, where a
+# second job would have restated all of it and been free to drift. The runner
+# stays the Apple silicon one, so the Intel bundle is cross-built -- which is
+# why nothing in the build may depend on running what it just produced.
 on:
   workflow_call:
 
@@ -22,6 +28,22 @@ jobs:
     defaults:
       run:
         shell: bash
+    strategy:
+      # Both bundles are wanted. With fail-fast at its default the first red row
+      # cancels the second, and a person chasing an Intel-only break loses the
+      # arm64 evidence that would have told them whether it is Intel-only.
+      fail-fast: false
+      matrix:
+        include:
+          # electron-builder names the unpacked directory after the DIFFERENCE
+          # from the default architecture, not after the architecture: arm64
+          # lands in release/mac-arm64 and x64 lands in release/mac with no
+          # suffix at all. `release/mac-x64` is the spelling everyone reaches
+          # for and no such directory is ever written.
+          - arch: arm64
+            bundle: mac-arm64
+          - arch: x64
+            bundle: mac
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -38,23 +60,37 @@ jobs:
             desktop/package-lock.json
             desktop/runtime/pi/package-lock.json
       - name: Provision the pinned Pi runtime
+        # Native, on every row: this step assembles for the runner and then runs
+        # the pinned Pi smoke, which executes what it assembled. It is told
+        # nothing about the row's architecture for exactly that reason.
         run: desktop/scripts/provision-pinned-pi-smoke.sh
+      - name: Cache the pinned Node for the architecture this row builds
+        # The private runtime staged into the bundle is architecture-specific,
+        # and each pinned archive is cached under its own name. Without this the
+        # Intel row would go looking for an archive nobody downloaded.
+        working-directory: desktop
+        env:
+          VOID_DESKTOP_MAC_ARCH: ${{ matrix.arch }}
+        run: npm run setup
       - name: Package the macOS app
         # Through the npm script: package:mac is build, then the assembly, then
         # the packager. Calling the packager directly would skip the assembly,
         # and the assembly is what stages the private runtime the app cannot
-        # start without.
+        # start without. The architecture is the one thing the row supplies; with
+        # nothing set the script still packages Apple silicon.
         working-directory: desktop
+        env:
+          VOID_DESKTOP_MAC_ARCH: ${{ matrix.arch }}
         run: npm run package:mac
       - name: Archive the bundle with its symlinks intact
         working-directory: desktop
         # The .app carries symlinks in Contents/Frameworks; ditto -c -k stores
         # them as links, and --keepParent keeps the .app wrapper itself. A plain
         # zip collapses the links into copies and the app will not launch.
-        run: ditto -c -k --sequesterRsrc --keepParent "release/mac-arm64/Void Code.app" release/void-code-mac-arm64.zip
+        run: ditto -c -k --sequesterRsrc --keepParent "release/${{ matrix.bundle }}/Void Code.app" release/void-code-mac-${{ matrix.arch }}.zip
       - name: Upload the macOS app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: void-code-mac-arm64
-          path: desktop/release/void-code-mac-arm64.zip
+          name: void-code-mac-${{ matrix.arch }}
+          path: desktop/release/void-code-mac-${{ matrix.arch }}.zip
           if-no-files-found: error
