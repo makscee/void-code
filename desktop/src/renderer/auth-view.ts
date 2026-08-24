@@ -159,3 +159,78 @@ export function describeLoginFailure(reason: string): string {
 export function loginStatusText(phase: LoginPhase): string {
   return phase.phase === 'error' ? describeLoginFailure(phase.reason) : '';
 }
+
+// The decision behind the "Request access" button and the line beside it. It lives here for the
+// reason stated at the top of this file: no DOM dependency, so it can be called by a test instead
+// of pattern-matched as text. Written inline in renderAuthScreens it would be a rule no unit test
+// can reach, and the next state added would silently get whichever answer the else branch gives.
+//
+// Structural, not imported from main/access-request: `state` is read as a plain string so this
+// mapper keeps its own whitelist — a word that module has not yet learned still lands on
+// 'unknown' here rather than falling through as a request state.
+export type AccessRequestOutcome =
+  | { ok: true; report: { state: string; requestedAt?: string; resolvedAt?: string } }
+  | { ok: false; reason: string };
+export type AccessRequestKind = 'pending' | 'not_requested' | 'open' | 'declined' | 'granted' | 'unknown';
+export interface AccessRequestView { kind: AccessRequestKind; canAsk: boolean; text: string }
+
+// Everything that means "we did not get an answer" — the three words vc uses for it, plus every
+// way the run itself can fail before vc says anything — arrives here, and it is deliberately not
+// the same answer as "nothing has been filed". vc splits those outcomes on purpose. Collapsing
+// them tells a person whose relay is down that they never asked: they press the button, it fails
+// the same silent way, and the only conclusion left to them is that they are doing it wrong.
+const COULD_NOT_ASK: AccessRequestView = {
+  kind: 'unknown',
+  canAsk: false,
+  text: "Void Code couldn't check on the request just now. Check again in a moment.",
+};
+
+// A date the answer actually carried, or nothing at all. `new Date(undefined).toLocaleDateString()`
+// is "Invalid Date" and it renders — it reads as a bug in the app rather than as a missing field,
+// and it displaces the one sentence the person needed. Every caller below has a dateless sentence
+// ready for that case.
+function requestDate(value: string | undefined): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return undefined;
+  return when.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+export function describeAccessRequest(result: AccessRequestOutcome | null): AccessRequestView {
+  // The gap between the screen appearing and the read returning. Both wrong answers are on the
+  // table: "nothing filed" invites a press that duplicates a request that already exists, and
+  // "we could not ask" reports a failure that has not happened. So it claims neither.
+  if (result === null) return { kind: 'pending', canAsk: false, text: '' };
+  if (!result.ok) return COULD_NOT_ASK;
+  const filed = requestDate(result.report.requestedAt);
+  const answered = requestDate(result.report.resolvedAt);
+  switch (result.report.state) {
+    // The one state that offers the button. Every other one either has a request already — a
+    // second press is another row in the queue for one person — or has an answer.
+    case 'not_requested':
+      return { kind: 'not_requested', canAsk: true, text: 'No request has been filed from this computer yet.' };
+    case 'open':
+      return {
+        kind: 'open',
+        canAsk: false,
+        text: filed ? `Your request was filed on ${filed} and is waiting for an answer.` : 'Your request is filed and waiting for an answer.',
+      };
+    // The state a screen is most likely to swallow: nothing has to change visually for the code
+    // to "work", and a person left on an unchanged screen goes on waiting for an answer that
+    // already came.
+    case 'declined':
+      return {
+        kind: 'declined',
+        canAsk: false,
+        text: answered ? `Your request was declined on ${answered}.` : 'Your request was declined.',
+      };
+    case 'granted':
+      return {
+        kind: 'granted',
+        canAsk: false,
+        text: answered ? `Your request was granted on ${answered}. Check again to continue.` : 'Your request was granted. Check again to continue.',
+      };
+    default:
+      return COULD_NOT_ASK;
+  }
+}

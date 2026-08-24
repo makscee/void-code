@@ -1,7 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
-import { beginLogin, canStartLogin, codeSecondsRemaining, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AuthScreen, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
@@ -35,6 +35,8 @@ const signinSignedOutElement = document.querySelector<HTMLElement>('#signin-sign
 const signinInvalidElement = document.querySelector<HTMLElement>('#signin-invalid')!;
 const signinNoAccessElement = document.querySelector<HTMLElement>('#signin-no-access')!;
 const signinNoAccessRecheckButton = document.querySelector<HTMLButtonElement>('#signin-no-access-recheck')!;
+const signinNoAccessRequestButton = document.querySelector<HTMLButtonElement>('#signin-no-access-request')!;
+const signinNoAccessRequestStatusElement = document.querySelector<HTMLElement>('#signin-no-access-request-status')!;
 const signinCodeElement = document.querySelector<HTMLElement>('#signin-code')!;
 const signinCodeValueElement = document.querySelector<HTMLElement>('#signin-code-value')!;
 const signinCodeCopyButton = document.querySelector<HTMLButtonElement>('#signin-code-copy')!;
@@ -53,6 +55,10 @@ let recentOpen = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
 let authScreen: AuthScreen = 'signed_out';
 let loginPhase: LoginPhase = { phase: 'idle' };
+// null until the first read comes back — which is neither "nothing was filed" nor "we could not
+// ask", and describeAccessRequest is what keeps those three apart.
+let accessRequest: AccessRequestOutcome | null = null;
+let accessRequestPending = false;
 let currentLoginId: string | undefined;
 let codeStartedAt = 0;
 let codeTimer: ReturnType<typeof setInterval> | undefined;
@@ -72,6 +78,15 @@ function stopCodeTimer(): void { if (codeTimer !== undefined) { clearInterval(co
 // The status line's colour is a statement about the phase, not about its text: switching the
 // class on `loginStatusText(...) !== ''` would re-couple the colour to the copy and paint any
 // future non-error sentence on this line red.
+// The button and the line beside it are one decision, and it is taken in auth-view where a unit
+// test can reach it: four answers, with "we could not ask" never collapsed into "you have not
+// asked". Nothing here composes a sentence of its own.
+function renderAccessRequest(): void {
+  const view = describeAccessRequest(accessRequest);
+  signinNoAccessRequestButton.hidden = !view.canAsk;
+  signinNoAccessRequestButton.disabled = accessRequestPending;
+  signinNoAccessRequestStatusElement.textContent = view.text;
+}
 function renderAuthScreens(): void {
   const showingCode = loginPhase.phase === 'code';
   signinSignedOutElement.hidden = showingCode || authScreen !== 'signed_out';
@@ -84,6 +99,7 @@ function renderAuthScreens(): void {
   signinStartButton.textContent = signInButtonLabel(loginPhase, authScreen);
   signinStatusElement.textContent = loginStatusText(loginPhase);
   signinStatusElement.classList.toggle('error', loginPhase.phase === 'error');
+  renderAccessRequest();
   if (loginPhase.phase === 'code') {
     signinCodeValueElement.textContent = loginPhase.userCode;
     signinLinkElement.textContent = loginPhase.verificationUrl;
@@ -95,9 +111,29 @@ function renderAuthScreens(): void {
       : remaining === undefined ? 'Enter this code to finish signing in.' : formatCountdown(remaining);
   }
 }
+// Arriving on the refusal screen reads the state of the request; it does not file one. That is
+// why the two are separate acts down to argv — a screen that filed on sight would put a row in
+// the queue every time a window was left open on it.
 function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
   authScreen = screenForStatus(result.ok ? result.status : null);
+  if (authScreen !== 'access_not_granted') accessRequest = null;
   renderAuthScreens();
+  if (authScreen === 'access_not_granted') void loadAccessRequest(false);
+}
+// One vc run per gesture, with the button held disabled for its duration so a second press
+// cannot stack a second row on the first. A read that never came back stays a failed read: it is
+// handed on as ok:false and never as "nothing has been filed".
+async function loadAccessRequest(ask: boolean): Promise<void> {
+  accessRequestPending = true;
+  renderAccessRequest();
+  try {
+    accessRequest = await window.voidTerminal.auth.accessRequest(ask);
+  } catch {
+    accessRequest = { ok: false, reason: 'read_failed' };
+  } finally {
+    accessRequestPending = false;
+    renderAccessRequest();
+  }
 }
 async function loadAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
 async function recheckAuthStatus(): Promise<void> { applyAuthStatus(await window.voidTerminal.auth.status()); }
@@ -276,6 +312,13 @@ signinNoAccessRecheckButton.addEventListener('click', () => {
   if (signinNoAccessRecheckButton.disabled) return;
   signinNoAccessRecheckButton.disabled = true;
   void recheckAuthStatus().finally(() => { signinNoAccessRecheckButton.disabled = false; });
+});
+// The only press that files anything. It passes --ask through to vc; every other path into this
+// screen reads. The state itself decides whether the press is available at all — canAsk is false
+// for a request already open, for one already answered, and for an answer nobody has yet.
+signinNoAccessRequestButton.addEventListener('click', () => {
+  if (accessRequestPending || !describeAccessRequest(accessRequest).canAsk) return;
+  void loadAccessRequest(true);
 });
 signinLinkOpenButton.addEventListener('click', () => {
   if (loginPhase.phase !== 'code') return;
