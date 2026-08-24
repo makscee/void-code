@@ -9,6 +9,7 @@ import (
 
 // TestAuthGate_NoToken verifies that an empty token returns a "Not logged in" error.
 func TestAuthGate_NoToken(t *testing.T) {
+	withTempHome(t)
 	_, _, err := authGate("", "http://unused-host", &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for empty token, got nil")
@@ -39,6 +40,7 @@ func TestAuthGate_ValidToken(t *testing.T) {
 }
 
 func TestAuthGateIgnoresFreshCacheAfterRevocation(t *testing.T) {
+	withTempHome(t)
 	var revoked bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if revoked {
@@ -61,6 +63,7 @@ func TestAuthGateIgnoresFreshCacheAfterRevocation(t *testing.T) {
 // TestAuthGate_RejectedToken verifies that a 401 from the auth server returns
 // a "Session token rejected" error and does not expose raw HTTP details.
 func TestAuthGate_RejectedToken(t *testing.T) {
+	withTempHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -79,6 +82,7 @@ func TestAuthGate_RejectedToken(t *testing.T) {
 }
 
 func TestAuthGate_IdentityTokenFailsClosedOnLiveRejection(t *testing.T) {
+	withTempHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
 	defer srv.Close()
 	if _, _, err := authGate("session-secret.verifier-secret", srv.URL, srv.Client()); err == nil {
@@ -87,6 +91,7 @@ func TestAuthGate_IdentityTokenFailsClosedOnLiveRejection(t *testing.T) {
 }
 
 func TestAuthGate_MalformedDottedTokenStillFailsClosed(t *testing.T) {
+	withTempHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -102,6 +107,7 @@ func TestAuthGate_MalformedDottedTokenStillFailsClosed(t *testing.T) {
 // TestAuthGate_NetworkAndServerErrorsDenyAdmission: without a live response,
 // vc cannot safely admit a session based on stale identity or budget data.
 func TestAuthGate_NetworkAndServerErrorsDenyAdmission(t *testing.T) {
+	withTempHome(t)
 	_, reached, err := authGate("any-token", "http://127.0.0.1:1", &http.Client{})
 	if err == nil || reached {
 		t.Fatalf("network result err=%v reached=%v, want deny", err, reached)
@@ -117,6 +123,7 @@ func TestAuthGate_NetworkAndServerErrorsDenyAdmission(t *testing.T) {
 // TestAuthGate_ReachesServer verifies authGate sets reached=true and parses userId/email.
 // VCD-65: SubDaysLeft removed; subDaysLeft in JSON is now ignored by the client.
 func TestAuthGate_ReachesServer(t *testing.T) {
+	withTempHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// Server sends sentinel subDaysLeft=36500; client ignores it.
