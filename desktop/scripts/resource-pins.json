@@ -1,7 +1,32 @@
 {
   "schema": 1,
-  "platform": "darwin-arm64",
+  "platforms": {
+    "darwin-arm64": {
+      "node": {
+        "version": "v22.23.1",
+        "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-darwin-arm64.tar.gz",
+        "sourceArchiveSha256": "ef28d8fab2c0e4314522d4bb1b7173270aa3937e93b92cb7de79c112ac1fa953",
+        "executableSha256": "2e3f1286a7eb3736346ed1803e458a0ff909e2b2d5bc746144dcb76970e9b99d"
+      }
+    },
+    "darwin-x64": {
+      "node": {
+        "version": "v22.23.1",
+        "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-darwin-x64.tar.gz",
+        "sourceArchiveSha256": "b8da981b8a0b1241b70249204916da76c63573ddf5814dbd2d1e41069105cb81",
+        "executableSha256": "03afb3618a2685335209c93f8c34633f8316dbe6cc32196bc19daa1a73852e5b"
+      }
+    },
+    "win32-x64": {
+      "node": {
+        "version": "v22.23.1",
+        "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-win-x64.zip",
+        "sourceArchiveSha256": "7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29"
+      }
+    }
+  },
   "node": {
+    "platform": "darwin-arm64",
     "version": "v22.23.1",
     "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-darwin-arm64.tar.gz",
     "sourceArchiveSha256": "ef28d8fab2c0e4314522d4bb1b7173270aa3937e93b92cb7de79c112ac1fa953",
