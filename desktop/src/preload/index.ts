@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC, preloadSessionId } from '../shared/preload-contract';
 import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
 import type { AuthLoginPush } from '../main/auth-ipc';
+import type { AccessRequestResult } from '../main/access-request';
 import type { StatusResult } from '../main/auth-session';
 
 const active = new Map<string, { channel: string; listener: (_event: Electron.IpcRendererEvent, payload: unknown) => void; request: SubscribeRequest }>();
@@ -76,6 +77,7 @@ const api: TerminalApi = {
     loginStart: () => ipcRenderer.invoke(IPC.authLoginStart) as Promise<{ loginId: string }>,
     onLoginEvent: (listener) => onPush<AuthLoginPush>(IPC.authLoginEvent, listener),
     copyCode: (code) => ipcRenderer.invoke(IPC.authCodeCopy, { code }) as Promise<void>,
+    accessRequest: (ask) => ipcRenderer.invoke(IPC.authAccessRequest, { ask }) as Promise<AccessRequestResult>,
   }),
 };
 Object.freeze(api);

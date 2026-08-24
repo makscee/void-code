@@ -5,11 +5,12 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntime } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
 import type { PrivateRuntime } from './resources';
+import { readAccessRequest } from './access-request';
 import { readAuthStatus } from './auth-session';
 import { startAuthLogin } from './auth-ipc';
 import { spawnAuthProcess } from './auth-spawn';
@@ -110,6 +111,7 @@ function registerIpc(): void {
     return { loginId };
   });
   ipcMain.handle(IPC.authCodeCopy, (event, raw: unknown) => { assertRenderer(event); clipboard.writeText(codeCopyRequest(raw)); });
+  ipcMain.handle(IPC.authAccessRequest, (event, raw: unknown) => { assertRenderer(event); return readAccessRequest(runtime.vc, spawnAuthProcess, accessRequestRequest(raw)); });
   ipcMain.on(IPC.subscribe, (event, raw: unknown) => { try { assertRenderer(event); manager.subscribe(event.sender.id, subscribeRequest(raw)); event.returnValue = { ok: true }; } catch (error) { event.returnValue = { ok: false, error: error instanceof Error ? error.message : 'subscription rejected' }; } });
   ipcMain.on(IPC.unsubscribe, (event, raw: unknown) => { assertRenderer(event); try { manager.unsubscribe(event.sender.id, subscribeRequest(raw)); } catch { /* stale unsubscribe is inert */ } });
 }

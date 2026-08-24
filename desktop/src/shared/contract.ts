@@ -1,8 +1,9 @@
 import path from 'node:path';
+import type { AccessRequestResult } from '../main/access-request';
 import type { AuthStatus, StatusResult } from '../main/auth-session';
 import type { AuthLoginPush } from '../main/auth-ipc';
 export { IPC } from './preload-contract';
-export type { AuthStatus, StatusResult, AuthLoginPush };
+export type { AccessRequestResult, AuthStatus, StatusResult, AuthLoginPush };
 
 export type SessionId = string;
 export type SubscriptionKind = 'output' | 'exit' | 'status';
@@ -64,6 +65,9 @@ export interface TerminalApi {
     loginStart(): Promise<{ loginId: string }>;
     onLoginEvent(listener: (event: AuthLoginPush) => void): Unsubscribe;
     copyCode(code: string): Promise<void>;
+    // ask=false reads the state and files nothing: showing the refusal screen must not put a row
+    // in the queue. Only the button passes true.
+    accessRequest(ask: boolean): Promise<AccessRequestResult>;
   };
 }
 
@@ -131,6 +135,14 @@ export function linkRequest(value: unknown): string {
 }
 // A sign-in device code, not a SupportRequest — copySupportReport builds its own report from a
 // {runtime, recoveryCode} context and has no way to carry an arbitrary code string.
+// The one bit that decides whether this invocation looks or files, validated like every other
+// request that crosses the boundary — an absent or non-boolean `ask` must not default to either
+// meaning by accident.
+export function accessRequestRequest(value: unknown): boolean {
+  const object = ownedObject(value, ['ask']);
+  if (typeof object.ask !== 'boolean') throw new Error('invalid access request');
+  return object.ask;
+}
 export function codeCopyRequest(value: unknown): string {
   const object = ownedObject(value, ['code']);
   if (typeof object.code !== 'string' || object.code.length === 0 || object.code.length > 64) throw new Error('invalid code');
