@@ -20,8 +20,9 @@ const (
 	EnvLang      = "VC_LANG"       // UI language: "en" (default) or "ru"
 
 	// EnvAccessCheckHost overrides the base URL of the service that answers
-	// the access check — "who am I, and am I let in". Unset means the sign-in
-	// host, so a plain `vc` behaves exactly as it did before this existed.
+	// the access check — "who am I, and am I let in". Unset means the relay
+	// base URL, where the access-request route actually lives; the check
+	// follows relay, not the sign-in host.
 	EnvAccessCheckHost = "VC_ACCESS_CHECK_HOST"
 )
 
@@ -42,12 +43,13 @@ type Config struct {
 	Lang        string // "en" or "ru"
 
 	// AccessCheckHost is the base URL asked "who am I, and am I let in"
-	// (today: GET /v1/vc/me). It defaults to AuthHost and is separate from it
-	// because in production the two are different services: the check is
-	// honoured by Relay and refused by the legacy checker behind the sign-in
-	// host, while the device-authorization routes and the provider list exist
-	// only behind the sign-in host. The name states the role, not the route —
-	// the same choice ErrAccessNotGranted made next door, for the same reason.
+	// (today: GET /v1/vc/me, and the access-request queue served next to it).
+	// It defaults to the RELAY base URL, not to AuthHost, because in production
+	// the two are different services: the check and the access-request queue
+	// are honoured by Relay and 404'd behind the sign-in host, while the
+	// device-authorization routes and the provider list exist only behind the
+	// sign-in host. The name states the role, not the route — the same choice
+	// ErrAccessNotGranted made next door, for the same reason.
 	// Base URL, no trailing slash.
 	AccessCheckHost string
 }
@@ -76,10 +78,13 @@ func Resolve(getenv func(string) string) Config {
 		authHost = DefaultAuthHost
 	}
 
-	// The check follows the RESOLVED sign-in host, not the compiled constant:
-	// pointing the whole CLI at a stand with VC_AUTH_HOST alone must not leave
-	// the check talking to production.
-	accessCheckHost := authHost
+	// The check follows the RESOLVED relay host, not a compiled constant:
+	// the access-request route lives on relay, so the default is relay's base
+	// URL (RelayScheme://RelayHost, exactly as cmd/vc/pi_bootstrap.go forms
+	// RelayURL), and pointing the whole CLI at a stand with VC_RELAY_HOST alone
+	// drags the check along with it. Sign-in is left on auth: device-login and
+	// the provider list have no route on relay.
+	accessCheckHost := fmt.Sprintf("%s://%s", relayScheme, relayHost)
 	if override, ok := usableBaseURL(getenv(EnvAccessCheckHost)); ok {
 		accessCheckHost = override
 	}

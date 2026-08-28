@@ -291,93 +291,149 @@ func TestStatusLineSkipSentinel(t *testing.T) {
 	}
 }
 
-// The access check ("who am I, and am I let in") and sign-in are the same host
-// on paper and two different services in production: the check is honoured by
-// Relay and refused by the legacy service behind the sign-in host, while the
-// device-authorization routes exist only behind the sign-in host. One switch
-// cannot serve both, so the check gets its own — defaulting to the sign-in host
-// so that changing nothing changes nothing.
+// The access check ("who am I, and am I let in" — today GET /v1/vc/me, and the
+// access-request queue served next to it) and sign-in are the same host on paper
+// and two different services in production: the check and the queue are honoured
+// by Relay and 404'd behind the sign-in host, while the device-authorization
+// routes and the provider list exist only behind the sign-in host. One switch
+// cannot serve both, so the check gets its own — and it defaults to RELAY, not to
+// the sign-in host, because Relay is where the route actually lives. Pointing the
+// default at auth is the production bug this fixes: POST auth/v1/vc/access-requests
+// returns 404, POST relay/... returns 201.
 //
-// The name states the role, not the route. /v1/vc/me is today's spelling of an
-// access check, and ErrAccessNotGranted next door already made the same choice
-// for the same reason: neither the protocol code nor the server-side mechanism
-// is stable enough to name.
+// The name states the role, not the route. Neither the protocol code nor the
+// server-side mechanism is stable enough to name.
+//
+// "Follows relay" is asserted against the SAME relay base URL the rest of the
+// binary builds — RelayScheme://RelayHost, exactly as cmd/vc/pi_bootstrap.go
+// forms RelayURL — never against a literal "relay.makscee.ru". A test that
+// hard-coded the production host would pass an implementation that also hard-coded
+// it, and so would miss the whole point of the tuning knob below.
+func relayBaseURL(cfg config.Config) string {
+	return cfg.RelayScheme + "://" + cfg.RelayHost
+}
 
-func TestResolveAccessCheckHostDefaultsToAuthHost(t *testing.T) {
+// The default, with nothing set, must land on relay and NOT on auth. This is the
+// bug: the access-request route lives on relay, and a default pointing at the
+// sign-in host makes every fresh `vc access-request` 404.
+func TestResolveAccessCheckHostDefaultsToRelay(t *testing.T) {
 	cfg := config.Resolve(func(string) string { return "" })
-	if cfg.AccessCheckHost != cfg.AuthHost {
-		t.Errorf("AccessCheckHost = %q, want it to fall back to AuthHost %q", cfg.AccessCheckHost, cfg.AuthHost)
+	if want := relayBaseURL(cfg); cfg.AccessCheckHost != want {
+		t.Errorf("AccessCheckHost = %q, want the resolved relay base URL %q — the access-request route lives on relay, not the sign-in host", cfg.AccessCheckHost, want)
 	}
-	if cfg.AccessCheckHost != config.DefaultAuthHost {
-		t.Errorf("AccessCheckHost = %q, want the compiled default %q — an unset override must not change what every hand-run vc does", cfg.AccessCheckHost, config.DefaultAuthHost)
+	if cfg.AccessCheckHost == cfg.AuthHost {
+		t.Errorf("AccessCheckHost = %q must not equal AuthHost %q — that default is the 404 bug: POST auth/v1/vc/access-requests is not a route", cfg.AccessCheckHost, cfg.AuthHost)
+	}
+	if cfg.AccessCheckHost == config.DefaultAuthHost {
+		t.Errorf("AccessCheckHost = %q, must not be the auth default %q", cfg.AccessCheckHost, config.DefaultAuthHost)
+	}
+	// Sign-in must stay on auth: device-login and the provider list have no route
+	// on relay, so this fix must not drag AuthHost along with it.
+	if cfg.AuthHost != config.DefaultAuthHost {
+		t.Errorf("AuthHost = %q, want the sign-in default %q left untouched — the check moving to relay must not move login", cfg.AuthHost, config.DefaultAuthHost)
 	}
 }
 
-// The fallback is to the RESOLVED sign-in host, not to the compiled constant.
-// Someone who points the whole CLI at a stand with VC_AUTH_HOST alone must not
-// find the access check still talking to production.
-func TestResolveAccessCheckHostFollowsAnOverriddenAuthHost(t *testing.T) {
+// The default follows the RESOLVED relay host, not the compiled constant. An
+// operator who points the whole CLI at a stand with VC_RELAY_HOST must not find
+// the access check still talking to production relay — the same property the old
+// comment demanded of VC_AUTH_HOST, now relative to relay, because relay is what
+// the check follows. A scheme prefix on the override travels through too.
+func TestResolveAccessCheckHostFollowsAnOverriddenRelayHost(t *testing.T) {
+	cases := []struct{ name, relayEnv string }{
+		{"host:port stand", "relay.stand.example:9443"},
+		{"plaintext stand with scheme", "http://relay.stand.example:8448"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{config.EnvRelayHost: c.relayEnv}
+			cfg := config.Resolve(func(name string) string { return env[name] })
+			// The check must land wherever relay landed — computed from cfg, so
+			// a change to VC_RELAY_HOST drags the check with it and a hard-coded
+			// production host in the implementation would be caught here.
+			if want := relayBaseURL(cfg); cfg.AccessCheckHost != want {
+				t.Errorf("VC_RELAY_HOST=%q: AccessCheckHost = %q, want it to follow relay to %q, not stay on production", c.relayEnv, cfg.AccessCheckHost, want)
+			}
+			if cfg.AccessCheckHost == config.DefaultRelayScheme+"://"+config.DefaultRelayHost {
+				t.Errorf("VC_RELAY_HOST=%q: AccessCheckHost stayed on the compiled relay %q — the check ignored the stand", c.relayEnv, cfg.AccessCheckHost)
+			}
+		})
+	}
+}
+
+// Pointing only the sign-in host at a stand must NOT drag the check off relay:
+// the check follows relay now, and login is configured independently. AuthHost
+// still moves — login stays configurable — but the check does not follow it.
+func TestResolveAccessCheckHostDoesNotFollowAuthHost(t *testing.T) {
 	env := map[string]string{config.EnvAuthHost: "https://identity.stand.example"}
 	cfg := config.Resolve(func(name string) string { return env[name] })
-	if cfg.AccessCheckHost != "https://identity.stand.example" {
-		t.Errorf("AccessCheckHost = %q, want it to follow VC_AUTH_HOST to the stand", cfg.AccessCheckHost)
+	if cfg.AuthHost != "https://identity.stand.example" {
+		t.Errorf("AuthHost = %q, want VC_AUTH_HOST to still move login", cfg.AuthHost)
+	}
+	if cfg.AccessCheckHost == cfg.AuthHost {
+		t.Errorf("AccessCheckHost = %q followed VC_AUTH_HOST — it must follow relay, not the sign-in host", cfg.AccessCheckHost)
+	}
+	if want := relayBaseURL(cfg); cfg.AccessCheckHost != want {
+		t.Errorf("AccessCheckHost = %q, want it left on relay %q when only VC_AUTH_HOST moved", cfg.AccessCheckHost, want)
 	}
 }
 
-// Setting the check's host moves the check and nothing else. Sign-in, the Pi
-// bootstrap's provider list and the relay all read their own values, and none
-// of them has a route on the host the check wants.
-func TestResolveAccessCheckHostOverrideMovesNothingElse(t *testing.T) {
-	env := map[string]string{config.EnvAccessCheckHost: "https://relay.makscee.ru"}
+// The explicit override is the highest priority: it wins over the relay default
+// AND over a moved VC_RELAY_HOST, and it moves the check and nothing else.
+func TestResolveAccessCheckHostExplicitOverrideWins(t *testing.T) {
+	env := map[string]string{
+		config.EnvAccessCheckHost: "https://check.example",
+		config.EnvRelayHost:       "relay.stand.example:9443",
+		config.EnvAuthHost:        "https://identity.stand.example",
+	}
 	cfg := config.Resolve(func(name string) string { return env[name] })
-	if cfg.AccessCheckHost != "https://relay.makscee.ru" {
-		t.Errorf("AccessCheckHost = %q, want the override", cfg.AccessCheckHost)
+	if cfg.AccessCheckHost != "https://check.example" {
+		t.Errorf("AccessCheckHost = %q, want the explicit VC_ACCESS_CHECK_HOST override to win over relay", cfg.AccessCheckHost)
 	}
-	if cfg.AuthHost != config.DefaultAuthHost {
-		t.Errorf("AuthHost = %q, want %q — sign-in and the provider list have no route on the check's host", cfg.AuthHost, config.DefaultAuthHost)
+	if cfg.AuthHost != "https://identity.stand.example" {
+		t.Errorf("AuthHost = %q, the check's override must not touch sign-in", cfg.AuthHost)
 	}
-	if cfg.RelayHost != config.DefaultRelayHost {
-		t.Errorf("RelayHost = %q, want %q — model traffic has nothing to do with the access check", cfg.RelayHost, config.DefaultRelayHost)
+	if cfg.RelayHost != "relay.stand.example:9443" {
+		t.Errorf("RelayHost = %q, the check's override must not touch relay", cfg.RelayHost)
 	}
 }
 
 // A blank value is not a choice anyone made. Every other VC_* override reads ""
 // as unset, and reading it as a real host here would hand the check to an empty
-// base URL instead of falling back.
+// base URL instead of falling back to relay.
 func TestResolveAccessCheckHostTreatsBlankAsUnset(t *testing.T) {
 	for _, blank := range []string{"", "   ", "\t\n"} {
 		env := map[string]string{config.EnvAccessCheckHost: blank}
 		cfg := config.Resolve(func(name string) string { return env[name] })
-		if cfg.AccessCheckHost != cfg.AuthHost {
-			t.Errorf("blank %q: AccessCheckHost = %q, want the AuthHost fallback %q", blank, cfg.AccessCheckHost, cfg.AuthHost)
+		if want := relayBaseURL(cfg); cfg.AccessCheckHost != want {
+			t.Errorf("blank %q: AccessCheckHost = %q, want the relay fallback %q", blank, cfg.AccessCheckHost, want)
 		}
 	}
 }
 
-// FetchMe builds its URL by concatenation — host + "/v1/vc/me" — so a trailing
-// slash produces "//v1/vc/me". The field documents itself as carrying no
-// trailing slash; that has to be enforced somewhere, and Resolve is the only
-// place every caller passes through.
+// The explicit override, when usable, is concatenated with "/v1/vc/..." paths, so
+// a trailing slash would produce "//v1/vc/...". The field carries no trailing
+// slash; Resolve is the only place every caller passes through.
 func TestResolveAccessCheckHostTrimsTrailingSlash(t *testing.T) {
-	for _, given := range []string{"https://relay.makscee.ru/", "https://relay.makscee.ru//"} {
+	for _, given := range []string{"https://check.example/", "https://check.example//"} {
 		env := map[string]string{config.EnvAccessCheckHost: given}
 		cfg := config.Resolve(func(name string) string { return env[name] })
-		if cfg.AccessCheckHost != "https://relay.makscee.ru" {
-			t.Errorf("given %q: AccessCheckHost = %q, want the slash trimmed — vc would otherwise request //v1/vc/me", given, cfg.AccessCheckHost)
+		if cfg.AccessCheckHost != "https://check.example" {
+			t.Errorf("given %q: AccessCheckHost = %q, want the slash trimmed — vc would otherwise request //v1/vc/...", given, cfg.AccessCheckHost)
 		}
 	}
 }
 
 // A base URL carrying a path, a query or a fragment cannot be concatenated into
-// a working request, and this one receives a bearer token. Falling back is the
-// safe reading of a value nobody can honour: refusing to send the credential
-// somewhere unusable beats sending it there.
+// a working request, and this one receives a bearer token. Falling back to relay
+// is the safe reading of a value nobody can honour: refusing to send the
+// credential somewhere unusable beats sending it there.
 func TestResolveAccessCheckHostIgnoresUnusableValues(t *testing.T) {
-	for _, given := range []string{"relay.makscee.ru", "https://relay.makscee.ru?x=1", "https://relay.makscee.ru#f", "://nonsense"} {
+	for _, given := range []string{"check.example", "https://check.example?x=1", "https://check.example#f", "://nonsense"} {
 		env := map[string]string{config.EnvAccessCheckHost: given}
 		cfg := config.Resolve(func(name string) string { return env[name] })
-		if cfg.AccessCheckHost != cfg.AuthHost {
-			t.Errorf("given %q: AccessCheckHost = %q, want the AuthHost fallback — a bearer token must not be sent to a base URL vc cannot build a request from", given, cfg.AccessCheckHost)
+		if want := relayBaseURL(cfg); cfg.AccessCheckHost != want {
+			t.Errorf("given %q: AccessCheckHost = %q, want the relay fallback %q — a bearer token must not be sent to a base URL vc cannot build a request from", given, cfg.AccessCheckHost, want)
 		}
 	}
 }

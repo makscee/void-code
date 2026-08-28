@@ -19,6 +19,7 @@ func TestStatusUsesLiveMeNotCachedIdentityOrBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(json.RawMessage(response)) }))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 	if err := auth.Save("status-token"); err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +45,7 @@ func TestStatusReportsLiveRejectionAndUnreachableServer(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) }))
 			defer srv.Close()
 			t.Setenv("VC_AUTH_HOST", srv.URL)
+			t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 			if err := auth.Save("private-token"); err != nil {
 				t.Fatal(err)
 			}

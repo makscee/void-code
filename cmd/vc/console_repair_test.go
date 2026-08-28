@@ -42,7 +42,7 @@ func TestStatusVerifiesSubscriptionAndShowsBudget(t *testing.T) {
 		_, _ = io.WriteString(w, `{"userId":"u-1","email":"user@example.test","pct":27.4,"resetAt":"2026-06-01T00:00:00Z"}`)
 	}))
 	defer server.Close()
-	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", server.URL)
 	if err := auth.Save("good"); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +63,7 @@ func TestStatusDoesNotTreatTokenAsVerified(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", http.StatusUnauthorized) }))
 	defer server.Close()
 	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", server.URL)
 	if err := auth.Save("bad"); err != nil {
 		t.Fatal(err)
 	}

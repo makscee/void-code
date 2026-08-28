@@ -129,6 +129,7 @@ func TestStatusJSONReportsInvalidCredentialWhenVerificationFails(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 
 	if err := auth.Save("stale-token"); err != nil {
 		t.Fatal(err)
@@ -171,6 +172,7 @@ func TestStatusJSONReportsSignedInWithIdentityAndBudget(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 
 	if err := auth.Save("good-token"); err != nil {
 		t.Fatal(err)
@@ -219,6 +221,7 @@ func TestStatusJSONOmitsBudgetFieldsWhenServerOmitsThem(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 
 	if err := auth.Save("good-token"); err != nil {
 		t.Fatal(err)
