@@ -7,9 +7,7 @@ on:
       - '!v*.*.*-vi20.*'
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   test:
@@ -102,23 +100,54 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  desktop-mac-app:
+    name: Desktop macOS app
+    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
+    uses: ./.github/workflows/desktop-mac-app.yml
+
+  desktop-windows-app:
+    name: Desktop Windows installer
+    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
+    uses: ./.github/workflows/desktop-windows-app.yml
+
   release:
-    name: Create GitHub Release
-    needs: build
+    name: Verify, stage, and publish the release
+    needs: [build, desktop-mac-app, desktop-windows-app]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (vars.DESKTOP_RELEASE != 'true' || (needs.desktop-mac-app.result == 'success' && needs.desktop-windows-app.result == 'success')) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Refuse to overwrite an existing public release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          state=$(gh api "repos/${GH_REPO}/releases/tags/${{ github.ref_name }}" --jq .draft 2>/dev/null || true)
+          if [ "$state" = false ]; then
+            echo "refusing to overwrite existing public release ${{ github.ref_name }}" >&2
+            exit 1
+          fi
+          if [ -n "$state" ] && [ "$state" != true ]; then
+            echo "unexpected existing release state for ${{ github.ref_name }}" >&2
+            exit 1
+          fi
+
+      - name: Download every qualified build
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Generate version.json
+      - name: Generate metadata and exact expected manifest
+        env:
+          DESKTOP_RELEASE: ${{ vars.DESKTOP_RELEASE }}
         run: |
           VERSION="${{ github.ref_name }}"
-          # Strip leading 'v' for semver field
           SEMVER="${VERSION#v}"
           cat > dist/version.json <<EOF
           {
@@ -148,126 +177,79 @@ jobs:
             }
           }
           EOF
+          cat > expected-assets.txt <<'EOF'
+          SHA256SUMS
+          vc-darwin-amd64
+          vc-darwin-arm64
+          vc-linux-amd64
+          vc-linux-arm64
+          vc-windows-amd64.exe
+          vc-windows-arm64.exe
+          version.json
+          EOF
+          EXPECTED_CLI_COUNT=8
+          EXPECTED_DESKTOP_COUNT=11
+          if [ "$DESKTOP_RELEASE" = true ]; then
+            cat >> expected-assets.txt <<'EOF'
+          Void-Code-0.1.0-windows-x64.exe
+          void-code-mac-arm64.zip
+          void-code-mac-x64.zip
+          EOF
+            expected_count=$EXPECTED_DESKTOP_COUNT
+          else
+            expected_count=$EXPECTED_CLI_COUNT
+          fi
+          sort -o expected-assets.txt expected-assets.txt
+          [ "$(wc -l < expected-assets.txt)" -eq "$expected_count" ]
+          chmod +x dist/vc-darwin-* dist/vc-linux-*
+          (cd dist && sha256sum $(find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort) > SHA256SUMS)
 
-      - name: Make Unix binaries executable
-        run: chmod +x dist/vc-darwin-* dist/vc-linux-*
+      - name: Verify local names and checksums
+        run: |
+          find dist -maxdepth 1 -type f -printf '%f\n' | sort > actual-assets.txt
+          comm -3 expected-assets.txt actual-assets.txt | tee manifest-difference.txt
+          test ! -s manifest-difference.txt
+          (cd dist && sha256sum -c SHA256SUMS)
 
-      - name: Generate checksums
-        working-directory: dist
-        run: sha256sum vc-* version.json > SHA256SUMS
-
-      - name: Sign build provenance
+      - name: Sign build provenance for every expected asset
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
-          subject-path: |
-            dist/vc-darwin-amd64
-            dist/vc-darwin-arm64
-            dist/vc-linux-amd64
-            dist/vc-linux-arm64
-            dist/vc-windows-amd64.exe
-            dist/vc-windows-arm64.exe
-            dist/version.json
-            dist/SHA256SUMS
+          subject-path: dist/*
 
-      - name: Create GitHub Release
+      - name: Create or update the non-public draft
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/vc-darwin-amd64
-            dist/vc-darwin-arm64
-            dist/vc-linux-amd64
-            dist/vc-linux-arm64
-            dist/vc-windows-amd64.exe
-            dist/vc-windows-arm64.exe
-            dist/version.json
-            dist/SHA256SUMS
+          files: dist/*
           generate_release_notes: true
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
 
-  # ---------------------------------------------------------------------------
-  # The desktop half, and the one thing that has to stay true about it: with
-  # nothing set, none of this runs and none of it publishes. An ordinary tag
-  # produces exactly the jobs and exactly the assets it produced before these
-  # three jobs existed.
-  #
-  # The switch is the repository variable DESKTOP_RELEASE. Unset -- which is
-  # what merging this leaves -- every condition below is false, all three jobs
-  # are skipped, and no job the CLI release depends on waits on them: `build`
-  # needs test and the pinned Pi qualification, `release` needs build, and
-  # `publish-auth` -- self-update for every installed client -- needs release.
-  # None of those four names appears in a `needs:` here. The dependency runs the
-  # other way, so a desktop build that dies on a runner cannot withhold the CLI
-  # or the self-update.
-  #
-  # Publication is the last job only, it attaches to the release that already
-  # exists, and it is gated by the same variable.
-  # ---------------------------------------------------------------------------
-  desktop-mac-app:
-    name: Desktop macOS app
-    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
-    uses: ./.github/workflows/desktop-mac-app.yml
-
-  desktop-windows-app:
-    name: Desktop Windows installer
-    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
-    uses: ./.github/workflows/desktop-windows-app.yml
-
-  desktop-attach:
-    name: Attach the desktop builds to the release
-    needs: [release, desktop-mac-app, desktop-windows-app]
-    if: ${{ vars.DESKTOP_RELEASE == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download every desktop build this run produced
-        # By pattern, never by name. Which builds exist is stated once -- the
-        # matrix in desktop-mac-app.yml, the upload step in
-        # desktop-windows-app.yml -- and this job asks for whatever that came to
-        # rather than keeping a second copy of the answer. The second copy is
-        # what the Intel row walked into: the matrix grew a row, the list here
-        # did not, and nothing went red -- the bundle was built for twenty
-        # minutes of runner time, uploaded as a run artifact nobody can reach,
-        # and left out of the release.
-        #
-        # `void-code-*` is the prefix every desktop upload already carries and no
-        # CLI artifact does -- those are `vc-*`, uploaded by the `build` matrix
-        # above and published by `release` -- so this reaches the desktop builds
-        # and only them. A new architecture arrives here on its own; a removed
-        # one leaves nothing behind pointing at it.
-        #
-        # merge-multiple is not decoration. Downloaded by pattern without it,
-        # each artifact lands in a directory named after itself and the glob
-        # below would match those directories instead of the files in them.
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: void-code-*
-          merge-multiple: true
-          path: desktop-installers
-
-      - name: Sign build provenance for the desktop builds
-        # The same glob the attach step uses, over a directory holding nothing
-        # but what the download brought back, so what is signed and what is
-        # published cannot come apart. Signing a subset would be worse than
-        # signing none: the release would then carry attestations that look
-        # complete. The action fails when the path matches nothing, which is
-        # where a download that found no artifact stops -- before the release
-        # gains anything.
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
-        with:
-          subject-path: desktop-installers/*
-
-      - name: Attach them to the release that already exists
-        # `upload`, never `create`: the release was made by the `release` job on
-        # its own terms, and this adds the desktop builds to it. There is no
-        # checkout in this job, so gh is told the repository through the
-        # environment. A directory of its own, not the `dist` the `release` job
-        # stages the CLI in: this glob must not be able to reach a CLI asset,
-        # and a name saying what it holds is how a reader can tell that it
-        # cannot.
+      - name: Verify draft names, count, and uploaded digests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release upload ${{ github.ref_name }} desktop-installers/* --clobber
+        run: |
+          release=$(gh api "repos/${GH_REPO}/releases/tags/${{ github.ref_name }}")
+          [ "$(jq -r .draft <<<"$release")" = true ]
+          jq -r '.assets[].name' <<<"$release" | sort > remote-assets.txt
+          comm -3 expected-assets.txt remote-assets.txt | tee remote-manifest-difference.txt
+          test ! -s remote-manifest-difference.txt
+          while read -r name; do
+            local_digest="sha256:$(sha256sum "dist/$name" | cut -d' ' -f1)"
+            remote_digest=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest' <<<"$release")
+            [ "$remote_digest" = "$local_digest" ] || {
+              echo "digest mismatch for $name" >&2
+              exit 1
+            }
+          done < expected-assets.txt
+
+      - name: Publish the verified draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: gh release edit ${{ github.ref_name }} --draft=false --prerelease="$PRERELEASE"
 
   publish-auth:
     name: Sync release to void-auth
