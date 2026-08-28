@@ -58,6 +58,7 @@ func TestStatusJSONReportsAccessNotGrantedWhenServerRefusesAccess(t *testing.T) 
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 
 	if err := auth.Save("accepted-token"); err != nil {
 		t.Fatal(err)
@@ -136,6 +137,7 @@ func TestStatusJSONMapsOnlyRefusedAccessToAccessNotGranted(t *testing.T) {
 			}))
 			defer srv.Close()
 			t.Setenv("VC_AUTH_HOST", srv.URL)
+			t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 
 			if err := auth.Save("some-token"); err != nil {
 				t.Fatal(err)
@@ -180,6 +182,7 @@ func TestStatusJSONMapsOnlyRefusedAccessToAccessNotGranted(t *testing.T) {
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		t.Setenv("VC_AUTH_HOST", srv.URL)
+		t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 		srv.Close() // nothing is listening
 
 		if err := auth.Save("some-token"); err != nil {
@@ -254,6 +257,7 @@ func TestStatusJSONDecidesStateFromTheAnswerNotItsText(t *testing.T) {
 			}))
 			defer srv.Close()
 			t.Setenv("VC_AUTH_HOST", srv.URL)
+			t.Setenv("VC_ACCESS_CHECK_HOST", srv.URL)
 
 			if err := auth.Save("some-token"); err != nil {
 				t.Fatal(err)

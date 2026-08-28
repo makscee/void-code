@@ -46,6 +46,7 @@ func TestRunSpawnNeverExecutesPathPiWithCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", server.URL)
 	if err := auth.Save("admitted-token"); err != nil {
 		t.Fatal(err)
 	}
