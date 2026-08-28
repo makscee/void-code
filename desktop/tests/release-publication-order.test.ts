@@ -6,6 +6,7 @@ const text = readFileSync(new URL('../../.github/workflows/release.yml', import.
 const jobs = asMap(parseWorkflow(text).jobs);
 const release = asMap(jobs.release);
 const publishAuth = asMap(jobs['publish-auth']);
+const publisherSource = readFileSync(new URL('../scripts/release-publisher.mjs', import.meta.url), 'utf8');
 const steps = asList(release.steps).map(asMap);
 const transcript = steps.map((step) => `${asText(step.name)}\n${asText(step.uses)}\n${asText(step.run)}\n${JSON.stringify(asMap(step.with))}`).join('\n');
 const needs = asList(release.needs).map(asText);
@@ -13,6 +14,12 @@ const needs = asList(release.needs).map(asText);
 /** Product contract: no public release or feed update can precede every enabled
  * package, exact-manifest verification, and provenance. */
 describe('release publication is terminal and manifest-verified', () => {
+  it('serializes ownership per repository and exact ref without cancellation', () => {
+    const concurrency = asMap(parseWorkflow(text).concurrency);
+    expect(asText(concurrency.group)).toBe('release-${{ github.repository }}-${{ github.ref }}');
+    expect(asText(concurrency['cancel-in-progress'])).toBe('false');
+  });
+
   it('waits for CLI and both conditionally enabled desktop producers', () => {
     expect(needs.slice().sort()).toEqual(['build', 'desktop-mac-app', 'desktop-windows-app']);
     const condition = asText(release.if);
@@ -27,11 +34,12 @@ describe('release publication is terminal and manifest-verified', () => {
     expect(asText(release.if)).toContain("vars.DESKTOP_RELEASE != 'true'");
   });
 
-  it('uses one draft-first publisher and never a later desktop attacher', () => {
+  it('uses one create-only, exact-ID publisher and never a later desktop attacher', () => {
     expect(asText(jobs['desktop-attach'])).toBe('');
-    expect(transcript).toContain('"draft":"true"');
-    expect(transcript).toMatch(/gh release edit[^\n]*--draft=false/);
-    expect(transcript).toContain('.draft');
+    expect(transcript).toContain('node desktop/scripts/release-publisher.mjs');
+    expect(publisherSource).toContain("method: 'POST', expected: [201], label: 'draft create'");
+    expect(publisherSource).toContain('releases/${this.releaseId}');
+    expect(publisherSource).not.toContain('softprops/action-gh-release');
   });
 
   it('verifies exact 8/11 asset manifests, checksums, digests, and provenance before publish', () => {
@@ -39,14 +47,14 @@ describe('release publication is terminal and manifest-verified', () => {
     expect(transcript).toContain('EXPECTED_DESKTOP_COUNT=11');
     expect(transcript).toContain('sha256sum -c SHA256SUMS');
     expect(transcript).toContain('attest-build-provenance');
-    expect(transcript).toContain('.digest');
+    expect(publisherSource).toContain('asset?.digest');
     expect(transcript).toContain('comm -3');
-    expect(transcript.indexOf('"draft":"true"')).toBeLessThan(transcript.indexOf('gh release edit'));
+    expect(publisherSource.indexOf('await this.create()')).toBeLessThan(publisherSource.indexOf("method: 'PATCH'"));
   });
 
   it('allows auth publication only after the terminal publisher succeeds', () => {
     expect(asList(publishAuth.needs).map(asText)).toEqual(['release']);
-    expect(transcript).toContain('--draft=false');
+    expect(publisherSource).toContain("body: JSON.stringify({ draft: false })");
   });
 
   it('names every required desktop asset, so deleting one is red', () => {

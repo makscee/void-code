@@ -26,7 +26,7 @@ describe('one publisher collects every qualified artifact before publication', (
     expect(transcript).toContain('actual-assets.txt');
     expect(transcript).toContain('comm -3');
     expect(transcript).toContain('test ! -s manifest-difference.txt');
-    expect(transcript.indexOf('test ! -s manifest-difference.txt')).toBeLessThan(transcript.indexOf('"draft":"true"'));
+    expect(transcript.indexOf('test ! -s manifest-difference.txt')).toBeLessThan(transcript.indexOf('node desktop/scripts/release-publisher.mjs'));
   });
 
   it('accounts for both mac rows and the Windows installer', () => {
@@ -40,6 +40,7 @@ describe('one publisher collects every qualified artifact before publication', (
   it('has no post-publication attachment job or upload', () => {
     expect(jobs['desktop-attach']).toBeUndefined();
     expect(releaseText).not.toMatch(/gh\s+release\s+upload/);
-    expect(transcript.match(/softprops\/action-gh-release/g)).toHaveLength(1);
+    expect(transcript).toContain('node desktop/scripts/release-publisher.mjs');
+    expect(transcript).not.toContain('softprops/action-gh-release');
   });
 });
