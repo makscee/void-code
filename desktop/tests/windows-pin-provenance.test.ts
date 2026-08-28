@@ -1,41 +1,46 @@
-import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import pins from '../scripts/resource-pins.json';
 
-const repo = path.resolve('..');
-const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+const assembly = readFileSync(path.resolve('scripts/assemble-windows-resources.mjs'), 'utf8');
+const builder = readFileSync(path.resolve('scripts/windows-vc-build.mjs'), 'utf8');
+const workflow = readFileSync(path.resolve('../.github/workflows/desktop-windows-app.yml'), 'utf8');
 
 /**
- * The Windows pin names bytes that ship to users, so it has to say where those
- * bytes came from. Three identities are involved and conflating them is what
- * made the previous pin unverifiable: the release, the commit the release was
- * built from, and the last commit that touched the CLI inside it.
- *
- * Freshness — whether the pinned release contains current work — is deliberately
- * not asserted here. It is a release-readiness question, and pinning it to a
- * moving `main` made this suite red between every release.
+ * Windows must package vc built from the checkout that triggered this run. A
+ * public-release pin can only point backwards before the next tag exists, so it
+ * is intrinsically incapable of carrying the source being released.
  */
-describe('windows vc pin provenance', () => {
-  const vc = pins.windows.vc as Record<string, string>;
-
-  it('names a published release asset rather than an anonymous local build', () => {
-    expect(vc.provenance).toBe('github-release');
-    expect(vc.repository).toBe('makscee/void-code');
-    expect(vc.releaseTag).toMatch(/^v\d+\.\d+\.\d+/);
-    expect(vc.assetName).toBe('vc-windows-amd64.exe');
-    expect(vc.sha256).toMatch(/^[0-9a-f]{64}$/);
+describe('windows vc checkout provenance', () => {
+  it('does not retain a static release pin for vc', () => {
+    expect((pins.windows as Record<string, unknown>).vc).toBeUndefined();
+    expect(workflow).not.toMatch(/releases\/download|runtime\/cache\/vc/);
   });
 
-  it('pins the commit the release was actually built from', () => {
-    expect(vc.releaseCommit).toBe(git('rev-list', '-n1', vc.releaseTag));
+  it('builds the exact windows amd64 CLI from this checkout', () => {
+    expect(builder).toMatch(/execFileSync\('go', \[\s*'build'/);
+    expect(builder).toContain("GOOS: 'windows'");
+    expect(builder).toContain("GOARCH: 'amd64'");
+    expect(builder).toContain("'./cmd/vc'");
+    expect(builder).toContain('gitHead(repo)');
   });
 
-  it('pins the CLI revision contained in that release, not the one on main', () => {
-    expect(vc.cliSourceCommit).toBe(git('log', '-1', '--format=%H', vc.releaseTag, '--', 'cmd/vc'));
+  it('requires workflow-bound source and version identities', () => {
+    expect(workflow).toContain('VOID_DESKTOP_VC_SOURCE_COMMIT: ${{ github.sha }}');
+    expect(workflow).toContain('VOID_DESKTOP_VC_VERSION: ${{ github.ref_name }}');
+    expect(assembly).toContain('VOID_DESKTOP_VC_SOURCE_COMMIT');
+    expect(assembly).toContain('VOID_DESKTOP_VC_VERSION');
+    expect(builder).toContain('internal/version.Version=');
   });
 
-  it('keeps the pinned CLI revision inside the pinned release', () => {
-    expect(() => git('merge-base', '--is-ancestor', vc.cliSourceCommit, vc.releaseTag)).not.toThrow();
+  it('records and verifies the built asset identity', () => {
+    expect(builder).toContain("assetName: 'vc-windows-amd64.exe'");
+    expect(builder).toContain('sourceCommit: checkoutCommit');
+    expect(builder).toContain('version: builtVersion');
+    expect(builder).toContain('builtVersion !== expectedOutput');
+    expect(builder).toContain('sha256: await shaFile(destination)');
+    expect(assembly).toContain('sourceCommit: expectedSourceCommit');
+    expect(assembly).toContain('version: expectedVersion');
   });
 });

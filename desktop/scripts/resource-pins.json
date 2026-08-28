@@ -37,15 +37,6 @@
       "version": "v22.23.1",
       "source": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-win-x64.zip",
       "sourceArchiveSha256": "7df0bc9375723f4a86b3aa1b7cc73342423d9677a8df4538aca31a049e309c29"
-    },
-    "vc": {
-      "provenance": "github-release",
-      "repository": "makscee/void-code",
-      "releaseTag": "v0.2.47",
-      "releaseCommit": "1242ec0091ba75052fcd130588ec6165e8288f8b",
-      "cliSourceCommit": "58497cadf16c5f7e3755308f9c3887a4065830ea",
-      "assetName": "vc-windows-amd64.exe",
-      "sha256": "00ae01d69475460a3234f8bc2c26121a396c0b7b01bb43c58510c8061cc2f15b"
     }
   },
   "pi": {

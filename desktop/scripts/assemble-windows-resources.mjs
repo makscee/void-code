@@ -2,6 +2,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, wri
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash } from './resource-assembly-lib.mjs';
+import { buildWindowsVc } from './windows-vc-build.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows resource assembly requires Windows x64');
 async function materializeTreeLinks(root) {
@@ -18,14 +19,15 @@ async function materializeTreeLinks(root) {
 }
 
 const desktop = process.cwd();
+const repo = path.resolve(desktop, '..');
+const expectedSourceCommit = process.env.VOID_DESKTOP_VC_SOURCE_COMMIT;
+const expectedVersion = process.env.VOID_DESKTOP_VC_VERSION;
 const pins = JSON.parse(await readFile(path.join(desktop, 'scripts/resource-pins.json'), 'utf8'));
 const win = pins.windows;
 const nodeArchive = `node-${win.node.version}-win-x64.zip`;
 const nodeArchivePath = path.join(desktop, 'runtime/cache/node', nodeArchive);
-const vcSource = path.join(desktop, 'runtime/cache/vc/vc.exe');
 if (win.node.source !== `https://nodejs.org/dist/${win.node.version}/${nodeArchive}`) throw new Error('private Windows Node source identifier mismatch');
 if (await shaFile(nodeArchivePath) !== win.node.sourceArchiveSha256) throw new Error('private Windows Node archive hash mismatch');
-if (await shaFile(vcSource) !== win.vc.sha256) throw new Error(`Windows vc digest mismatch: ${vcSource} is not ${win.vc.assetName} from ${win.vc.repository} ${win.vc.releaseTag}`);
 
 const piSource = process.env.VOID_DESKTOP_PI_SOURCE ?? path.join(desktop, 'runtime/pi');
 await assertPiSourcePins(piSource, pins.pi);
@@ -51,9 +53,14 @@ try {
   if (nodeVersion !== win.node.version) throw new Error(`private Windows Node version mismatch: ${nodeVersion}`);
 
   await mkdir(path.join(staging, 'vc'), { recursive: true });
+  const vc = await buildWindowsVc({
+    repo,
+    destination: path.join(staging, 'vc/vc.exe'),
+    sourceCommit: expectedSourceCommit,
+    version: expectedVersion,
+  });
   await mkdir(path.join(staging, 'fixture'), { recursive: true });
   await cp(nodeSource, path.join(staging, 'node'), { recursive: true });
-  await cp(vcSource, path.join(staging, 'vc/vc.exe'));
   await cp(path.join(desktop, 'dist/fixture/round-trip.js'), path.join(staging, 'fixture/round-trip.js'));
   await mkdir(path.join(staging, 'pi'), { recursive: true });
   await cp(path.join(piSource, 'package.json'), path.join(staging, 'pi/package.json'));
@@ -73,7 +80,7 @@ try {
   const manifest = {
     schema: 1,
     platform: 'win32-x64',
-    vc: { version: execFileSync(path.join(staging, 'vc/vc.exe'), ['--version'], { encoding: 'utf8' }).trim(), sourceCommit: win.vc.cliSourceCommit, releaseTag: win.vc.releaseTag, releaseCommit: win.vc.releaseCommit, path: 'vc/vc.exe', sha256: win.vc.sha256 },
+    vc,
     node: { version: nodeVersion, source: win.node.source, sourceArchiveSha256: win.node.sourceArchiveSha256, path: 'node/node.exe', sha256: nodeHash, npm: { version: execFileSync(stagedNode, [privateNpm, '--version'], { encoding: 'utf8' }).trim() } },
     pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },
     fixture: { path: 'fixture/round-trip.js', sha256: await shaFile(path.join(staging, 'fixture/round-trip.js')) },

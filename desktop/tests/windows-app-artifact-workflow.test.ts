@@ -409,36 +409,19 @@ describe(`${REUSABLE} builds the Windows installer and leaves it as a run artifa
       .toBe('installs from the lockfile');
   });
 
-  it('provisions the pinned Windows resources before it packages', () => {
-    // assemble-windows-resources.mjs reads two files that no checkout carries
-    // and no `npm ci` creates: runtime/cache/vc/vc.exe and
-    // runtime/cache/node/node-<pin>-win-x64.zip. Each is compared against its
-    // sha256 in resource-pins.json and the assembly throws on a mismatch, so a
-    // job that goes straight from installing to packaging cannot succeed.
-    // `npm run setup` does not help: it fetches the darwin archive.
-    //
-    // "Some step that is not an install" would be satisfied by `echo hi`, so
-    // the step has to be recognisable as the provisioning one: it reads
-    // scripts/resource-pins.json, which is where the URLs and the digests are.
-    // The mac file names its provisioning script outright; this is the same
-    // demand, made of a step written inline. A future provisioner that fetches
-    // the pins some other way would need this rule rewritten, deliberately --
-    // which is the point.
+  it('provisions the pinned Windows Node runtime before it packages', () => {
     const before = steps.slice(0, packagingIndex < 0 ? 0 : packagingIndex).map((step) => asText(step.run)).filter(Boolean);
     const provisioning = before.filter((script) => /resource-pins\.json/.test(script));
     expect(reason(packagingIndex < 0 ? 'no `npm run package:win` step'
       : provisioning.length > 0 ? 'provisioned first'
-        : 'nothing between the install and the packaging reads scripts/resource-pins.json to fetch the pinned vc.exe and the pinned Windows Node archive'))
+        : 'nothing fetches the pinned Windows Node archive before packaging'))
       .toBe('provisioned first');
   });
 
-  it('does not retype a pinned digest that resource-pins.json already holds', () => {
-    // Two copies of a hash drift, and the copy in the workflow is the one
-    // nobody updates. Whatever the provisioning step is, it has to read the
-    // pin. Both files, because the digest could be retyped in either one.
+  it('does not retype the pinned Node digest', () => {
     const text = `${workflowText('test.yml')}\n${workflowText(REUSABLE)}`;
-    const copied = [pins.windows.vc.sha256, pins.windows.node.sourceArchiveSha256].filter((digest) => text.includes(digest));
-    expect(reason(copied.join(', ') || 'no digest copied into the workflow')).toBe('no digest copied into the workflow');
+    expect(reason(text.includes(pins.windows.node.sourceArchiveSha256) ? pins.windows.node.sourceArchiveSha256 : 'no digest copied into the workflow'))
+      .toBe('no digest copied into the workflow');
   });
 
   it('packages through `npm run package:win`, never electron-builder by hand', () => {
