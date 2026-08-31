@@ -65,8 +65,19 @@ try {
     if (renderer.title) break;
     await sleep(100);
   }
+  // The window census names one window per process -- the first on-screen layer-0 window on
+  // macOS, MainWindowHandle on Windows -- and during a cold start that window can be the startup
+  // splash, which stays up until the main window is shown. A single sample taken the moment the
+  // renderer reports a title therefore measures whichever window happened to be there. Sample
+  // until the census settles on a window that satisfies the assertion below; when none ever does,
+  // the last sample falls through to the same assertion and the same failure as before.
+  let native;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    native = await inspectNativeWindow(primary.pid, root);
+    if (native.visible && native.width >= 500 && native.height >= 500) break;
+    await sleep(100);
+  }
   const processes = inventory();
-  const native = await inspectNativeWindow(primary.pid, root);
   if (renderer.title !== 'Void Code' || renderer.visibility !== 'visible' || !renderer.href.endsWith('/renderer/index.html') || !processes.some((process) => process.command.includes('--type=renderer')) || !native.visible || native.width < 500 || native.height < 500) throw new Error(`normal window assertion failed: ${JSON.stringify({ renderer, native, processes })}`);
   minimizeNativeWindow(primary.pid);
   if (windows) {
