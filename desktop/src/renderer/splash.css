@@ -1,0 +1,24 @@
+/* Every colour here is stated outright. Nothing inherits a default: a page that leans on the
+   platform's default text colour reads as black on the window's #101216 background — that is the
+   defect that shipped once already, when a policy dropped the styles and left black on black. */
+html { background: #101216; }
+body {
+  margin: 0;
+  background: #101216;
+  color: #e6e9ef;
+  font: 13px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 28px;
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  -webkit-app-region: drag;
+}
+h1 { margin: 0; font-size: 16px; font-weight: 600; color: #ffffff; letter-spacing: 0.01em; }
+p { margin: 0; color: #b6bdc9; }
+p.quiet { color: #7f8794; }

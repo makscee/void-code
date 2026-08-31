@@ -23,7 +23,8 @@ import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
-import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from './startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage, withStartupSplash } from './startup-lifecycle';
+import { createSplashWindow } from './splash-window';
 import type { StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
@@ -35,6 +36,8 @@ if (productionProbePerturb && !['missing-font', 'palette-collapse'].includes(pro
 const productionProbeRoot = productionProbeOutput ? mkdtempSync(path.join(os.tmpdir(), 'void-code-production-terminal-')) : undefined;
 if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 'user-data'));
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
+// The headless modes drive a single window and read its output; a second window breaks the probes.
+const splashFactory = smokeOutput || productionProbeOutput ? undefined : createSplashWindow;
 const missingRendererTest = missingRendererRequested(process.argv, process.env.VOID_STARTUP_TEST_MISSING_RENDERER, existsSync(path.join(app.getPath('userData'), '.void-startup-test-missing-renderer')));
 let manager: SessionManager;
 let workspace: WorkspaceStore;
@@ -203,16 +206,20 @@ async function createWindow(): Promise<BrowserWindow> {
 
 async function bootstrap(): Promise<void> {
   await startupStage('readiness', () => app.whenReady());
-  runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
-  workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
-  if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
-  const statusChannels = new StatusChannelStore(
-    path.join(app.getPath('userData'), 'status-channels'),
-    (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
-    (chatId) => workspace.view().workspace?.selectedId === chatId,
-  );
-  manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
-  registerIpc(); await createWindow();
+  // Everything below is the wait a person stares at an empty screen through, up to and including
+  // the renderer load inside createWindow, which is what finally puts a real window on screen.
+  await withStartupSplash(splashFactory, async () => {
+    runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
+    workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
+    if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
+    const statusChannels = new StatusChannelStore(
+      path.join(app.getPath('userData'), 'status-channels'),
+      (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
+      (chatId) => workspace.view().workspace?.selectedId === chatId,
+    );
+    manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
+    registerIpc(); await createWindow();
+  });
 }
 
 function failStartup(failure: StartupStageError): void {
