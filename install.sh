@@ -184,6 +184,38 @@ verify_sha256() {
   return 0
 }
 
+# ── release tags are third-party text pasted into a URL path ─────────────────
+# The tag arrives from two places, neither of them ours: the "tag" field of
+# version.json on $AUTH_HOST, and tag_name from api.github.com. Nothing here is
+# shell-injectable — the quoting is right — but curl and wget both normalise
+# `/../` per RFC 3986 before the request leaves the machine, so a tag carrying
+# `..` addresses a path OUTSIDE releases/download/<repo>/: another account's
+# repository, or any other file github.com will serve. A `/` re-aims within the
+# host just as freely. sha256 does not save this: SHA256SUMS is fetched from the
+# same re-aimed directory, so the forgery is checked against the forger's list.
+#
+# The rule is a shape, not a blocklist: a tag is [A-Za-z0-9._-]+ or it is not a
+# tag, and one that is not a tag is REFUSED — never trimmed, never stripped,
+# never percent-encoded into something that merely looks safe. The alphabet is
+# spelled out instead of written as A-Z/a-z ranges because range endpoints go
+# through collation, which is locale-dependent, and this check must not be.
+tag_is_valid() {
+  case "${1:-}" in
+    '') return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# A refusal has to name what it refused, and what it refused is hostile text on
+# its way to a terminal — a control byte executes there, and an ANSI escape can
+# rewrite the very line saying the value was rejected. Every byte outside the
+# tag alphabet becomes '?', so the only thing ever printed is the alphabet.
+tag_render() {
+  printf '%s' "${1:-}" \
+    | LC_ALL=C tr -c 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-' '?'
+}
+
 # ── OS + arch detection ───────────────────────────────────────────────────────
 detect_os() {
   case "$(uname -s)" in
@@ -215,6 +247,7 @@ VERSION_BANNER="==> void-code installer"
 # It carries the release tag the mirror is addressed by, so a single-shot fetch
 # here killed the fallback in precisely the case the fallback exists for: the
 # primary host flapping or down. Retried into a temp file, never left behind.
+VJ_TAG_REFUSED=0
 _vj_raw=""
 _vj_tmp="$(mktemp)"
 if fetch_to_file_retry "$VERSION_JSON_URL" "$_vj_tmp"; then
@@ -228,6 +261,17 @@ if [ -n "$_vj_raw" ]; then
   fi
   # Release tag — the mirror is addressed by tag, not by version.
   _vj_tag="$(printf '%s' "$_vj_raw" | grep -o '"tag"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
+  # Checked here, where the value is received, and not where it is fetched: the
+  # dry run prints the mirror URL for a human to run by hand, so a refusal that
+  # waits for download time still hands them the mangled URL to paste.
+  if [ -n "$_vj_tag" ] && ! tag_is_valid "$_vj_tag"; then
+    printf 'vc: %s named a release tag that is not a tag — refusing it: %s\n' \
+      "$VERSION_JSON_URL" "$(tag_render "$_vj_tag")" >&2
+    printf '    (a release tag is [A-Za-z0-9._-]+ and nothing else — this one is not\n' >&2
+    printf '     repaired or trimmed into one, it is dropped, and with it the mirror)\n' >&2
+    _vj_tag=""
+    VJ_TAG_REFUSED=1
+  fi
   # Try to resolve artifact path from "darwin/amd64" or "darwin-amd64" key
   _artifact="$(printf '%s' "$_vj_raw" | grep -o "\"${OS}/${ARCH}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
   if [ -z "$_artifact" ]; then
@@ -248,8 +292,17 @@ VC_BIN_URL="$AUTH_HOST/vc/$VC_ARTIFACT_PATH"
 # means no mirror, and the primary failure stays fatal.
 MIRROR_REPO="${VC_MIRROR_REPO:-makscee/void-code}"
 MIRROR_TAG="${_vj_tag:-}"
-if [ -z "$MIRROR_TAG" ] && [ -n "${_ver:-}" ]; then
-  MIRROR_TAG="v${_ver}"
+# v${_ver} is not a second chance for a document whose own tag field was
+# refused: _ver comes from that same document, and substituting a guess for the
+# value it got wrong is exactly the repair that must not happen. _ver is data
+# from the same third party either way, so it faces the same check.
+if [ -z "$MIRROR_TAG" ] && [ "$VJ_TAG_REFUSED" != 1 ] && [ -n "${_ver:-}" ]; then
+  if tag_is_valid "v${_ver}"; then
+    MIRROR_TAG="v${_ver}"
+  else
+    printf 'vc: %s named a version that makes no usable release tag — refusing it: v%s\n' \
+      "$VERSION_JSON_URL" "$(tag_render "$_ver")" >&2
+  fi
 fi
 MIRROR_ASSET="${VC_ARTIFACT_PATH##*/}"
 MIRROR_BIN_URL=""
@@ -257,10 +310,20 @@ MIRROR_SUMS_URL=""
 MIRROR_LATEST_TRIED=0
 
 mirror_urls_from_tag() {
-  if [ -n "$MIRROR_TAG" ]; then
+  MIRROR_BIN_URL=""
+  MIRROR_SUMS_URL=""
+  # Belt and braces. Every caller has already refused a bad tag with a message
+  # naming the source it came from; this is the single point where a tag turns
+  # into a URL, so it is also the single point where an unchecked one could get
+  # out. Always returns 0: `set -e` is on and the bare call below must not end
+  # the run.
+  if [ -n "$MIRROR_TAG" ] && tag_is_valid "$MIRROR_TAG"; then
     MIRROR_BIN_URL="https://github.com/$MIRROR_REPO/releases/download/$MIRROR_TAG/$MIRROR_ASSET"
     MIRROR_SUMS_URL="https://github.com/$MIRROR_REPO/releases/download/$MIRROR_TAG/SHA256SUMS"
+  else
+    MIRROR_TAG=""
   fi
+  return 0
 }
 
 # Last resort for the tag: ask GitHub which release is the latest one. Without
@@ -299,6 +362,13 @@ resolve_mirror_tag_from_latest() {
   rm -f "$_rl_tmp"
   if [ -z "$_rl_tag" ]; then
     printf 'vc: %s named no tag — no mirror to fall back to.\n' "$_rl_url" >&2
+    return 1
+  fi
+  if ! tag_is_valid "$_rl_tag"; then
+    printf 'vc: %s named a release tag that is not a tag — refusing it: %s\n' \
+      "$_rl_url" "$(tag_render "$_rl_tag")" >&2
+    printf '    No mirror: the tag is the only thing that addresses one, and this\n' >&2
+    printf '    value is not made into a URL.\n' >&2
     return 1
   fi
 
@@ -928,6 +998,9 @@ if [ "$DRY_RUN" = 1 ]; then
   if [ -n "$MIRROR_BIN_URL" ]; then
     printf 'FALLBACK (only if the GET above fails): GET %s\n' "$MIRROR_BIN_URL"
     printf '  verified against %s before install\n' "$MIRROR_SUMS_URL"
+  elif [ "$VJ_TAG_REFUSED" = 1 ]; then
+    printf 'FALLBACK: none — the release tag version.json named was refused (above),\n'
+    printf '  and a value that is not a tag is not built into a URL to hand you\n'
   else
     printf 'FALLBACK: version.json carried no release tag — at install time the tag\n'
     printf '  would be resolved from https://api.github.com/repos/%s/releases/latest\n' "$MIRROR_REPO"
