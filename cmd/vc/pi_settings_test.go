@@ -282,3 +282,82 @@ func TestEnsurePiDefaultModelIsIdempotent(t *testing.T) {
 		t.Errorf("settings lost the default model: %s", second)
 	}
 }
+
+// vc has a second writer of the very same settings.json: the web-search
+// reconciler owns the "packages" key (cmd/vc/pi_web_search.go,
+// reconcileManagedPackageSetting). Both do a full read-modify-write from disk,
+// so neither may drop what the other put there. This runs the pair in both
+// orders and pins that the end state is identical either way — if the two ever
+// grow an ordering dependency, that is the assertion that breaks.
+func TestEnsurePiDefaultModelComposesWithWebSearchPackageWriter(t *testing.T) {
+	const body = `{
+  "theme": "nord",
+  "maxTokens": 1000000,
+  "editor": {"vimMode": true, "tabWidth": 2, "rulers": [80, 120]}
+}`
+	const pkgPath = "/managed/pi-web-access-0.13.0-void.1"
+
+	// existing: the upgrade path, a settings.json the user already has.
+	// missing: the fresh install the seed exists for — whichever writer runs
+	// first creates the file, and the other must find and extend it.
+	run := func(t *testing.T, seed string, first, second string) []byte {
+		t.Helper()
+		dir := piSettingsSandbox(t)
+		path := filepath.Join(dir, "settings.json")
+		if seed != "" {
+			path = writePiSettings(t, dir, seed, 0600)
+		}
+		for _, step := range []string{first, second} {
+			switch step {
+			case "seed":
+				if err := ensurePiDefaultModel(); err != nil {
+					t.Fatalf("ensurePiDefaultModel() error = %v", err)
+				}
+			case "packages":
+				if err := reconcileManagedPackageSetting(pkgPath, true); err != nil {
+					t.Fatalf("reconcileManagedPackageSetting() error = %v", err)
+				}
+			}
+		}
+		got := readPiSettings(t, path)
+		assertDefaultsWritten(t, got)
+		packages, ok := got["packages"].([]any)
+		if !ok || len(packages) != 1 || packages[0] != pkgPath {
+			t.Errorf("packages = %#v, want [%q] (the other writer's key must survive)", got["packages"], pkgPath)
+		}
+		if seed != "" {
+			if got["theme"] != "nord" {
+				t.Errorf("theme = %#v, want %q", got["theme"], "nord")
+			}
+			if editor, ok := got["editor"].(map[string]any); !ok || editor["tabWidth"] != json.Number("2") {
+				t.Errorf("editor = %#v, want the nested object intact", got["editor"])
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	for _, tc := range []struct {
+		name string
+		seed string
+	}{
+		{name: "existing settings", seed: body},
+		{name: "fresh install", seed: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seedFirst, packagesFirst []byte
+			t.Run("seed then packages", func(t *testing.T) {
+				seedFirst = run(t, tc.seed, "seed", "packages")
+			})
+			t.Run("packages then seed", func(t *testing.T) {
+				packagesFirst = run(t, tc.seed, "packages", "seed")
+			})
+			if !bytes.Equal(seedFirst, packagesFirst) {
+				t.Errorf("call order changed the result\nseed first:     %s\npackages first: %s", seedFirst, packagesFirst)
+			}
+		})
+	}
+}
