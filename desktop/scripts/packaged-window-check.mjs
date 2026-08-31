@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { mainWindowMinimumEdge } from './window-thresholds.mjs';
 
 const mac = process.platform === 'darwin' && process.arch === 'arm64';
 const windows = process.platform === 'win32' && process.arch === 'x64';
@@ -74,11 +75,11 @@ try {
   let native;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     native = await inspectNativeWindow(primary.pid, root);
-    if (native.visible && native.width >= 500 && native.height >= 500) break;
+    if (native.visible && native.width >= mainWindowMinimumEdge && native.height >= mainWindowMinimumEdge) break;
     await sleep(100);
   }
   const processes = inventory();
-  if (renderer.title !== 'Void Code' || renderer.visibility !== 'visible' || !renderer.href.endsWith('/renderer/index.html') || !processes.some((process) => process.command.includes('--type=renderer')) || !native.visible || native.width < 500 || native.height < 500) throw new Error(`normal window assertion failed: ${JSON.stringify({ renderer, native, processes })}`);
+  if (renderer.title !== 'Void Code' || renderer.visibility !== 'visible' || !renderer.href.endsWith('/renderer/index.html') || !processes.some((process) => process.command.includes('--type=renderer')) || !native.visible || native.width < mainWindowMinimumEdge || native.height < mainWindowMinimumEdge) throw new Error(`normal window assertion failed: ${JSON.stringify({ renderer, native, processes })}`);
   minimizeNativeWindow(primary.pid);
   if (windows) {
     const minimized = await inspectNativeWindow(primary.pid, root);

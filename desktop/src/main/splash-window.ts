@@ -19,7 +19,11 @@ import type { SplashWindow } from './startup-lifecycle';
  */
 export function splashWindowOptions(): BrowserWindowConstructorOptions {
   return {
-    title: 'Void Code', show: true, width: 460, height: 260, center: true,
+    // 340, а не «сколько занимает текст»: на macOS страница укладывалась ровно в 232 px до
+    // пикселя, и любой другой системный шрифт обрезал бы последнюю строку — ту самую, что
+    // называет цену закрытия. Ширина и высота обязаны остаться ниже mainWindowMinimumEdge
+    // (scripts/window-thresholds.mjs), иначе перекличка окон начнёт мерить splash.
+    title: 'Void Code', show: true, width: 460, height: 340, center: true,
     resizable: false, maximizable: false, fullscreenable: false, backgroundColor: '#101216',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   };
