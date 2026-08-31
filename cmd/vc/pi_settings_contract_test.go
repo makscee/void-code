@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -76,23 +77,51 @@ func TestPiSettingsWritersPreserveIntegersBeyondFloat64(t *testing.T) {
 // EITHER writer. 0644 is the case that matters — a user who widened the file
 // must not find it narrowed back, and a writer that hardcodes 0600 does exactly
 // that without saying so.
+//
+// The claim is "the mode did not change", stated against the mode actually
+// observed before the write rather than against the literal 0644, because those
+// are the same number only on POSIX. Windows has no permission bits for Go to
+// report: os.Stat gives 0666 for any ordinary file and 0444 for a read-only
+// one, and os.Chmod moves only the read-only flag. Asserting 0644 there demands
+// something the platform cannot represent, and the test fails on correct code.
+//
+// Said plainly, because the difference matters when reading a green run: on
+// Windows this subtest is a weaker claim. It catches a writer that marks the
+// file read-only, and it cannot catch the defect this criterion was written for
+// — a hardcoded 0600 also reports 0666, so the two are indistinguishable. The
+// real content of criterion 3 is verified on POSIX; on Windows the test is
+// present, honest, and narrower. It is not skipped: a writer that flipped the
+// read-only flag would be a genuine bug on the platform where users actually
+// hit read-only files.
 func TestPiSettingsWritersPreserveExistingFileMode(t *testing.T) {
 	for _, writer := range piSettingsWriters {
 		t.Run(writer.name, func(t *testing.T) {
 			dir := piSettingsSandbox(t)
 			path := writePiSettings(t, dir, `{"theme":"nord"}`, 0644)
 
+			before := statPerm(t, path)
+			// On POSIX the fixture must really carry 0644, or the assertion
+			// below compares the write against a mode nobody asked for.
+			if runtime.GOOS != "windows" && before != 0644 {
+				t.Fatalf("fixture mode = %04o, want 0644 — the test cannot say anything about a mode it failed to set", before)
+			}
+
 			writer.write(t)
 
-			info, err := os.Stat(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := info.Mode().Perm(); got != 0644 {
-				t.Errorf("settings.json mode = %04o, want 0644 unchanged (this write is an update, not a re-creation)", got)
+			if got := statPerm(t, path); got != before {
+				t.Errorf("settings.json mode = %04o, want %04o unchanged (this write is an update, not a re-creation)", got, before)
 			}
 		})
 	}
+}
+
+func statPerm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
 }
 
 // Acceptance criterion 8: the pair vc seeds is only useful if the extension that

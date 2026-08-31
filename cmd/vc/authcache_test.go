@@ -14,10 +14,20 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 )
 
+// withTempHome points the home directory at a throwaway one, for tests that
+// write VC state (~/.void-code/token, the auth cache) as a side effect.
+//
+// Both variables, because os.UserHomeDir does not read the same one everywhere:
+// HOME on unix, USERPROFILE on Windows. Setting only HOME leaves the Windows
+// run resolving the real profile, so every caller of this helper wrote a live
+// token into the developer's own ~/.void-code — silently, since on the platform
+// the author was using it worked. The package's HOME guard
+// (home_isolation_test.go) is what catches it, and it caught exactly this.
 func withTempHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	return home
 }
 

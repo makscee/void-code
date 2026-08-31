@@ -94,8 +94,7 @@ func TestLoginJSONFlagSelectsRunnerExclusively(t *testing.T) {
 // server standing in for cfg.AuthHost, and fails if wiring is faked, missing,
 // or pointed elsewhere.
 func TestNewDeviceLoginDepsWiresToConfiguredAuthHost(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	withTempHome(t)
 
 	const expiresIn = 600
 	const interval = 5
