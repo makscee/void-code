@@ -78,9 +78,11 @@ const normalize = (path: string) => path.replace(/^\.\//, '').replace(/\/{2,}/g,
 
 // A glob as GitHub and the shell mean it: `*` stands for a run of characters
 // within one path segment and never crosses a `/`. Both sides may be globs --
-// the Windows installer is uploaded as `Void-Code-*-windows-x64.exe`, because
-// the version is in the file name -- so the candidate's own `*` is first made
-// into a plausible concrete character run and then matched.
+// the download step here asks for `void-code-*`, the prefix every desktop
+// upload carries -- so the candidate's own `*` is first made into a plausible
+// concrete character run and then matched. (The Windows installer itself is no
+// longer globbed: its name carries no version, so desktop-windows-app.yml
+// uploads it by its exact name.)
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const asRegExp = (pattern: string) => new RegExp(`^${pattern.split('*').map(escapeRegExp).join('[^/]*')}$`);
 const covers = (pattern: string, candidate: string) => asRegExp(normalize(pattern)).test(normalize(candidate).replace(/\*/g, 'x'));

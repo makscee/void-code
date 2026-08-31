@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import pins from '../scripts/resource-pins.json';
 import { assemblyTarget, vcBuildPlan } from '../scripts/resource-assembly-lib.mjs';
+import { parseBuildVersion, vcBuildArgs } from '../scripts/build-version.mjs';
 import { asList, asMap, asText, parseWorkflow, type YamlMap } from './workflow-yaml';
 
 // Two assemblies stage the same binary, and only one of them can be wrong about
@@ -119,9 +120,36 @@ describe('scripts/assemble-windows-resources.mjs stages a vc it built', () => {
     // The same invocation, not a similar one: -trimpath and -buildvcs=false are
     // what make the binary reproducible, and a Windows build that dropped them
     // would produce a bundle nobody could compare against a Mac one.
-    const goBuild = /execFileSync\(\s*'go',\s*\[\s*'build',\s*'-trimpath',\s*'-buildvcs=false',\s*'-o'/;
-    expect(goBuild.test(macAssembly)).toBe(true);
-    expect(goBuild.test(windowsCode) && /'\.\/cmd\/vc'/.test(windowsCode)).toBe(true);
+    //
+    // This used to be asserted as a literal argv -- `['build', '-trimpath',
+    // '-buildvcs=false', '-o'` -- matched against BOTH files. That worked while
+    // the argv was a constant, and it stopped working the day the build had to
+    // carry a version: `-ldflags "-X ...version.Version=<git describe>"` is not
+    // a constant, so the two files can no longer hold identical literals and
+    // this rule and version-stamping-wiring.test.ts contradicted each other
+    // outright.
+    //
+    // The property survives the change, and gets stronger. "Both platforms
+    // build vc the same way" used to rest on two literals that happened to
+    // match and were free to stop matching; it now rests on both calling ONE
+    // argv builder, whose content is measured for real in
+    // build-version.test.ts -- including a build of cmd/vc that is run and
+    // asked its version.
+    const argv = vcBuildArgs('/tmp/out/vc', parseBuildVersion('v9.9.9'));
+    expect(argv).toEqual(expect.arrayContaining(['build', '-trimpath', '-buildvcs=false', './cmd/vc']));
+    for (const [name, source] of [['macOS', codeOf(macAssembly)], ['Windows', windowsCode]] as const) {
+      expect(source, `the ${name} assembly does not import ./build-version.mjs`).toMatch(/from '\.\/build-version\.mjs'/);
+      // The argv `go` is handed, not one computed nearby: a call whose result
+      // never reaches execFileSync satisfies a bare `vcBuildArgs(` and builds
+      // an unstamped binary anyway.
+      expect(source, `the ${name} assembly does not build vc with the argv vcBuildArgs returns`).toMatch(/execFileSync\(\s*'go',\s*vcBuildArgs\(/);
+      expect(source, `the ${name} assembly still hands go build an argv typed into the script`).not.toMatch(/'build',\s*'-trimpath'/);
+    }
+    // And it is still the Go toolchain doing it here, on this machine, from
+    // this tree -- which is the whole subject of this file. A shared argv
+    // builder is worth nothing if the Windows side goes back to downloading
+    // something and never runs `go` at all.
+    expect(windowsCode, 'the Windows assembly no longer invokes the Go toolchain').toMatch(/\bexecFileSync\(\s*'go'/);
   });
 
   it('takes GOOS and GOARCH from the shared assembly target, never from a literal', () => {

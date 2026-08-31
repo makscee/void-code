@@ -39,14 +39,14 @@ const repo = git(process.cwd(), ['rev-parse', '--show-toplevel']);
 const repoFacts = repositoryFacts(repo);
 const sourceCommit = assertRepositoryReady(repoFacts);
 const packageJson = JSON.parse(readFileSync(path.join(repo, 'desktop/package.json'), 'utf8'));
-if (packageJson.build?.productName !== 'Void Code' || packageJson.build?.appId !== 'works.voidcode.desktop' || packageJson.build?.nsis?.artifactName !== 'Void-Code-${version}-windows-${arch}.${ext}') throw new Error('authoritative package identity mismatch');
+if (packageJson.build?.productName !== 'Void Code' || packageJson.build?.appId !== 'works.voidcode.desktop' || packageJson.build?.nsis?.artifactName !== 'Void-Code-windows-${arch}.${ext}') throw new Error('authoritative package identity mismatch');
 
 if (command === 'generate') {
   requireKeys(args, ['installer', 'resources', 'arch', 'build-timestamp', 'predecessor-ref', 'predecessor-sha256', 'operator-gate', 'gate-evidence', 'output'], ['gate-verified-at']);
   const output = path.resolve(args.output);
   if (existsSync(output)) throw new Error('candidate manifest output already exists');
   const manifest = buildCandidateManifest({
-    productName: packageJson.build.productName, version: packageJson.version, sourceCommit, sourceOrigin: repoFacts.originUrl,
+    productName: packageJson.build.productName, sourceCommit, sourceOrigin: repoFacts.originUrl,
     installerPath: path.resolve(args.installer), resourceManifestPath: path.resolve(args.resources), arch: args.arch,
     buildTimestamp: args['build-timestamp'], predecessorReference: args['predecessor-ref'], predecessorSha256: args['predecessor-sha256'],
     operatorGate: args['operator-gate'], gateEvidence: args['gate-evidence'], gateVerifiedAt: args['gate-verified-at'] ?? null,
@@ -56,7 +56,10 @@ if (command === 'generate') {
 } else {
   requireKeys(args, ['manifest', 'installer', 'resources']);
   const manifest = assertCandidateManifest(JSON.parse(readFileSync(path.resolve(args.manifest), 'utf8')));
-  if (manifest.source.commit !== sourceCommit || manifest.product.name !== packageJson.build.productName || manifest.product.version !== packageJson.version) throw new Error('manifest does not match synchronized source identity');
+  // The version is not compared against desktop/package.json: that file carries
+  // a placeholder, and the candidate's version comes from the build. What ties
+  // the manifest to these artifacts is verifyCandidateArtifacts below.
+  if (manifest.source.commit !== sourceCommit || manifest.product.name !== packageJson.build.productName) throw new Error('manifest does not match synchronized source identity');
   verifyCandidateArtifacts(manifest, path.resolve(args.installer), path.resolve(args.resources));
   console.log(JSON.stringify({ action: 'verified', sourceCommit, installerSha256: manifest.installer.sha256, operatorGate: manifest.operatorGate.status }));
 }

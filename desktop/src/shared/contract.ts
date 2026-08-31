@@ -43,6 +43,7 @@ export interface TerminalApi {
   lifecycleStatus(request: SessionRequest): Promise<ChatStatusReply>;
   chooseFolder(): Promise<string | null>;
   openLink(url: string): Promise<void>;
+  appVersion(): Promise<string>;
   support: {
     copy(request: SupportRequest): Promise<SupportResult>;
     save(request: SupportRequest): Promise<SupportResult>;

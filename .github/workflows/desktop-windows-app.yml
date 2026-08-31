@@ -105,15 +105,18 @@ jobs:
       - name: Upload the Windows installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         # The name is the packager's, assembled from desktop/package.json:
-        # directories.output, win.target (nsis -> .exe), version, the --x64 of
+        # directories.output, win.target (nsis -> .exe), the --x64 of
         # package:win, and build.nsis.artifactName. It is never retyped:
         # windows-app-artifact-workflow.test.ts derives it from that config and
         # compares it against this line, so a renamed product, a changed target
-        # or a different arch is a red test rather than an empty download. Only
-        # the version is globbed, so a version bump does not turn into a job
-        # that uploads nothing, and `if-no-files-found: error` turns a glob that
-        # matched nothing into a failed job rather than an empty artifact.
+        # or a different arch is a red test rather than an empty download.
+        #
+        # No wildcard: the artifactName pattern carries no ${version} any more --
+        # the version lives inside the build, not in its file name -- so there is
+        # nothing left in the name that varies between builds. An exact path
+        # cannot match the wrong file, and `if-no-files-found: error` turns a
+        # rename into a failed job rather than an empty artifact.
         with:
           name: void-code-windows-x64-installer
-          path: desktop/release/Void-Code-*-windows-x64.exe
+          path: desktop/release/Void-Code-windows-x64.exe
           if-no-files-found: error

@@ -20,7 +20,7 @@ function timestamp(value) {
 export function supportReportValid(value) {
   return exact(value, ['schema', 'app', 'system', 'generatedAt', 'state']) &&
     exact(value.app, ['name', 'version']) && exact(value.system, ['platform', 'architecture']) && exact(value.state, ['workspace', 'runtime', 'recoveryCode']) &&
-    value.schema === 1 && value.app.name === 'Void Code' && /^\d+\.\d+\.\d+$/.test(value.app.version) &&
+    value.schema === 1 && value.app.name === 'Void Code' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value.app.version) &&
     ['windows', 'macos', 'linux', 'other'].includes(value.system.platform) && ['x64', 'arm64', 'other'].includes(value.system.architecture) &&
     timestamp(value.generatedAt) && ['none', 'ready', 'missing'].includes(value.state.workspace) &&
     ['not_started', 'running', 'ended', 'start_failed'].includes(value.state.runtime) &&

@@ -86,7 +86,7 @@ export function stagedNpmVersion(stagingRoot) {
   try {
     version = JSON.parse(readFileSync(manifest, 'utf8')).version;
   } catch (error) {
-    throw new Error(`cannot read the staged private npm version from ${manifest}: ${error.message}`);
+    throw new Error(`cannot read the version of the staged private npm from ${manifest}: ${error.message}`);
   }
   if (typeof version !== 'string' || version === '') throw new Error(`the staged private npm at ${manifest} declares no version`);
   return version;

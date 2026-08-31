@@ -55,6 +55,7 @@ const api: TerminalApi = {
   lifecycleStatus: (request) => ipcRenderer.invoke(IPC.lifecycleStatus, request),
   chooseFolder: () => ipcRenderer.invoke(IPC.chooseFolder),
   openLink: (url) => ipcRenderer.invoke(IPC.openLink, { url }),
+  appVersion: () => ipcRenderer.invoke(IPC.appVersion) as Promise<string>,
   support: Object.freeze({
     copy: (request) => ipcRenderer.invoke(IPC.supportCopy, request),
     save: (request) => ipcRenderer.invoke(IPC.supportSave, request),

@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { treeHash } from './resource-assembly-lib.mjs';
+import { assertStampedVc } from './packaged-check-lib.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows package check requires Windows x64');
 
@@ -121,7 +122,11 @@ try {
     vc: execFileSync(path.join(runtime, manifest.vc.path), ['--version'], { encoding: 'utf8', env: { PATH: `${process.env.SystemRoot}\\System32` } }).trim(),
     pi: piIdentity,
   };
-  const installer = path.join(release, 'Void-Code-0.1.0-windows-x64.exe');
+  // The vc inside the installed bundle has to know which vc it is: `vc dev` is
+  // the regression this check exists on Windows to catch, on the platform where
+  // it shipped.
+  assertStampedVc(privateVersions.vc, manifest);
+  const installer = path.join(release, 'Void-Code-windows-x64.exe');
   const nativePty = path.join(ptyRoot, 'prebuilds/win32-x64/pty.node');
   const result = {
     package: { electron: '39.2.6', xterm: '6.0.0', nodePty: '1.1.0' }, privateVersions,

@@ -38,7 +38,7 @@ const native = path.join(resources, 'app.asar.unpacked/node_modules/node-pty/pre
 const privateNpm = path.join(runtime, 'node/bin/npm');
 if (!manifest.node.npm?.version || !manifest.node.npm?.treeSha256) throw new Error('private npm manifest facts missing');
 const npmVersion = execFileSync(privateNpm, ['--version'], { encoding: 'utf8', env: { PATH: `${path.dirname(privateNpm)}:/usr/bin:/bin` } }).trim();
-if (npmVersion !== manifest.node.npm.version) throw new Error('private npm version mismatch');
+if (npmVersion !== manifest.node.npm.version) throw new Error('the private npm reports a different version than the manifest');
 const signature = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { encoding: 'utf8' });
 if (signature.status === 0 || !signature.stderr.includes('signature indicates they must be present')) throw new Error('unexpected local signature disposition');
 
