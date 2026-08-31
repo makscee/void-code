@@ -20,30 +20,12 @@ jobs:
         run: go test ./...
       - name: Validate release tag graphs
         run: ruby .github/scripts/check-release-tag-graphs.rb
+      - name: Validate desktop CI gate and mutations
+        run: ruby .github/scripts/test-desktop-ci-contract.rb
 
-  desktop-pinned-pi-smoke:
-    name: Desktop pinned Pi smoke
-    runs-on: macos-14
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: .go-version
-          cache: true
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22.23.1'
-          cache: npm
-          cache-dependency-path: |
-            desktop/package-lock.json
-            desktop/runtime/pi/package-lock.json
-      - name: Provision and require exact pinned Pi smoke
-        run: desktop/scripts/provision-pinned-pi-smoke.sh
+  desktop-tests:
+    name: Full desktop Vitest gate
+    uses: ./.github/workflows/desktop-tests.yml
 
   # ---------------------------------------------------------------------------
   # Desktop packaging is described in exactly one place per platform, and both
@@ -61,8 +43,10 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop-mac-app:
     name: Desktop macOS app artifact
+    needs: desktop-tests
     uses: ./.github/workflows/desktop-mac-app.yml
 
   desktop-windows-app:
     name: Desktop Windows installer artifact
+    needs: desktop-tests
     uses: ./.github/workflows/desktop-windows-app.yml
