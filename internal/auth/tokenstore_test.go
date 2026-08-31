@@ -4,27 +4,94 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-func TestSaveLoadWipeAndPermissions(t *testing.T) {
+// withTempHome points the home directory at a throwaway one, for the tests in
+// this file — every one of them writes a credential.
+//
+// Both variables, because os.UserHomeDir does not read the same one everywhere:
+// HOME on unix, USERPROFILE on Windows. Setting only HOME left the Windows run
+// resolving the real profile, so these five tests overwrote the developer's own
+// ~/.void-code/token — silently, since on the platform the author was using it
+// worked. One helper rather than five hand-written pairs, so the pair can only
+// be forgotten in one place; home_isolation_test.go is what notices when it is.
+func withTempHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := Save("opaque-first"); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(home, ".void-code", "token")
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
+// assertCredentialFileIsPrivate makes the "only this account can read the
+// token" claim in the strongest form the running platform can carry.
+//
+// On POSIX that is the literal 0600. Windows has no permission bits for Go to
+// report: os.Stat gives 0666 for any ordinary file and 0444 for a read-only
+// one, os.Chmod moves only the read-only flag, and the real access control
+// lives in ACLs that os.FileMode cannot express. Asking for 0600 there asks for
+// a number the platform will never produce, and the test fails on correct code.
+//
+// Plainly, so a green Windows run is not read as two platforms agreeing: on
+// Windows the privacy of the credential is NOT checked here, and nothing else
+// in this package checks it either. That claim is verified on POSIX only. What
+// remains on Windows is narrow but real — the credential must come out
+// writable, because Save replaces it by renaming over it, and a rename onto a
+// read-only file fails there.
+func assertCredentialFileIsPrivate(t *testing.T, path string) {
+	t.Helper()
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("credential mode=%o", info.Mode().Perm())
+	got := info.Mode().Perm()
+	if runtime.GOOS == "windows" {
+		if got&0200 == 0 {
+			t.Errorf("credential mode=%04o, want a writable file — a read-only credential cannot be replaced by the next Save", got)
+		}
+		return
 	}
-	dirInfo, _ := os.Stat(filepath.Dir(path))
-	if dirInfo.Mode().Perm() != 0o700 {
-		t.Fatalf("directory mode=%o", dirInfo.Mode().Perm())
+	if got != 0o600 {
+		t.Errorf("credential mode=%04o, want 0600", got)
 	}
+}
+
+// assertCredentialDirIsPrivate makes the same claim about the directory the
+// credential lives in: 0700 on POSIX.
+//
+// On Windows it makes no mode claim at all — os.Stat reports 0777 for every
+// directory a test can create, so there is no value to compare against that
+// would distinguish a private directory from a world-readable one. What is left
+// is that the directory exists and is a directory, which is worth keeping only
+// because Save is expected to have created it. The privacy of the credential
+// directory is verified on POSIX.
+func assertCredentialDirIsPrivate(t *testing.T, dir string) {
+	t.Helper()
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("credential directory %s is not a directory", dir)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("directory mode=%04o, want 0700", got)
+	}
+}
+
+func TestSaveLoadWipeAndPermissions(t *testing.T) {
+	home := withTempHome(t)
+	if err := Save("opaque-first"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".void-code", "token")
+	assertCredentialFileIsPrivate(t, path)
+	assertCredentialDirIsPrivate(t, filepath.Dir(path))
 	got, legacy, err := Load()
 	if err != nil || got != "opaque-first" || legacy {
 		t.Fatalf("load mismatch")
@@ -38,8 +105,7 @@ func TestSaveLoadWipeAndPermissions(t *testing.T) {
 }
 
 func TestAtomicReplacementPreservesPreviousOnRenameFailure(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	withTempHome(t)
 	if err := Save("previous-credential"); err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +135,7 @@ func TestReplacementFaultsRestorePreviousCredentialAndCleanup(t *testing.T) {
 	phases := []string{"write", "file-sync", "rename", "directory-sync", "cleanup-directory-sync"}
 	for _, phase := range phases {
 		t.Run(phase, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
+			withTempHome(t)
 			if err := Save("previous-credential"); err != nil {
 				t.Fatal(err)
 			}
@@ -126,8 +191,7 @@ func TestReplacementFaultsRestorePreviousCredentialAndCleanup(t *testing.T) {
 }
 
 func TestReplacementSuccessCompletesFileAndDirectorySync(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	withTempHome(t)
 	if err := Save("previous-credential"); err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +211,7 @@ func TestReplacementSuccessCompletesFileAndDirectorySync(t *testing.T) {
 }
 
 func TestLegacyTokenIsRetainedButNeverLoaded(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := withTempHome(t)
 	legacy := filepath.Join(home, ".claudev", "token")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
 		t.Fatal(err)

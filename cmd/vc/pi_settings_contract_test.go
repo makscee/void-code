@@ -124,6 +124,40 @@ func statPerm(t *testing.T, path string) os.FileMode {
 	return info.Mode().Perm()
 }
 
+// assertCreatedFilePrivate makes the "this file is nobody else's business"
+// claim about a file the program creates, in the strongest form the running
+// platform can carry.
+//
+// On POSIX that is the literal 0600. Windows has no permission bits for Go to
+// report — os.Stat gives 0666 for any ordinary file and 0444 for a read-only
+// one, os.Chmod moves only the read-only flag, and the real access control
+// lives in ACLs that os.FileMode cannot express. Demanding 0600 there demands a
+// number the platform will never produce, and the test fails on correct code.
+//
+// Said plainly, so a green Windows run is not read as two platforms agreeing:
+// on Windows this helper does NOT check privacy, and neither does anything
+// else. The privacy half of every criterion that calls it is verified on POSIX
+// only. What remains on Windows is narrow but real — the file must come out
+// writable, because these files are all replaced by an atomic rename over the
+// old one, and on Windows a rename onto a read-only file fails.
+//
+// It lives in one place on purpose: the mistake this replaces was the same
+// hand-written 0600 comparison copied into three files, so a fourth copy would
+// be a fourth place to get Windows wrong.
+func assertCreatedFilePrivate(t *testing.T, path, subject string) {
+	t.Helper()
+	got := statPerm(t, path)
+	if runtime.GOOS == "windows" {
+		if got&0200 == 0 {
+			t.Errorf("%s mode = %04o, want a writable file — a read-only one cannot be replaced by the next atomic write", subject, got)
+		}
+		return
+	}
+	if got != 0600 {
+		t.Errorf("%s mode = %04o, want 0600 — it must not be readable by others", subject, got)
+	}
+}
+
 // Acceptance criterion 8: the pair vc seeds is only useful if the extension that
 // receives it registers that provider and accepts that model. The two live in
 // different languages — Go constants here, a JS source string in

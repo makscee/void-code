@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -242,14 +241,7 @@ func TestEnsurePiDefaultModelCreatesPrivateFile(t *testing.T) {
 		t.Fatalf("ensurePiDefaultModel() error = %v", err)
 	}
 
-	got := statPerm(t, filepath.Join(dir, "settings.json"))
-	if runtime.GOOS == "windows" {
-		if got&0200 == 0 {
-			t.Errorf("settings.json mode = %04o, want a writable file — Pi has to be able to save the user's next model choice", got)
-		}
-	} else if got != 0600 {
-		t.Errorf("settings.json mode = %04o, want 0600 — it sits beside the token and must not be readable by others", got)
-	}
+	assertCreatedFilePrivate(t, filepath.Join(dir, "settings.json"), "settings.json")
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
