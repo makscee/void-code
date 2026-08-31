@@ -31,12 +31,21 @@ import {
 const roots: string[] = [];
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 function temporary(prefix: string) { const root = mkdtempSync(path.join(os.tmpdir(), prefix)); roots.push(root); return root; }
+// "No build block at all" needs a sentinel, not `undefined`: `undefined` is
+// what a defaulted parameter is, so fixture(undefined) hands back the DEFAULT
+// build block -- the valid one every other test in this file relies on. Written
+// with `undefined` in the refusal list below, the case asked for the same
+// fixture to be accepted on one line and refused on another, which no
+// implementation can satisfy.
+const NO_BUILD = Symbol('a runtime manifest with no build block at all');
 function fixture(build: unknown = { version: '0.2.50', describe: 'v0.2.50' }) {
   const root = temporary('vc-candidate-');
   const installer = path.join(root, 'Void-Code-windows-x64.exe');
   const resources = path.join(root, 'manifest.json');
   writeFileSync(installer, 'exact unsigned installer fixture');
-  writeFileSync(resources, JSON.stringify({ schema: 1, platform: 'win32-x64', build, vc: {}, node: {}, pi: {} }));
+  const manifest: Record<string, unknown> = { schema: 1, platform: 'win32-x64', build, vc: {}, node: {}, pi: {} };
+  if (build === NO_BUILD) delete manifest.build;
+  writeFileSync(resources, JSON.stringify(manifest));
   return { root, installer, resources };
 }
 const input = (artifacts: { installer: string; resources: string }) => ({
@@ -85,8 +94,9 @@ describe('candidate manifest provenance', () => {
   });
 
   it('refuses an unstamped or nonsensical runtime manifest instead of recording the placeholder', () => {
-    for (const build of [undefined, {}, { version: '' }, { version: 'dev' }, { version: 'v0.2.50' }, { version: '0.2' }]) {
-      expect(() => buildCandidateManifest(input(fixture(build))), `${JSON.stringify(build)} was accepted as a build version`).toThrow();
+    for (const build of [NO_BUILD, {}, { version: '' }, { version: 'dev' }, { version: 'v0.2.50' }, { version: '0.2' }]) {
+      const label = typeof build === 'symbol' ? build.description : JSON.stringify(build);
+      expect(() => buildCandidateManifest(input(fixture(build))), `${label} was accepted as a build version`).toThrow();
     }
   });
 
