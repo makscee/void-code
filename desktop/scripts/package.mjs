@@ -18,7 +18,10 @@ import { electronBuilderVersionArgs, readBuildVersion } from './build-version.mj
 // Windows is the platform whose installer matters most here.
 
 const desktop = path.resolve(import.meta.dirname, '..');
-const cli = path.join(desktop, 'node_modules/electron-builder/cli.js');
+// The packer, overridable so a test can put a recorder in its place and read
+// the argv this wrapper actually hands over -- the one thing no amount of
+// reading this file's text can establish. The default is the real packer.
+const cli = process.env.VOID_DESKTOP_PACKER ?? path.join(desktop, 'node_modules/electron-builder/cli.js');
 
 const versionArgs = electronBuilderVersionArgs(readBuildVersion());
 if (!versionArgs.every((argument) => argument.startsWith('-c.extraMetadata.version='))) throw new Error('the packer was not handed -c.extraMetadata.version');
