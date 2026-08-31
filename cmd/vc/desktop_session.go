@@ -21,6 +21,12 @@ import (
 type desktopSessionPlan struct {
 	nodePath  string
 	args, env []string
+	// Everything the preparation wants the user to see but was not willing to
+	// fail over. It travels on the plan because the stream to say it on belongs
+	// to the command, not to the preparation: the desktop app reads the
+	// command's error stream, and a line written to os.Stderr here would land in
+	// a process nobody is watching.
+	warnings []string
 }
 type desktopSessionDeps struct {
 	loadToken       func() (string, error)
@@ -42,6 +48,9 @@ func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 		plan, err := prepareDesktopSession(nodePath, piEntry, args, deps)
 		if err != nil {
 			return fmt.Errorf("desktop-session: %w", err)
+		}
+		for _, warning := range plan.warnings {
+			fmt.Fprintln(cmd.ErrOrStderr(), warning)
 		}
 		return deps.run(cmd.Context(), plan, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}}
@@ -92,13 +101,23 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if _, err := deps.reconcileSearch(true); err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("managed Pi web search unavailable: %w", err)
 	}
+	// The same seed runSpawn does, in the same place and on the same terms —
+	// the desktop app never goes through runSpawn, so without this line the
+	// default model reaches only the people who open a terminal. It sits behind
+	// the access check on purpose: a token that was refused must not leave a
+	// mark in anyone's Pi settings. Unlike everything else here, its failure is
+	// a warning: an unreadable settings.json is not worth the user's session.
+	var warnings []string
+	if err := ensurePiDefaultModel(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi default model was not seeded: %v", err))
+	}
 	caPath, err := deps.resolveCA(cfg)
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("relay CA unavailable: %w", err)
 	}
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	env = setDesktopEnv(env, "PI_SKIP_VERSION_CHECK", "1")
-	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env}, nil
+	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env, warnings: warnings}, nil
 }
 
 var desktopPiArgs = map[string]bool{"--continue": false, "-c": false, "--resume": false, "-r": false, "--session": true, "--session-id": true, "--fork": true, "--no-session": false, "--name": true, "-n": true}
