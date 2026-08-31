@@ -57,3 +57,49 @@ describe('the startup splash window', () => {
     expect(ctor, 'the shown splash window sets window options inline, bypassing splashWindowOptions()').not.toMatch(/alwaysOnTop|skipTaskbar/);
   });
 });
+
+const splashPage = readFileSync(new URL('../src/renderer/splash.html', import.meta.url), 'utf8');
+const packagedCheck = readFileSync(new URL('../scripts/packaged-window-check.mjs', import.meta.url), 'utf8');
+
+describe('the startup splash page', () => {
+  it('tells the person what closing this window costs them, because closing it cancels the start', () => {
+    // The splash is the only window for almost the whole start (the main one is created last),
+    // so `window-all-closed` quits the app whenever it is closed -- at five seconds into a normal
+    // thirteen-second start just as much as into a hung one. Cancelling deliberately is fine; the
+    // page promising "closes by itself once the app is ready" and saying nothing of the rest is not.
+    //
+    // Honest limit, and it is the whole weakness of this test: meaning is not checkable here. What
+    // is pinned is a marked element plus a vocabulary -- so rewording survives, deleting the
+    // warning fails, and a sentence that uses these words to say something else would still pass.
+    // A stronger version would need a reader, which no test in this suite has.
+    const element = /<([a-z]+)\b[^>]*\bdata-role=["']close-cancels-startup["'][^>]*>([\s\S]*?)<\/\1>/i.exec(splashPage);
+    const warning = (element?.[2] ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    expect(warning, 'splash.html carries no element marked data-role="close-cancels-startup"').not.toBe('');
+    expect(warning, 'the warning does not mention closing this window').toMatch(/clos/i);
+    expect(warning, 'the warning does not say that closing cancels the start').toMatch(/cancel|stop|quit|exit|abort|abandon|interrupt|end|(?:won.t|will not|never) start/i);
+  });
+});
+
+describe('the packaged window check and the splash share one size threshold', () => {
+  it('measures the main window by a threshold the splash is bound to stay under, not by a number that happens to match', async () => {
+    // packaged-window-check.mjs tells the main window from the splash by size alone. Nothing but
+    // coincidence keeps 460x260 under its `>= 500`: grow the splash to 500x300 and the check does
+    // not fail, it quietly starts measuring the splash and passing. So the threshold has to be one
+    // value both sides read -- then either side moving breaks this test for real.
+    //
+    // Imported dynamically so a missing module reds this test alone instead of the whole file.
+    const { mainWindowMinimumEdge } = await import('../scripts/window-thresholds.mjs');
+    expect(mainWindowMinimumEdge, 'window-thresholds.mjs does not export a numeric mainWindowMinimumEdge').toBeTypeOf('number');
+
+    const built = options();
+    expect(built.width, 'the splash is wide enough to be mistaken for the main window').toBeLessThan(mainWindowMinimumEdge as number);
+    expect(built.height, 'the splash is tall enough to be mistaken for the main window').toBeLessThan(mainWindowMinimumEdge as number);
+
+    // The other half of the link. Pinned as source text because packaged-window-check.mjs cannot be
+    // imported to be asked -- it opens a socket, makes a temp directory and launches the packaged
+    // app at module scope. Honest limit: this proves where the number comes from, not that the
+    // check behaves.
+    expect(packagedCheck, 'packaged-window-check.mjs does not read the shared threshold').toMatch(/from\s+['"]\.\/window-thresholds\.mjs['"]/);
+    expect(packagedCheck, 'packaged-window-check.mjs still compares a window dimension against a number of its own').not.toMatch(/\b(?:width|height)\s*[<>]=?\s*\d/);
+  });
+});
