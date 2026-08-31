@@ -172,72 +172,54 @@ func removeManagedWebSearchPackage(path string) error {
 	return nil
 }
 
+// reconcileManagedPackageSetting adds or removes the managed package path in
+// settings.json's "packages", and does nothing at all when the file already
+// says what it should.
+//
+// It owns one key and nothing else: the read, the lock and the atomic write are
+// updatePiSettings's, so a user's file mode and the other writer's keys survive
+// a change here the same way they survive a change there. The error a mutator
+// cannot return travels out in mutateErr.
 func reconcileManagedPackageSetting(packagePath string, present bool) error {
-	path := piSettingsPath()
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		data = []byte("{}")
-	} else if err != nil {
-		return fmt.Errorf("read Pi settings: %w", err)
-	}
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return fmt.Errorf("parse Pi settings without modifying it: %w", err)
-	}
-	raw, exists := settings["packages"]
-	packages := []any{}
-	if exists {
-		var ok bool
-		packages, ok = raw.([]any)
-		if !ok {
-			return fmt.Errorf("Pi settings packages is not an array")
-		}
-	}
-	out := make([]any, 0, len(packages)+1)
-	matches := 0
-	for _, item := range packages {
-		if source, ok := item.(string); ok && source == packagePath {
-			matches++
-			if !present || matches > 1 {
-				continue
+	var mutateErr error
+	err := updatePiSettings(func(settings map[string]any) bool {
+		raw, exists := settings["packages"]
+		packages := []any{}
+		if exists {
+			var ok bool
+			packages, ok = raw.([]any)
+			if !ok {
+				mutateErr = fmt.Errorf("Pi settings packages is not an array")
+				return false
 			}
 		}
-		out = append(out, item)
+		out := make([]any, 0, len(packages)+1)
+		matches := 0
+		for _, item := range packages {
+			if source, ok := item.(string); ok && source == packagePath {
+				matches++
+				if !present || matches > 1 {
+					continue
+				}
+			}
+			out = append(out, item)
+		}
+		if present && matches == 0 {
+			out = append(out, packagePath)
+		}
+		if !present && !exists {
+			return false
+		}
+		if (present && matches == 1) || (!present && matches == 0) {
+			return false
+		}
+		settings["packages"] = out
+		return true
+	})
+	if mutateErr != nil {
+		return mutateErr
 	}
-	if present && matches == 0 {
-		out = append(out, packagePath)
-	}
-	if !present && !exists {
-		return nil
-	}
-	if (present && matches == 1) || (!present && matches == 0) {
-		return nil
-	}
-	settings["packages"] = out
-	next, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return err
-	}
-	next = append(next, '\n')
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings.json.tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err = tmp.Chmod(0600); err == nil {
-		_, err = tmp.Write(next)
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return err
 }
 
 func inspectManagedPackageSetting(packagePath string) (bool, error) {
