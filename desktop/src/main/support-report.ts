@@ -28,7 +28,14 @@ function platform(value: string): SupportPlatform {
 function architecture(value: string): SupportArchitecture { return value === 'x64' || value === 'arm64' ? value : 'other'; }
 
 export function buildSupportReport(input: SupportReportInput): SupportReport {
-  if (!/^\d+\.\d+\.\d+$/.test(input.appVersion)) throw new Error('invalid app version');
+  // Widened from ^\d+\.\d+\.\d+$ deliberately: a build off the tag reports
+  // 0.2.50-3-gabc1234, and a support report that cannot be generated for a
+  // branch build fails exactly when support is needed. Normalizing it down to
+  // the tag was rejected -- the field exists to identify the build in front of
+  // the person, and rounding sends the reader to the wrong source tree.
+  // scripts/windows-pilot-rehearsal-lib.mjs holds this rule too, spelled
+  // identically, because neither file can import the other.
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.appVersion)) throw new Error('invalid app version');
   if (!Number.isFinite(Date.parse(input.generatedAt))) throw new Error('invalid report timestamp');
   return {
     schema: 1,

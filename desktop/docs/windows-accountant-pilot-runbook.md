@@ -16,8 +16,8 @@ Maks verifies locally, recording only PASS/STOP:
 - Windows 10/11 x64; ordinary accountant user can install per-user software.
 - At least 2 GB free disk; current date/time; supported network available.
 - No other Void Code, Pi, or session-maintenance process is running. Existing unrelated `node`, `vc`, `conhost`, or `OpenConsole` processes are noted by PID and left untouched.
-- Exact candidate manifest, exact installer named `Void-Code-0.1.0-windows-x64.exe`, and retained predecessor installer are present from the controlled handoff.
-- Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `product.version = 0.1.0`, `signing.status = unsigned`, and carries the intended predecessor hash/reference and current operator-gate status. A `verified` value is only the manifest-declared status; it is not evidence that this machine's manual gate or the guided pilot passed.
+- Exact candidate manifest, exact installer named `Void-Code-windows-x64.exe`, and retained predecessor installer are present from the controlled handoff.
+- Candidate manifest checker passed on the build machine. The manifest says `product.name = Void Code`, `signing.status = unsigned`, a `product.version` equal to the one the build stamped (no longer the fixed `0.1.0`: it is `git describe` at build time, so a branch build carries a suffix),, and carries the intended predecessor hash/reference and current operator-gate status. A `verified` value is only the manifest-declared status; it is not evidence that this machine's manual gate or the guided pilot passed.
 
 **STOP:** wrong Windows/architecture, insufficient space, missing manifest/installer/predecessor, or unexpected concurrent Void Code, Pi, or session-maintenance process.
 
@@ -46,7 +46,7 @@ Maks observes the result but records only `AUTH_READY PASS` or `AUTH_READY STOP`
 Open a fresh PowerShell in the handoff folder and compute:
 
 ```powershell
-$installer = Get-Item .\Void-Code-0.1.0-windows-x64.exe
+$installer = Get-Item .\Void-Code-windows-x64.exe
 $actual = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $actual
 ```
@@ -84,7 +84,7 @@ A `Zone.Identifier` stream exists. Double-click the exact verified installer. Th
 
 1. **Windows protected your PC** / unknown publisher warning.
 2. Select **More info**.
-3. Confirm the app is the exact already-verified `Void-Code-0.1.0-windows-x64.exe`.
+3. Confirm the app is the exact already-verified `Void-Code-windows-x64.exe`.
 4. Select **Run anyway**.
 5. Complete the per-user installer with product name **Void Code**.
 
@@ -117,7 +117,7 @@ The accountant must acknowledge: **Pi can read and change everything inside the 
 
 Retain no chat text, terminal content, file content, client/path screenshot, or session identifier. Record only each numbered result.
 
-1. Launch **Void Code** from Start without PowerShell or a terminal. Expect name `Void Code` and version `0.1.0` where shown by Windows metadata.
+1. Launch **Void Code** from Start without PowerShell or a terminal. Expect name `Void Code` and, where Windows metadata shows a version, the same `product.version` the candidate manifest records.
 2. Choose only the prepared local folder and read the trusted-folder disclosure.
 3. Select **New Chat**. Send one benign value-free request about a disposable sample, such as asking Pi to list file **types/counts without printing names or contents**. Record `FIRST_CHAT PASS` only.
 4. Select **New Chat** again. Confirm two tabs, shared-folder warning, independent interaction, and background `Working` → `Ready`/unread. Record `TWO_CHAT_STATUS PASS` only.
@@ -219,7 +219,7 @@ From `desktop/`:
 
 ```bash
 npm run candidate:generate -- \
-  --installer release/Void-Code-0.1.0-windows-x64.exe \
+  --installer release/Void-Code-windows-x64.exe \
   --resources resources/staged/manifest.json \
   --arch x64 \
   --build-timestamp 2026-07-27T12:34:56.000Z \
@@ -227,11 +227,11 @@ npm run candidate:generate -- \
   --predecessor-sha256 <64-lowercase-hex> \
   --operator-gate blocked \
   --gate-evidence VC-19 \
-  --output release/Void-Code-0.1.0-windows-x64.candidate.json
+  --output release/Void-Code-windows-x64.candidate.json
 
 npm run candidate:check -- \
-  --manifest release/Void-Code-0.1.0-windows-x64.candidate.json \
-  --installer release/Void-Code-0.1.0-windows-x64.exe \
+  --manifest release/Void-Code-windows-x64.candidate.json \
+  --installer release/Void-Code-windows-x64.exe \
   --resources resources/staged/manifest.json
 ```
 

@@ -2,6 +2,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, wri
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { assemblyTarget, assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash, vcBuildPlan } from './resource-assembly-lib.mjs';
+import { readBuildVersion, vcBuildArgs } from './build-version.mjs';
 
 // The vc inside the Windows bundle is built from the tree being packaged, the
 // way the macOS assembly builds its own. It used to be a file downloaded from a
@@ -43,6 +44,9 @@ if (await shaFile(nodeArchivePath) !== win.node.sourceArchiveSha256) throw new E
 // answer is asked of git rather than written down: a constant in this file is
 // what stopped describing the thing it named.
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+// The version this build is, from the same place the macOS assembly asks. The
+// Windows installer is where the unstamped vc actually shipped.
+const buildVersion = readBuildVersion();
 
 const piSource = process.env.VOID_DESKTOP_PI_SOURCE ?? path.join(desktop, 'runtime/pi');
 await assertPiSourcePins(piSource, pins.pi);
@@ -75,7 +79,9 @@ try {
   await mkdir(path.join(staging, 'vc'), { recursive: true });
   await mkdir(path.join(staging, 'fixture'), { recursive: true });
   const stagedVc = path.join(staging, 'vc/vc.exe');
-  const buildVc = (destination, build) => execFileSync('go', ['build', '-trimpath', '-buildvcs=false', '-o', destination, './cmd/vc'], { cwd: repo, env: { ...process.env, CGO_ENABLED: '0', GOOS: build.goos, GOARCH: build.goarch }, stdio: 'inherit' });
+  // The argv is build-version.mjs's, ldflags included: a vc built here has to
+  // be able to say which version it is, the way a release binary can.
+  const buildVc = (destination, build) => execFileSync('go', vcBuildArgs(destination, buildVersion), { cwd: repo, env: { ...process.env, CGO_ENABLED: '0', GOOS: build.goos, GOARCH: build.goarch }, stdio: 'inherit' });
   const plan = vcBuildPlan(target, host);
   buildVc(stagedVc, plan.find((build) => build.purpose === 'ship'));
   const versionBuild = plan.find((build) => build.purpose === 'version');
@@ -106,6 +112,7 @@ try {
   const manifest = {
     schema: 1,
     platform: target.platform,
+    build: { version: buildVersion.packageVersion, describe: buildVersion.stamp },
     vc: { version: vcVersion, sourceCommit: commit, path: 'vc/vc.exe', sha256: await shaFile(stagedVc) },
     node: { version: nodeVersion, source: win.node.source, sourceArchiveSha256: win.node.sourceArchiveSha256, path: 'node/node.exe', sha256: nodeHash, npm: { version: execFileSync(stagedNode, [privateNpm, '--version'], { encoding: 'utf8' }).trim() } },
     pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },

@@ -93,6 +93,10 @@ function registerIpc(): void {
   ipcMain.handle(IPC.workspaceClose, (event, raw: unknown) => { assertRenderer(event); return closeWorkspaceChat(manager, workspace, event.sender.id, raw); });
   ipcMain.handle(IPC.workspaceResume, (event, raw: unknown) => { assertRenderer(event); return workspace.resume(chatRequest(raw).sessionId); });
   ipcMain.handle(IPC.openLink, async (event, raw: unknown) => { assertRenderer(event); return shell.openExternal(linkRequest(raw)); });
+  // app.getVersion() is the packaged bundle's own version, which is what
+  // -c.extraMetadata.version sets at packaging time. Reading package.json off
+  // disk instead would report the in-tree placeholder forever.
+  ipcMain.handle(IPC.appVersion, (event) => { assertRenderer(event); return app.getVersion(); });
   ipcMain.handle(IPC.supportCopy, (event, raw: unknown) => { assertRenderer(event); return copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)); });
   ipcMain.handle(IPC.supportSave, async (event, raw: unknown) => { assertRenderer(event);
     const report = supportReport(raw);

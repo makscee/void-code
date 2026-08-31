@@ -23,9 +23,15 @@ export function expectedRuntimePlatform(platform: string, arch: string): Runtime
   return built;
 }
 
+// The version a build can spell: MAJOR.MINOR.PATCH with an optional prerelease,
+// which is the whole range scripts/build-version.mjs emits and nothing else.
+// `dev`, a leading `v` and a whole `--version` line stay refused.
+const BUILD_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
 export interface RuntimeManifest {
   schema: 1;
   platform: RuntimePlatform;
+  build: { version: string; describe: string };
   vc: { version: string; sourceCommit: string; path: string; sha256: string };
   node: { version: string; path: string; sha256: string };
   pi: { version: string; entry: string; treeSha256: string };
@@ -114,6 +120,10 @@ export function resolvePrivateRuntime(root: string): PrivateRuntime {
   const manifest = JSON.parse(checkedRead(root, canonicalRoot, 'manifest.json').toString('utf8')) as RuntimeManifest;
   const expectedPlatform = expectedRuntimePlatform(process.platform, process.arch);
   if (manifest.schema !== 1 || manifest.platform !== expectedPlatform) throw new Error('unsupported private runtime manifest');
+  // Required, not optional. An optional field is one an assembly can quietly
+  // stop writing, which is exactly what happened to the vc version stamp: a
+  // runtime that cannot say which build it is does not start.
+  if (typeof manifest.build?.version !== 'string' || !BUILD_VERSION.test(manifest.build.version) || typeof manifest.build.describe !== 'string' || manifest.build.describe.trim() === '') throw new Error('private runtime manifest records no build version');
   const vc = checkedPath(root, canonicalRoot, manifest.vc.path, 'file');
   const node = checkedPath(root, canonicalRoot, manifest.node.path, 'file');
   const fixture = checkedPath(root, canonicalRoot, manifest.fixture.path, 'file');

@@ -2,6 +2,7 @@ import { cp, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, 
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { assemblyTarget, assertPiSourcePins, assertPiTreePin, expectedNodeArchive, extractPinnedNodeArchive, nodePinFor, shaFile, stagedNpmVersion, treeHash, vcBuildPlan } from './resource-assembly-lib.mjs';
+import { readBuildVersion, vcBuildArgs } from './build-version.mjs';
 
 async function materializeTreeLinks(root) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -29,6 +30,9 @@ if (pins.schema !== 1) throw new Error('unsupported resource pins');
 const host = `${process.platform}-${process.arch}`;
 const target = assemblyTarget(`${process.platform}-${process.env.VOID_DESKTOP_MAC_ARCH ?? process.arch}`, host);
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+// Which build this is, asked once and spent three ways: the ldflags below, the
+// manifest's build block, and the version electron-builder puts in the bundle.
+const buildVersion = readBuildVersion();
 try { execFileSync('git', ['merge-base', '--is-ancestor', expectedCommit, commit], { cwd: repo, stdio: 'ignore' }); }
 catch { throw new Error(`VC-15 source commit is not an ancestor of ${commit}`); }
 
@@ -73,7 +77,9 @@ try {
   await mkdir(path.join(staging, 'pi'), { recursive: true });
 
   const vcPath = path.join(staging, 'vc/bin/vc');
-  const buildVc = (destination, build) => execFileSync('go', ['build', '-trimpath', '-buildvcs=false', '-o', destination, './cmd/vc'], { cwd: repo, env: { ...process.env, CGO_ENABLED: '0', GOOS: build.goos, GOARCH: build.goarch }, stdio: 'inherit' });
+  // The argv is build-version.mjs's, ldflags included: a vc built here has to
+  // be able to say which version it is, the way a release binary can.
+  const buildVc = (destination, build) => execFileSync('go', vcBuildArgs(destination, buildVersion), { cwd: repo, env: { ...process.env, CGO_ENABLED: '0', GOOS: build.goos, GOARCH: build.goarch }, stdio: 'inherit' });
   const plan = vcBuildPlan(target, host);
   buildVc(vcPath, plan.find((build) => build.purpose === 'ship'));
   const versionBuild = plan.find((build) => build.purpose === 'version');
@@ -130,6 +136,7 @@ try {
   const manifest = {
     schema: 1,
     platform: target.platform,
+    build: { version: buildVersion.packageVersion, describe: buildVersion.stamp },
     vc: { version: vcVersion, sourceCommit: expectedCommit, path: 'vc/bin/vc', sha256: await shaFile(vcPath) },
     node: {
       version: nodePin.version,

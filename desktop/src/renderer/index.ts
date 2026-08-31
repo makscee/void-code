@@ -1,8 +1,10 @@
 import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
+import { appVersionLabel } from './app-version';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
+const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
@@ -561,6 +563,12 @@ async function productionProbe(): Promise<void> {
   document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify(result)}`;
 }
 
+// The version is on screen before a folder is chosen and before sign-in, in
+// every state the app has. A bridge that cannot answer says so in the label
+// rather than leaving the space blank.
+void window.voidTerminal.appVersion()
+  .then((version) => { appVersionElement.textContent = appVersionLabel(version); })
+  .catch(() => { appVersionElement.textContent = appVersionLabel(null); });
 void loadAuthStatus();
 void window.voidTerminal.workspace.load().then(async (loaded) => {
   view = loaded; render();

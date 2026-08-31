@@ -7,6 +7,7 @@ export const IPC = {
   supportCopy: 'support:copy', supportSave: 'support:save',
   authStatus: 'auth:status', authLoginStart: 'auth:login-start', authLoginEvent: 'auth:login-event', authCodeCopy: 'auth:code-copy',
   authAccessRequest: 'auth:access-request',
+  appVersion: 'app:version',
 } as const;
 
 const FIXTURE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;

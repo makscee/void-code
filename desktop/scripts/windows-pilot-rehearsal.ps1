@@ -16,7 +16,7 @@ $allowedNames = @('Void Code','Void Code.exe','vc','vc.exe','node','node.exe','O
 $normalizedNames = @('Void Code','vc','node','OpenConsole','conhost')
 $shaPattern = '^[a-f0-9]{64}$'
 $commitPattern = '^[a-f0-9]{40}$'
-$versionPattern = '^\d+\.\d+\.\d+$'
+$versionPattern = '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'
 $referencePattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
 $mutableReferencePattern = '^(latest|current|head|pending|unknown|tbd|none)$'
 $isoPattern = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
@@ -98,7 +98,7 @@ function Test-Manifest($Value) {
   if (-not (Test-Integer $Value.schema) -or $Value.schema -ne 1 -or $Value.product.name -cne 'Void Code' -or $Value.product.version -isnot [string] -or $Value.product.version -cnotmatch $versionPattern) { return $false }
   if ($Value.source.commit -isnot [string] -or $Value.source.commit -cnotmatch $commitPattern -or $Value.source.branch -cne 'main' -or $Value.source.remote -cne 'origin/main' -or $Value.source.originUrl -cnotin @('https://github.com/makscee/void-code.git','git@github.com:makscee/void-code.git','ssh://git@github.com/makscee/void-code.git')) { return $false }
   if (-not (Test-CanonicalTimestamp $Value.build.timestamp) -or $Value.installer.arch -cnotin @('x64','arm64')) { return $false }
-  $expectedBasename = 'Void-Code-{0}-windows-{1}.exe' -f $Value.product.version,$Value.installer.arch
+  $expectedBasename = 'Void-Code-windows-{0}.exe' -f $Value.installer.arch
   if ($Value.installer.basename -cne $expectedBasename -or -not (Test-Integer $Value.installer.size) -or [int64]$Value.installer.size -lt 1 -or $Value.installer.sha256 -isnot [string] -or $Value.installer.sha256 -cnotmatch $shaPattern) { return $false }
   if ($Value.resources.manifest.basename -cne 'manifest.json' -or -not (Test-Integer $Value.resources.manifest.size) -or [int64]$Value.resources.manifest.size -lt 1 -or $Value.resources.manifest.sha256 -isnot [string] -or $Value.resources.manifest.sha256 -cnotmatch $shaPattern -or $Value.resources.platform -cne ('win32-' + $Value.installer.arch)) { return $false }
   if (-not (Test-Reference $Value.predecessor.reference) -or $Value.predecessor.installerSha256 -isnot [string] -or $Value.predecessor.installerSha256 -cnotmatch $shaPattern -or $Value.signing.status -cne 'unsigned' -or -not (Test-Reference $Value.operatorGate.evidence)) { return $false }
