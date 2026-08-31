@@ -410,12 +410,18 @@ describe(`${REUSABLE} builds the Windows installer and leaves it as a run artifa
   });
 
   it('provisions the pinned Windows resources before it packages', () => {
-    // assemble-windows-resources.mjs reads two files that no checkout carries
-    // and no `npm ci` creates: runtime/cache/vc/vc.exe and
-    // runtime/cache/node/node-<pin>-win-x64.zip. Each is compared against its
-    // sha256 in resource-pins.json and the assembly throws on a mismatch, so a
-    // job that goes straight from installing to packaging cannot succeed.
-    // `npm run setup` does not help: it fetches the darwin archive.
+    // assemble-windows-resources.mjs reads a file that no checkout carries and
+    // no `npm ci` creates: runtime/cache/node/node-<pin>-win-x64.zip. It is
+    // compared against its sha256 in resource-pins.json and the assembly throws
+    // on a mismatch, so a job that goes straight from installing to packaging
+    // cannot succeed. `npm run setup` does not help: it fetches the darwin
+    // archive.
+    //
+    // This step used to fetch a second file, runtime/cache/vc/vc.exe, out of a
+    // pinned GitHub release. That is gone: vc is compiled from the tree being
+    // packaged, so the toolchain the job sets up replaces the download.
+    // tests/windows-vc-from-source.test.ts holds that ground; here only the
+    // Node half remains, and it remains for the same reason it always did.
     //
     // "Some step that is not an install" would be satisfied by `echo hi`, so
     // the step has to be recognisable as the provisioning one: it reads
@@ -428,7 +434,7 @@ describe(`${REUSABLE} builds the Windows installer and leaves it as a run artifa
     const provisioning = before.filter((script) => /resource-pins\.json/.test(script));
     expect(reason(packagingIndex < 0 ? 'no `npm run package:win` step'
       : provisioning.length > 0 ? 'provisioned first'
-        : 'nothing between the install and the packaging reads scripts/resource-pins.json to fetch the pinned vc.exe and the pinned Windows Node archive'))
+        : 'nothing between the install and the packaging reads scripts/resource-pins.json to fetch the pinned Windows Node archive'))
       .toBe('provisioned first');
   });
 
@@ -436,8 +442,22 @@ describe(`${REUSABLE} builds the Windows installer and leaves it as a run artifa
     // Two copies of a hash drift, and the copy in the workflow is the one
     // nobody updates. Whatever the provisioning step is, it has to read the
     // pin. Both files, because the digest could be retyped in either one.
+    //
+    // The digests are discovered, not named. This case used to list two by key
+    // -- the vc pin's and the Node pin's -- and naming a key is how a test
+    // turns into a TypeError the day that key is removed, which is exactly what
+    // removing the vc pin does. Every 64-hex string in the file is a digest
+    // somebody could retype, whichever key holds it, including one added later.
+    const digests: string[] = [];
+    const walk = (value: unknown) => {
+      if (typeof value === 'string') { if (/^[a-f0-9]{64}$/.test(value)) digests.push(value); return; }
+      if (Array.isArray(value)) { for (const item of value) walk(item); return; }
+      if (value && typeof value === 'object') { for (const item of Object.values(value as Record<string, unknown>)) walk(item); }
+    };
+    walk(pins);
     const text = `${workflowText('test.yml')}\n${workflowText(REUSABLE)}`;
-    const copied = [pins.windows.vc.sha256, pins.windows.node.sourceArchiveSha256].filter((digest) => text.includes(digest));
+    expect(digests.length).toBeGreaterThan(0);
+    const copied = digests.filter((digest) => text.includes(digest));
     expect(reason(copied.join(', ') || 'no digest copied into the workflow')).toBe('no digest copied into the workflow');
   });
 

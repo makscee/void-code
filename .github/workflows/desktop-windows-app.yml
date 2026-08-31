@@ -50,13 +50,18 @@ jobs:
       - name: Install the desktop dependencies from the lockfile
         working-directory: desktop
         run: npm ci
-      - name: Fetch the pinned Windows resources, verifying every digest
+      - name: Fetch the pinned Windows Node archive, verifying its digest
         working-directory: desktop
-        # scripts/assemble-windows-resources.mjs reads two files that no
-        # checkout carries and no install creates -- runtime/cache/vc/vc.exe and
-        # the pinned win-x64 Node archive -- and refuses to assemble unless each
-        # matches the digest scripts/resource-pins.json holds for it. `npm run
-        # setup` is no help: it fetches the darwin archive.
+        # scripts/assemble-windows-resources.mjs reads one file that no checkout
+        # carries and no install creates -- the pinned win-x64 Node archive --
+        # and refuses to assemble unless it matches the digest
+        # scripts/resource-pins.json holds for it. `npm run setup` is no help:
+        # it fetches the darwin archive.
+        #
+        # It used to fetch a second file here, runtime/cache/vc/vc.exe, out of a
+        # pinned GitHub release. That is gone: the assembly compiles vc from the
+        # tree being packaged, which is what the actions/setup-go step above is
+        # for. Node stays pinned and downloaded, because nobody here builds it.
         #
         # Every URL and every digest is read out of resource-pins.json as the
         # step runs. A digest typed into this file would be a second source of
@@ -75,11 +80,6 @@ jobs:
                 url: pins.node.source,
                 sha256: pins.node.sourceArchiveSha256,
                 into: path.join("runtime/cache/node", path.basename(pins.node.source)),
-              },
-              {
-                url: `https://github.com/${pins.vc.repository}/releases/download/${pins.vc.releaseTag}/${pins.vc.assetName}`,
-                sha256: pins.vc.sha256,
-                into: "runtime/cache/vc/vc.exe",
               },
             ];
 

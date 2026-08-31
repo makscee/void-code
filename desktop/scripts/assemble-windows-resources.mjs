@@ -1,9 +1,23 @@
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash } from './resource-assembly-lib.mjs';
+import { assemblyTarget, assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash, vcBuildPlan } from './resource-assembly-lib.mjs';
 
-if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows resource assembly requires Windows x64');
+// The vc inside the Windows bundle is built from the tree being packaged, the
+// way the macOS assembly builds its own. It used to be a file downloaded from a
+// pinned past release, and the pin is what shipped v0.2.47 inside the v0.2.48
+// installer: the desktop spawned `vc login --json`, a flag that release had
+// never heard of, and every Windows sign-in died on `unknown flag`. A pin whose
+// staleness breaks the product on every release is not a stale value, it is a
+// structure -- so the structure is gone rather than refreshed.
+const host = `${process.platform}-${process.arch}`;
+if (host !== 'win32-x64') throw new Error(`Windows resource assembly requires win32-x64, not ${host}`);
+// Which Go vocabulary this platform speaks, and which builds it needs, are
+// resource-assembly-lib.mjs's answer -- never a GOOS typed into this file, which
+// is how a third platform becomes a new branch here instead of a new entry in
+// one map.
+const target = assemblyTarget(host, host);
+
 async function materializeTreeLinks(root) {
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const absolute = path.join(root, entry.name);
@@ -18,20 +32,28 @@ async function materializeTreeLinks(root) {
 }
 
 const desktop = process.cwd();
+const repo = path.resolve(desktop, '..');
 const pins = JSON.parse(await readFile(path.join(desktop, 'scripts/resource-pins.json'), 'utf8'));
 const win = pins.windows;
 const nodeArchive = `node-${win.node.version}-win-x64.zip`;
 const nodeArchivePath = path.join(desktop, 'runtime/cache/node', nodeArchive);
-const vcSource = path.join(desktop, 'runtime/cache/vc/vc.exe');
 if (win.node.source !== `https://nodejs.org/dist/${win.node.version}/${nodeArchive}`) throw new Error('private Windows Node source identifier mismatch');
 if (await shaFile(nodeArchivePath) !== win.node.sourceArchiveSha256) throw new Error('private Windows Node archive hash mismatch');
-if (await shaFile(vcSource) !== win.vc.sha256) throw new Error(`Windows vc digest mismatch: ${vcSource} is not ${win.vc.assetName} from ${win.vc.repository} ${win.vc.releaseTag}`);
+// The bundle has to be able to say which revision its vc came from, and the
+// answer is asked of git rather than written down: a constant in this file is
+// what stopped describing the thing it named.
+const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 
 const piSource = process.env.VOID_DESKTOP_PI_SOURCE ?? path.join(desktop, 'runtime/pi');
 await assertPiSourcePins(piSource, pins.pi);
 const extraction = await mkdtemp(path.join(desktop, '.node-win-extraction-'));
 await mkdir(path.join(desktop, 'resources'), { recursive: true });
 const staging = await mkdtemp(path.join(desktop, 'resources/.assembly-win-'));
+// A build for another architecture cannot be asked its own version, so the
+// answer would come from a second build for this machine. Windows packages
+// itself today, so the plan asks for no such probe -- the directory is here so
+// that the day it does, this is an entry in the plan and not a new branch.
+const probing = await mkdtemp(path.join(desktop, '.vc-version-probe-'));
 try {
   const archiveLiteral = nodeArchivePath.replaceAll("'", "''");
   const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
@@ -52,8 +74,19 @@ try {
 
   await mkdir(path.join(staging, 'vc'), { recursive: true });
   await mkdir(path.join(staging, 'fixture'), { recursive: true });
+  const stagedVc = path.join(staging, 'vc/vc.exe');
+  const buildVc = (destination, build) => execFileSync('go', ['build', '-trimpath', '-buildvcs=false', '-o', destination, './cmd/vc'], { cwd: repo, env: { ...process.env, CGO_ENABLED: '0', GOOS: build.goos, GOARCH: build.goarch }, stdio: 'inherit' });
+  const plan = vcBuildPlan(target, host);
+  buildVc(stagedVc, plan.find((build) => build.purpose === 'ship'));
+  const versionBuild = plan.find((build) => build.purpose === 'version');
+  let vcProbePath = stagedVc;
+  if (versionBuild !== undefined) {
+    vcProbePath = path.join(probing, 'vc.exe');
+    buildVc(vcProbePath, versionBuild);
+  }
+  const vcVersion = execFileSync(vcProbePath, ['--version'], { encoding: 'utf8' }).trim();
+
   await cp(nodeSource, path.join(staging, 'node'), { recursive: true });
-  await cp(vcSource, path.join(staging, 'vc/vc.exe'));
   await cp(path.join(desktop, 'dist/fixture/round-trip.js'), path.join(staging, 'fixture/round-trip.js'));
   await mkdir(path.join(staging, 'pi'), { recursive: true });
   await cp(path.join(piSource, 'package.json'), path.join(staging, 'pi/package.json'));
@@ -72,8 +105,8 @@ try {
   const piPackage = JSON.parse(await readFile(path.join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'));
   const manifest = {
     schema: 1,
-    platform: 'win32-x64',
-    vc: { version: execFileSync(path.join(staging, 'vc/vc.exe'), ['--version'], { encoding: 'utf8' }).trim(), sourceCommit: win.vc.cliSourceCommit, releaseTag: win.vc.releaseTag, releaseCommit: win.vc.releaseCommit, path: 'vc/vc.exe', sha256: win.vc.sha256 },
+    platform: target.platform,
+    vc: { version: vcVersion, sourceCommit: commit, path: 'vc/vc.exe', sha256: await shaFile(stagedVc) },
     node: { version: nodeVersion, source: win.node.source, sourceArchiveSha256: win.node.sourceArchiveSha256, path: 'node/node.exe', sha256: nodeHash, npm: { version: execFileSync(stagedNode, [privateNpm, '--version'], { encoding: 'utf8' }).trim() } },
     pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },
     fixture: { path: 'fixture/round-trip.js', sha256: await shaFile(path.join(staging, 'fixture/round-trip.js')) },
@@ -87,5 +120,6 @@ try {
   await rm(staging, { recursive: true, force: true });
   throw error;
 } finally {
+  await rm(probing, { recursive: true, force: true });
   await rm(extraction, { recursive: true, force: true });
 }
