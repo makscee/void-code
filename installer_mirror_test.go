@@ -146,8 +146,27 @@ bump() {
 
 case "$url" in
   */vc/version.json)
-    [ "$FAKE_VERSION_JSON" = "ok" ] || die
-    serve "$FAKE_DIR/version.json"
+    # version.json gets the same three modes as the binary, and for the same
+    # reason: it carries the release tag the mirror is addressed by, so whether
+    # it survives a flapping host is a behaviour of its own, not a detail of
+    # the binary download. Its attempts are counted in a separate file — a
+    # shared counter would let one fetch's failures satisfy the other's budget.
+    case "$FAKE_VERSION_JSON" in
+      ok)
+        serve "$FAKE_DIR/version.json"
+        ;;
+      flaky)
+        n=$(bump "$FAKE_DIR/version-attempts")
+        if [ "$n" -gt "$FAKE_VERSION_FLAKY_N" ]; then
+          serve "$FAKE_DIR/version.json"
+        else
+          die
+        fi
+        ;;
+      *)
+        die
+        ;;
+    esac
     ;;
   *releases/latest*)
     [ "$FAKE_LATEST" = "ok" ] || die
@@ -230,15 +249,19 @@ exit 1
 // ── harness ──────────────────────────────────────────────────────────────────
 
 type mirrorOpts struct {
-	primary     string // ok | fail | flaky
-	mirror      string // ok | fail
-	sums        string // ok | fail | mismatch
-	ca          string // ok | fail
-	versionJSON string // ok | fail
-	latest      string // ok | fail
-	flakyN      int    // how many primary attempts die before one succeeds
-	oldCurl     bool   // curl build without --retry-all-errors
-	existingVC  string // pre-create $HOME/.void-code/bin/vc with this content
+	primary       string // ok | fail | flaky
+	mirror        string // ok | fail
+	sums          string // ok | fail | mismatch
+	ca            string // ok | fail
+	versionJSON   string // ok | fail | flaky
+	latest        string // ok | fail
+	flakyN        int    // how many primary attempts die before one succeeds
+	versionFlakyN int    // how many version.json attempts die before one succeeds
+	oldCurl       bool   // curl build without --retry-all-errors
+	existingVC    string // pre-create $HOME/.void-code/bin/vc with this content
+	existingCA    string // pre-create $HOME/.void-code/relay-ca.pem with this content
+	existingRC    string // pre-create $HOME/.zshrc with this content
+	skipDownload  bool   // VC_SKIP_DOWNLOAD=1
 }
 
 type mirrorResult struct {
@@ -247,6 +270,11 @@ type mirrorResult struct {
 	log      []string
 	home     string
 	vcPath   string
+	caPath   string
+	rcPath   string
+	// The run's private TMPDIR. Nothing but install.sh's own mktemp writes
+	// here, so whatever is left in it after the run is a leftover of the run.
+	tmpDir string
 }
 
 func orDefault(v, def string) string {
@@ -337,10 +365,27 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 			t.Fatal(err)
 		}
 	}
+	if o.existingCA != "" {
+		if err := os.MkdirAll(filepath.Join(home, ".void-code"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".void-code", "relay-ca.pem"), []byte(o.existingCA), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if o.existingRC != "" {
+		if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(o.existingRC), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	flakyN := o.flakyN
 	if flakyN == 0 {
 		flakyN = 2
+	}
+	versionFlakyN := o.versionFlakyN
+	if versionFlakyN == 0 {
+		versionFlakyN = 2
 	}
 	oldCurl := "0"
 	if o.oldCurl {
@@ -366,7 +411,11 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 		"FAKE_VERSION_JSON=" + orDefault(o.versionJSON, "ok"),
 		"FAKE_LATEST=" + orDefault(o.latest, "ok"),
 		"FAKE_FLAKY_N=" + fmt.Sprint(flakyN),
+		"FAKE_VERSION_FLAKY_N=" + fmt.Sprint(versionFlakyN),
 		"FAKE_CURL_OLD=" + oldCurl,
+	}
+	if o.skipDownload {
+		env = append(env, "VC_SKIP_DOWNLOAD=1")
 	}
 
 	cmd := exec.Command("sh", "install.sh")
@@ -407,6 +456,9 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 		log:      log,
 		home:     home,
 		vcPath:   filepath.Join(home, ".void-code", "bin", "vc"),
+		caPath:   filepath.Join(home, ".void-code", "relay-ca.pem"),
+		rcPath:   filepath.Join(home, ".zshrc"),
+		tmpDir:   tmp,
 	}
 }
 
