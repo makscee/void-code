@@ -148,19 +148,28 @@ func TestEnsurePiDefaultModelLeavesUserModelAlone(t *testing.T) {
 	}
 }
 
-// Acceptance criterion 4: only defaultProvider set → only defaultModel is added,
-// the user's provider stays.
-func TestEnsurePiDefaultModelAddsOnlyModelWhenProviderSet(t *testing.T) {
+// Acceptance criterion 4 of the default-model spec, as corrected by criterion 9
+// of the single-owner spec: with a provider already chosen and no model, only
+// the missing half is added and everything else stays put.
+//
+// This test used to make that point with defaultProvider "void-deepseek" and
+// required gpt-5.6-terra to be appended next to it — a pair no provider serves,
+// because the extension's deepseek branch filters that model out
+// (pi_extension.go:59). The rule the test was written for is intact; the one
+// case it stated the rule with was the case where the rule does not hold. The
+// provider the seed owns is the honest way to state it, and the foreign-provider
+// case now lives in TestEnsurePiDefaultModelDoesNotInventAProviderModelPair.
+func TestEnsurePiDefaultModelAddsOnlyModelWhenItsOwnProviderIsSet(t *testing.T) {
 	dir := piSettingsSandbox(t)
-	path := writePiSettings(t, dir, `{"defaultProvider":"void-deepseek","theme":"nord"}`, 0600)
+	path := writePiSettings(t, dir, `{"defaultProvider":"`+wantPiDefaultProvider+`","theme":"nord"}`, 0600)
 
 	if err := ensurePiDefaultModel(); err != nil {
 		t.Fatalf("ensurePiDefaultModel() error = %v", err)
 	}
 
 	got := readPiSettings(t, path)
-	if got["defaultProvider"] != "void-deepseek" {
-		t.Errorf("defaultProvider = %#v, want %q (user's choice must survive)", got["defaultProvider"], "void-deepseek")
+	if got["defaultProvider"] != wantPiDefaultProvider {
+		t.Errorf("defaultProvider = %#v, want %q (user's choice must survive)", got["defaultProvider"], wantPiDefaultProvider)
 	}
 	if got["defaultModel"] != wantPiDefaultModel {
 		t.Errorf("defaultModel = %#v, want %q", got["defaultModel"], wantPiDefaultModel)
