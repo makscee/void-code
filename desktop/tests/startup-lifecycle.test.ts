@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage } from '../src/main/startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage, withStartupSplash } from '../src/main/startup-lifecycle';
 
 describe('startup lifecycle', () => {
   it('routes asynchronous stage rejection through one failure handler', async () => {
@@ -54,5 +54,74 @@ describe('startup lifecycle', () => {
     expect(window.restore).toHaveBeenCalledOnce();
     expect(window.show).toHaveBeenCalledOnce();
     expect(window.focus).toHaveBeenCalledOnce();
+  });
+});
+
+describe('startup splash', () => {
+  const splashWindow = (order: string[], overrides: { close?: () => void; isDestroyed?: () => boolean } = {}) => ({
+    close: vi.fn(overrides.close ?? (() => { order.push('close'); })),
+    isDestroyed: vi.fn(overrides.isDestroyed ?? (() => false)),
+  });
+
+  it('opens the splash before the heavy startup work begins', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order);
+    await withStartupSplash(() => { order.push('create'); return window; }, async () => { order.push('work'); });
+    expect(order).toEqual(['create', 'work', 'close']);
+  });
+
+  it('returns the value produced by the startup work', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order);
+    await expect(withStartupSplash(() => window, async () => 'bootstrapped')).resolves.toBe('bootstrapped');
+  });
+
+  it('closes the splash once the startup work succeeds', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order);
+    await withStartupSplash(() => window, async () => undefined);
+    expect(window.close).toHaveBeenCalledOnce();
+  });
+
+  it('closes the splash and rethrows the original startup failure unchanged', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order);
+    const failure = new Error('runtime validation failed');
+    await expect(withStartupSplash(() => window, async () => { throw failure; })).rejects.toBe(failure);
+    expect(window.close).toHaveBeenCalledOnce();
+  });
+
+  it('runs the startup work when no splash factory is supplied', async () => {
+    const order: string[] = [];
+    await expect(withStartupSplash(undefined, async () => { order.push('work'); return 'bootstrapped'; })).resolves.toBe('bootstrapped');
+    expect(order).toEqual(['work']);
+  });
+
+  it('leaves an already destroyed splash window alone', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order, { isDestroyed: () => true });
+    await expect(withStartupSplash(() => window, async () => 'bootstrapped')).resolves.toBe('bootstrapped');
+    expect(window.close).not.toHaveBeenCalled();
+  });
+
+  it('still starts the application when the splash itself cannot be created', async () => {
+    const order: string[] = [];
+    await expect(withStartupSplash(() => { throw new Error('no display available'); }, async () => { order.push('work'); return 'bootstrapped'; })).resolves.toBe('bootstrapped');
+    expect(order).toEqual(['work']);
+  });
+
+  it('returns the successful startup result even when closing the splash throws', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order, { close: () => { throw new Error('close failed'); } });
+    await expect(withStartupSplash(() => window, async () => 'bootstrapped')).resolves.toBe('bootstrapped');
+    expect(window.close).toHaveBeenCalledOnce();
+  });
+
+  it('surfaces the startup failure, not the splash close failure', async () => {
+    const order: string[] = [];
+    const window = splashWindow(order, { close: () => { throw new Error('close failed'); } });
+    const failure = new Error('runtime validation failed');
+    await expect(withStartupSplash(() => window, async () => { throw failure; })).rejects.toBe(failure);
+    expect(window.close).toHaveBeenCalledOnce();
   });
 });
