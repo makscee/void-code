@@ -200,6 +200,7 @@ func runTagInstall(t *testing.T, o tagOpts) mirrorResult {
 		"FAKE_VERSION_JSON=" + orDefault(o.versionJSON, "ok"),
 		"FAKE_LATEST=" + orDefault(o.latest, "ok"),
 		"FAKE_FLAKY_N=2",
+		"FAKE_VERSION_FLAKY_N=2",
 		"FAKE_CURL_OLD=0",
 	}
 	if o.dryRun {
