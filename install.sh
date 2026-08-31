@@ -11,6 +11,17 @@
 #
 # After installation, authenticate interactively with: vc login
 #
+# TWO COPIES, AND THIS ONE IS THE SOURCE. On every stable release
+# .github/workflows/release.yml copies this file over
+# void-auth/public/vc/install.sh — the copy served at /vc/install.sh, the one
+# every `curl | sh` actually runs. So the direction is one-way: edit here, and
+# the release carries it across. A fix made only in void-auth is erased by the
+# next stable release, and a fix made here reaches users only once one happens,
+# so an urgent one has to be applied in both places by hand. The GitHub release
+# mirror below is exactly what that costs when it is forgotten: it landed in
+# the served copy and never in this one, and nothing here said the other copy
+# existed.
+#
 # Env:
 #   VC_AUTH_HOST        default https://auth.makscee.ru — overrides every
 #                       fetch URL. Used by e2e harness to point at staging.
@@ -21,6 +32,10 @@
 #   VC_INSTALL_PI       default 1; install @earendil-works/pi-coding-agent
 #   VC_INSTALL_CLAUDE   default 0; install @anthropic-ai/claude-code
 #   VC_INSTALL_CODEX    default 0; install @openai/codex
+#   VC_MIRROR_REPO      default makscee/void-code — GitHub repo whose release
+#                       serves the vc binary when VC_AUTH_HOST fails. The
+#                       mirror download is always sha256-checked against the
+#                       SHA256SUMS of the same release.
 #
 # Flags:
 #   --dry-run           same as VC_INSTALL_DRY_RUN=1
@@ -65,16 +80,109 @@ RELAY_CA_URL="$AUTH_HOST/vc/relay-ca.pem"
 
 # ── HTTP fetcher ─────────────────────────────────────────────────────────────
 # Prefer curl; fall back to wget (fresh debian/ubuntu LXC ships wget only).
+#
+# The vc binary is ~8 MB and dies mid-stream on some routes
+# (curl: (92) HTTP/2 stream ... INTERNAL_ERROR), so every fetch gets a retry
+# budget instead of one shot:
+#   - curl retries in-process (--retry). Only --retry-all-errors makes it cover
+#     a mid-stream abort, and that option exists since curl 7.71 — older builds
+#     abort on the unknown option, so it is probed for, never assumed.
+#   - wget already retries on its own (--tries defaults to 20).
+#   - fetch_to_file_retry adds whole-process attempts on top. That is the only
+#     retry an old curl gets for a broken stream, so it is enabled exactly
+#     where curl's own budget does not cover the failure we are chasing.
+CURL_RETRY_ARGS=""
+FETCH_ATTEMPTS=1
 if command -v curl >/dev/null 2>&1; then
-  fetch_to_file()   { curl -fsSL "$1" -o "$2"; }
-  fetch_to_stdout() { curl -fsSL "$1"; }
+  CURL_RETRY_ARGS="--retry 3 --retry-delay 1 --retry-max-time 120"
+  if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+    CURL_RETRY_ARGS="$CURL_RETRY_ARGS --retry-all-errors"
+  else
+    FETCH_ATTEMPTS=3
+  fi
+  # CURL_RETRY_ARGS is deliberately unquoted: it must word-split into flags.
+  fetch_to_file()   { curl -fsSL $CURL_RETRY_ARGS "$1" -o "$2"; }
+  fetch_to_stdout() { curl -fsSL $CURL_RETRY_ARGS "$1"; }
 elif command -v wget >/dev/null 2>&1; then
   fetch_to_file()   { wget -qO "$2" "$1"; }
   fetch_to_stdout() { wget -qO- "$1"; }
+  FETCH_ATTEMPTS=2
 else
   printf 'vc: neither curl nor wget found — install one and re-run.\n' >&2
   exit 1
 fi
+
+# Download $1 to $2, retrying the whole fetch FETCH_ATTEMPTS times.
+# A failed attempt leaves a truncated file, never a partial one.
+fetch_to_file_retry() {
+  _fr_url="$1"
+  _fr_dest="$2"
+  _fr_n=1
+  while :; do
+    if fetch_to_file "$_fr_url" "$_fr_dest"; then
+      return 0
+    fi
+    : > "$_fr_dest" 2>/dev/null || true
+    if [ "$_fr_n" -ge "$FETCH_ATTEMPTS" ]; then
+      return 1
+    fi
+    printf 'vc: download attempt %s/%s failed for %s — retrying\n' \
+      "$_fr_n" "$FETCH_ATTEMPTS" "$_fr_url" >&2
+    _fr_n=$((_fr_n + 1))
+    sleep 1
+  done
+}
+
+# Print the sha256 of $1, or fail if the machine has no way to compute one.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1; exit}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1; exit}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF; exit}'
+  else
+    return 1
+  fi
+}
+
+# Verify file $1 against the SHA256SUMS list at URL $2, entry named $3.
+# The mirror is a third party: no list, no entry, no tool, or no match all mean
+# refuse — installing unverified bytes is worse than not installing.
+verify_sha256() {
+  _vs_file="$1"
+  _vs_url="$2"
+  _vs_name="$3"
+
+  _vs_sums="$(mktemp)"
+  if ! fetch_to_file_retry "$_vs_url" "$_vs_sums"; then
+    printf 'vc: could not fetch %s — refusing to install unverified bytes\n' "$_vs_url" >&2
+    rm -f "$_vs_sums"
+    return 1
+  fi
+  _vs_want="$(awk -v n="$_vs_name" '$2 == n || $2 == "*" n { print $1; exit }' "$_vs_sums")" || _vs_want=""
+  rm -f "$_vs_sums"
+  if [ -z "$_vs_want" ]; then
+    printf 'vc: %s lists no sha256 for %s — refusing to install\n' "$_vs_url" "$_vs_name" >&2
+    return 1
+  fi
+
+  _vs_got="$(sha256_of "$_vs_file")" || _vs_got=""
+  if [ -z "$_vs_got" ]; then
+    printf 'vc: no sha256 tool (sha256sum / shasum / openssl) — cannot verify the\n' >&2
+    printf '    mirror download, refusing to install.\n' >&2
+    return 1
+  fi
+  if [ "$_vs_got" != "$_vs_want" ]; then
+    printf 'vc: sha256 mismatch for %s\n' "$_vs_name" >&2
+    printf '    expected %s\n' "$_vs_want" >&2
+    printf '    got      %s\n' "$_vs_got" >&2
+    printf '    Refusing to install. Nothing was replaced.\n' >&2
+    return 1
+  fi
+  printf '==> sha256 verified against %s\n' "$_vs_url" >&2
+  return 0
+}
 
 # ── OS + arch detection ───────────────────────────────────────────────────────
 detect_os() {
@@ -102,13 +210,24 @@ ARCH=$(detect_arch)
 VC_ARTIFACT_PATH="bin/vc-${OS}-${ARCH}"
 VERSION_BANNER="==> void-code installer"
 
+#
+# version.json is fetched with the SAME whole-process retry as everything else.
+# It carries the release tag the mirror is addressed by, so a single-shot fetch
+# here killed the fallback in precisely the case the fallback exists for: the
+# primary host flapping or down. Retried into a temp file, never left behind.
 _vj_raw=""
-_vj_raw="$(fetch_to_stdout "$VERSION_JSON_URL" 2>/dev/null)" || true
+_vj_tmp="$(mktemp)"
+if fetch_to_file_retry "$VERSION_JSON_URL" "$_vj_tmp"; then
+  _vj_raw="$(cat "$_vj_tmp" 2>/dev/null)" || _vj_raw=""
+fi
+rm -f "$_vj_tmp"
 if [ -n "$_vj_raw" ]; then
   _ver="$(printf '%s' "$_vj_raw" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
   if [ -n "$_ver" ]; then
     VERSION_BANNER="==> void-code installer (v${_ver})"
   fi
+  # Release tag — the mirror is addressed by tag, not by version.
+  _vj_tag="$(printf '%s' "$_vj_raw" | grep -o '"tag"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
   # Try to resolve artifact path from "darwin/amd64" or "darwin-amd64" key
   _artifact="$(printf '%s' "$_vj_raw" | grep -o "\"${OS}/${ARCH}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || true
   if [ -z "$_artifact" ]; then
@@ -120,6 +239,77 @@ if [ -n "$_vj_raw" ]; then
 fi
 
 VC_BIN_URL="$AUTH_HOST/vc/$VC_ARTIFACT_PATH"
+
+# ── GitHub release mirror (fallback source) ──────────────────────────────────
+# makscee/void-code publishes the same bytes as a public release. It is used
+# only when $AUTH_HOST fails to deliver, and only after its sha256 is checked
+# against the SHA256SUMS of the same release — it is a third-party source.
+# Needs the tag: no tag in version.json (and no version to derive one from)
+# means no mirror, and the primary failure stays fatal.
+MIRROR_REPO="${VC_MIRROR_REPO:-makscee/void-code}"
+MIRROR_TAG="${_vj_tag:-}"
+if [ -z "$MIRROR_TAG" ] && [ -n "${_ver:-}" ]; then
+  MIRROR_TAG="v${_ver}"
+fi
+MIRROR_ASSET="${VC_ARTIFACT_PATH##*/}"
+MIRROR_BIN_URL=""
+MIRROR_SUMS_URL=""
+MIRROR_LATEST_TRIED=0
+
+mirror_urls_from_tag() {
+  if [ -n "$MIRROR_TAG" ]; then
+    MIRROR_BIN_URL="https://github.com/$MIRROR_REPO/releases/download/$MIRROR_TAG/$MIRROR_ASSET"
+    MIRROR_SUMS_URL="https://github.com/$MIRROR_REPO/releases/download/$MIRROR_TAG/SHA256SUMS"
+  fi
+}
+
+# Last resort for the tag: ask GitHub which release is the latest one. Without
+# this the mirror is addressed only by a tag that comes from the very host the
+# mirror exists to route around — host fully down means no tag, no mirror URL,
+# and a fallback branch that is dead before it is reached.
+#
+# The REST endpoint is used rather than the redirect from the web release page:
+# tag_name is a documented, stable field, the HTML around it is not, and both
+# curl and wget read it the same way, with no -w/%{url_effective} equivalent
+# needed for the wget path.
+#
+# Called ONLY after the primary source has already failed to deliver: while
+# $AUTH_HOST is healthy this issues no GitHub request at all. A tag resolved
+# this way gets NO sha256 exemption — the bytes go through the same
+# MIRROR_SUMS_URL check as a tag that came from version.json.
+resolve_mirror_tag_from_latest() {
+  if [ -n "$MIRROR_TAG" ]; then
+    return 0
+  fi
+  if [ "$MIRROR_LATEST_TRIED" = 1 ]; then
+    return 1
+  fi
+  MIRROR_LATEST_TRIED=1
+
+  printf 'vc: no release tag from %s — asking GitHub for the latest release of %s\n' \
+    "$VERSION_JSON_URL" "$MIRROR_REPO" >&2
+  _rl_url="https://api.github.com/repos/$MIRROR_REPO/releases/latest"
+  _rl_tmp="$(mktemp)"
+  if ! fetch_to_file_retry "$_rl_url" "$_rl_tmp"; then
+    rm -f "$_rl_tmp"
+    printf 'vc: %s did not answer either — no mirror to fall back to.\n' "$_rl_url" >&2
+    return 1
+  fi
+  _rl_tag="$(grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$_rl_tmp" | head -1 | grep -o '"[^"]*"$' | tr -d '"')" || _rl_tag=""
+  rm -f "$_rl_tmp"
+  if [ -z "$_rl_tag" ]; then
+    printf 'vc: %s named no tag — no mirror to fall back to.\n' "$_rl_url" >&2
+    return 1
+  fi
+
+  MIRROR_TAG="$_rl_tag"
+  printf '==> using %s, taken from the latest release of %s (releases/latest)\n' \
+    "$MIRROR_TAG" "$MIRROR_REPO" >&2
+  mirror_urls_from_tag
+  return 0
+}
+
+mirror_urls_from_tag
 
 # ── shell rc file detection + idempotent PATH append ─────────────────────────
 # Detect login shell, pick the right rc file. CREATE it if absent.
@@ -735,6 +925,14 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '%s\n' "$VERSION_BANNER"
   printf 'GET %s  (-> %s/vc)\n' "$VC_BIN_URL" "$BIN_DIR"
   printf 'GET %s  (-> %s/relay-ca.pem)\n' "$RELAY_CA_URL" "$CA_DIR"
+  if [ -n "$MIRROR_BIN_URL" ]; then
+    printf 'FALLBACK (only if the GET above fails): GET %s\n' "$MIRROR_BIN_URL"
+    printf '  verified against %s before install\n' "$MIRROR_SUMS_URL"
+  else
+    printf 'FALLBACK: version.json carried no release tag — at install time the tag\n'
+    printf '  would be resolved from https://api.github.com/repos/%s/releases/latest\n' "$MIRROR_REPO"
+    printf '  and the download verified against the SHA256SUMS of that release\n'
+  fi
   if [ "$(uname -s)" = "Darwin" ]; then
     printf 'WOULD: security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db <relay-ca.pem>\n'
   else
@@ -782,8 +980,35 @@ mkdir -p "$BIN_DIR"
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   printf '==> downloading vc binary from %s\n' "$AUTH_HOST" >&2
   TMP_BIN="$(mktemp)"
-  fetch_to_file "$VC_BIN_URL" "$TMP_BIN" \
-    || { printf 'vc: failed to download %s\n' "$VC_BIN_URL" >&2; rm -f "$TMP_BIN"; exit 1; }
+  VC_BIN_SOURCE=""
+  if fetch_to_file_retry "$VC_BIN_URL" "$TMP_BIN"; then
+    VC_BIN_SOURCE="$VC_BIN_URL"
+  else
+    printf 'vc: %s did not deliver — looking for a public release mirror\n' "$VC_BIN_URL" >&2
+    # Only here, with the primary already proven dead, may the tag be resolved
+    # from GitHub. A no-op when version.json already supplied one.
+    resolve_mirror_tag_from_latest || true
+    if [ -n "$MIRROR_BIN_URL" ]; then
+      printf '==> downloading %s\n' "$MIRROR_BIN_URL" >&2
+      if fetch_to_file_retry "$MIRROR_BIN_URL" "$TMP_BIN"; then
+        if verify_sha256 "$TMP_BIN" "$MIRROR_SUMS_URL" "$MIRROR_ASSET"; then
+          VC_BIN_SOURCE="$MIRROR_BIN_URL"
+        else
+          rm -f "$TMP_BIN"
+          exit 1
+        fi
+      fi
+    fi
+  fi
+  if [ -z "$VC_BIN_SOURCE" ]; then
+    printf 'vc: failed to download %s\n' "$VC_BIN_URL" >&2
+    if [ -n "$MIRROR_BIN_URL" ]; then
+      printf 'vc: the mirror %s failed too.\n' "$MIRROR_BIN_URL" >&2
+    fi
+    printf '    Check your connection and re-run; nothing was installed.\n' >&2
+    rm -f "$TMP_BIN"
+    exit 1
+  fi
 
   # Basic sanity check: binary should be > 1 KB.
   _bin_size=0
@@ -797,13 +1022,38 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
 
   chmod 0755 "$TMP_BIN"
   mv -f "$TMP_BIN" "$BIN_DIR/vc"
-  printf '==> installed to %s\n' "$BIN_DIR/vc" >&2
+  printf '==> installed to %s (from %s)\n' "$BIN_DIR/vc" "$VC_BIN_SOURCE" >&2
 fi
 
 # 2. Provision the production relay CA (public cert only)
+#
+# Fetched to a temp file and moved into place only once it is whole. It used to
+# be written straight to its final path, and fetch_to_file_retry truncates its
+# destination when it runs out of attempts — so a re-run on a flapping network
+# blanked a relay-ca.pem that was working a minute ago and left the machine
+# worse than before the installer touched it.
 printf '==> provisioning relay CA\n' >&2
-fetch_to_file "$RELAY_CA_URL" "$CA_DIR/relay-ca.pem" \
-  || { printf 'vc: failed to download relay CA\n' >&2; exit 1; }
+CA_FILE="$CA_DIR/relay-ca.pem"
+CA_TMP="$(mktemp)"
+if fetch_to_file_retry "$RELAY_CA_URL" "$CA_TMP"; then
+  chmod 0644 "$CA_TMP"
+  mv -f "$CA_TMP" "$CA_FILE"
+else
+  rm -f "$CA_TMP"
+  if [ -s "$CA_FILE" ]; then
+    # A usable cert is already on the machine and stays exactly as it was. The
+    # install is complete without a fresh copy, so this is loud, not fatal.
+    printf 'vc: failed to download relay CA from %s — kept the existing %s untouched.\n' \
+      "$RELAY_CA_URL" "$CA_FILE" >&2
+    printf '    Re-run the installer once the network is back to refresh it.\n' >&2
+  else
+    # Nothing to keep, so leave nothing behind: an empty relay-ca.pem is a file
+    # vc will read and choke on, and it passes every test for existence.
+    rm -f "$CA_FILE"
+    printf 'vc: failed to download relay CA from %s\n' "$RELAY_CA_URL" >&2
+    exit 1
+  fi
+fi
 
 # 2b. Trust the relay CA in the OS store so curl/git (not just node) work in-session.
 trust_relay_ca
