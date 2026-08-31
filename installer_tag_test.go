@@ -65,6 +65,12 @@ const (
 	// the version-derived tag, but three spaces are non-empty, so they survive
 	// that guard and land in the URL as spaces.
 	tagBlank = "   "
+	// ASCII except for one letter. Which is the whole point: the alphabet has to
+	// be spelled out character by character rather than written as A-Z / a-z
+	// ranges, because a bracket range in a `case` glob is resolved through the
+	// locale's COLLATION, and in a collation where é sorts between e and f the
+	// range a-z contains it. See tagRangeBlindLocale below.
+	tagNonASCII = "vé1.0" // vé1.0
 
 	// The auth host for these runs. Deliberately NOT the neighbour's
 	// auth.test.invalid: the rejection assertion below looks for the word
@@ -90,6 +96,7 @@ type tagOpts struct {
 	mirror         string // ok | fail
 	sums           string // ok | fail | mismatch
 	dryRun         bool
+	locale         string // LC_ALL/LANG for the run; empty → C
 }
 
 // runTagInstall runs install.sh against fake fetchers, with both tag sources
@@ -176,6 +183,11 @@ func runTagInstall(t *testing.T, o tagOpts) mirrorResult {
 		"HOME=" + home,
 		"TMPDIR=" + tmp,
 		"SHELL=/bin/zsh",
+		// Explicit, not inherited and not left to the shell's default: the
+		// character rule this file pins is locale-sensitive, so the locale is
+		// part of every fixture rather than a property of the machine.
+		"LC_ALL=" + orDefault(o.locale, "C"),
+		"LANG=" + orDefault(o.locale, "C"),
 		"VC_AUTH_HOST=" + tagAuthHost,
 		"VC_INSTALL_PI=0",
 		"VC_INSTALL_YES=1",
@@ -267,6 +279,99 @@ func tagRequireSaysRejected(t *testing.T, combined string) {
 		}
 	}
 	t.Errorf("no output line says the release tag was rejected:\n%s", combined)
+}
+
+// ── choosing a locale that can tell the two spellings apart ──────────────────
+//
+// The rule "a tag is [A-Za-z0-9._-]+" has two spellings in shell, and they are
+// not the same rule:
+//
+//	case "$1" in *[!A-Za-z0-9._-]*) ...          # ranges
+//	case "$1" in *[!ABC…abc…0123456789._-]*) ... # spelled out
+//
+// A bracket RANGE is resolved through the locale's collation. Measured on this
+// machine (bash 3.2 as /bin/sh) with the tag `vé1.0`:
+//
+//	LC_ALL=C            ranges reject   spelled out reject
+//	LC_ALL=en_US.UTF-8  ranges ACCEPT   spelled out reject
+//	LC_ALL=C.UTF-8      ranges reject   spelled out reject
+//	LC_ALL=ru_RU.UTF-8  ranges reject   spelled out reject
+//
+// So the difference is real, and "run it in some UTF-8 locale" is not enough to
+// see it: two of the three UTF-8 locales above cannot tell the spellings apart.
+// A subtest pinned to a locale picked by name would go green on those machines
+// while testing nothing — the same class of "не смог" dressed as "прошло" that
+// this file exists to avoid.
+//
+// Hence the probe: ask THIS machine's `sh`, in each locale it actually has,
+// whether a range admits a non-ASCII letter. Only a locale that answers yes can
+// discriminate, and only such a locale is used.
+
+// tagRangeBlindLocale finds a locale in which this machine's `sh` treats a
+// bracket range as collation-based. Returns the locale, the candidates tried,
+// and whether one was found.
+func tagRangeBlindLocale(t *testing.T) (locale string, tried []string, ok bool) {
+	t.Helper()
+
+	// en_US.UTF-8 first because it is the usual one; then whatever the machine
+	// reports, so a box without it is not written off.
+	seen := map[string]bool{}
+	candidates := []string{"en_US.UTF-8", "en_US.utf8"}
+	for _, c := range candidates {
+		seen[c] = true
+	}
+	if out, err := exec.Command("locale", "-a").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			name := strings.TrimSpace(line)
+			if name == "" || seen[name] {
+				continue
+			}
+			norm := strings.ToLower(strings.ReplaceAll(name, "-", ""))
+			if !strings.HasSuffix(norm, ".utf8") {
+				continue
+			}
+			seen[name] = true
+			candidates = append(candidates, name)
+		}
+	}
+
+	// Does `sh` in this locale say the tag matches the given bracket set?
+	matches := func(loc, set string) (bool, bool) {
+		script := fmt.Sprintf(`case "$1" in *[!%s]*) printf outside ;; *) printf inside ;; esac`, set)
+		cmd := exec.Command("sh", "-c", script, "sh", tagNonASCII)
+		cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL=" + loc, "LANG=" + loc}
+		out, err := cmd.Output()
+		if err != nil {
+			return false, false
+		}
+		switch string(out) {
+		case "inside":
+			return true, true
+		case "outside":
+			return false, true
+		}
+		return false, false
+	}
+
+	const ranges = `A-Za-z0-9._-`
+	const spelled = `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-`
+
+	for _, loc := range candidates {
+		rangeAdmits, ranOK := matches(loc, ranges)
+		if !ranOK || !rangeAdmits {
+			continue
+		}
+		// The locale must also leave the spelled-out alphabet strict. If both
+		// spellings admitted the letter, the contract would be unsatisfiable in
+		// this locale and a red subtest would be blaming the implementation for
+		// the fixture's choice.
+		spelledAdmits, ranOK := matches(loc, spelled)
+		if !ranOK || spelledAdmits {
+			continue
+		}
+		return loc, candidates, true
+	}
+	return "", candidates, false
 }
 
 // tagRequireNothingInstalled: no vc, and no mirror bytes parked next to where it
@@ -405,6 +510,53 @@ func TestShellInstallerRefusesAReleaseTagThatIsNotATag(t *testing.T) {
 		}
 		if r.code == 0 {
 			t.Errorf("installer exited 0 on a tag_name that re-aims the release path\n%s", r.combined)
+		}
+		tagRequireNothingInstalled(t, r)
+		tagRequireSaysRejected(t, r.combined)
+	})
+
+	// The character rule has to hold in the locale the user is actually in, not
+	// only in C. Every other subtest here runs in C, where the two ways of
+	// spelling the alphabet — ranges and character-by-character — behave
+	// identically; a UTF-8 locale is where they part company, and where a tag
+	// like `vé1.0` gets into the URL under the range spelling. The comment in
+	// install.sh says as much; this is the measurement behind it.
+	t.Run("a non-ASCII tag is refused in a UTF-8 locale as well", func(t *testing.T) {
+		locale, tried, ok := tagRangeBlindLocale(t)
+		if !ok {
+			// NOT a pass. There is no locale on this machine in which `sh`
+			// resolves a bracket range through collation, so this subtest can
+			// only produce a green that means nothing — and a green that means
+			// nothing is the failure mode this whole file is written against.
+			t.Skipf("НЕ СМОГ: ни в одной локали этой машины `sh` не разрешает диапазон "+
+				"через collation, поэтому подтест не отличает [A-Za-z0-9._-] от "+
+				"посимвольного алфавита и ничего не проверяет.\n"+
+				"    Пробовал (%d): %s\n"+
+				"    Это НЕ подтверждение правила — на такой машине оно остаётся непроверенным.",
+				len(tried), strings.Join(tried, ", "))
+		}
+		t.Logf("locale under test: %s", locale)
+
+		r := runTagInstall(t, tagOpts{
+			versionTag: tagNonASCII,
+			primary:    "fail",
+			latest:     "fail",
+			mirror:     "ok",
+			sums:       "ok",
+			locale:     locale,
+		})
+
+		for _, line := range r.log {
+			if strings.Contains(line, "é") {
+				t.Errorf("a request was issued carrying a non-ASCII tag (locale %s):\n  %s", locale, line)
+			}
+		}
+		if calls := append(mirrorBinCalls(r.log), mirrorSumCalls(r.log)...); len(calls) != 0 {
+			t.Errorf("a release URL was built from a non-ASCII tag in locale %s:\n%s",
+				locale, strings.Join(calls, "\n"))
+		}
+		if r.code == 0 {
+			t.Errorf("installer exited 0 on the tag %q in locale %s\n%s", tagNonASCII, locale, r.combined)
 		}
 		tagRequireNothingInstalled(t, r)
 		tagRequireSaysRejected(t, r.combined)
