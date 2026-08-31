@@ -134,6 +134,10 @@ func repairDesktopDeps() desktopSessionDeps {
 	}, authGate: func(string, string, *http.Client) (auth.MeResult, bool, error) { return auth.MeResult{}, true, nil }, resolveCA: func(config.Config) (string, error) { return "/ca.pem", nil }, reconcilePi: func() (string, error) { return "/managed.ts", nil }, reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil }}
 }
 func TestDesktopSessionProtectsPiAuthorityAndRuntime(t *testing.T) {
+	// This test walks a preparation all the way through, and a preparation
+	// seeds Pi's settings. Without the sandbox that write lands in the
+	// developer's own ~/.pi/agent/settings.json.
+	piSettingsSandbox(t)
 	node, pi := desktopFiles(t)
 	deps := repairDesktopDeps()
 	for _, args := range [][]string{{"--model", "foreign"}, {"--provider=foreign"}, {"hello"}} {

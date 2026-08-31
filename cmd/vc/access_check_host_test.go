@@ -128,6 +128,9 @@ func TestStatusJSONAsksTheAccessCheckHost(t *testing.T) {
 // the failure mode worth a test of its own: the app would stop misreporting the
 // sign-in and still refuse to open a chat, which is the whole point of the work.
 func TestChatSessionGateAsksTheAccessCheckHost(t *testing.T) {
+	// Same reason as in console_repair_test.go: everything past the gate is
+	// allowed to touch Pi's settings, so it must not be the real ones.
+	piSettingsSandbox(t)
 	check := newHostSpy(t, http.StatusOK, `{"userId":"u-1"}`)
 	signIn := newHostSpy(t, http.StatusOK, `{"userId":"wrong-host"}`)
 
