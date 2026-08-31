@@ -139,7 +139,10 @@ describe('scripts/assemble-windows-resources.mjs stages a vc it built', () => {
     expect(argv).toEqual(expect.arrayContaining(['build', '-trimpath', '-buildvcs=false', './cmd/vc']));
     for (const [name, source] of [['macOS', codeOf(macAssembly)], ['Windows', windowsCode]] as const) {
       expect(source, `the ${name} assembly does not import ./build-version.mjs`).toMatch(/from '\.\/build-version\.mjs'/);
-      expect(source, `the ${name} assembly does not call vcBuildArgs`).toMatch(/\bvcBuildArgs\s*\(/);
+      // The argv `go` is handed, not one computed nearby: a call whose result
+      // never reaches execFileSync satisfies a bare `vcBuildArgs(` and builds
+      // an unstamped binary anyway.
+      expect(source, `the ${name} assembly does not build vc with the argv vcBuildArgs returns`).toMatch(/execFileSync\(\s*'go',\s*vcBuildArgs\(/);
       expect(source, `the ${name} assembly still hands go build an argv typed into the script`).not.toMatch(/'build',\s*'-trimpath'/);
     }
     // And it is still the Go toolchain doing it here, on this machine, from

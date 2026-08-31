@@ -1,6 +1,10 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import packageJson from '../package.json';
+import { readBuildVersion } from '../scripts/build-version.mjs';
 
 // build-version.test.ts proves the module answers correctly. This file proves
 // the answer is USED -- by both assemblies, by the packer, and by the manifest.
@@ -30,7 +34,11 @@ describe('both assemblies stamp the vc they build', () => {
   it.each(ASSEMBLIES)('%s asks build-version.mjs rather than composing ldflags itself', (file) => {
     const code = codeOf(read(`../scripts/${file}`));
     expect(code, `${file} does not import ./build-version.mjs`).toMatch(/from '\.\/build-version\.mjs'/);
-    expect(code, `${file} does not call vcBuildArgs`).toMatch(/\bvcBuildArgs\s*\(/);
+    // The argv has to be the argv `go` is HANDED, not one computed beside the
+    // call. The same class of mutation that survived in scripts/package.mjs --
+    // compute the right thing, pass something else -- would survive a check for
+    // a bare `vcBuildArgs(` anywhere in the file.
+    expect(code, `${file} does not build vc with the argv vcBuildArgs returns`).toMatch(/execFileSync\(\s*'go',\s*vcBuildArgs\(/);
   });
 
   it.each(ASSEMBLIES)('%s no longer hands go build an argv typed into the script', (file) => {
@@ -91,6 +99,63 @@ describe('the packer is told the version; the tree is not rewritten to carry it'
     for (const entry of computing) {
       expect(codeOf(sourceOf(entry)), `scripts/${entry} spells out a version instead of asking build-version.mjs`).toMatch(/from '\.\/build-version\.mjs'/);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // And it reaches the packer's argv. This is the only test in this file that
+  // RUNS anything, and it exists because the two rules above -- both of which
+  // read source text -- are jointly satisfied by a wrapper that computes the
+  // version and then forgets to pass it: deleting `...versionArgs` from the
+  // execFileSync call leaves both substrings in place, keeps this suite green,
+  // and ships an installer that says 0.1.0. That is the whole defect, restored,
+  // under a green suite. It survived a mutation run; nothing but a person
+  // building a bundle by hand would have caught it.
+  //
+  // THE SEAM IS DELIBERATE, and it is the team lead's call, not a convenience.
+  // scripts/package.mjs reads VOID_DESKTOP_PACKER for the path to the packer so
+  // this test can put a recorder there. The alternative -- exporting the argv
+  // as a pure function and testing that -- does not catch the mutation, because
+  // the mutation is at the CALL, not in the argv. Running electron-builder for
+  // real is minutes per invocation and will never be in CI, so without the seam
+  // the only real check is a human packaging a bundle.
+  //
+  // What the seam does NOT do is let the default drift: the wrapper must still
+  // name the real packer when the variable is unset, asserted as text below,
+  // because a default pointed at anything else is not observable from here.
+  // -------------------------------------------------------------------------
+  const temporaries: string[] = [];
+  afterAll(() => { for (const root of temporaries.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+  it('hands -c.extraMetadata.version to the packer it actually runs', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'vc-packer-stub-'));
+    temporaries.push(root);
+    const stub = path.join(root, 'packer-stub.mjs');
+    // A recorder, not a packer: it prints the argv it was handed and exits.
+    writeFileSync(stub, 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+
+    const wrapper = new URL('../scripts/package.mjs', import.meta.url);
+    const stdout = execFileSync(process.execPath, [decodeURIComponent(wrapper.pathname), '--win', '--x64'], {
+      cwd: decodeURIComponent(new URL('../', import.meta.url).pathname),
+      encoding: 'utf8',
+      env: { ...process.env, VOID_DESKTOP_PACKER: stub },
+    });
+    const recorded = stdout.trim().split('\n').at(-1) ?? '';
+    const argv = JSON.parse(recorded) as string[];
+
+    // The caller's own flags survive -- a wrapper that dropped --win would
+    // package the wrong platform while satisfying the version rule.
+    expect(argv).toContain('--win');
+    expect(argv).toContain('--x64');
+    // And the version, compared against what git says right now rather than
+    // against a literal: the relation, so this keeps meaning what it means at
+    // v0.3.0.
+    expect(argv).toContain(`-c.extraMetadata.version=${readBuildVersion().packageVersion}`);
+  });
+
+  it('still names the real packer when nothing overrides it', () => {
+    const wrapper = codeOf(readFileSync(new URL('../scripts/package.mjs', import.meta.url), 'utf8'));
+    expect(wrapper, 'the packer wrapper does not read VOID_DESKTOP_PACKER, so the check above cannot observe it').toMatch(/VOID_DESKTOP_PACKER/);
+    expect(wrapper, 'the packer wrapper no longer defaults to electron-builder').toMatch(/node_modules\/electron-builder\/cli\.js/);
   });
 
   it('no npm script computes the version with a shell substitution', () => {

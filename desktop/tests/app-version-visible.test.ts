@@ -122,14 +122,66 @@ describe('what lands in that element is the real version, carried from main', ()
   });
 
   it('the bridge exposes it to the renderer', () => {
-    expect(preload, 'the preload bridge does not expose appVersion').toMatch(/appVersion[\s\S]{0,120}IPC\.appVersion/);
+    // The call, not the name: `appVersion` appearing somewhere in the file is
+    // satisfied by a comment or a type import.
+    expect(preload, 'the preload bridge does not expose appVersion as a call over IPC.appVersion')
+      .toMatch(/appVersion:\s*\([^)]*\)\s*=>[^,;]*ipcRenderer\.invoke\(\s*IPC\.appVersion\s*\)/);
   });
 
-  it('the renderer puts it into #app-version through the label function', () => {
-    expect(renderer, 'index.ts does not read #app-version').toMatch(/app-version/);
-    expect(renderer, 'index.ts does not use appVersionLabel').toMatch(/appVersionLabel/);
-    expect(renderer, 'index.ts does not ask the bridge for the version').toMatch(/appVersion/);
+  // -------------------------------------------------------------------------
+  // The chain, followed link by link, rather than three names looked up.
+  //
+  // This was three substring checks -- `app-version`, `appVersionLabel`,
+  // `appVersion` -- and all three survived deleting the entire block that asks
+  // the bridge and fills the element, because `import { appVersionLabel } from
+  // './app-version'` contains all three (`appVersion` is a substring of
+  // `appVersionLabel`). One import line satisfied the whole rule. The result of
+  // that mutation is an empty <span> in the header: exactly the state this file
+  // opens by saying it exists to prevent, arriving from the other side.
+  //
+  // So each link is checked as a SHAPE and tied to the next: the id resolves to
+  // a binding, the bridge is CALLED with parentheses, and the value it returns
+  // reaches that binding's textContent through appVersionLabel.
+  // -------------------------------------------------------------------------
+  describe('the renderer follows the chain from the bridge to the element', () => {
+    const binding = /const\s+(\w+)\s*=\s*document\.querySelector[^;]*['"]#app-version['"][^;]*;/.exec(renderer);
+    // A 400-character window from the call, the way renderer-login.test.ts cuts
+    // a handler out of this same file: enough to hold the whole statement,
+    // small enough that an unrelated `textContent` elsewhere cannot supply it.
+    const callIndex = renderer.indexOf('window.voidTerminal.appVersion()');
+    const block = callIndex < 0 ? '' : renderer.slice(callIndex, callIndex + 400);
+
+    it('resolves #app-version into a binding', () => {
+      expect(binding?.[1], 'index.ts never looks up #app-version').toBeDefined();
+    });
+
+    it('calls the bridge for the version', () => {
+      // `window.voidTerminal.appVersion()` with the parentheses: the mutation
+      // that survived left the identifier and removed the call.
+      expect(block, 'index.ts does not call window.voidTerminal.appVersion()').not.toBe('');
+    });
+
+    it('puts what the bridge returned into that element, through appVersionLabel', () => {
+      expect(block, 'the version never reaches appVersionLabel').toMatch(/appVersionLabel\(/);
+      expect(block, `the version never reaches ${binding?.[1] ?? 'the #app-version element'}.textContent`)
+        .toMatch(new RegExp(`${binding?.[1] ?? 'appVersionElement'}\\.textContent\\s*=`));
+    });
+
+    it('fills the element on the failure path too, so a bridge that cannot answer leaves no blank', () => {
+      // appVersionLabel is total -- it returns a visible label for null, tested
+      // above -- but only if something calls it when the promise rejects. An
+      // unhandled rejection leaves the span exactly as empty as no code at all.
+      expect(block, 'nothing handles a rejected appVersion() call, so a failed bridge blanks the header').toMatch(/\bcatch\b/);
+    });
   });
+
+  // A NOTE ON WHAT WOULD BE STRONGER, and why it is not here: the only check
+  // that really proves a version is on the screen is reading the live
+  // textContent of #app-version out of a running window -- which
+  // scripts/packaged-window-check.mjs is already positioned to do, since it
+  // drives the packaged app. That needs a built bundle, so it belongs to
+  // `npm run check`, not to this suite. Worth adding there; everything above is
+  // the strongest a unit test can be about a renderer with no DOM.
 
   it('the renderer does not carry a version literal of its own', () => {
     // A hardcoded '0.1.0' in the renderer would satisfy every check above and
