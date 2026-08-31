@@ -381,6 +381,11 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	if _, webErr := reconcileManagedWebSearch(true); webErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
 	}
+	// A seeded default is a convenience, never a precondition: an unreadable or
+	// hand-broken settings.json must still let Pi start.
+	if modelErr := ensurePiDefaultModel(); modelErr != nil {
+		fmt.Fprintf(os.Stderr, "vc: warning: Pi default model was not seeded: %v\n", modelErr)
+	}
 	caPath, err := resolveCA(cfg)
 	if err != nil {
 		return fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
