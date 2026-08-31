@@ -40,7 +40,7 @@ func TestVoidCodeDeviceLabelsArePlatformAwareAndValueFree(t *testing.T) {
 }
 
 func TestSuccessiveDeviceLoginKeepsOnlyNewAuthorization(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	withTempHome(t)
 	oldToken, newToken := "old-session.old-secret", "new-session.new-secret"
 	if err := auth.Save(oldToken); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestSuccessiveDeviceLoginKeepsOnlyNewAuthorization(t *testing.T) {
 }
 
 func TestPriorAuthorizationCleanupFailureWarnsWithoutFailingLogin(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	withTempHome(t)
 	oldToken, newToken := "prior-session.prior-secret", "current-session.current-secret"
 	if err := auth.Save(oldToken); err != nil {
 		t.Fatal(err)

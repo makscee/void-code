@@ -216,22 +216,33 @@ func TestEnsurePiDefaultModelRespectsPiCodingAgentDir(t *testing.T) {
 	}
 }
 
-// Acceptance criterion 7, first half: a file vc creates is 0600, and the atomic
-// staging file does not survive the call.
-func TestEnsurePiDefaultModelCreatesFileMode0600(t *testing.T) {
+// Acceptance criterion 7, first half: the file vc creates is not readable by
+// anyone else, and the atomic staging file does not survive the call.
+//
+// The 0600 assertion runs on POSIX only. Windows has no permission bits for Go
+// to report — os.Stat gives 0666 for any ordinary file and 0444 for a read-only
+// one, os.Chmod moves only the read-only flag, and the actual access control
+// lives in ACLs that os.FileMode cannot express. Demanding 0600 there demands a
+// number the platform will never produce, and the test fails on correct code.
+//
+// Plainly, so a green Windows run is not misread: on Windows this subtest does
+// NOT check the privacy of the created file, and nothing here does. A settings
+// file next to a token deserves that check, and it is verified on POSIX only.
+// What remains on Windows is narrow but real — the file must come out writable,
+// because a seed that created it read-only would leave Pi unable to save the
+// user's next model change.
+//
+// The staging-leftover assertion is the atomicity half and runs on both: it
+// needs no permission bits.
+func TestEnsurePiDefaultModelCreatesPrivateFile(t *testing.T) {
 	dir := piSettingsSandbox(t)
 
 	if err := ensurePiDefaultModel(); err != nil {
 		t.Fatalf("ensurePiDefaultModel() error = %v", err)
 	}
 
-	info, err := os.Stat(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Errorf("settings.json mode = %04o, want 0600", got)
-	}
+	assertCreatedFilePrivate(t, filepath.Join(dir, "settings.json"), "settings.json")
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -243,25 +254,12 @@ func TestEnsurePiDefaultModelCreatesFileMode0600(t *testing.T) {
 	}
 }
 
-// Acceptance criterion 7, second half: an existing file keeps its own mode —
-// the write is an update, not a re-creation.
-func TestEnsurePiDefaultModelKeepsExistingFileMode(t *testing.T) {
-	dir := piSettingsSandbox(t)
-	path := writePiSettings(t, dir, `{"theme":"nord"}`, 0644)
-
-	if err := ensurePiDefaultModel(); err != nil {
-		t.Fatalf("ensurePiDefaultModel() error = %v", err)
-	}
-
-	assertDefaultsWritten(t, readPiSettings(t, path))
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0644 {
-		t.Errorf("settings.json mode = %04o, want 0644 unchanged", got)
-	}
-}
+// Acceptance criterion 7, second half — an existing file keeps its own mode —
+// is not tested here. TestPiSettingsWritersPreserveExistingFileMode in
+// pi_settings_contract_test.go makes exactly that claim on exactly this fixture,
+// portably, and for both writers of settings.json rather than the seed alone. A
+// second copy of it in this file would be one more place to get Windows wrong,
+// with nothing gained.
 
 // Acceptance criterion 8: the second call is a no-op down to the byte.
 func TestEnsurePiDefaultModelIsIdempotent(t *testing.T) {

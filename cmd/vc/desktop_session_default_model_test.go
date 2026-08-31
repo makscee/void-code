@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -191,10 +192,29 @@ func TestDesktopSessionSeedsPiDefaultModelBeforeLaunchingPi(t *testing.T) {
 // Contract 1, the other half of "as safely as the terminal path": a model the
 // user picked is a choice, not a gap to fill. The file must come out of a
 // session byte-identical.
+//
+// The mode is checked as "whatever it was, unchanged" rather than against 0600,
+// because Go on Windows has no POSIX permissions to report: os.Stat gives every
+// ordinary file 0666, os.Chmod moves only the read-only flag, and the real
+// access lives in ACLs that os.FileMode cannot express. A literal 0600 there
+// demands something the platform does not have and reddens correct code.
+//
+// Plainly, so a green Windows run is not read as two platforms agreeing: on
+// Windows the mode half of this subtest is nearly empty — a preserved file and
+// a re-created one both report 0666, so it cannot tell them apart. It still
+// catches a session that left the user's settings read-only. The mode claim is
+// verified on POSIX. The byte-identity claim above it — the reason this subtest
+// exists — is fully verified on both.
 func TestDesktopSessionKeepsAnExistingDefaultModel(t *testing.T) {
 	dir := piSettingsSandbox(t)
 	const body = "{\n  \"defaultModel\": \"user-pick\",\n  \"theme\": \"nord\"\n}\n"
 	path := writePiSettings(t, dir, body, 0600)
+	before := statPerm(t, path)
+	// On POSIX the fixture has to really carry 0600, or the comparison below
+	// holds the write against a mode nobody asked for.
+	if runtime.GOOS != "windows" && before != 0600 {
+		t.Fatalf("fixture mode = %04o, want 0600 — the test cannot say anything about a mode it failed to set", before)
+	}
 	probe := &desktopSeedProbe{settingsPath: path}
 
 	if warnings, err := execDesktopSession(t, probe); err != nil {
@@ -208,12 +228,8 @@ func TestDesktopSessionKeepsAnExistingDefaultModel(t *testing.T) {
 	if string(after) != body {
 		t.Fatalf("desktop-session rewrote settings the user owns.\nbefore:\n%s\nafter:\n%s", body, after)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("settings mode = %v, want 0600", info.Mode().Perm())
+	if got := statPerm(t, path); got != before {
+		t.Errorf("settings.json mode = %04o, want %04o unchanged — a session updates the user's file, it does not re-create it", got, before)
 	}
 }
 
