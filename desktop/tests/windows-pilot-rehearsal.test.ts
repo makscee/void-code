@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { descendantSnapshot, serializeEvidence, sha256Text, supportReportValid } from '../scripts/windows-pilot-rehearsal-lib.mjs';
+import { expectedInstallerBasename } from '../scripts/candidate-manifest-lib.mjs';
 
 const scriptUrl = new URL('../scripts/windows-pilot-rehearsal.ps1', import.meta.url);
 const scriptPath = decodeURIComponent(scriptUrl.pathname);
@@ -18,7 +19,7 @@ function validManifest() {
   return {
     schema: 1, product: { name: 'Void Code', version: '0.1.0' },
     source: { commit: 'a'.repeat(40), branch: 'main', remote: 'origin/main', originUrl: 'https://github.com/makscee/void-code.git' },
-    build: { timestamp }, installer: { basename: 'Void-Code-0.1.0-windows-x64.exe', size: 1, sha256: 'a'.repeat(64), arch: 'x64' },
+    build: { timestamp }, installer: { basename: 'Void-Code-windows-x64.exe', size: 1, sha256: 'a'.repeat(64), arch: 'x64' },
     resources: { manifest: { basename: 'manifest.json', size: 1, sha256: 'b'.repeat(64) }, platform: 'win32-x64' },
     predecessor: { reference: 'v0.0.1', installerSha256: 'c'.repeat(64) }, signing: { status: 'unsigned' },
     operatorGate: { status: 'verified', evidence: 'pilot-2026-01-02', verifiedAt: timestamp },
@@ -28,7 +29,7 @@ function validManifest() {
 describe('value-free Windows pilot rehearsal contract', () => {
   it('serializes only exact, semantically related evidence', () => {
     const hash = 'a'.repeat(64);
-    const value = { schema: 1, phase: 'preflight', occurredAt: timestamp, result: 'PASS', check: 'MANIFEST', coarseCode: 'NONE', candidate: { installerBasename: 'Void-Code-0.1.0-windows-x64.exe', expectedSha256: hash, actualSha256: hash, operatorGateDeclaredStatus: 'verified', signature: 'not_signed', motw: 'present' }, processes: [], support: null };
+    const value = { schema: 1, phase: 'preflight', occurredAt: timestamp, result: 'PASS', check: 'MANIFEST', coarseCode: 'NONE', candidate: { installerBasename: 'Void-Code-windows-x64.exe', expectedSha256: hash, actualSha256: hash, operatorGateDeclaredStatus: 'verified', signature: 'not_signed', motw: 'present' }, processes: [], support: null };
     expect(serializeEvidence(value)).toBe(`${JSON.stringify(value)}\n`);
     expect(() => serializeEvidence({ ...value, path: 'poison' })).toThrow('EVIDENCE_INVALID');
     expect(() => serializeEvidence({ ...value, result: 'STOP' })).toThrow('EVIDENCE_INVALID');
@@ -192,5 +193,39 @@ describe('value-free Windows pilot rehearsal contract', () => {
     expect(script).toContain('Select-Object Name,ProcessId,ParentProcessId,CreationDate');
     expect(script).toContain('Get-AuthenticodeSignature -LiteralPath $Installer');
     expect(script).toContain('-Stream Zone.Identifier');
+  });
+
+  // -------------------------------------------------------------------------
+  // The rehearsal script is a THIRD copy of two rules that also live in
+  // scripts/candidate-manifest-lib.mjs and src/main/support-report.ts: how an
+  // installer is named, and what an app version may look like. It re-implements
+  // them in PowerShell because it runs on the pilot machine with nothing else
+  // installed.
+  //
+  // pwsh is not on the machines this suite runs on -- every behavioural test
+  // above is `runIf(pwshAvailable)` and skips here -- so a rule that drifts in
+  // the .ps1 drifts silently and is found on the pilot laptop, in front of the
+  // person the rehearsal exists to protect. These two checks read the script as
+  // text, which is the only force available.
+  // -------------------------------------------------------------------------
+
+  it('derives the installer name the same way the rest of the repository does: without a version', () => {
+    const derivation = /\$expectedBasename = .*/.exec(script)?.[0] ?? '';
+    expect(derivation, 'the rehearsal script no longer derives an expected installer name').not.toBe('');
+    expect(derivation, `the rehearsal script still puts the version in the installer name: ${derivation}`).not.toContain('product.version');
+    expect(derivation).toContain('Void-Code-');
+    expect(derivation).toContain('windows-');
+    expect(expectedInstallerBasename('Void Code', 'x64'), 'the two derivations disagree about the name').toBe('Void-Code-windows-x64.exe');
+  });
+
+  it('accepts the same app versions as the report writer', () => {
+    // The pattern is compared with the JavaScript validator's, not with a
+    // spelling chosen here -- so widening it in one place and not the other is
+    // what turns red, and the wording stays the implementer's.
+    const powershell = /\$versionPattern = '([^']+)'/.exec(script)?.[1];
+    expect(powershell, 'the rehearsal script declares no $versionPattern').toBeDefined();
+    const javascript = /\/(\^\\d\+[^/\n]*\$)\//.exec(readFileSync(new URL('../scripts/windows-pilot-rehearsal-lib.mjs', import.meta.url), 'utf8'))?.[1];
+    expect(javascript, 'windows-pilot-rehearsal-lib.mjs declares no app-version pattern').toBeDefined();
+    expect(powershell).toBe(javascript);
   });
 });

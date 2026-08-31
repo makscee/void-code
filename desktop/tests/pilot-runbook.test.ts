@@ -42,6 +42,16 @@ describe('guided Windows accountant pilot runbook', () => {
     expect(runbook).toContain('Do not delete any of them during normal uninstall/rollback');
   });
 
+  it('names the installer the way the build now writes it', () => {
+    // The runbook is typed at, by hand, on the pilot machine: five of its
+    // commands take the installer path as an argument. A file name that no
+    // longer exists turns the first hashing step into "file not found" and the
+    // pilot into a debugging session about the runbook.
+    const named = runbook.match(/Void-Code-[^\s`'"\\]*\.exe/g) ?? [];
+    expect(named.length, 'the runbook names no installer at all').toBeGreaterThan(0);
+    expect([...new Set(named)]).toEqual(['Void-Code-windows-x64.exe']);
+  });
+
   it('documents tooling without freezing a real candidate in source', () => {
     expect(runbook).toContain('npm run candidate:generate');
     expect(runbook).toContain('npm run candidate:check');

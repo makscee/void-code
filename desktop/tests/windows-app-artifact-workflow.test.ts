@@ -118,9 +118,13 @@ describe('the workflow reader', () => {
 //
 //   directories.output   release
 //   win.target           nsis                     -> extension exe
-//   nsis.artifactName    Void-Code-${version}-windows-${arch}.${ext}
-//   version              0.1.0
+//   nsis.artifactName    Void-Code-windows-${arch}.${ext}
 //   the --x64 in the package:win script            -> ${arch} is x64
+//
+// ${version} is deliberately absent from the pattern -- the version lives
+// inside the build now, not in its file name -- but the expansion below still
+// knows the macro, because the derivation must keep working if the pattern ever
+// carries it again.
 //
 // One subtlety decides whether `${arch}` survives. electron-builder normally
 // drops the arch of a default-arch build (platformPackager.js:547), but only
@@ -495,21 +499,47 @@ describe(`${REUSABLE} builds the Windows installer and leaves it as a run artifa
 });
 
 describe('the Windows artifact is the installer electron-builder actually writes', () => {
-  // The name is derived from desktop/package.json, never retyped. Two spellings
-  // keep that promise: the derived path itself, and the same path with the
-  // VERSION -- and only the version -- replaced by a glob, so a version bump
-  // does not turn into a job that uploads nothing. Everything else about the
-  // name has to agree with the config character for character, which is what
-  // makes a renamed artifact a red test rather than an empty download.
+  // The name is derived from desktop/package.json, never retyped, and it is now
+  // derivable EXACTLY: the artifactName pattern no longer contains ${version},
+  // so there is nothing left in the name that varies between builds and nothing
+  // left to glob over.
+  //
+  // The glob used to be load-bearing -- `Void-Code-*-windows-x64.exe`, with the
+  // star standing in for a version that changed every release -- and it was
+  // load-bearing at a cost: a star matches whatever is there, including the
+  // wrong file, and it is why `if-no-files-found: error` had to be the thing
+  // catching a rename. With the version out of the name the property gets
+  // STRONGER rather than weaker: the workflow names the one file the config
+  // says will exist, character for character.
+  //
+  // The property being preserved from the old spelling, restated: the name the
+  // workflow looks for and the name electron-builder writes are derived from
+  // one source and cannot drift apart.
   const derived = `desktop/${installerPath}`;
-  const versionGlobbed = derived.replace(packageJson.version, '*');
 
-  it('uploads the NSIS installer at the path the build config derives', () => {
+  it('names an installer whose name does not change between builds', () => {
+    // The reason the version left the file name in the first place: the
+    // download page links releases/latest/download/<asset>, a GitHub permalink
+    // with the asset name baked in, and a name that moves every release breaks
+    // it every release.
+    expect(reason(/\$\{version\}/.test(packageJson.build.nsis.artifactName) ? `the artifactName pattern carries the version: ${packageJson.build.nsis.artifactName}` : 'a name that survives a release')).toBe('a name that survives a release');
+    expect(reason(/\d+\.\d+\.\d+/.test(installerPath) ? `the derived installer name carries a version: ${installerPath}` : 'a name that survives a release')).toBe('a name that survives a release');
+  });
+
+  it('uploads the NSIS installer at exactly the path the build config derives', () => {
     const path = asText(uploadStep.path);
     expect(reason(path === '' ? 'no actions/upload-artifact step'
-      : path === derived || path === versionGlobbed ? 'the path the build config derives'
+      : path === derived ? 'the path the build config derives'
         : `${path}, where the config derives ${derived}`))
       .toBe('the path the build config derives');
+  });
+
+  it('needs no wildcard, and does not keep one out of habit', () => {
+    // A leftover `*` would match the installer today and go on matching
+    // whatever else lands in release/ tomorrow -- and it would hide a rename
+    // that this file is otherwise able to catch outright.
+    const path = asText(uploadStep.path);
+    expect(reason(path.includes('*') ? `the upload path is still a glob: ${path}` : 'an exact path')).toBe('an exact path');
   });
 
   it('does not upload the unpacked application directory', () => {
