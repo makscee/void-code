@@ -132,9 +132,27 @@ describe('scripts/assemble-windows-resources.mjs stages a vc it built', () => {
     // assemblyTarget for the vocabularies, vcBuildPlan for which builds to run
     // and what each is for, including the host-runnable one the version is read
     // from when the shipped binary cannot be run where it was built.
+    //
+    // This half is a TEXT check, and it cannot be anything else here. Say so
+    // plainly rather than let the next reader assume a behavioural one was
+    // forgotten: assemblyTarget refuses cross-OS pairs outright, so the only
+    // host that can build the Windows target is a Windows one, `native` is
+    // therefore always true, and vcBuildPlan returns exactly `[ship]` -- byte
+    // for byte what an inlined literal would return. There is no observable
+    // difference to assert. The `version` branch is reachable only through the
+    // Mac cross pair, and it is exercised there, further down this file.
+    //
+    // What the parenthesis buys: an unused import still carries the NAME, so
+    // `\bvcBuildPlan\b` stayed green when the call was replaced by an inline
+    // `[{ goos: target.goos, goarch: target.goarch, purpose: 'ship' }]` -- a
+    // mutation that survived review. A call site is the thing an import line
+    // cannot supply. Their CI runs neither this suite nor eslint, so an import
+    // left unused is caught by nothing else.
     expect(/from\s+'\.\/resource-assembly-lib\.mjs'/.test(windowsCode)).toBe(true);
-    expect(windowsCode).toMatch(/\bassemblyTarget\b/);
-    expect(windowsCode).toMatch(/\bvcBuildPlan\b/);
+    const uncalled = ['assemblyTarget', 'vcBuildPlan']
+      .filter((name) => !new RegExp(`\\b${name}\\s*\\(`).test(windowsCode))
+      .map((name) => `${name} is imported but never called`);
+    expect(uncalled.join(', ') || 'the script asks the shared planner').toBe('the script asks the shared planner');
     const literals = [...codeOf(windowsAssembly).matchAll(/(['"`])(?:windows|amd64|arm64|x64)\1/g)].map((match) => match[0]);
     expect(literals.join(', ') || 'no GOOS or GOARCH written into the script').toBe('no GOOS or GOARCH written into the script');
   });
