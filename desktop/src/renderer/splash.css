@@ -5,20 +5,45 @@ html { background: #101216; }
 body {
   margin: 0;
   background: #101216;
-  color: #e6e9ef;
-  font: 13px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #c9ced6;
+  font: 13px/18px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   height: 100vh;
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 0 28px;
+  gap: 12px;
+  padding: 18px 20px 14px;
   box-sizing: border-box;
+  text-align: center;
   -webkit-user-select: none;
   user-select: none;
   cursor: default;
-  -webkit-app-region: drag;
 }
-h1 { margin: 0; font-size: 16px; font-weight: 600; color: #ffffff; letter-spacing: 0.01em; }
-p { margin: 0; color: #b6bdc9; }
-p.quiet { color: #7f8794; }
+
+/* The one moving thing on screen, and the only reason a person believes the app is alive rather
+   than wedged: a still window says nothing during a start that can run for minutes. Pure CSS —
+   the page loads no script and reaches no network. */
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-top-color: #f0b357;
+  animation: splash-spin 900ms linear infinite;
+}
+@keyframes splash-spin { to { transform: rotate(360deg); } }
+/* Slowed rather than stopped: a person who asks for less motion still needs to see that something
+   is happening, and a frozen spinner reads exactly like the frozen window this replaced. */
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+h1 {
+  margin: 0;
+  font: 400 11px/13px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #c9ced6;
+}
+p { margin: 0; }
+p.status { color: #848b95; }
+p.hint { margin-top: auto; font-size: 11px; line-height: 15px; color: #5f666f; }

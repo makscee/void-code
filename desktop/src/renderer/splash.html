@@ -2,12 +2,13 @@
 <html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="splash.css"><title>Starting Void Code</title>
 <!-- The colours are declared twice on purpose, and the two survive different failures: the linked
      sheet is 'self' and survives a policy with no inline styles, the block below survives the sheet
-     going missing from a build. Either one alone keeps the text readable on the dark window. -->
-<style>html,body{background:#101216;color:#e6e9ef}h1{color:#fff}p{color:#b6bdc9}</style>
+     going missing from a build. Either one alone keeps the text readable on the dark window. The
+     spinner lives in the sheet only: without it the page loses its motion but not its words. -->
+<style>html,body{background:#101216;color:#c9ced6}h1{color:#c9ced6}p{color:#848b95}</style>
 </head>
 <body>
-<h1>Starting Void Code</h1>
-<p>The first start after installing is the slow one: the app unpacks itself and the system checks every unpacked file. It can take several minutes.</p>
-<p class="quiet">Later starts are much quicker. This window closes by itself once the app is ready.</p>
-<p data-role="close-cancels-startup">Closing this window stops the start instead of waiting it out. Nothing breaks and nothing is lost — Void Code simply does not open, and you can start it again whenever suits you.</p>
+<div class="spinner" role="img" aria-label="Starting"></div>
+<h1>Void Code</h1>
+<p class="status">First start takes minutes</p>
+<p class="hint" data-role="close-cancels-startup">Close to cancel</p>
 </body></html>

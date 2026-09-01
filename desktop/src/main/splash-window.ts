@@ -19,13 +19,21 @@ import type { SplashWindow } from './startup-lifecycle';
  */
 export function splashWindowOptions(): BrowserWindowConstructorOptions {
   return {
-    // 340, а не «сколько занимает текст»: на macOS страница укладывалась ровно в 232 px до
-    // пикселя, и любой другой системный шрифт обрезал бы последнюю строку — ту самую, что
-    // называет цену закрытия. Ширина и высота обязаны остаться ниже mainWindowMinimumEdge
-    // (scripts/window-thresholds.mjs), иначе перекличка окон начнёт мерить splash.
-    title: 'Void Code', show: true, width: 460, height: 340, center: true,
+    // Размер снят с содержимого, а не назначен: спиннер, название, строка состояния и подпись
+    // укладываются в ~120 px, остальное — запас на другой системный шрифт (на Windows это Segoe UI,
+    // а мерил я на macOS). Обе стороны обязаны остаться ниже mainWindowMinimumEdge
+    // (scripts/window-thresholds.mjs), иначе перекличка окон начнёт мерить splash вместо главного.
+    //
+    // autoHideMenuBar, а не setMenu(null): опция живёт в этом же объекте — единственном месте, где
+    // окно настраивается, — и не требует ветки по системам; setMenu есть только на Windows и Linux.
+    title: 'Void Code', show: true, width: 360, height: 220, center: true, autoHideMenuBar: true,
     resizable: false, maximizable: false, fullscreenable: false, backgroundColor: '#101216',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    // backgroundThrottling: замерено на WIN11-VCLAB, а не выбрано по вкусу. Слежка Chromium за
+    // перекрытием считала это окно закрытым и гасила документ целиком: visibilityState 'hidden'
+    // одиннадцать выборок подряд при hasFocus true, страница разобрана и свёрстана — и ни одного
+    // кадра. С этой опцией и без единого флага запуска — 'visible' четырнадцать выборок подряд и
+    // весь текст на снимке.
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   };
 }
 
