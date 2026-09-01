@@ -23,9 +23,8 @@ import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from './startup-diagnostic';
-import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage, withStartupSplash } from './startup-lifecycle';
-import { createSplashWindow } from './splash-window';
-import type { StartupStageError } from './startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
+import type { SingleStartupWindow, StartupStageError } from './startup-lifecycle';
 
 const smokeArgument = process.argv.find((argument) => argument.startsWith('--void-smoke-output='));
 const smokeOutput = smokeArgument?.slice('--void-smoke-output='.length);
@@ -36,8 +35,13 @@ if (productionProbePerturb && !['missing-font', 'palette-collapse'].includes(pro
 const productionProbeRoot = productionProbeOutput ? mkdtempSync(path.join(os.tmpdir(), 'void-code-production-terminal-')) : undefined;
 if (productionProbeRoot) app.setPath('userData', path.join(productionProbeRoot, 'user-data'));
 const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
-// The headless modes drive a single window and read its output; a second window breaks the probes.
-const splashFactory = smokeOutput || productionProbeOutput ? undefined : createSplashWindow;
+// The headless modes drive one window and read one page out of it. They get no loading page: an
+// extra navigation is an extra page-title-updated, and the title is how those probes report.
+const headlessProbe = smokeOutput ? { output: smokeOutput, prefix: 'VOID_SMOKE:', page: 'smoke.html', query: undefined as Record<string, string> | undefined }
+  : productionProbeOutput ? { output: productionProbeOutput, prefix: 'VOID_PRODUCTION_TERMINAL:', page: 'index.html', query: { productionTerminalProbe: '1' } as Record<string, string> | undefined } : undefined;
+// The page the window opens on. Still named splash.html: tests/splash-window.test.ts reads that
+// path, and renaming the file belongs with removing the second window's tests, not before them.
+const LOADING_PAGE = 'splash.html';
 const missingRendererTest = missingRendererRequested(process.argv, process.env.VOID_STARTUP_TEST_MISSING_RENDERER, existsSync(path.join(app.getPath('userData'), '.void-startup-test-missing-renderer')));
 let manager: SessionManager;
 let workspace: WorkspaceStore;
@@ -155,21 +159,22 @@ async function captureVisibleColors(window: BrowserWindow, raw: unknown) {
   } finally { if (attached) debug.detach(); }
 }
 
-async function createWindow(): Promise<BrowserWindow> {
+interface StartupWindow extends SingleStartupWindow { window: BrowserWindow }
+
+// The window itself, and the two pages it shows in turn. Nothing about ownership happens here:
+// everything this function attaches must survive a navigation that arrives before there is a
+// manager to tear down, which is exactly what the loading page's own load is.
+async function createWindow(): Promise<StartupWindow> {
   const window = await startupStage('window-creation', () => new BrowserWindow({
     title: 'Void Code', show: false, width: 1100, height: 760, backgroundColor: '#101216',
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   }));
   // Renderer IPC begins during load, so authority must name this exact window before loading it.
   mainWindow = window;
-  const ownerId = window.webContents.id;
   installNavigationPolicy(window.webContents);
-  window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
-  window.webContents.on('render-process-gone', () => manager.teardownOwner(ownerId));
-  window.webContents.on('destroyed', () => manager.teardownOwner(ownerId));
-  const headless = smokeOutput ? { output: smokeOutput, prefix: 'VOID_SMOKE:', page: 'smoke.html', query: undefined }
-    : productionProbeOutput ? { output: productionProbeOutput, prefix: 'VOID_PRODUCTION_TERMINAL:', page: 'index.html', query: { productionTerminalProbe: '1' } } : undefined;
+  const headless = headlessProbe;
   if (headless) {
+    const ownerId = window.webContents.id;
     window.webContents.on('page-title-updated', (event, title) => {
       const pixelPrefix = 'VOID_PRODUCTION_PIXEL_REQUEST:';
       if (productionProbeOutput && title.startsWith(pixelPrefix)) {
@@ -198,29 +203,55 @@ async function createWindow(): Promise<BrowserWindow> {
       writeFileSync(headless.output, `${JSON.stringify(result, null, 2)}
 `, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
     });
+  }
+  const applicationPage = () => {
+    if (!headless) return loadAndPresentWindow(window, () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${rendererFilename(missingRendererTest)}`))));
     const query = headless.query ? { ...headless.query, ...(productionProbePerturb ? { productionTerminalPerturb: productionProbePerturb } : {}) } : undefined;
-    await startupStage('renderer-load', () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined)));
-  } else await startupStage('renderer-load', () => loadAndPresentWindow(window, () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${rendererFilename(missingRendererTest)}`)))));
-  return window;
+    return loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${headless.page}`), query ? { query } : undefined));
+  };
+  return {
+    window,
+    // Shown once the loading page is loaded rather than at construction: the window arrives with
+    // its content already painted, so nobody sees an empty rectangle claiming to be a loading
+    // screen. What it costs is milliseconds -- the page is local, tiny and scriptless.
+    loadLoadingPage: async () => {
+      if (headless) return;
+      await startupStage('renderer-load', () => loadAndPresentWindow(window, () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${LOADING_PAGE}`)))));
+    },
+    loadApplicationPage: async () => { await startupStage('renderer-load', applicationPage); },
+  };
+}
+
+// Everything that needs a manager, attached in the one slot where a manager exists and a navigation
+// is still to come. registerIpc belongs here for the same reason: its handlers reach for `manager`
+// and `workspace`, and until they exist there is nothing for the loading page to call into.
+function takeWindowOwnership(startup: StartupWindow): void {
+  const ownerId = startup.window.webContents.id;
+  startup.window.webContents.on('did-start-navigation', () => manager.teardownOwner(ownerId));
+  startup.window.webContents.on('render-process-gone', () => manager.teardownOwner(ownerId));
+  startup.window.webContents.on('destroyed', () => manager.teardownOwner(ownerId));
+  registerIpc();
+}
+
+// The wait a person used to stare at an empty screen through. It is the same wait -- nothing here
+// makes a cold start faster -- but it now happens behind a window that says what is going on.
+async function prepareApplication(): Promise<SessionManager> {
+  // Off this thread: the same checks, run where they cannot stop the loading page from painting.
+  runtime = await startupStage('runtime-validation', () => resolvePrivateRuntimeAsync(runtimeRoot));
+  workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
+  if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
+  const statusChannels = new StatusChannelStore(
+    path.join(app.getPath('userData'), 'status-channels'),
+    (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
+    (chatId) => workspace.view().workspace?.selectedId === chatId,
+  );
+  manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
+  return manager;
 }
 
 async function bootstrap(): Promise<void> {
   await startupStage('readiness', () => app.whenReady());
-  // Everything below is the wait a person stares at an empty screen through, up to and including
-  // the renderer load inside createWindow, which is what finally puts a real window on screen.
-  await withStartupSplash(splashFactory, async () => {
-    // Off this thread: the same checks, run where they cannot stop the splash from painting.
-    runtime = await startupStage('runtime-validation', () => resolvePrivateRuntimeAsync(runtimeRoot));
-    workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
-    if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
-    const statusChannels = new StatusChannelStore(
-      path.join(app.getPath('userData'), 'status-channels'),
-      (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
-      (chatId) => workspace.view().workspace?.selectedId === chatId,
-    );
-    manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
-    registerIpc(); await createWindow();
-  });
+  await startSingleWindow(createWindow, prepareApplication, takeWindowOwnership);
 }
 
 function failStartup(failure: StartupStageError): void {

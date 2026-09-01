@@ -1,12 +1,10 @@
-// The one number that tells this app's windows apart by size.
+// The floor that says "this is the application window", used by scripts/packaged-window-check.mjs.
 //
-// `packaged-window-check.mjs` has no way to ask which window the census handed it: macOS names the
-// first on-screen layer-0 window of the process, Windows names MainWindowHandle, and neither says
-// "main" or "splash". It tells them apart by size — so the size of the startup splash and the floor
-// the check measures against are one decision, not two numbers that happen not to collide today.
-//
-// It sits between the two windows the app opens: the main window is 1100x760
-// (`splashWindowOptions` in src/main/splash-window.ts sizes the splash; `createWindow` in
-// src/main/index.ts sizes the main one). A window this app opens must be plainly on one side or
-// the other of this value; tests/splash-window.test.ts fails if the splash ever reaches it.
+// It was born to tell two windows apart: the app opened a separate 460x340 splash, the census names
+// one window per process, and nothing but the coincidence of 460 < 500 kept the check measuring the
+// right one. There is one window now (docs/superpowers/specs/2026-09-01-single-window-loading.md),
+// so it no longer separates anything -- what it still does is reject a window nobody could work in,
+// which is what the check waits for while the window is still being built. That is worth a name and
+// this paragraph rather than a bare number twice in a 90-line script: the bare number is what let
+// the splash size drift toward it unnoticed in the first place.
 export const mainWindowMinimumEdge = 500;

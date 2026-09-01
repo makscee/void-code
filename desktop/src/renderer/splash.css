@@ -12,8 +12,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 18px 20px 14px;
+  gap: 14px;
+  padding: 24px;
   box-sizing: border-box;
   text-align: center;
   -webkit-user-select: none;
@@ -25,8 +25,8 @@ body {
    than wedged: a still window says nothing during a start that can run for minutes. Pure CSS —
    the page loads no script and reaches no network. */
 .spinner {
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.16);
   border-top-color: #f0b357;
@@ -46,4 +46,6 @@ h1 {
 }
 p { margin: 0; }
 p.status { color: #848b95; }
-p.hint { margin-top: auto; font-size: 11px; line-height: 15px; color: #5f666f; }
+/* Не прижата к низу: окно теперь во весь размер приложения, и подпись у нижнего края
+   отрывается от того, к чему относится. Держится группой с остальным, центром окна. */
+p.hint { margin-top: 8px; font-size: 11px; line-height: 15px; color: #5f666f; }

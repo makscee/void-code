@@ -86,3 +86,30 @@ export async function withStartupSplash<T>(createSplash: (() => SplashWindow) | 
   closeSplash();
   return result;
 }
+
+// One window, not two. It opens on the loading page, keeps that page through the heavy part of
+// startup, and swaps its contents for the application once everything the application needs exists.
+//
+// The order is the whole content of this function, and it is an ordering the app cannot choose
+// freely: `createWindow` attaches `did-start-navigation -> manager.teardownOwner(ownerId)`, and the
+// manager is what preparation builds. Attach that listener before the loading page navigates and it
+// fires against a manager that is still undefined, inside a listener, where the throw belongs to
+// nobody. So ownership goes on after preparation and before the application page — the one slot
+// where the listener has both a manager to reach and a navigation left to hear.
+export interface SingleStartupWindow {
+  loadLoadingPage(): Promise<void>;
+  loadApplicationPage(): Promise<void>;
+}
+
+export async function startSingleWindow<W extends SingleStartupWindow, P>(
+  openWindow: () => Promise<W>,
+  prepare: () => Promise<P>,
+  takeOwnership: (window: W, prepared: P) => void,
+): Promise<W> {
+  const window = await openWindow();
+  await window.loadLoadingPage();
+  const prepared = await prepare();
+  takeOwnership(window, prepared);
+  await window.loadApplicationPage();
+  return window;
+}
