@@ -135,6 +135,15 @@ die() {
   exit 92
 }
 
+# Mimic curl --fail against a route that is simply not there: no bytes, no partial
+# file, exit 22. Distinct from die() on purpose — "the file does not exist yet"
+# is the whole transitional case, and a harness that spelled it as a torn stream
+# would be testing a different thing.
+notfound() {
+  printf 'curl: (22) The requested URL returned error: 404\n' >&2
+  exit 22
+}
+
 # Count one whole-process attempt in the counter file $1 and print the total.
 bump() {
   _n=0
@@ -178,9 +187,23 @@ case "$url" in
     ;;
   *releases/download/*SHA256SUMS*)
     case "$FAKE_MIRROR_SUMS" in
+      missing)  notfound ;;
       fail)     die ;;
       mismatch) serve "$FAKE_DIR/sums-mirror-bad" ;;
       *)        serve "$FAKE_DIR/sums-mirror" ;;
+    esac
+    ;;
+  */vc/SHA256SUMS)
+    # The primary host's own checksum list, served next to version.json. The
+    # default is "missing" and not "ok": today the route is a 404 on the real
+    # host, and a harness whose silent default was a healthy file would let a
+    # caller that never thought about this route pass as if it had.
+    case "${FAKE_PRIMARY_SUMS:-missing}" in
+      missing)  notfound ;;
+      fail)     die ;;
+      mismatch) serve "$FAKE_DIR/sums-primary-bad" ;;
+      noentry)  serve "$FAKE_DIR/sums-primary-noentry" ;;
+      *)        serve "$FAKE_DIR/sums-primary" ;;
     esac
     ;;
   *releases/download/*)
@@ -251,7 +274,8 @@ exit 1
 type mirrorOpts struct {
 	primary       string // ok | fail | flaky
 	mirror        string // ok | fail
-	sums          string // ok | fail | mismatch
+	sums          string // mirror's SHA256SUMS: ok | missing | fail | mismatch
+	primarySums   string // $AUTH_HOST/vc/SHA256SUMS: ok | missing | fail | mismatch | noentry
 	ca            string // ok | fail
 	versionJSON   string // ok | fail | flaky
 	latest        string // ok | fail
@@ -339,6 +363,18 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 	writeFixture("sums-mirror", fmt.Sprintf("%s  vc-somewhere-else\n%s  %s\n",
 		mirrorSHA256("decoy"), mirrorSHA256(mirrorMirrorBytes), asset))
 	writeFixture("sums-mirror-bad", fmt.Sprintf("%s  %s\n", strings.Repeat("0", 64), asset))
+	// The primary host's list, spelled the way the release actually spells it:
+	// `sha256sum vc-* version.json > SHA256SUMS` runs inside dist/, so the names
+	// are bare basenames even though the bytes are served from /vc/bin/. A decoy
+	// first, for the same reason as the mirror's: match the asset, not line 1.
+	writeFixture("sums-primary", fmt.Sprintf("%s  vc-somewhere-else\n%s  %s\n%s  version.json\n",
+		mirrorSHA256("decoy"), mirrorSHA256(mirrorPrimaryBytes), asset, mirrorSHA256("version.json")))
+	writeFixture("sums-primary-bad", fmt.Sprintf("%s  %s\n", strings.Repeat("0", 64), asset))
+	// A list that exists and simply does not name this asset — indistinguishable
+	// from an older format, which is why the spec treats it as "nothing to check
+	// against" rather than as a mismatch.
+	writeFixture("sums-primary-noentry", fmt.Sprintf("%s  vc-somewhere-else\n%s  version.json\n",
+		mirrorSHA256("decoy"), mirrorSHA256("version.json")))
 	writeFixture("partial", mirrorPartialBytes)
 
 	writeExec := func(name, body string) {
@@ -407,6 +443,9 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 		"FAKE_PRIMARY=" + orDefault(o.primary, "ok"),
 		"FAKE_MIRROR=" + orDefault(o.mirror, "fail"),
 		"FAKE_MIRROR_SUMS=" + orDefault(o.sums, "ok"),
+		// Unset means "missing" in the fake curl; spelled out here so a reader
+		// of the environment sees the transitional 404 the runs default to.
+		"FAKE_PRIMARY_SUMS=" + orDefault(o.primarySums, "missing"),
 		"FAKE_CA=" + orDefault(o.ca, "ok"),
 		"FAKE_VERSION_JSON=" + orDefault(o.versionJSON, "ok"),
 		"FAKE_LATEST=" + orDefault(o.latest, "ok"),
