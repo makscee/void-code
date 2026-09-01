@@ -1,4 +1,4 @@
-# vc Windows installer (PowerShell).
+﻿# vc Windows installer (PowerShell).
 #
 # Usage:
 #   iex (irm https://auth.makscee.ru/vc/install.ps1)
@@ -73,13 +73,125 @@ $MinNodeMajor = 22
 
 $authHost = if ($env:VC_AUTH_HOST) { $env:VC_AUTH_HOST } else { 'https://auth.makscee.ru' }
 
+# A temp path of our own, deleted on every exit path. [IO.Path]::GetTempFileName()
+# creates the placeholder too, so the old `GetTempFileName() + '.exe'` left an
+# empty stub behind in TEMP on every single run.
+function New-VCTempPath {
+    param([string]$Suffix)
+    return (Join-Path ([IO.Path]::GetTempPath()) ("vc-install-" + [Guid]::NewGuid().ToString('N') + $Suffix))
+}
+
+# ── every fetch gets a retry budget, not one shot ────────────────────────────
+# vc.exe is ~8 MB and dies mid-stream on some routes: the header promises a
+# length, a prefix arrives, the connection drops. That is the Windows shape of
+# the curl: (92) a client reported on the shell path, and Invoke-WebRequest
+# meets it as a terminating error over a half-written file — one shot means a
+# dead installer. So the whole fetch is attempted again, and the destination is
+# cleared first: a truncated leftover must never be mistaken for the download.
+#
+# A reply from the host is not a broken stream. 404 and 403 are the host's
+# answer and will be the same answer three times, so they end the attempts at
+# once — same line curl draws with --retry, which covers transport errors and
+# leaves HTTP verdicts alone. It matters here: $AUTH_HOST/vc/SHA256SUMS is a 404
+# on every host until the next stable release, and every install would sit
+# through the retry budget for it.
+function Invoke-VCDownload {
+    param(
+        [string]$Uri,
+        [string]$OutFile,
+        [int]$Attempts = 3
+    )
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
+            Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+            return $true
+        } catch {
+            Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
+            $answered = $false
+            try { $answered = $null -ne $_.Exception.Response } catch { $answered = $false }
+            if ($answered -or $attempt -ge $Attempts) { return $false }
+            Write-Host "vc: download attempt $attempt/$Attempts failed for $Uri — retrying" -ForegroundColor Yellow
+            Start-Sleep -Seconds 1
+        }
+    }
+    return $false
+}
+
+# ── what the SHA256SUMS list says about the bytes we just downloaded ─────────
+# THREE outcomes, not two, and that is the entire reason this helper exists:
+#
+#   'ok'        — the list named this asset and the bytes match;
+#   'mismatch'  — the list named this asset and the bytes do NOT match. The
+#                 bytes are wrong whatever their source, and no caller may
+#                 install them;
+#   'unchecked' — there was nothing to check against: no list at that URL, or no
+#                 entry for this asset in it. Says nothing at all about the
+#                 bytes, so what it means is the caller's decision.
+#
+# install.sh keeps that distinction in an exit code for a stated reason: an exit
+# code cannot be a "be lenient" argument, so leniency the primary path allows
+# can never be handed to the mirror path, which must refuse. PowerShell has no
+# exit code inside a script, so the same discipline is kept by the same means:
+# this helper takes no switch that could soften it and returns a fact, never a
+# verdict — the verdict is written by each caller, because "refusing to install"
+# is true on a third-party mirror and false on the primary host. There is
+# nothing lenient here to pass anywhere.
+#
+# It prints the facts (which list, which hashes) and stops there.
+function Get-VCSha256Status {
+    param(
+        [string]$FilePath,
+        [string]$SumsUrl,
+        [string]$AssetName
+    )
+    $sumsTmp = New-VCTempPath '.sha256sums'
+    try {
+        if (-not (Invoke-VCDownload -Uri $SumsUrl -OutFile $sumsTmp)) {
+            Write-Host "vc: could not fetch $SumsUrl" -ForegroundColor Yellow
+            return 'unchecked'
+        }
+        # The release runs `sha256sum vc-* version.json` inside dist/, so the
+        # names in the list are bare basenames; binary mode writes them as
+        # `*name`. Our asset can be on any line, so every line is read.
+        $want = $null
+        foreach ($line in @(Get-Content -LiteralPath $sumsTmp -ErrorAction SilentlyContinue)) {
+            $fields = $line.Trim() -split '\s+', 2
+            if ($fields.Count -lt 2) { continue }
+            if ($fields[1].Trim().TrimStart('*') -eq $AssetName) {
+                $want = $fields[0].Trim()
+                break
+            }
+        }
+        if (-not $want) {
+            Write-Host "vc: $SumsUrl lists no sha256 for $AssetName" -ForegroundColor Yellow
+            return 'unchecked'
+        }
+        $got = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash
+        if ($got.ToLowerInvariant() -ne $want.ToLowerInvariant()) {
+            Write-Host "vc: sha256 mismatch for $AssetName" -ForegroundColor Red
+            Write-Host "    expected $($want.ToLowerInvariant())" -ForegroundColor Red
+            Write-Host "    got      $($got.ToLowerInvariant())" -ForegroundColor Red
+            return 'mismatch'
+        }
+        Write-Host "==> sha256 verified against $SumsUrl" -ForegroundColor Green
+        return 'ok'
+    } finally {
+        Remove-Item -Force $sumsTmp -ErrorAction SilentlyContinue
+    }
+}
+
 # Fetch version.json to get current version + canonical artifact path.
 # If fetch fails, fall back to hardcoded path — never hardcode as primary.
 $versionJsonUrl = "$authHost/vc/version.json"
 $versionBanner = '==> void-code installer'
 $vcArtifactPath = 'bin/vc-windows-amd64.exe'  # fallback
+$versionTmp = New-VCTempPath '.version.json'
 try {
-    $versionJson = Invoke-RestMethod -Uri $versionJsonUrl -UseBasicParsing -ErrorAction Stop
+    if (-not (Invoke-VCDownload -Uri $versionJsonUrl -OutFile $versionTmp)) {
+        throw "could not fetch $versionJsonUrl"
+    }
+    $versionJson = (Get-Content -LiteralPath $versionTmp -Raw) | ConvertFrom-Json
     if ($versionJson.version) {
         $versionBanner = "==> void-code installer (v$($versionJson.version))"
     }
@@ -95,11 +207,18 @@ try {
     if ($fromJson) { $vcArtifactPath = $fromJson }
 } catch {
     # version.json fetch failed — banner without version, artifact path from fallback
+} finally {
+    Remove-Item -Force $versionTmp -ErrorAction SilentlyContinue
 }
 Write-Host $versionBanner
 
 $vcUrl      = "$authHost/vc/$vcArtifactPath"
 $relayCaUrl = "$authHost/vc/relay-ca.pem"
+# The list lives beside version.json, on the host the bytes come from, and names
+# the asset by its bare basename — release.yml publishes one file for both
+# installers, so this is the same route install.sh takes.
+$vcSumsUrl   = "$authHost/vc/SHA256SUMS"
+$vcAssetName = ($vcArtifactPath -split '[\\/]')[-1]
 
 Write-Host "==> detecting platform: windows/amd64"
 
@@ -131,9 +250,14 @@ $piEntry = Join-Path $piRuntimeDir 'node_modules\.bin\pi.cmd'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 # 1. Download vc.exe
-$tmp = [IO.Path]::GetTempFileName() + '.exe'
+$tmp = New-VCTempPath '.exe'
 Write-Host "==> downloading vc binary from $authHost" -ForegroundColor Cyan
-Invoke-WebRequest -Uri $vcUrl -OutFile $tmp -UseBasicParsing
+if (-not (Invoke-VCDownload -Uri $vcUrl -OutFile $tmp)) {
+    Write-Host "vc: failed to download $vcUrl" -ForegroundColor Red
+    Write-Host "    Check your connection and re-run; nothing was installed." -ForegroundColor Red
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    exit 1
+}
 
 # Verify download is non-empty (basic sanity check)
 $tmpSize = (Get-Item $tmp).Length
@@ -143,9 +267,32 @@ if ($tmpSize -lt 1024) {
     exit 1
 }
 
-# Signature check: vc-windows-amd64.exe — unsigned preview.
-# Minisign verification will be added in a future release.
-Write-Host "==> verifying download (unsigned preview — minisign in future release)" -ForegroundColor Yellow
+# The primary host's own list, and the asymmetry with a third-party mirror is
+# deliberate. $AUTH_HOST is where the bytes came from anyway, so its list proves
+# nothing about the host — it catches a torn transfer, which is the failure this
+# installer keeps meeting. What it must NOT do is refuse when the list is not
+# there: the route starts existing with the next stable release, so strictness
+# here would break every Windows install between that release and this change.
+# Say it out loud and carry on. A mismatch is a different animal: those bytes
+# are wrong, and nothing gets replaced with them.
+$vcSumsStatus = Get-VCSha256Status -FilePath $tmp -SumsUrl $vcSumsUrl -AssetName $vcAssetName
+if ($vcSumsStatus -eq 'mismatch') {
+    Write-Host "    Refusing to install. Nothing was replaced." -ForegroundColor Red
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    exit 1
+}
+if ($vcSumsStatus -ne 'ok') {
+    Write-Host "vc: this download is NOT VERIFIED — there was nothing to check it against" -ForegroundColor Yellow
+    Write-Host "    at $vcSumsUrl" -ForegroundColor Yellow
+    Write-Host "    (that list is published from the next stable release onwards)." -ForegroundColor Yellow
+    Write-Host "    Continuing with the install." -ForegroundColor Yellow
+}
+
+# Authenticity is a separate question from integrity, and saying so is the point:
+# the line above used to read "verifying download (unsigned preview — minisign in
+# future release)" while nothing but the file size had been looked at, and the
+# word minisign let every reader — us included — conclude integrity was covered.
+Write-Host "==> the binary is unsigned (minisign signatures come in a future release)" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  SmartScreen note: If Windows shows 'Windows protected your PC'," -ForegroundColor Yellow
 Write-Host "  click 'More info' then 'Run anyway' to allow the unsigned preview binary." -ForegroundColor Yellow
