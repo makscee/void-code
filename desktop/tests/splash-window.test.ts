@@ -47,6 +47,29 @@ describe('the startup splash window', () => {
     expect(preferences.nodeIntegration).toBe(false);
   });
 
+  it('asks Chromium not to throttle it, because an occluded splash stops producing frames at all', () => {
+    // Measured on WIN11-VCLAB, and the numbers are why this is a test and not a preference. As
+    // shipped, the splash document reported visibilityState 'hidden' on 11 consecutive samples
+    // while hasFocus was true -- parsed, laid out, correct colours, and dark. Launching with
+    // --disable-features=CalculateNativeWinOcclusion gave 'visible' 16 times running; setting this
+    // one option and passing no launch flags at all gave 'visible' 14 times running, with the whole
+    // page on the screenshot. Chromium's native occlusion tracking had been deciding the window was
+    // covered and switching the document off.
+    //
+    // The main window carries the same option (createWindow() in src/main/index.ts) and is pinned by
+    // tests/background-throttling.test.ts -- but for a different injury, and both belong to whoever
+    // one day reads this flag as redundant. There, the document kept rendering and its timers were
+    // slowed, so the sign-in countdown stalled while the person was off reading their email. Here,
+    // there is no document to slow: the window stands and produces no frames whatever, which is the
+    // blank splash this whole task exists to fix. One flag, two injuries; removing it because the
+    // first no longer applies brings the second straight back.
+    //
+    // Honest limit, the same one background-throttling.test.ts states: this proves the option is in
+    // the object the app builds. It cannot prove Chromium honours it -- that took a real Windows
+    // machine, and nothing in this suite has one.
+    expect(options().webPreferences?.backgroundThrottling).toBe(false);
+  });
+
   it('builds the window people actually see from those options, with no second set written inline', () => {
     // Without this, the options function can be entirely correct while createSplashWindow keeps
     // its own literal — the tests above would pass and the trap would ship. Pinned as source text
