@@ -69,21 +69,37 @@ describe('one window, loading page first', () => {
   // listener. The fakes below reproduce exactly that: loading a page runs the registered
   // navigation listeners, and the listener reaches for a manager that preparation creates.
 
-  const startup = () => {
+  // `closedDuringPreparation` is the person clicking the window's close button while the heavy part
+  // runs. Electron's own objects behave the way these fakes do afterwards: touching a destroyed
+  // window throws, which is why takeOwnership (it reads webContents.id) and loadApplicationPage
+  // raise here rather than quietly doing nothing.
+  const startup = ({ closedDuringPreparation = false } = {}) => {
     const order: string[] = [];
     const navigation: Array<() => void> = [];
     let manager: { teardownOwner: () => void } | undefined;
+    let destroyed = false;
     const window = {
+      isDestroyed: vi.fn(() => destroyed),
       loadLoadingPage: vi.fn(async () => { order.push('loading page'); for (const listener of navigation) listener(); }),
-      loadApplicationPage: vi.fn(async () => { order.push('application page'); for (const listener of navigation) listener(); }),
+      loadApplicationPage: vi.fn(async () => {
+        order.push('application page');
+        if (destroyed) throw new Error('Object has been destroyed');
+        for (const listener of navigation) listener();
+      }),
     };
     return {
       order,
       window,
       openWindow: async () => { order.push('window'); return window; },
-      prepare: async () => { order.push('prepare'); manager = { teardownOwner: () => order.push('teardown') }; return manager; },
+      prepare: async () => {
+        order.push('prepare');
+        if (closedDuringPreparation) destroyed = true;
+        manager = { teardownOwner: () => order.push('teardown') };
+        return manager;
+      },
       takeOwnership: () => {
         order.push('ownership');
+        if (destroyed) throw new Error('Object has been destroyed');
         navigation.push(() => {
           if (manager === undefined) throw new Error('did-start-navigation reached an undefined manager');
           manager.teardownOwner();
@@ -91,6 +107,26 @@ describe('one window, loading page first', () => {
       },
     };
   };
+
+  it('lets a person who closes the window during startup cancel it, rather than leaving that to a race', async () => {
+    // The page says "Close to cancel", so cancelling has to be something the code does, not
+    // something that usually happens. Today nothing here looks at the window: close it while
+    // preparation runs and `app.quit()` begins shutting down, but preparation finishes anyway, and
+    // then takeOwnership (webContents.id) and loadApplicationPage both run against a destroyed
+    // window, throw, and surface as "Void Code could not start" -- an error dialog for a person who
+    // asked to stop. That the process usually dies first is the whole objection: the promise on the
+    // screen should not depend on who wins.
+    //
+    // The `order` assertion is the load-bearing one, and it is worth saying which and why.
+    // Wrapping the tail in try/catch resolves quietly and never reaches loadApplicationPage either
+    // -- takeOwnership throws first and is swallowed -- so both of those checks pass for it. What
+    // it cannot fake is not having gone there: `order` still records 'ownership'. Verified by
+    // substitution against all three shapes.
+    const { order, window, openWindow, prepare, takeOwnership } = startup({ closedDuringPreparation: true });
+    await expect(startSingleWindow(openWindow, prepare, takeOwnership)).resolves.toBeDefined();
+    expect(window.loadApplicationPage, 'a window the person closed was navigated to the application page').not.toHaveBeenCalled();
+    expect(order, 'startup carried on into ownership after the window was gone').toEqual(['window', 'loading page', 'prepare']);
+  });
 
   it('does not let the loading page navigate into ownership that nothing has wired up yet', async () => {
     const { openWindow, prepare, takeOwnership } = startup();
