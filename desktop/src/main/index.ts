@@ -210,12 +210,14 @@ async function createWindow(): Promise<StartupWindow> {
   };
   return {
     window,
+    // Asked after preparation: by then the person has had the whole cold start to change their mind.
+    isDestroyed: () => window.isDestroyed(),
     // Shown once the loading page is loaded rather than at construction: the window arrives with
     // its content already painted, so nobody sees an empty rectangle claiming to be a loading
     // screen. What it costs is milliseconds -- the page is local, tiny and scriptless.
     loadLoadingPage: async () => {
       if (headless) return;
-      await startupStage('renderer-load', () => loadAndPresentWindow(window, () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${LOADING_PAGE}`)))));
+      await startupStage('loading-page-load', () => loadAndPresentWindow(window, () => loadRenderer(() => window.loadFile(path.join(__dirname, `../renderer/${LOADING_PAGE}`)))));
     },
     loadApplicationPage: async () => { await startupStage('renderer-load', applicationPage); },
   };

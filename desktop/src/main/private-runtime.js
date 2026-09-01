@@ -141,4 +141,4 @@ function resolvePrivateRuntime(root) {
   return { root, vc, node, piEntry, fixture, manifest };
 }
 
-module.exports = { expectedRuntimePlatform, sha256File, treeSha256, resolvePrivateRuntime };
+module.exports = { RUNTIME_PLATFORMS, expectedRuntimePlatform, sha256File, treeSha256, resolvePrivateRuntime };

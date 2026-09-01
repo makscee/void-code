@@ -70,6 +70,7 @@ export function focusExistingWindow(window: FocusableWindow | undefined): void {
 // nobody. So ownership goes on after preparation and before the application page — the one slot
 // where the listener has both a manager to reach and a navigation left to hear.
 export interface SingleStartupWindow {
+  isDestroyed(): boolean;
   loadLoadingPage(): Promise<void>;
   loadApplicationPage(): Promise<void>;
 }
@@ -82,6 +83,12 @@ export async function startSingleWindow<W extends SingleStartupWindow, P>(
   const window = await openWindow();
   await window.loadLoadingPage();
   const prepared = await prepare();
+  // The page says "Close to cancel", so cancelling is something this function does rather than
+  // something that usually happens: a person who closed the window during the heavy part gets no
+  // ownership attached to a window that is gone, no navigation into it, and no error dialog about a
+  // startup they stopped on purpose. Not a try/catch — swallowing the throw would still have gone
+  // there, and going there is what must not happen.
+  if (window.isDestroyed()) return window;
   takeOwnership(window, prepared);
   await window.loadApplicationPage();
   return window;

@@ -2,9 +2,14 @@
 // has to stay loadable by a worker thread (see the header of private-runtime.js); this file is what
 // keeps the rest of the app type-checked against it.
 //
-// The platform list is spelled here and in private-runtime.js, and nothing mechanical keeps the two
-// in step: a platform added to one and not the other is caught by neither compiler nor test.
+// The platform list is spelled here and in private-runtime.js, and the compiler keeps only one of
+// the two directions honest: a platform in the .js and missing here fails to compile, while one
+// declared here and missing there compiles everywhere and refuses on the machine it names.
+// tests/runtime-platform-list.test.ts compares the two as sets, which is what closes that side.
 export type RuntimePlatform = 'darwin-arm64' | 'darwin-x64' | 'win32-x64';
+
+// The array the running code reads, exported so the two spellings can be compared at runtime.
+export const RUNTIME_PLATFORMS: readonly RuntimePlatform[];
 
 export interface RuntimeManifest {
   schema: 1;
