@@ -17,6 +17,14 @@
 
 const MARK = '~BUN';
 
+// A declaration, not the first thing in the file shaped like one: optional `export`, then
+// const/let/var, then the name. Reading the first match of `isBunBinary = ...;` anywhere was a whole
+// class of mistake, not one bug -- a comment holding the old line was merely the first place it
+// turned up, and a string holding it reaches the same match with comments stripped, because
+// testsForMark needs string values kept. Anchoring answers all of them the same way: a comment, a
+// string, and whatever turns up next are none of them a declaration.
+const DECLARED = (name) => `(?:^|[^\\w$.])(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*=\\s*([^;]*);`;
+
 // Why the consequence and not the cause: whoever reads this is mid-bump, with no reason to know
 // what a file name has to do with anything.
 const COST = [
@@ -91,7 +99,7 @@ function stringValues(snippet) {
 function testsForMark(expression, source) {
   if (stringValues(expression).includes(MARK)) return true;
   for (const identifier of new Set(expression.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? [])) {
-    const declaration = new RegExp(`(?:const|let|var)\\s+${identifier}\\s*=\\s*([^;]*);`).exec(source);
+    const declaration = new RegExp(DECLARED(identifier)).exec(source);
     if (declaration && stringValues(declaration[1]).includes(MARK)) return true;
   }
   return false;
@@ -136,7 +144,7 @@ function branchesSelectedBy(source, flag) {
  */
 export function assertPiBunContract({ config, loader }) {
   const configSource = stripComments(config);
-  const declaration = /\bisBunBinary\s*=\s*([^;]*);/.exec(configSource);
+  const declaration = new RegExp(DECLARED('isBunBinary')).exec(configSource);
   if (!declaration) {
     refuse('config.js declares no isBunBinary at all', 'Nothing is left to switch Pi into the mode that serves extensions from inside the bundle.');
   }
