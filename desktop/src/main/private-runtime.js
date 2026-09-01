@@ -172,6 +172,15 @@ function resolvePrivateRuntime(root) {
   const piRoot = checkedPath(root, canonicalRoot, 'pi', 'directory', 'piTree');
   const piEntry = checkedPath(root, canonicalRoot, manifest.pi.entry, 'file', 'piEntry');
   if (!within(realpathSync(piRoot), realpathSync(piEntry))) throw new Error('Pi entrypoint escaped Pi tree');
+  // Checked the same way entry is: inside the Pi tree, not a symlink, a directory. A package
+  // directory that does not contain its own entry point is somebody else's directory, and Pi would
+  // read somebody else's package.json and themes out of it.
+  let piPackageDir;
+  if (manifest.pi.packageDir !== undefined) {
+    piPackageDir = checkedPath(root, canonicalRoot, manifest.pi.packageDir, 'directory', 'piTree');
+    if (!within(realpathSync(piRoot), realpathSync(piPackageDir))) throw new Error('Pi package directory escaped Pi tree');
+    if (!within(realpathSync(piPackageDir), realpathSync(piEntry))) throw new Error('Pi entrypoint escaped its package directory');
+  }
   if (createHash('sha256').update(checkedRead(root, canonicalRoot, manifest.vc.path, 'vc')).digest('hex') !== manifest.vc.sha256) throw new Error('vc resource hash mismatch');
   if (createHash('sha256').update(checkedRead(root, canonicalRoot, manifest.node.path, 'node')).digest('hex') !== manifest.node.sha256) throw new Error('Node resource hash mismatch');
   if (createHash('sha256').update(checkedRead(root, canonicalRoot, manifest.fixture.path, 'fixture')).digest('hex') !== manifest.fixture.sha256) throw new Error('fixture resource hash mismatch');
@@ -180,7 +189,7 @@ function resolvePrivateRuntime(root) {
     if (checkedPath(root, canonicalRoot, relative, 'file', asset) !== expected) throw new Error('runtime asset changed during validation');
   }
   checkedPath(root, canonicalRoot, 'pi', 'directory', 'piTree'); checkedRoot(root);
-  return { root, vc, node, piEntry, fixture, manifest };
+  return { root, vc, node, piEntry, piPackageDir, fixture, manifest };
 }
 
 module.exports = { RUNTIME_PLATFORMS, MISSING_RUNTIME_ASSET_MESSAGES, expectedRuntimePlatform, sha256File, treeSha256, resolvePrivateRuntime };

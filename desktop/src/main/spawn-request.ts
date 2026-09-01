@@ -23,6 +23,6 @@ export function spawnDesktopRequest(runtime: PrivateRuntime, request: StartReque
   const lifecycle = sessionLifecycleArgs(path.join(os.homedir(), '.pi/agent/sessions'), real.sessionId, real.mode, real.cwd);
   return spawn(runtime.vc, ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle], {
     name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd, ...conpty,
-    env: desktopChildEnv(process.platform === 'win32' ? 'win32' : 'darwin', process.env, runtime.node, authority),
+    env: desktopChildEnv(process.platform === 'win32' ? 'win32' : 'darwin', process.env, runtime.node, authority, runtime.piPackageDir),
   });
 }

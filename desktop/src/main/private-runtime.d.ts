@@ -22,10 +22,14 @@ export interface RuntimeManifest {
   build: { version: string; describe: string };
   vc: { version: string; sourceCommit: string; path: string; sha256: string };
   node: { version: string; path: string; sha256: string };
-  pi: { version: string; entry: string; treeSha256: string };
+  // Only the Windows assembly writes packageDir: it is the one bundled into a single file, and
+  // bundle mode moves Pi's getPackageDir() to the directory of node.exe. The macOS assembly does
+  // not write it and nothing changes there. Optional against the rule above, deliberately: making
+  // it required would break the platform that does not need it.
+  pi: { version: string; entry: string; treeSha256: string; packageDir?: string };
   fixture: { path: string; sha256: string };
 }
-export interface PrivateRuntime { root: string; vc: string; node: string; piEntry: string; fixture: string; manifest: RuntimeManifest }
+export interface PrivateRuntime { root: string; vc: string; node: string; piEntry: string; piPackageDir?: string; fixture: string; manifest: RuntimeManifest }
 
 export function expectedRuntimePlatform(platform: string, arch: string): RuntimePlatform;
 export function sha256File(file: string): string;
