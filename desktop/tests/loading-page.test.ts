@@ -64,4 +64,21 @@ describe('the loading page keeps something moving', () => {
     expect(name, 'the spinner animation names no keyframes').toBeTypeOf('string');
     expect(page.styles, `the spinner animates "${name}" but no @keyframes ${name} exists, so nothing moves`).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
   });
+
+  // Migrated here from tests/splash-window.test.ts when the second window was removed. The window
+  // changed; the promise the page makes did not. Closing the window during startup still ends the
+  // start -- it is the app's only window, and it always was during this part of the run -- so the
+  // page is still obliged to say so before a person finds out by doing it.
+  it('tells the person what closing this window costs them, because closing it cancels the start', () => {
+    // Honest limit, and it is the whole weakness of this test: meaning is not checkable here. What
+    // is pinned is a marked element plus a vocabulary -- so rewording survives, deleting the
+    // warning fails, and a sentence that uses these words to say something else would still pass.
+    // A stronger version would need a reader, which no test in this suite has.
+    const page = loadingPage();
+    const element = /<([a-z]+)\b[^>]*\bdata-role=["']close-cancels-startup["'][^>]*>([\s\S]*?)<\/\1>/i.exec(page.markup);
+    const warning = (element?.[2] ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    expect(warning, `${page.file} marks an element data-role="close-cancels-startup" but it says nothing`).not.toBe('');
+    expect(warning, 'the warning does not mention closing this window').toMatch(/clos/i);
+    expect(warning, 'the warning does not say that closing cancels the start').toMatch(/cancel|stop|quit|exit|abort|abandon|interrupt|end|(?:won.t|will not|never) start/i);
+  });
 });
