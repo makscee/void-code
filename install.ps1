@@ -81,6 +81,47 @@ function New-VCTempPath {
     return (Join-Path ([IO.Path]::GetTempPath()) ("vc-install-" + [Guid]::NewGuid().ToString('N') + $Suffix))
 }
 
+# The HTTP status behind a failed Invoke-WebRequest, or 0 when the host never
+# answered at all (broken stream, DNS, timeout — the absence IS the signal).
+#
+# The two PowerShells disagree about the exception and agree about the path to
+# the number: Windows PowerShell 5.1 — the only PowerShell on a stock Windows 11,
+# and therefore the one that runs this file for real — throws a WebException
+# carrying an HttpWebResponse, while PowerShell 7 throws an HttpResponseException
+# carrying an HttpResponseMessage. Both expose .Response.StatusCode, and on both
+# it is a System.Net.HttpStatusCode enum, so a single [int] cast reads it on
+# either. Nothing here may depend on the exception TYPE: no test can execute 5.1
+# (there is no 5.1 on the CI runner), so a 7-shaped check would be unverified
+# where it matters most. The InnerException walk is for the wrapped forms 5.1
+# produces when the failure surfaces while writing -OutFile.
+function Get-VCHttpStatus {
+    param($ErrorRecord)
+    $ex = $null
+    try { $ex = $ErrorRecord.Exception } catch { return 0 }
+    for ($depth = 0; $depth -lt 5 -and $null -ne $ex; $depth++) {
+        $response = $null
+        try { $response = $ex.Response } catch { $response = $null }
+        if ($null -ne $response) {
+            $code = $null
+            try { $code = $response.StatusCode } catch { $code = $null }
+            if ($null -ne $code) {
+                try { return [int]$code } catch { }
+            }
+        }
+        try { $ex = $ex.InnerException } catch { $ex = $null }
+    }
+    return 0
+}
+
+# Which answers are worth asking again, quoted rather than guessed. `man curl`,
+# on what --retry covers: "Transient error means either: a timeout, an FTP 4xx
+# response code or an HTTP 408, 429, 500, 502, 503 or 504 response code."
+# install.sh widens even that to every error with --retry-all-errors when curl is
+# new enough (install.sh:101-106), so the shell path shrugs off a 502 from a host
+# mid-deploy. This one must too, and used to not: any answer at all ended the
+# attempts, which made an ordinary deploy-time 502 fatal on Windows alone.
+$VCTransientHttpStatuses = @(408, 429, 500, 502, 503, 504)
+
 # ── every fetch gets a retry budget, not one shot ────────────────────────────
 # vc.exe is ~8 MB and dies mid-stream on some routes: the header promises a
 # length, a prefix arrives, the connection drops. That is the Windows shape of
@@ -89,29 +130,36 @@ function New-VCTempPath {
 # dead installer. So the whole fetch is attempted again, and the destination is
 # cleared first: a truncated leftover must never be mistaken for the download.
 #
-# A reply from the host is not a broken stream. 404 and 403 are the host's
+# A verdict is not a transient answer, and the line between them is drawn by the
+# status code, not by "did the host reply at all". 403 and 404 are the host's
 # answer and will be the same answer three times, so they end the attempts at
-# once — same line curl draws with --retry, which covers transport errors and
-# leaves HTTP verdicts alone. It matters here: $AUTH_HOST/vc/SHA256SUMS is a 404
-# on every host until the next stable release, and every install would sit
-# through the retry budget for it.
+# once: $AUTH_HOST/vc/SHA256SUMS is a 404 on every host until the next stable
+# release, and a retry budget spent on it is paid by every install in the world.
+#
+# $script:VCLastDownloadStatus carries that status out to callers that must word
+# their message differently for "the host says there is no such thing" and "we
+# could not reach the host" — the return value stays a plain success/failure.
 function Invoke-VCDownload {
     param(
         [string]$Uri,
         [string]$OutFile,
         [int]$Attempts = 3
     )
+    $script:VCLastDownloadStatus = 0
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
         try {
             Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
             Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+            $script:VCLastDownloadStatus = 0
             return $true
         } catch {
             Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
-            $answered = $false
-            try { $answered = $null -ne $_.Exception.Response } catch { $answered = $false }
-            if ($answered -or $attempt -ge $Attempts) { return $false }
-            Write-Host "vc: download attempt $attempt/$Attempts failed for $Uri — retrying" -ForegroundColor Yellow
+            $status = Get-VCHttpStatus $_
+            $script:VCLastDownloadStatus = $status
+            $worthAskingAgain = ($status -eq 0) -or ($VCTransientHttpStatuses -contains $status)
+            if (-not $worthAskingAgain -or $attempt -ge $Attempts) { return $false }
+            $why = if ($status -eq 0) { 'the transfer broke' } else { "HTTP $status" }
+            Write-Host "vc: download attempt $attempt/$Attempts failed for $Uri ($why) — retrying" -ForegroundColor Yellow
             Start-Sleep -Seconds 1
         }
     }
