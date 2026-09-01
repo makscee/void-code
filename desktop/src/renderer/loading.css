@@ -30,9 +30,9 @@ body {
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.16);
   border-top-color: #f0b357;
-  animation: splash-spin 900ms linear infinite;
+  animation: loading-spin 900ms linear infinite;
 }
-@keyframes splash-spin { to { transform: rotate(360deg); } }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
 /* Slowed rather than stopped: a person who asks for less motion still needs to see that something
    is happening, and a frozen spinner reads exactly like the frozen window this replaced. */
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }

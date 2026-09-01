@@ -66,12 +66,13 @@ try {
     if (renderer.title) break;
     await sleep(100);
   }
-  // The window census names one window per process -- the first on-screen layer-0 window on
-  // macOS, MainWindowHandle on Windows -- and during a cold start that window can be the startup
-  // splash, which stays up until the main window is shown. A single sample taken the moment the
-  // renderer reports a title therefore measures whichever window happened to be there. Sample
-  // until the census settles on a window that satisfies the assertion below; when none ever does,
-  // the last sample falls through to the same assertion and the same failure as before.
+  // The window census names one window per process -- the first on-screen layer-0 window on macOS,
+  // MainWindowHandle on Windows -- and it can be asked before that window is on screen at all: the
+  // renderer reports a title from the loading page while the window is still being placed. A single
+  // sample taken at that moment measures whatever the census had. (It used to be worse: there was a
+  // second, smaller window during startup, and the census could name that one instead.) Sample until
+  // the census settles on a window that satisfies the assertion below; when none ever does, the last
+  // sample falls through to the same assertion and the same failure as before.
   let native;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     native = await inspectNativeWindow(primary.pid, root);

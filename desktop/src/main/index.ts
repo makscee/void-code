@@ -39,11 +39,8 @@ const runtimeRoot = path.join(process.resourcesPath, 'private-runtime');
 // extra navigation is an extra page-title-updated, and the title is how those probes report.
 const headlessProbe = smokeOutput ? { output: smokeOutput, prefix: 'VOID_SMOKE:', page: 'smoke.html', query: undefined as Record<string, string> | undefined }
   : productionProbeOutput ? { output: productionProbeOutput, prefix: 'VOID_PRODUCTION_TERMINAL:', page: 'index.html', query: { productionTerminalProbe: '1' } as Record<string, string> | undefined } : undefined;
-// The page the window opens on. The name is left over from the second window it used to fill;
-// tests/loading-page.test.ts finds this page by what it says, not by what it is called, so the
-// rename is free whenever someone wants it — it costs this line, scripts/copy-static.mjs and the
-// stylesheet link inside the page.
-const LOADING_PAGE = 'splash.html';
+// The page the window opens on, and the only page it shows until the application is ready.
+const LOADING_PAGE = 'loading.html';
 const missingRendererTest = missingRendererRequested(process.argv, process.env.VOID_STARTUP_TEST_MISSING_RENDERER, existsSync(path.join(app.getPath('userData'), '.void-startup-test-missing-renderer')));
 let manager: SessionManager;
 let workspace: WorkspaceStore;

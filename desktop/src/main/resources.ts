@@ -24,7 +24,7 @@ function workerEntry(): string {
  * The checks are unchanged and still synchronous -- they are simply synchronous on another thread.
  * That distinction is the whole point: reading the Pi tree with `readFileSync` took the main thread
  * for the entire cold start (measured: 19,068 files, 1336 ms, a 5 ms timer fired 0 times), and for
- * all of it the browser process could not parse the splash page or paint a frame. Windows called the
+ * all of it the browser process could not parse the loading page or paint a frame. Windows called the
  * window hung, which it was.
  *
  * Rewriting the checks on `fs/promises` would free the thread too, and would widen the gap between
@@ -43,7 +43,7 @@ export function resolvePrivateRuntimeAsync(root: string): Promise<PrivateRuntime
       void worker.terminate();
     });
     // A worker that dies without answering must not leave the caller waiting: startup would hang
-    // behind a splash forever, which is worse than the failure it is hiding.
+    // behind the loading page forever, which is worse than the failure it is hiding.
     worker.once('error', (error) => { answered = true; reject(error); });
     worker.once('exit', (code) => { if (!answered) reject(new Error(`runtime validation worker exited without validating (code ${code})`)); });
   });
