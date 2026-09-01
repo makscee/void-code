@@ -60,33 +60,6 @@ export function focusExistingWindow(window: FocusableWindow | undefined): void {
   window.focus();
 }
 
-// The splash is a separate window from the main one, so it carries only what closing it needs.
-export interface SplashWindow {
-  close(): void;
-  isDestroyed(): boolean;
-}
-
-// Cold start on Windows measured 331.7s (Defender inspecting 19068 freshly unpacked files), warm
-// 13.3s, with an empty screen for all of it. Everything heavy runs inside `work`; the splash is
-// opened before it and closed after it, on both the success and the failure path — a startup that
-// dies behind a splash that never goes away is worse than the blank screen it replaced.
-// Neither the splash failing to open nor failing to close may take the application down with it.
-export async function withStartupSplash<T>(createSplash: (() => SplashWindow) | undefined, work: () => Promise<T>): Promise<T> {
-  let splash: SplashWindow | undefined;
-  const openSplash = () => { try { splash = createSplash?.(); } catch { /* no display, no splash — the application still starts */ } };
-  const closeSplash = () => {
-    if (!splash) return;
-    const window = splash;
-    splash = undefined;
-    try { if (!window.isDestroyed()) window.close(); } catch { /* the startup outcome is what matters, not the splash's exit */ }
-  };
-  openSplash();
-  let result: T;
-  try { result = await work(); } catch (error) { closeSplash(); throw error; }
-  closeSplash();
-  return result;
-}
-
 // One window, not two. It opens on the loading page, keeps that page through the heavy part of
 // startup, and swaps its contents for the application once everything the application needs exists.
 //
