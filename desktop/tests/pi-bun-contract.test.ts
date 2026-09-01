@@ -1,3 +1,4 @@
+// rails:pin-on-coverage the two comment fixtures below pin behaviour that is already correct; each was run against a build with stripComments() replaced by the identity, which accepts both -- see the task report
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
@@ -117,6 +118,52 @@ export const isBunBinary = import.meta.url.includes("$bunfs") || import.meta.url
     });
 `;
     expect(() => assertPiBunContract({ ...shipped, loader: alwaysAliases })).toThrow();
+  });
+
+  it('is not fooled by the old form surviving in a block comment above the live one', async () => {
+    // Found by the implementer, mutating his own work: removing stripComments() survived every
+    // fixture here. It survived because none of them put a whole assignment inside a comment --
+    // Pi's real prose mentions the markers, but not in the shape of code, so the declaration regex
+    // skipped past it either way.
+    //
+    // This is the shape that tells the two apart, and it is the ordinary shape of a deprecation: the
+    // old line kept above the new one, for whoever comes looking. Verified both ways -- refused as
+    // the checker stands, accepted by a build whose stripComments() returns its argument.
+    const documented = `/**
+ * Detect if we are running as a Bun compiled binary. Until 0.85 this read:
+ *   isBunBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN");
+ */
+export const isBunBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("%7EBUN");
+`;
+    const assertPiBunContract = await contract();
+    expect(() => assertPiBunContract({ ...shipped, config: documented }), 'the old form in a comment was read as the live one').toThrow();
+  });
+
+  it('is not fooled by the old form surviving in line comments', async () => {
+    // The same trap through the other half of stripComments(): `//` and `/* */` are separate paths
+    // in it, and a fixture for one proves nothing about the other.
+    const documented = `// Until 0.85 this read:
+// export const isBunBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN");
+export const isBunBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("%7EBUN");
+`;
+    const assertPiBunContract = await contract();
+    expect(() => assertPiBunContract({ ...shipped, config: documented }), 'the old form in a comment was read as the live one').toThrow();
+  });
+
+  it('reads the declaration, not the first thing in the file shaped like one', async () => {
+    // The comment case is a symptom; this is the illness. The check takes the first text matching
+    // `isBunBinary = ...;` anywhere in the file, and a comment was only the first place that turned
+    // out to be. Strings are kept on purpose -- testsForMark needs their values -- so a string
+    // holding the old line reaches the same regex, and stripping comments does nothing about it.
+    //
+    // Verified both ways and it fails both: refused by neither build. Anchoring the match to a
+    // declaration -- optional `export`, then const/let/var -- closes the class rather than this one
+    // instance, because a comment, a string, and whatever turns up next are all "not a declaration".
+    const noted = `const MIGRATION_NOTE = 'isBunBinary = import.meta.url.includes("~BUN");';
+export const isBunBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("%7EBUN");
+`;
+    const assertPiBunContract = await contract();
+    expect(() => assertPiBunContract({ ...shipped, config: noted }), 'a string holding the old line was read as the declaration').toThrow();
   });
 
   it('runs where a version bump actually happens', () => {
