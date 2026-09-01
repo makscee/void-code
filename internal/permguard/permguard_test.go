@@ -3,8 +3,28 @@ package permguard
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// systemPathSample returns a path the policy must classify as a system path on
+// the OS the test is running on.
+//
+// "/etc/hosts" is that path on POSIX and cannot be reused on Windows: norm()
+// runs it through filepath.Abs, which completes a rooted-but-driveless path
+// with the current drive, so the guard sees "C:/etc/hosts" — a directory under
+// the root of whatever drive the checkout sits on, which is not a Windows
+// system location and is correctly absent from systemPrefixes. Asserting deny
+// on it under Windows would assert a bug, not the rule. The Windows system
+// locations are in the same list ("C:/Windows/", "C:/Program Files/", …), so
+// the property under test — an edit to a system path is denied — is checked
+// there with a path that actually is one.
+func systemPathSample() string {
+	if runtime.GOOS == "windows" {
+		return `C:\Windows\System32\drivers\etc\hosts`
+	}
+	return "/etc/hosts"
+}
 
 func mustLoad(t *testing.T) *Guard {
 	t.Helper()
@@ -71,9 +91,10 @@ func TestClassify_DenyWriteAgentConfig(t *testing.T) {
 
 func TestClassify_DenyWriteSystemPath(t *testing.T) {
 	g := mustLoad(t)
-	d := g.Classify(Event{ToolName: "Edit", FilePath: "/etc/hosts"})
+	sample := systemPathSample()
+	d := g.Classify(Event{ToolName: "Edit", FilePath: sample})
 	if d.Decision != "deny" {
-		t.Fatalf("Edit /etc/hosts => %q, want deny (reason: %q)", d.Decision, d.Reason)
+		t.Fatalf("Edit %s => %q, want deny (reason: %q)", sample, d.Decision, d.Reason)
 	}
 }
 

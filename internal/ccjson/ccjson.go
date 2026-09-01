@@ -169,6 +169,19 @@ func EnsureFolderTrust(path string, dirs ...string) error {
 
 // writeAtomic writes data to path using a temp-file + rename so a crash
 // mid-write never leaves a truncated file. Mode is always 0600.
+//
+// KNOWN GAP — on Windows this file is not protected by permissions.
+// ~/.claude.json is a credential file: Claude Code keeps the account/oauth
+// state and, depending on setup, the API key in it, which is why the mode here
+// is 0600 and not the default. Windows has no POSIX mode bits, and Go's Chmod
+// there can only toggle the read-only attribute — 0600 keeps the owner-write
+// bit, so the call is a no-op and os.Stat reports 0666. The file therefore
+// inherits the NTFS ACL of its parent directory (%USERPROFILE%), i.e. whatever
+// that grants to Administrators and to other processes of the same user, and
+// nothing in this package narrows it. Closing the gap means an ACL call
+// (windows.SetNamedSecurityInfo / icacls) on the temp file before the rename;
+// until someone does that, the guarantee stated above is POSIX-only, and
+// ccjson_test.go asserts 0600 on POSIX only for the same reason.
 func writeAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".claude.json.tmp")
