@@ -14,6 +14,14 @@ module DesktopCiContract
     Array(job.fetch("needs"))
   end
 
+  def windows_runner?(job)
+    Array(job["runs-on"]).any? { |runner| runner.to_s.match?(/windows/i) }
+  end
+
+  def go_test_step(job)
+    Array(job["steps"]).find { |step| step["run"].to_s.match?(/\bgo\s+test\b/) }
+  end
+
   def assert(condition, message)
     raise message unless condition
   end
@@ -51,6 +59,26 @@ module DesktopCiContract
       package_job = test_jobs.fetch(name)
       assert(needs(package_job).include?("desktop-pinned-pi-smoke"), "PR #{name} must depend on desktop tests")
       assert(!package_job.key?("if"), "PR #{name} must not conditionally bypass desktop tests")
+    end
+
+    # Windows-only Go sources exist (internal/harness/cmdline_windows_test.go,
+    # internal/update/replace_windows_test.go) and no workflow executed them:
+    # every `go test` in this repository ran on ubuntu-latest, and GOOS=windows
+    # was compiled only inside release.yml's cross-build matrix. A defect in
+    # Windows-only code therefore survived every branch and every pull request
+    # and surfaced at release. These assertions say the Windows run exists, is
+    # the whole module, is built the way ubuntu builds it, and is allowed to
+    # fail the run.
+    windows_go_jobs = test_jobs.select { |_name, job| windows_runner?(job) && go_test_step(job) }
+    assert(!windows_go_jobs.empty?, "test.yml must run the Go suite on Windows: no job declares a Windows `runs-on:` with a `run:` step invoking `go test`, so every *_windows_test.go in this repository executes nowhere")
+    windows_go_jobs.each do |name, job|
+      step = go_test_step(job)
+      command = step.fetch("run").strip
+      assert(command.match?(%r{(?:\A|\s)\./\.\.\.(?:\s|\z)}), "test.yml job #{name} must run the whole module on Windows: `go test` there names no ./... argument, so only a hand-picked package is covered (#{command})")
+      assert(!command.match?(/\s-run[\s=]/), "test.yml job #{name} must not narrow the Windows Go suite with -run (#{command})")
+      assert(command.include?("-tags vctestfixture"), "test.yml job #{name} must build the Windows Go suite with -tags vctestfixture, the same tag the ubuntu job uses, or the two runners compile different code (#{command})")
+      assert(job["continue-on-error"] != true, "test.yml job #{name} must fail closed: continue-on-error on the job hides a red Windows suite")
+      assert(step["continue-on-error"] != true, "test.yml job #{name} must fail closed: continue-on-error on its `go test` step hides a red Windows suite")
     end
 
     release_jobs = load_workflow(directory, "release.yml").fetch("jobs")
