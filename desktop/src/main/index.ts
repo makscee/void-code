@@ -7,7 +7,7 @@ import path from 'node:path';
 import * as pty from 'node-pty';
 import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
-import { resolvePrivateRuntime } from './resources';
+import { resolvePrivateRuntimeAsync } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
 import type { PrivateRuntime } from './resources';
 import { readAccessRequest } from './access-request';
@@ -209,7 +209,8 @@ async function bootstrap(): Promise<void> {
   // Everything below is the wait a person stares at an empty screen through, up to and including
   // the renderer load inside createWindow, which is what finally puts a real window on screen.
   await withStartupSplash(splashFactory, async () => {
-    runtime = await startupStage('runtime-validation', () => resolvePrivateRuntime(runtimeRoot));
+    // Off this thread: the same checks, run where they cannot stop the splash from painting.
+    runtime = await startupStage('runtime-validation', () => resolvePrivateRuntimeAsync(runtimeRoot));
     workspace = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
     if (productionProbeRoot) { workspace.setFolder(productionProbeRoot); workspace.newChat(randomUUID()); }
     const statusChannels = new StatusChannelStore(
