@@ -116,6 +116,23 @@ type winOpts struct {
 	flakyN int
 	// pre-create $USERPROFILE/.void-code/bin/vc.exe with this content
 	existingVC string
+
+	// ── the host answers, rather than the stream breaking ──────────────────
+	//
+	// A torn stream and an HTTP status are different events, and the whole
+	// second half of this file exists because an installer that cannot tell
+	// them apart is wrong in one direction or the other. These fields spell
+	// the answers out one attempt at a time, so a test says exactly what the
+	// host did on attempt 1, on attempt 2, and so on.
+	//
+	// primaryStatuses[i] is the status returned to attempt i+1 for the binary;
+	// once the list runs out the bytes are served. sumsStatuses does the same
+	// for the checksum list, ahead of whatever `sums` says.
+	primaryStatuses []int
+	sumsStatuses    []int
+	// A status the host returns to EVERY attempt for the binary — a verdict
+	// that will not change however many times it is asked (403, 404).
+	primaryStatusAlways int
 }
 
 type winResult struct {
@@ -217,6 +234,7 @@ func runWindowsInstall(t *testing.T, o winOpts) winResult {
 	var mu sync.Mutex
 	var requests []string
 	attempts := 0
+	sumsAttempts := 0
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -230,6 +248,14 @@ func runWindowsInstall(t *testing.T, o winOpts) winResult {
 				winFixtureVersion, winFixtureVersion, winArtifactPath)
 
 		case winSumsRoute:
+			mu.Lock()
+			sumsAttempts++
+			m := sumsAttempts
+			mu.Unlock()
+			if m <= len(o.sumsStatuses) {
+				http.Error(w, http.StatusText(o.sumsStatuses[m-1]), o.sumsStatuses[m-1])
+				return
+			}
 			// The release runs `sha256sum vc-* version.json` inside dist/, so the
 			// names in the list are bare basenames even though the bytes are
 			// served from /vc/bin/. A decoy line first: the checker has to match
@@ -255,6 +281,14 @@ func runWindowsInstall(t *testing.T, o winOpts) winResult {
 			attempts++
 			n := attempts
 			mu.Unlock()
+			if o.primaryStatusAlways != 0 {
+				http.Error(w, http.StatusText(o.primaryStatusAlways), o.primaryStatusAlways)
+				return
+			}
+			if n <= len(o.primaryStatuses) {
+				http.Error(w, http.StatusText(o.primaryStatuses[n-1]), o.primaryStatuses[n-1])
+				return
+			}
 			if primaryMode == "flaky" && n <= flakyN {
 				// A torn transfer, not a 404: the promised length arrives in the
 				// header, a prefix of the body arrives on the wire, and the
@@ -717,3 +751,160 @@ func firstDifference(utf8Text, ansiText string) string {
 	}
 	return ""
 }
+
+// ── transient answers versus verdicts ────────────────────────────────────────
+//
+// Requirement 3 above proves the installer survives a BROKEN STREAM. It says
+// nothing about the other half of the same question: what the installer does
+// when the host does answer, with a number.
+//
+// The two are not the same event and must not get the same treatment:
+//
+//	502, 503, 429, 408, and a timeout  — "not now". curl retries these; the
+//	     man page names exactly this set as transient, and install.sh widens it
+//	     further with --retry-all-errors (lines 101-106). A single 502 during a
+//	     deploy is the most ordinary thing there is on a host being deployed to.
+//	403, 404, 401                      — "no". The same answer three times, so
+//	     asking twice more buys nothing. $AUTH_HOST/vc/SHA256SUMS is a 404 on
+//	     every host until the next stable release, and every install in the
+//	     world would otherwise sit through a retry budget for it.
+//
+// The Windows installer currently has one bucket for both: any answer at all
+// ends the attempts. So a deploy-time 502 kills a Windows install that the
+// shell path shrugs off — and no test in this file could see it, because the
+// fixtures only knew how to break a stream, never how to answer.
+//
+// ── what these assertions are made of, and why that matters here ─────────────
+//
+// Only two observables: how many requests the host received, and how the run
+// ended (exit code, bytes at ~/.void-code/bin/vc.exe, what the user was told).
+// Nothing here asserts how the implementation recognises a retryable failure.
+//
+// That restraint is not stylistic. Every run in this file executes under
+// PowerShell 7, and the machine these installs happen on runs Windows
+// PowerShell 5.1, where Invoke-WebRequest throws a WebException rather than an
+// HttpResponseException — so any assertion phrased in terms of the exception
+// object would be pinning a 7-shaped detail that 5.1 does not have. Counting
+// requests and reading the outcome is the same statement under both, which is
+// what makes these tests worth anything for the machine they are about. What
+// they still cannot do is RUN 5.1: see the note at the end of this file.
+func TestPowerShellInstallerRetriesTransientAnswersAndNotVerdicts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the PowerShell installer against a local fixture host")
+	}
+
+	// A host mid-deploy answers 502 once and serves the file on the next ask.
+	// The shell installer survives this; today the Windows one exits 1.
+	t.Run("a 502 on the first attempt is retried, not surrendered to", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{primaryStatuses: []int{502}, sums: "ok"})
+
+		calls := winRequestsFor(r, "/vc/"+winArtifactPath)
+		if r.code != 0 {
+			t.Fatalf("installer exited %d after a single 502 — one bad gateway during a deploy kills the install, while install.sh retries it (%d request(s) made)\n%s",
+				r.code, len(calls), r.combined)
+		}
+		if len(calls) < 2 {
+			t.Fatalf("the binary was requested %d time(s): a 502 was never retried\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+		if got := winReadFile(t, r.vcPath); got != winPrimaryBytes {
+			t.Errorf("vc.exe does not hold the served bytes: got %.32q…", got)
+		}
+	})
+
+	// A second code, and a different family: 429 is the host saying "slow down",
+	// which is the one answer where retrying is not merely allowed but asked for.
+	t.Run("a 429 on the first attempt is retried, not surrendered to", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{primaryStatuses: []int{429}, sums: "ok"})
+
+		calls := winRequestsFor(r, "/vc/"+winArtifactPath)
+		if r.code != 0 {
+			t.Fatalf("installer exited %d after a single 429 — the host asked to be asked again and was not (%d request(s) made)\n%s",
+				r.code, len(calls), r.combined)
+		}
+		if len(calls) < 2 {
+			t.Fatalf("the binary was requested %d time(s): a 429 was never retried\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+		if got := winReadFile(t, r.vcPath); got != winPrimaryBytes {
+			t.Errorf("vc.exe does not hold the served bytes: got %.32q…", got)
+		}
+	})
+
+	// The same distinction on the checksum list, where getting it wrong is
+	// quieter and therefore worse: a 503 that is not retried does not fail the
+	// install, it downgrades it. The user is told the download could not be
+	// checked — the truthful sentence for a route that does not exist yet, and a
+	// lie about a host that simply hiccuped and had the list all along.
+	t.Run("a 503 on the checksum list does not quietly downgrade the install to unverified", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "ok", sumsStatuses: []int{503}})
+
+		calls := winRequestsFor(r, winSumsRoute)
+		if r.code != 0 {
+			t.Fatalf("installer exited %d on a checksum list that answered 503 once\n%s", r.code, r.combined)
+		}
+		if len(calls) < 2 {
+			t.Fatalf("the checksum list was requested %d time(s): a 503 was never retried\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+		if strings.Contains(strings.ToLower(r.combined), "not verified") {
+			t.Errorf("the list was there and the run still tells the user the download is unverified — a transient answer was taken for a missing route:\n%s",
+				r.combined)
+		}
+		if !strings.Contains(strings.ToLower(r.combined), "sha256") {
+			t.Errorf("the run never says the checksum was checked:\n%s", r.combined)
+		}
+	})
+
+	// ── the other side of the same line, and the reason it is drawn ──────────
+	//
+	// These two are guards: they pass today, and the fix above is exactly the
+	// kind of change that breaks them. Retrying everything is the naive repair,
+	// and it costs a retry budget on every single install (the 404 case below is
+	// the state of the world for every user until the next stable release).
+
+	t.Run("a 403 on the binary is a verdict and is asked exactly once", func(t *testing.T) {
+		sentinel := "SENTINEL-" + strings.Repeat("v", 2048) + "\n"
+		r := runWindowsInstall(t, winOpts{primaryStatusAlways: 403, sums: "ok", existingVC: sentinel})
+
+		if r.code == 0 {
+			t.Errorf("installer exited 0 though the host refused to serve the binary\n%s", r.combined)
+		}
+		calls := winRequestsFor(r, "/vc/"+winArtifactPath)
+		if len(calls) != 1 {
+			t.Errorf("a 403 was asked %d time(s); it is the host's answer and will be the same answer every time\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+		if got := winReadFile(t, r.vcPath); got != sentinel {
+			t.Errorf("the working vc.exe did not survive a refused download: got %.32q…", got)
+		}
+	})
+
+	t.Run("the 404 on a checksum list that does not exist yet is asked exactly once", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "missing"})
+
+		if r.code != 0 {
+			t.Fatalf("installer exited %d with no checksum list on the host\n%s", r.code, r.combined)
+		}
+		calls := winRequestsFor(r, winSumsRoute)
+		if len(calls) != 1 {
+			t.Errorf("the missing list was asked for %d time(s) — that is the retry budget every install in the world pays until the next stable release publishes it\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+	})
+}
+
+// ── what none of this reaches: Windows PowerShell 5.1 ────────────────────────
+//
+// Every run above is PowerShell 7. The installs these tests are about happen on
+// Windows PowerShell 5.1 — measured on WIN11-VCLAB, where `Get-Command pwsh` is
+// False — and the two differ in exactly the area this file now tests: 5.1's
+// Invoke-WebRequest throws a WebException carrying an HttpWebResponse, 7 throws
+// an HttpResponseException carrying an HttpResponseMessage.
+//
+// The assertions are written to be indifferent to that (request counts and the
+// outcome, never the exception), so they state something true of both. What no
+// test here can do is execute 5.1: whether the implementation's own way of
+// telling a transient answer from a verdict behaves the same under WebException
+// is UNVERIFIED by this suite, and provable only on a Windows runner or by hand
+// on WIN11-VCLAB. Said here rather than left to be assumed.
