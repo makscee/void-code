@@ -37,6 +37,13 @@
 #                       mirror download is always sha256-checked against the
 #                       SHA256SUMS of the same release.
 #
+# Both sources are sha256-checked, and they are checked with different
+# strictness on purpose. See sha256_status() below: a MISMATCH refuses
+# everywhere, but "there was nothing to check against" refuses only on the
+# mirror. $AUTH_HOST/vc/SHA256SUMS starts existing with the next stable release,
+# so until then it is a 404 for every user, and a strict check there would break
+# every install in the world rather than protect it.
+#
 # Flags:
 #   --dry-run           same as VC_INSTALL_DRY_RUN=1
 #   -y / --yes          non-interactive: auto-confirm all prompts
@@ -146,42 +153,93 @@ sha256_of() {
   fi
 }
 
+# Compare file $1 against the SHA256SUMS list at URL $2, entry named $3.
+#
+# THREE outcomes, not two, and that is the entire reason this helper exists:
+#
+#   0 — the list named this asset and the bytes match;
+#   1 — the list named this asset and the bytes DO NOT match. The bytes are
+#       wrong whatever their source, and no caller may install them;
+#   2 — there was nothing to check against: no list at that URL, no entry for
+#       this asset in it, or no sha256 tool on this machine. Says nothing at
+#       all about the bytes, so what it means is the caller's decision.
+#
+# The distinction lives in a return code precisely so it CANNOT be a "be
+# lenient" argument: the mirror path calls verify_sha256 below, which refuses on
+# 1 and 2 alike, and nothing a primary-path caller passes can reach it.
+#
+# Prints the facts and no verdict — the verdict wording belongs to the caller,
+# because "refusing to install" is true on the mirror and false on the primary.
+sha256_status() {
+  _ss_file="$1"
+  _ss_url="$2"
+  _ss_name="$3"
+
+  _ss_sums="$(mktemp)"
+  if ! fetch_to_file_retry "$_ss_url" "$_ss_sums"; then
+    printf 'vc: could not fetch %s\n' "$_ss_url" >&2
+    rm -f "$_ss_sums"
+    return 2
+  fi
+  _ss_want="$(awk -v n="$_ss_name" '$2 == n || $2 == "*" n { print $1; exit }' "$_ss_sums")" || _ss_want=""
+  rm -f "$_ss_sums"
+  if [ -z "$_ss_want" ]; then
+    printf 'vc: %s lists no sha256 for %s\n' "$_ss_url" "$_ss_name" >&2
+    return 2
+  fi
+
+  _ss_got="$(sha256_of "$_ss_file")" || _ss_got=""
+  if [ -z "$_ss_got" ]; then
+    printf 'vc: no sha256 tool (sha256sum / shasum / openssl) on this machine —\n' >&2
+    printf '    nothing here can check a download.\n' >&2
+    return 2
+  fi
+  if [ "$_ss_got" != "$_ss_want" ]; then
+    printf 'vc: sha256 mismatch for %s\n' "$_ss_name" >&2
+    printf '    expected %s\n' "$_ss_want" >&2
+    printf '    got      %s\n' "$_ss_got" >&2
+    return 1
+  fi
+  printf '==> sha256 verified against %s\n' "$_ss_url" >&2
+  return 0
+}
+
 # Verify file $1 against the SHA256SUMS list at URL $2, entry named $3.
 # The mirror is a third party: no list, no entry, no tool, or no match all mean
 # refuse — installing unverified bytes is worse than not installing.
 verify_sha256() {
-  _vs_file="$1"
-  _vs_url="$2"
-  _vs_name="$3"
+  if sha256_status "$1" "$2" "$3"; then
+    return 0
+  fi
+  printf '    Refusing to install. Nothing was replaced.\n' >&2
+  return 1
+}
 
-  _vs_sums="$(mktemp)"
-  if ! fetch_to_file_retry "$_vs_url" "$_vs_sums"; then
-    printf 'vc: could not fetch %s — refusing to install unverified bytes\n' "$_vs_url" >&2
-    rm -f "$_vs_sums"
-    return 1
-  fi
-  _vs_want="$(awk -v n="$_vs_name" '$2 == n || $2 == "*" n { print $1; exit }' "$_vs_sums")" || _vs_want=""
-  rm -f "$_vs_sums"
-  if [ -z "$_vs_want" ]; then
-    printf 'vc: %s lists no sha256 for %s — refusing to install\n' "$_vs_url" "$_vs_name" >&2
-    return 1
-  fi
-
-  _vs_got="$(sha256_of "$_vs_file")" || _vs_got=""
-  if [ -z "$_vs_got" ]; then
-    printf 'vc: no sha256 tool (sha256sum / shasum / openssl) — cannot verify the\n' >&2
-    printf '    mirror download, refusing to install.\n' >&2
-    return 1
-  fi
-  if [ "$_vs_got" != "$_vs_want" ]; then
-    printf 'vc: sha256 mismatch for %s\n' "$_vs_name" >&2
-    printf '    expected %s\n' "$_vs_want" >&2
-    printf '    got      %s\n' "$_vs_got" >&2
-    printf '    Refusing to install. Nothing was replaced.\n' >&2
-    return 1
-  fi
-  printf '==> sha256 verified against %s\n' "$_vs_url" >&2
-  return 0
+# The primary host's own list, and the asymmetry with the mirror is deliberate.
+# $AUTH_HOST is where the bytes came from anyway, so a list from the same host
+# proves nothing about the host — it catches a torn transfer, which is the
+# failure this installer keeps meeting. What it must NOT do is refuse when the
+# list is not there: the route starts existing with the next stable release, so
+# a strict check here would break every install between that release and this
+# change. Say it out loud instead, and carry on.
+#
+# A mismatch is a different animal and refuses exactly as on the mirror.
+verify_primary_download() {
+  _vp_status=0
+  sha256_status "$1" "$PRIMARY_SUMS_URL" "$VC_ASSET_NAME" || _vp_status=$?
+  case "$_vp_status" in
+    0) return 0 ;;
+    2)
+      printf 'vc: this download is NOT VERIFIED — there was nothing to check it against\n' >&2
+      printf '    at %s (the list is published from the next\n' "$PRIMARY_SUMS_URL" >&2
+      printf '    stable release onwards). Continuing with the install.\n' >&2
+      return 0
+      ;;
+    *)
+      printf '    Refusing to install. Nothing was replaced.\n' >&2
+      return 1
+      ;;
+  esac
 }
 
 # ── release tags are third-party text pasted into a URL path ─────────────────
@@ -283,6 +341,15 @@ if [ -n "$_vj_raw" ]; then
 fi
 
 VC_BIN_URL="$AUTH_HOST/vc/$VC_ARTIFACT_PATH"
+# The asset's bare name — how both checksum lists spell it. The release runs
+# `sha256sum vc-* version.json > SHA256SUMS` inside dist/, so the names in it
+# are basenames even though the primary serves the bytes from /vc/bin/.
+VC_ASSET_NAME="${VC_ARTIFACT_PATH##*/}"
+# Beside version.json, on the host the bytes come from — never under /vc/bin/,
+# which holds binaries only. The release workflow publishes to this same route;
+# the two ends are pinned to each other by a test, because agreeing separately
+# on two different routes works for nobody.
+PRIMARY_SUMS_URL="$AUTH_HOST/vc/SHA256SUMS"
 
 # ── GitHub release mirror (fallback source) ──────────────────────────────────
 # makscee/void-code publishes the same bytes as a public release. It is used
@@ -304,7 +371,7 @@ if [ -z "$MIRROR_TAG" ] && [ "$VJ_TAG_REFUSED" != 1 ] && [ -n "${_ver:-}" ]; the
       "$VERSION_JSON_URL" "$(tag_render "$_ver")" >&2
   fi
 fi
-MIRROR_ASSET="${VC_ARTIFACT_PATH##*/}"
+MIRROR_ASSET="$VC_ASSET_NAME"
 MIRROR_BIN_URL=""
 MIRROR_SUMS_URL=""
 MIRROR_LATEST_TRIED=0
@@ -994,6 +1061,7 @@ trust_relay_ca() {
 if [ "$DRY_RUN" = 1 ]; then
   printf '%s\n' "$VERSION_BANNER"
   printf 'GET %s  (-> %s/vc)\n' "$VC_BIN_URL" "$BIN_DIR"
+  printf 'GET %s  (checked against, if it is there yet)\n' "$PRIMARY_SUMS_URL"
   printf 'GET %s  (-> %s/relay-ca.pem)\n' "$RELAY_CA_URL" "$CA_DIR"
   if [ -n "$MIRROR_BIN_URL" ]; then
     printf 'FALLBACK (only if the GET above fails): GET %s\n' "$MIRROR_BIN_URL"
@@ -1055,6 +1123,14 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   TMP_BIN="$(mktemp)"
   VC_BIN_SOURCE=""
   if fetch_to_file_retry "$VC_BIN_URL" "$TMP_BIN"; then
+    # Checked here and not after the branch: a refusal must be a refusal, not a
+    # reason to go and fetch the mirror instead. The primary delivered — bytes
+    # that fail their own host's list are a torn transfer, and the answer to
+    # that is to stop, not to download the same release from somewhere else.
+    if ! verify_primary_download "$TMP_BIN"; then
+      rm -f "$TMP_BIN"
+      exit 1
+    fi
     VC_BIN_SOURCE="$VC_BIN_URL"
   else
     printf 'vc: %s did not deliver — looking for a public release mirror\n' "$VC_BIN_URL" >&2
