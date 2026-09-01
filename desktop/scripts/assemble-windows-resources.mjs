@@ -106,6 +106,32 @@ try {
   });
   await rm(path.join(staging, 'pi/node_modules/.package-lock.json'), { force: true });
   await hoistPiBundledDependencies(path.join(staging, 'pi'));
+
+  // ПРОБА, не для слияния. Замер: Defender платит за ЧИСЛО файлов, а не за объём —
+  // 12 000 мелких файлов сканируются 40.5 с, те же мегабайты в 12 файлах — 7.7 с, и
+  // на мелких кеш почти не помогает (37 с при повторе против 0.2 с). В дереве Pi
+  // 19 069 файлов, из них 12 800 — .ts/.mts/.cts/.map/.md, которые Node никогда не
+  // исполняет, но которые проверка целостности честно читает все до одного.
+  // Чистка стоит ПОСЛЕ assertPiSourcePins (пины сверены с нетронутым исходником)
+  // и ДО treeHash (манифест описывает то, что реально поедет).
+  const prunePatterns = [/\.m?ts$/, /\.cts$/, /\.map$/, /\.md$/, /\.markdown$/];
+  const pruneDirs = new Set(['test', 'tests', '__tests__', 'docs', 'doc', 'example', 'examples']);
+  let pruned = 0, prunedBytes = 0, kept = 0;
+  const pruneTree = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (pruneDirs.has(entry.name)) { await rm(absolute, { recursive: true, force: true }); continue; }
+        await pruneTree(absolute);
+      } else if (prunePatterns.some((pattern) => pattern.test(entry.name))) {
+        prunedBytes += (await lstat(absolute)).size;
+        await rm(absolute, { force: true });
+        pruned += 1;
+      } else kept += 1;
+    }
+  };
+  await pruneTree(path.join(staging, 'pi'));
+  console.error(`ПРОБА: вычищено ${pruned} файлов (${Math.round(prunedBytes / 1048576)} МБ), осталось ${kept}`);
   await materializeTreeLinks(path.join(staging, 'pi'));
   await assertWindowsInstallablePaths(staging);
   const piPackage = JSON.parse(await readFile(path.join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'));
