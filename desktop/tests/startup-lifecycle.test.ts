@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startupStage, withStartupSplash } from '../src/main/startup-lifecycle';
+import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage, withStartupSplash } from '../src/main/startup-lifecycle';
 
 describe('startup lifecycle', () => {
   it('routes asynchronous stage rejection through one failure handler', async () => {
@@ -123,5 +123,57 @@ describe('startup splash', () => {
     const failure = new Error('runtime validation failed');
     await expect(withStartupSplash(() => window, async () => { throw failure; })).rejects.toBe(failure);
     expect(window.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('one window, loading page first', () => {
+  // Artem's decision of 01.09: the loader gets the same size as the app, and at the same size two
+  // windows stop making sense. So there is one window, it opens on the loading page, and its
+  // contents are swapped for the application once the heavy part is done.
+  //
+  // The obstacle that makes this an ordering problem rather than a one-liner: createWindow()
+  // attaches `did-start-navigation -> manager.teardownOwner(ownerId)`, and `manager` is assigned
+  // only after runtime validation. An ownership handler attached before the loading page loads
+  // fires on that page's own navigation, with `manager` still undefined, and throws inside the
+  // listener. The fakes below reproduce exactly that: loading a page runs the registered
+  // navigation listeners, and the listener reaches for a manager that preparation creates.
+
+  const startup = () => {
+    const order: string[] = [];
+    const navigation: Array<() => void> = [];
+    let manager: { teardownOwner: () => void } | undefined;
+    const window = {
+      loadLoadingPage: vi.fn(async () => { order.push('loading page'); for (const listener of navigation) listener(); }),
+      loadApplicationPage: vi.fn(async () => { order.push('application page'); for (const listener of navigation) listener(); }),
+    };
+    return {
+      order,
+      window,
+      openWindow: async () => { order.push('window'); return window; },
+      prepare: async () => { order.push('prepare'); manager = { teardownOwner: () => order.push('teardown') }; return manager; },
+      takeOwnership: () => {
+        order.push('ownership');
+        navigation.push(() => {
+          if (manager === undefined) throw new Error('did-start-navigation reached an undefined manager');
+          manager.teardownOwner();
+        });
+      },
+    };
+  };
+
+  it('does not let the loading page navigate into ownership that nothing has wired up yet', async () => {
+    const { openWindow, prepare, takeOwnership } = startup();
+    // The assertion is the absence of that throw. Attach ownership before the loading page and this
+    // rejects with the same error the real app would raise inside its own listener.
+    await expect(startSingleWindow(openWindow, prepare, takeOwnership)).resolves.toBeDefined();
+  });
+
+  it('opens on the loading page before the heavy work and swaps to the application only after it', async () => {
+    const { order, window, openWindow, prepare, takeOwnership } = startup();
+    const returned = await startSingleWindow(openWindow, prepare, takeOwnership);
+    expect(order).toEqual(['window', 'loading page', 'prepare', 'ownership', 'application page', 'teardown']);
+    expect(window.loadLoadingPage).toHaveBeenCalledOnce();
+    expect(window.loadApplicationPage).toHaveBeenCalledOnce();
+    expect(returned, 'the caller cannot reach the window it is meant to keep').toBe(window);
   });
 });
