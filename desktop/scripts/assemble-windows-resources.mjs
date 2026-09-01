@@ -115,15 +115,16 @@ try {
   // Чистка стоит ПОСЛЕ assertPiSourcePins (пины сверены с нетронутым исходником)
   // и ДО treeHash (манифест описывает то, что реально поедет).
   const prunePatterns = [/\.m?ts$/, /\.cts$/, /\.map$/, /\.md$/, /\.markdown$/];
-  const pruneDirs = new Set(['test', 'tests', '__tests__', 'docs', 'doc', 'example', 'examples']);
+  // Каталоги по имени НЕ чистим. Первая проба чистила, и Pi сломался: пакет yaml
+  // держит настоящий рабочий каталог dist/doc, и composer.js требует ../doc/directives.js.
+  // Приложение при этом стартовало нормально и ошибок не писало — сломалось бы у
+  // человека в момент первого чата. Имя каталога ничего не говорит о том, что внутри.
   let pruned = 0, prunedBytes = 0, kept = 0;
   const pruneTree = async (dir) => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const absolute = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (pruneDirs.has(entry.name)) { await rm(absolute, { recursive: true, force: true }); continue; }
-        await pruneTree(absolute);
-      } else if (prunePatterns.some((pattern) => pattern.test(entry.name))) {
+      if (entry.isDirectory()) await pruneTree(absolute);
+      else if (prunePatterns.some((pattern) => pattern.test(entry.name))) {
         prunedBytes += (await lstat(absolute)).size;
         await rm(absolute, { force: true });
         pruned += 1;
