@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,8 @@ func TestStableReleaseSyncsInstallersAndBinariesToVoidAuth(t *testing.T) {
 }
 
 func TestShellInstallerProvisionsManagedPiDespiteHealthyPathPi(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
@@ -127,6 +130,8 @@ func TestPowerShellPiContractMatchesWindowsResolverArtifact(t *testing.T) {
 }
 
 func TestShellInstallerDryRunDoesNotWrite(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	home := t.TempDir()
 	before, err := os.ReadDir(home)
 	if err != nil {
@@ -179,13 +184,74 @@ func TestPowerShellDryRunExitsBeforeWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PowerShell dry-run failed: %v\n%s", err, output)
 	}
-	entries, err := os.ReadDir(home)
-	if err != nil {
-		t.Fatal(err)
+
+	// The assertion here used to be "the directory is empty", and that is wrong
+	// on Windows — not because the installer misbehaves, but because the shell
+	// does. PowerShell 7.5+ writes its own startup cache under $env:USERPROFILE
+	// on every launch, so an empty-directory check measures pwsh, not
+	// install.ps1.
+	//
+	// Measured on WIN11-VCLAB (Windows 11 Pro), portable pwsh builds, a fresh
+	// directory per case, USERPROFILE pointed at it:
+	//
+	//   pwsh 7.6.5  -NoProfile -Command "exit 0"          → AppData\Local\Microsoft\PowerShell\StartupProfileData-NonInteractive
+	//   pwsh 7.5.10 -NoProfile -Command "exit 0"          → the same file
+	//   pwsh 7.6.5  -NoProfile -File install.ps1 (dry run)→ the same file, and nothing else
+	//   pwsh 7.4.6  either way                            → nothing at all
+	//
+	// The no-op case never loads install.ps1 and never sets VC_INSTALL_DRY_RUN,
+	// yet produces the identical tree — so the `[AppData]` that failed this test
+	// on windows-latest (run 33512615187, image windows-2025, pwsh 7 from
+	// C:\Program Files\PowerShell\7) is the shell's, and the installer wrote
+	// nothing. install.ps1 cannot have written it in any case: the dry-run guard
+	// checked above returns before the first `New-Item`.
+	//
+	// So the claim is narrowed to what the installer is actually answerable for
+	// — the paths it builds under the user's profile — and those are read out of
+	// install.ps1 rather than spelled out here, so a new door into the profile
+	// is watched without anyone remembering to update this test. Same shape, and
+	// the same reason, as homePathsWrittenByInstaller in home_isolation_test.go,
+	// whose TestMain likewise scopes its guard instead of watching all of HOME.
+	for _, rel := range userProfilePathsWrittenByPowerShellInstaller(t, content) {
+		path := filepath.Join(home, filepath.FromSlash(rel))
+		if info, statErr := os.Stat(path); statErr == nil {
+			t.Errorf("PowerShell dry-run created %%USERPROFILE%%\\%s (directory=%v) though it must exit before any write:\n%s",
+				rel, info.IsDir(), output)
+		} else if !os.IsNotExist(statErr) {
+			t.Fatalf("stat %s: %v", path, statErr)
+		}
 	}
-	if len(entries) != 0 {
-		t.Fatalf("PowerShell dry-run wrote under USERPROFILE: %v", entryNames(entries))
+}
+
+// powerShellUserProfilePathRe matches the one way install.ps1 builds a path
+// under the user's profile:
+//
+//	$vcDir = Join-Path $env:USERPROFILE '.void-code'
+var powerShellUserProfilePathRe = regexp.MustCompile(`Join-Path \$env:USERPROFILE '([^']+)'`)
+
+// userProfilePathsWrittenByPowerShellInstaller returns the paths, relative to
+// %USERPROFILE%, that install.ps1 names for itself — asked of the installer
+// rather than remembered here.
+//
+// It fails the test when it finds none: an assertion built from an empty list
+// asserts nothing, and that is exactly how a narrowed check turns into a
+// decoration without anybody noticing.
+func userProfilePathsWrittenByPowerShellInstaller(t *testing.T, installer string) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var found []string
+	for _, m := range powerShellUserProfilePathRe.FindAllStringSubmatch(installer, -1) {
+		rel := strings.ReplaceAll(m[1], `\`, "/")
+		if rel == "" || seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		found = append(found, rel)
 	}
+	if len(found) == 0 {
+		t.Fatal("НЕ СМОГ: в install.ps1 не нашлось ни одного пути под $env:USERPROFILE — проверять сухой прогон стало не по чему")
+	}
+	return found
 }
 
 func entryNames(entries []os.DirEntry) []string {

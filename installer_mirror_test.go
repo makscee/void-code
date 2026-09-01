@@ -248,6 +248,36 @@ exit 1
 
 // ── harness ──────────────────────────────────────────────────────────────────
 
+// skipInstallShOnWindows guards every test in this package that spawns
+// `sh install.sh`.
+//
+// `install.sh` is the POSIX install path and nothing else. A Windows machine is
+// sent to `install.ps1` — that is what auth.makscee.ru/download offers it, what
+// docs/windows-setup.md tells it to run, and what release.yml publishes for it
+// (both installers are copied side by side, see
+// TestStableReleaseSyncsInstallersAndBinariesToVoidAuth). No supported path
+// asks Windows to run install.sh, so these tests are not "broken on Windows":
+// there is no Windows behaviour for them to check.
+//
+// What a Windows runner would measure instead is its own CI image. The `sh` on
+// PATH there is the MSYS one Git for Windows ships, and `uname -s` under it
+// answers `MINGW64_NT-…`, which install.sh's detect_os does not know — the run
+// prints `detecting platform: unknown/amd64` and installs a Linux asset name.
+// Teaching install.sh that spelling would create a second Windows install path
+// that nobody ships and nobody tests (spec 2026-09-01-windows-suite-green.md,
+// «Границы»).
+//
+// Every such test calls this by name as its first statement, so a reader of one
+// test sees that it does not run on Windows, while the reason is written once.
+// The skip is conditional on purpose: under POSIX these tests run exactly as
+// they did before.
+func skipInstallShOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("checks install.sh, the POSIX install path; Windows installs via install.ps1, so the behaviour under test does not exist on Windows")
+	}
+}
+
 type mirrorOpts struct {
 	primary       string // ok | fail | flaky
 	mirror        string // ok | fail
@@ -511,6 +541,8 @@ func readMirrorFile(t *testing.T, path string) string {
 // ── the contract ─────────────────────────────────────────────────────────────
 
 func TestShellInstallerCarriesMirrorContract(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}

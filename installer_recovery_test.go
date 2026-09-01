@@ -120,6 +120,8 @@ func mirrorRequireNoPartialBytes(t *testing.T, home string) {
 // green `go test ./...`.
 
 func TestShellInstallerNeverDamagesAnExistingRelayCA(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
@@ -189,6 +191,8 @@ func TestShellInstallerNeverDamagesAnExistingRelayCA(t *testing.T) {
 // ── 2. both sources down ─────────────────────────────────────────────────────
 
 func TestShellInstallerLeavesNothingWhenNeitherSourceDelivers(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
@@ -241,6 +245,8 @@ func TestShellInstallerLeavesNothingWhenNeitherSourceDelivers(t *testing.T) {
 // did not have.
 
 func TestShellInstallerAsksGitHubNothingWhenThePrimaryIsHealthy(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
@@ -289,6 +295,8 @@ func TestShellInstallerAsksGitHubNothingWhenThePrimaryIsHealthy(t *testing.T) {
 // ── 4. version.json survives a flapping host ─────────────────────────────────
 
 func TestShellInstallerRetriesVersionJSONAsAWholeProcess(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
@@ -379,6 +387,8 @@ func TestShellInstallerRetriesVersionJSONAsAWholeProcess(t *testing.T) {
 // user's shell rc file, and a test fixture must not.
 
 func TestShellInstallerSkipDownloadFetchesNothingAndEditsNoRCFile(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}

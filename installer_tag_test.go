@@ -405,6 +405,8 @@ func tagRequireNothingInstalled(t *testing.T, r mirrorResult) {
 // ── the contract ─────────────────────────────────────────────────────────────
 
 func TestShellInstallerRefusesAReleaseTagThatIsNotATag(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
@@ -598,6 +600,8 @@ func TestShellInstallerRefusesAReleaseTagThatIsNotATag(t *testing.T) {
 // the loss shows up only on the day the primary host is down.
 
 func TestShellInstallerStillAcceptsAnOrdinaryReleaseTag(t *testing.T) {
+	skipInstallShOnWindows(t)
+
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
