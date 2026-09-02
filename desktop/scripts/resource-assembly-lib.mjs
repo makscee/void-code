@@ -16,6 +16,10 @@ const ASSEMBLY_PLATFORMS = {
   'win32-x64': { goos: 'windows', goarch: 'amd64' },
 };
 
+// The same names the bundled smoke checks against. Exported rather than repeated there: a second
+// list of the platforms we build is a second thing to forget when a third architecture arrives.
+export const ASSEMBLY_PLATFORM_NAMES = Object.keys(ASSEMBLY_PLATFORMS);
+
 /**
  * The Node pin for one platform, carrying the platform it is for.
  *

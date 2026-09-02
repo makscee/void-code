@@ -25,7 +25,8 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bundlePiRuntime, hoistPiBundledDependencies } from './resource-assembly-lib.mjs';
+import { assemblyTarget, bundlePiRuntime, hoistPiBundledDependencies } from './resource-assembly-lib.mjs';
+import { piSmokeBootstrapPlan, piSmokeRunEnv, piSmokeTarget } from './bundled-pi-smoke-lib.mjs';
 
 const desktop = path.resolve(import.meta.dirname, '..');
 const repo = path.resolve(desktop, '..');
@@ -35,12 +36,18 @@ function die(what, detail) {
   process.exit(1);
 }
 
-// The extension's fake bootstrap is a shell script, and that limits this check to POSIX on purpose:
-// the extension runs it through execFileSync without a shell, and Node has refused to spawn .cmd and
-// .bat that way since 18.20. This runs in the macOS provision job, so refusing out loud beats
-// checking something weaker on Windows and calling it the same check.
-if (process.platform === 'win32') {
-  die('the smoke itself', '  It needs a POSIX runner (macOS/Linux): the extension\'s fake bootstrap cannot be spawned\n  through execFileSync on Windows. It runs from desktop-tests.yml and desktop-mac-app.yml.');
+// Which platform is being checked comes from the caller, never from the host: bundling for
+// `${process.platform}-${process.arch}` is what let a macOS runner report success for a darwin
+// bundle production does not ship. The host still decides one thing, and only this one -- whether
+// what was bundled can be started here. assemblyTarget refuses a cross-operating-system pair with
+// that reason, and refusing is right: this check runs what it bundles, and a check that stops
+// running things is the weakening the plan forbids.
+let target;
+try {
+  target = piSmokeTarget({ argv: process.argv.slice(2), env: process.env });
+  assemblyTarget(target, `${process.platform}-${process.arch}`);
+} catch (error) {
+  die('the smoke\'s own setup, not the bundle', `  ${error.message.split('\n').join('\n  ')}`);
 }
 
 const piSource = path.join(desktop, 'runtime/pi');
@@ -56,7 +63,7 @@ try {
   const piRoot = path.join(work, 'pi');
   await cp(piSource, piRoot, { recursive: true, verbatimSymlinks: true });
   await hoistPiBundledDependencies(piRoot);
-  const bundle = await bundlePiRuntime(piRoot, `${process.platform}-${process.arch}`);
+  const bundle = await bundlePiRuntime(piRoot, target);
 
   // The premise everything below rests on. If node_modules survived, green means nothing: the
   // extension could have loaded the old way, through aliases resolved from disk.
@@ -85,10 +92,23 @@ try {
 
   // The extension asks vc which providers are granted, through
   // execFileSync(VC_BOOTSTRAP_EXECUTABLE, ['pi-bootstrap']). Hand it an answer: what this needs is a
-  // registered provider, not a live relay.
-  const bootstrap = path.join(work, 'bootstrap.sh');
+  // registered provider, not a live relay. One stub for every platform -- see piSmokeBootstrapPlan
+  // for why the shell script it replaced could not be one.
   const models = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
-  await writeFile(bootstrap, `#!/bin/sh\n[ "$1" = "pi-bootstrap" ] || exit 1\nprintf '%s' '${JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'smoke', providers: [{ kind: 'codex', relayProviderId: 'smoke-provider', models }] })}'\n`, { mode: 0o700 });
+  const bootstrapAnswer = JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'smoke', providers: [{ kind: 'codex', relayProviderId: 'smoke-provider', models }] });
+  const stub = piSmokeBootstrapPlan({ target, directory: work });
+  // Built for the machine this runs on, not for the target: the stub is the test's own fixture and
+  // has to start here. The bundle is the thing built for the target.
+  const host = assemblyTarget(`${process.platform}-${process.arch}`, `${process.platform}-${process.arch}`);
+  try {
+    execFileSync('go', ['build', '-o', stub.output, stub.source], {
+      cwd: repo,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CGO_ENABLED: '0', GOOS: host.goos, GOARCH: host.goarch },
+    });
+  } catch (error) {
+    die('building the bootstrap stub, not the bundle', `  go build failed for ${stub.source}:\n${`${error.stdout ?? ''}${error.stderr ?? ''}${error.message ?? ''}`.split('\n').slice(0, 8).map((line) => `    ${line}`).join('\n')}`);
+  }
 
   const run = (args, env) => {
     try {
@@ -97,7 +117,7 @@ try {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 120000,
-        env: { PATH: '/usr/bin:/bin', HOME: home, TERM: 'dumb', PI_PACKAGE_DIR: packageDir, ...env },
+        env: { ...piSmokeRunEnv({ target, home, packageDir }), ...env },
       });
     } catch (error) {
       return { failed: `${error.stdout ?? ''}${error.stderr ?? ''}${error.message ?? ''}` };
@@ -105,7 +125,7 @@ try {
   };
 
   // 1. The provider the app connects a model through.
-  const listed = run(['-e', extension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: bootstrap });
+  const listed = run(['-e', extension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer });
   if (listed.failed !== undefined) {
     die('running the bundle with the real extension', `  The entry point did not survive --list-models. Output:\n${listed.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
   }

@@ -9,6 +9,21 @@ import { assertStampedVc } from './packaged-check-lib.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows package check requires Windows x64');
 
+// Nothing in .github/workflows calls this, and that is a decision rather than an oversight, so it is
+// written where somebody wondering will look. It drives the packaged app through ConPTY with
+// node-pty, starts and kills real process trees, and asks Win32 for a process inventory; every one
+// of those is the kind of thing that answers differently on a hosted runner with no interactive
+// desktop, and this script is reached from provision paths that gate every push and every release.
+// A flaky gate there is worse than a check somebody runs deliberately.
+//
+// What would change the answer: one experimental run of exactly these steps on windows-latest. If
+// the pty fixtures behave, connecting it is a small edit -- it works on release/win-unpacked, which
+// the Windows job already builds. Until somebody has watched it try, it stays a check for a real
+// Windows machine: `npm run check:win-package`.
+//
+// What it is NOT the last line of defence for: the bundle. desktop-windows-app.yml runs
+// check-bundled-pi-smoke.mjs against a win32-x64 bundle before it uploads anything.
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const waitGone = async (pids) => {
@@ -113,9 +128,18 @@ try {
 
   await run('normal');
   await run('forced');
-  const piPackagePath = path.join(runtime, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json');
+  // Where Pi's package directory is comes from the manifest, not from a second copy of the layout
+  // written down here. The second copy is what broke: this line read
+  // pi/node_modules/@earendil-works/pi-coding-agent/package.json, bundling deletes that directory,
+  // and the failure would have waited for whoever next ran this by hand. The manifest says the
+  // layout once, and both the app and this check read it from there.
+  const inRuntime = (relative) => path.join(runtime, ...relative.split('/'));
+  const piPackagePath = inRuntime(`${manifest.pi.packageDir ?? 'pi/node_modules/@earendil-works/pi-coding-agent'}/package.json`);
   const piPackage = JSON.parse(await readFile(piPackagePath, 'utf8'));
-  const piIdentity = { version: piPackage.version, installedPackageJsonSha256: await sha(piPackagePath), sourcePackageJsonSha256: await sha(path.join(runtime, 'pi/package.json')), sourceLockSha256: await sha(path.join(runtime, 'pi/package-lock.json')), treeSha256: await treeHash(path.join(runtime, 'pi')) };
+  // The entry the app will actually start. Named in the manifest, so a build that moved it without
+  // saying so is caught here rather than by a user whose app does not open.
+  if ((await readFile(inRuntime(manifest.pi.entry))).length === 0) throw new Error(`packaged Pi entry point is empty: ${manifest.pi.entry}`);
+  const piIdentity = { version: piPackage.version, entry: manifest.pi.entry, installedPackageJsonSha256: await sha(piPackagePath), sourcePackageJsonSha256: await sha(path.join(runtime, 'pi/package.json')), sourceLockSha256: await sha(path.join(runtime, 'pi/package-lock.json')), treeSha256: await treeHash(path.join(runtime, 'pi')) };
   if (piIdentity.version !== manifest.pi.version || piIdentity.sourcePackageJsonSha256 !== manifest.pi.sourcePackageJsonSha256 || piIdentity.sourceLockSha256 !== manifest.pi.sourceLockSha256 || piIdentity.treeSha256 !== manifest.pi.treeSha256) throw new Error('packaged private Pi identity mismatch');
   const privateVersions = {
     node: execFileSync(node, ['--version'], { encoding: 'utf8', env: { PATH: `${process.env.SystemRoot}\\System32` } }).trim(),

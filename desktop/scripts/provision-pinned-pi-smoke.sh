@@ -13,4 +13,8 @@ npm ci --prefix runtime/pi --ignore-scripts --no-audit --no-fund
 node scripts/check-pi-bun-contract.mjs
 npm run assemble
 npm run check:pinned-pi-smoke
-npm run check:bundled-pi-smoke
+# The target is stated, not inferred: the smoke refuses to guess, because guessing is how a macOS
+# runner came to report success for a Windows bundle. Here the answer is genuinely this machine --
+# the step runs what it bundles -- so the host is spelled out at the call site rather than assumed
+# inside the check. The arch is asked of node so an Intel Mac provisions its own bundle.
+npm run check:bundled-pi-smoke -- --target "darwin-$(node -p process.arch)"
