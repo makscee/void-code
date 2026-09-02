@@ -288,6 +288,23 @@ jobs:
           fileName: "vc-*"
           out-file-path: void-auth/public/vc/bin
 
+      # The checksum list install.sh checks the PRIMARY download against. It has
+      # been attached to the release since long before this step existed, and it
+      # never reached the served copy: the step above copies binaries only, so
+      # $AUTH_HOST/vc/SHA256SUMS was a 404 and the front-door download was the
+      # one thing nothing checked.
+      #
+      # Its own step rather than a widened `vc-*` glob, and out-file-path
+      # public/vc rather than public/vc/bin: install.sh looks for it beside
+      # version.json, and a list published under bin/ is a file nobody reads.
+      - name: Download release checksums
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: makscee/void-code
+          tag: ${{ github.ref_name }}
+          fileName: "SHA256SUMS"
+          out-file-path: void-auth/public/vc
+
       - name: Generate version.json
         run: |
           VERSION="${{ github.ref_name }}"
@@ -338,7 +355,10 @@ jobs:
           cd void-auth
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/vc/bin/ public/vc/version.json public/vc/install.sh public/vc/install.ps1
+          # SHA256SUMS is staged with the rest: void-auth serves what is
+          # committed, so a list downloaded into the checkout and left unstaged
+          # reaches nobody and install.sh keeps printing "not verified".
+          git add public/vc/bin/ public/vc/version.json public/vc/install.sh public/vc/install.ps1 public/vc/SHA256SUMS
           git diff --cached --quiet || git commit -m "chore: bump vc binaries to ${{ github.ref_name }}
 
           Automated sync from makscee/void-code release ${{ github.ref_name }}.
