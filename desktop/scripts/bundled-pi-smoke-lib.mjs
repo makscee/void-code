@@ -8,8 +8,9 @@
 // Everything here is a decision, so it can be pinned by fixtures rather than by a runner. What a
 // runner has to settle -- does a win32 bundle actually load its extension -- is settled by the step
 // in desktop-windows-app.yml, and by nothing in this file.
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { ASSEMBLY_PLATFORM_NAMES } from './resource-assembly-lib.mjs';
+import { ASSEMBLY_PLATFORM_NAMES, bundleNativeDestinations, bundlePiRuntime } from './resource-assembly-lib.mjs';
 
 // Windows needs more than a PATH to behave: SystemRoot is what winsock and os.tmpdir() fall back
 // to, and PATHEXT is how a spawned name becomes an executable. Constants rather than values read
@@ -89,4 +90,51 @@ export function piSmokeBootstrapPlan({ target, directory }) {
     source: path.resolve(import.meta.dirname, 'pi-smoke-bootstrap'),
     output: path.join(directory, target.startsWith('win32') ? 'pi-smoke-bootstrap.exe' : 'pi-smoke-bootstrap'),
   };
+}
+
+/**
+ * The native modules a bundle built for `target` must carry, relative to the bundle directory.
+ *
+ * This is what makes the target observable at all. Everything else about a bundle is the same
+ * JavaScript whichever platform it was built for; the native module is the one artefact that differs,
+ * so it is the one thing a finished bundle can be asked about. The paths come from the assembly's own
+ * table rather than a copy -- see bundleNativeDestinations for why.
+ */
+export function piSmokeExpectedNative({ target }) {
+  return bundleNativeDestinations(target);
+}
+
+/** Everything under `root`, relative to it and slash-separated, so Windows and POSIX compare alike. */
+async function listBundleTree(root) {
+  return (await readdir(root, { recursive: true })).map((entry) => entry.split(path.sep).join('/'));
+}
+
+/**
+ * Build the bundle the smoke will run, and refuse to hand back one built for anything but the target.
+ *
+ * The bundler and the listing are parameters so that this decision can be pinned by fixtures instead
+ * of by an esbuild run against a provisioned Pi tree. That is not a testing convenience: between
+ * "piSmokeTarget returned the right target" and "the bundle was built with it" sat one unpinned line,
+ * and putting the host back into it left the whole suite green. No runner catches that either -- on
+ * every job we run the host equals the target, and there the substitution means nothing -- so the pin
+ * has to be able to see the argument the bundler was handed.
+ *
+ * They default to the production wiring rather than being required, and that is the point: a caller
+ * that passes neither has no wiring left to get wrong. Handing the bundler in from the call site is
+ * exactly where the mutation moved to once the seam itself was pinned.
+ *
+ * The check is then made twice over, once on the way in and once on the way out: the platform passed
+ * to the bundler, and the native module the finished bundle actually carries. The second is what
+ * catches a bundler that ignored its argument, and it is the half a cross-architecture run exercises
+ * for real.
+ */
+export async function bundleForSmoke({ piRoot, target, bundle = bundlePiRuntime, list = listBundleTree }) {
+  const built = await bundle(piRoot, target);
+  const root = built?.packageDir ? path.join(piRoot, built.packageDir) : piRoot;
+  const staged = await list(root);
+  const missing = piSmokeExpectedNative({ target }).filter((relative) => !staged.includes(relative));
+  if (missing.length > 0) {
+    throw new Error(`the bundle was asked for ${target} and does not carry its native modules: ${missing.join(', ')}.\nA bundle built for another platform is complete and runnable here, and would fail on the machine it is for.`);
+  }
+  return built;
 }

@@ -25,8 +25,8 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assemblyTarget, bundlePiRuntime, hoistPiBundledDependencies } from './resource-assembly-lib.mjs';
-import { piSmokeBootstrapPlan, piSmokeRunEnv, piSmokeTarget } from './bundled-pi-smoke-lib.mjs';
+import { assemblyTarget, hoistPiBundledDependencies } from './resource-assembly-lib.mjs';
+import { bundleForSmoke, piSmokeBootstrapPlan, piSmokeRunEnv, piSmokeTarget } from './bundled-pi-smoke-lib.mjs';
 
 const desktop = path.resolve(import.meta.dirname, '..');
 const repo = path.resolve(desktop, '..');
@@ -63,7 +63,10 @@ try {
   const piRoot = path.join(work, 'pi');
   await cp(piSource, piRoot, { recursive: true, verbatimSymlinks: true });
   await hoistPiBundledDependencies(piRoot);
-  const bundle = await bundlePiRuntime(piRoot, target);
+  // Built through bundleForSmoke rather than by calling the bundler directly: it is what compares the
+  // platform the bundler was handed, and the native module the finished bundle carries, against the
+  // target that was asked for. Bundling for the host instead was a mutation the entire suite missed.
+  const bundle = await bundleForSmoke({ piRoot, target });
 
   // The premise everything below rests on. If node_modules survived, green means nothing: the
   // extension could have loaded the old way, through aliases resolved from disk.
@@ -149,7 +152,7 @@ try {
     die('the bundle matching the pin', `  The entry point reports ${printed}; resource-pins.json pins ${pins.pi.version}.`);
   }
 
-  console.log(`bundled pi smoke: void-codex registered by the real extension (${models.join(', ')}), version ${printed}, node_modules gone`);
+  console.log(`bundled pi smoke: ${target} bundle, void-codex registered by the real extension (${models.join(', ')}), version ${printed}, node_modules gone`);
 } finally {
   await rm(work, { recursive: true, force: true });
 }

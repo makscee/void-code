@@ -223,6 +223,26 @@ const PI_BUNDLE_NATIVE = {
   'darwin-x64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-x64/darwin-modifiers.node', 'native/darwin/prebuilds/darwin-x64/darwin-modifiers.node']],
 };
 
+/**
+ * Where a bundle built for `platform` carries its native modules, relative to the bundle directory.
+ *
+ * The bundled smoke asks this to find out which platform a bundle was really built for, which is the
+ * one thing that distinguishes an honest run from one that quietly bundled the host. Exported rather
+ * than copied there: a second table would have to be kept in step with this one, and we have already
+ * found three defects of the shape "one agreement living in two places". A stale copy would fail
+ * safe -- an expected path that no longer exists makes the smoke red -- but red for the wrong reason
+ * is not free either, on a path that runs on every push and every release.
+ *
+ * The check it feeds is not made circular by sharing this table: the bundler is asked for the host's
+ * entry and the smoke for the target's, and it is that difference in key, not the paths themselves,
+ * that the pin is about.
+ */
+export function bundleNativeDestinations(platform) {
+  const staged = PI_BUNDLE_NATIVE[platform];
+  if (staged === undefined) throw new Error(`no Pi bundle layout for ${platform}`);
+  return staged.map(([, destination]) => destination);
+}
+
 // hoistPiBundledDependencies moves nested packages up a level, and it runs after the install, so
 // the same file lives in one of two places depending on whether it has been called yet. Ask both
 // rather than depend on the call order inside somebody else's script.

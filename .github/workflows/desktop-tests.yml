@@ -30,6 +30,22 @@ jobs:
             desktop/runtime/pi/package-lock.json
       - name: Provision and require exact pinned Pi smoke
         run: desktop/scripts/provision-pinned-pi-smoke.sh
+      - name: Prove the smoke bundles for the target it is given, not for the runner
+        working-directory: desktop
+        # The provision step above runs the smoke for this machine, where target and host agree --
+        # and a bundle built for the host satisfies a check written for the host, so that run cannot
+        # tell the two apart. Asking for the other macOS architecture makes them differ on a machine
+        # that actually executes the result: assemblyTarget allows it (same operating system), and a
+        # bundle for the other arch runs here, because the only architecture-specific thing in it is
+        # a native module Pi loads optionally. Measured, not assumed: 12 seconds, and it goes red
+        # when the bundler is handed the host instead of the target.
+        #
+        # The grep is the other half: it asks the check to say which bundle it checked, so a smoke
+        # that ignored --target could not pass by checking this machine twice.
+        run: |
+          other="darwin-$(node -p 'process.arch === "arm64" ? "x64" : "arm64"')"
+          npm run check:bundled-pi-smoke -- --target "$other" | tee "$RUNNER_TEMP/cross-arch-smoke.log"
+          grep -q "$other bundle" "$RUNNER_TEMP/cross-arch-smoke.log"
       - name: Run the complete desktop Vitest suite
         working-directory: desktop
         run: npm test
