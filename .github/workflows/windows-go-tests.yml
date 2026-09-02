@@ -1,0 +1,63 @@
+name: Windows Go suite
+
+# The only description of the Go suite on Windows there is. It is reachable
+# only through `uses:` -- from test.yml on every branch push, and from
+# release.yml before anything publishes; it cannot be started by an event of its
+# own. Both callers reaching the same file is the point, and it is the same
+# point desktop packaging already makes: a green run on a branch is evidence
+# about the release only when the steps are not similar but the same file. The
+# suite lived inline in both workflows for a day, and a copy inside release.yml
+# is a third description no branch push can reach -- free to drift, and the copy
+# that drifts is always the one nobody runs.
+#
+# What it closes: internal/harness/cmdline_windows_test.go and
+# internal/update/replace_windows_test.go were written, committed, and run
+# nowhere. Every `go test` in this repository ran on ubuntu-latest, where those
+# files are not so much as compiled, and the only thing that ever built
+# GOOS=windows was the cross-build matrix in release.yml, which compiles the
+# product and runs none of its tests. So a Windows-only defect -- a broken
+# behaviour or merely a compile error -- survived every branch and every pull
+# request and first appeared at the release it broke.
+#
+# The permissions block is not boilerplate. A called workflow that declares none
+# does not run unprivileged: it INHERITS the caller's token, silently, and
+# release.yml holds contents: write, id-token: write and attestations: write. So
+# the suite would run at every release with a token that can push to this
+# repository, mint an OIDC identity and sign attestations, for a job whose whole
+# purpose is to read the tree and run tests. Read-only here means a publish is
+# refused by the platform and not merely by us. desktop-tests.yml,
+# desktop-mac-app.yml and desktop-windows-app.yml declare exactly this block for
+# exactly this reason; this is the fourth file reached the same way, spelled the
+# same way, so all four can be read at a glance.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      # ./... and not the two Windows packages: the failures worth catching sit
+      # in code nobody marked Windows at all -- a test assuming a unix HOME, a
+      # forward slash, a case-sensitive filesystem -- and hand-picking packages
+      # is precisely how those stay hidden. -tags vctestfixture is parity, not
+      # preference: the ubuntu job sets it, and two runners compiling different
+      # code prove nothing about each other. It carries the same cost stated in
+      # test.yml, unchanged by the platform -- the real installer runs in no
+      # test here either.
+      #
+      # Red here is a finding, not an outage, and it is left free to redden the
+      # run: continue-on-error, or an `if:` on the job or on this step, would
+      # put these tests back where they already were -- executed and unheeded --
+      # and would let a release proceed past a suite that never ran. What it
+      # surfaces gets fixed under its own spec, not quietly inside this one.
+      - name: Run tests
+        run: go test -tags vctestfixture ./...

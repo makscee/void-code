@@ -35,40 +35,21 @@ jobs:
       - name: Validate desktop CI gate and mutations
         run: ruby .github/scripts/test-desktop-ci-contract.rb
 
+  # The Windows Go suite is described in exactly one place --
+  # .github/workflows/windows-go-tests.yml -- and both callers reach it through
+  # `uses:`. Here, unconditionally: every branch push and every pull request
+  # runs it. In release.yml the same file is called before anything publishes.
+  # That is what makes a green run on a branch evidence about the release: the
+  # steps are not similar, they are the same file. It was briefly written out
+  # inline in both, which is two descriptions free to drift, and the copy in the
+  # tag-triggered workflow was the one no branch push ever ran.
+  #
+  # Why it exists at all, and what it costs, is stated in that file rather than
+  # restated here, because restating it here is the mistake this arrangement
+  # removes.
   test-windows:
     name: Test (Windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: .go-version
-          cache: true
-      # internal/harness/cmdline_windows_test.go and
-      # internal/update/replace_windows_test.go were written, committed, and
-      # then run nowhere. Every `go test` in this repository ran on
-      # ubuntu-latest, where those files are not so much as compiled, and the
-      # only thing that ever built GOOS=windows was the cross-build matrix in
-      # release.yml. So a defect in Windows-only code -- a broken behaviour or
-      # merely a compile error -- survived every branch and every pull request
-      # and first appeared at the release it broke. This job is where it
-      # appears instead, one push earlier and on a runner that can tell.
-      #
-      # ./... and not the two Windows packages: the failures worth catching sit
-      # in code nobody marked Windows at all -- a test assuming a unix HOME, a
-      # forward slash, a case-sensitive filesystem -- and hand-picking packages
-      # is precisely how those stay hidden. -tags vctestfixture is parity, not
-      # preference: the ubuntu job sets it, and two runners compiling different
-      # code prove nothing about each other. It carries the same cost stated
-      # above, unchanged by the platform -- the real installer runs in no test
-      # here either.
-      #
-      # Red here is a finding, not an outage, and it is left free to redden the
-      # run: continue-on-error would put these tests back where they already
-      # were -- executed and unheeded. What it surfaces gets fixed under its own
-      # spec, not quietly inside this one.
-      - name: Run tests
-        run: go test -tags vctestfixture ./...
+    uses: ./.github/workflows/windows-go-tests.yml
 
   desktop-pinned-pi-smoke:
     name: Full desktop Vitest gate
