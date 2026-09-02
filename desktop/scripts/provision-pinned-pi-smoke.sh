@@ -13,8 +13,16 @@ npm ci --prefix runtime/pi --ignore-scripts --no-audit --no-fund
 node scripts/check-pi-bun-contract.mjs
 npm run assemble
 npm run check:pinned-pi-smoke
-# The target is stated, not inferred: the smoke refuses to guess, because guessing is how a macOS
-# runner came to report success for a Windows bundle. Here the answer is genuinely this machine --
-# the step runs what it bundles -- so the host is spelled out at the call site rather than assumed
-# inside the check. The arch is asked of node so an Intel Mac provisions its own bundle.
+# What this run proves, and what it does not, because the answer is not obvious and a reader a month
+# from now will otherwise read it as an oversight: macOS ships Pi UNBUNDLED -- the macOS assembly
+# stages Pi's installed tree, and only the Windows installer carries a bundle -- so this proves
+# nothing about the macOS product. It is here for what it does prove, on every push rather than only
+# when a Windows installer is built: that the pinned Pi still serves extensions from inside a bundle.
+# That contract is what the Windows product rests on, it can only break when this pin moves, and this
+# script is the one path a bump goes through. It is not a substitute for the win32 run --
+# desktop-windows-app.yml runs the same check against the bundle that actually ships.
+#
+# The target is stated rather than inferred: guessing is how a macOS runner came to report success
+# for a Windows bundle. Here the answer is genuinely this machine, so it is spelled out at the call
+# site; the arch is asked of node so an Intel Mac provisions its own bundle.
 npm run check:bundled-pi-smoke -- --target "darwin-$(node -p process.arch)"
