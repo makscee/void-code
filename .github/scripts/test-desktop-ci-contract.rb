@@ -21,148 +21,207 @@ def assert_rejected(label)
   end
 end
 
-# The mutations above key off the literal text of steps that already exist. The
-# Windows Go job does not, so its text cannot be guessed here; these locate it
-# the same way the contract does -- by structure -- and rewrite test.yml from
-# the mutated tree. A mutation that cannot find its target raises rather than
-# passing vacuously, which is the failure mode that would make this whole file
-# decorative.
-def mutate_windows_go_job(directory, label, file = "test.yml")
-  path = File.join(directory, file)
-  workflow = YAML.load_file(path)
-  jobs = workflow.fetch("jobs")
-  name, job = DesktopCiContract.windows_go_jobs(jobs).first
-  raise "fixture missing: #{file} has no Windows job running go test (#{label})" unless job
-
-  yield jobs, name, job, DesktopCiContract.go_test_step(job)
-  File.write(path, YAML.dump(workflow))
-end
-
+# The unmutated tree has to pass first: every mutation below is only evidence
+# that the check is strict, and a check that rejects the real workflows too
+# rejects everything for free.
 DesktopCiContract.check(SOURCE)
 
-assert_rejected("remove the Windows Go job") do |directory|
-  mutate_windows_go_job(directory, "remove the Windows Go job") { |jobs, name, _job, _step| jobs.delete(name) }
+# The mutations below key off structure, never off literal text. The Windows Go
+# suite is written by whoever implements it, in a file this script does not name
+# and under a job name it does not know, so text that guessed either would stop
+# matching the moment they changed -- and a mutation that matches nothing is a
+# mutation that always "survives" nothing, which is the failure mode that makes
+# a file like this decorative. Every locator below raises when it cannot find
+# its target, so the vacuous case aborts instead of passing.
+#
+# The suite is reached through `uses:`, so a mutation has two places to bite:
+# the call, which lives in the caller, and the suite, which lives in the file
+# called. A call site hands the block both, already parsed.
+CallSite = Struct.new(:caller_path, :caller_workflow, :jobs, :job_name, :job,
+                      :callee_path, :callee_workflow, :suite_name, :suite_job, :go_step)
+
+def windows_go_call_site(directory, file, label)
+  caller_path = File.join(directory, file)
+  caller_workflow = YAML.load_file(caller_path)
+  jobs = caller_workflow.fetch("jobs")
+  job_name, (callee_file, _suite) = DesktopCiContract.windows_go_calls(directory, jobs).first
+  raise "fixture missing: #{file} has no job calling a reusable Windows Go workflow (#{label})" unless job_name
+
+  callee_path = File.join(directory, callee_file)
+  callee_workflow = YAML.load_file(callee_path)
+  suite_name, suite_job = DesktopCiContract.windows_go_jobs(callee_workflow.fetch("jobs")).first
+  raise "fixture missing: #{callee_file} has no Windows job running go test (#{label})" unless suite_job
+
+  CallSite.new(caller_path, caller_workflow, jobs, job_name, jobs.fetch(job_name),
+               callee_path, callee_workflow, suite_name, suite_job,
+               DesktopCiContract.go_test_step(suite_job))
+end
+
+# Both files are written back, because a block is free to touch either side.
+def mutate_windows_go_call(directory, label, file = "test.yml")
+  site = windows_go_call_site(directory, file, label)
+  yield site
+  File.write(site.caller_path, YAML.dump(site.caller_workflow))
+  File.write(site.callee_path, YAML.dump(site.callee_workflow))
+end
+
+# ---------------------------------------------------------------------------
+# The call: ways the suite could exist and still not gate a caller.
+# ---------------------------------------------------------------------------
+
+assert_rejected("stop calling the Windows Go suite from test.yml") do |directory|
+  mutate_windows_go_call(directory, "stop calling the suite from test.yml") { |site| site.jobs.delete(site.job_name) }
+end
+
+assert_rejected("stop calling the Windows Go suite from release.yml") do |directory|
+  mutate_windows_go_call(directory, "stop calling the suite from release.yml", "release.yml") { |site| site.jobs.delete(site.job_name) }
+end
+
+assert_rejected("run the release call beside the build instead of before it") do |directory|
+  mutate_windows_go_call(directory, "detach the release call from build", "release.yml") do |site|
+    build = site.jobs.fetch("build")
+    dependencies = Array(build.fetch("needs"))
+    raise "fixture missing: release.yml build does not need #{site.job_name}" unless dependencies.include?(site.job_name)
+
+    build["needs"] = dependencies - [site.job_name]
+  end
+end
+
+assert_rejected("condition the release call with always()") do |directory|
+  mutate_windows_go_call(directory, "if: always() on the release call", "release.yml") { |site| site.job["if"] = "${{ always() }}" }
+end
+
+assert_rejected("condition the test.yml call") do |directory|
+  mutate_windows_go_call(directory, "if on the test.yml call") { |site| site.job["if"] = "${{ github.event_name == 'pull_request' }}" }
+end
+
+# The point of the shared file, mutated: two workflows of the same shape are
+# two descriptions, and only one of them is what a branch push ever runs.
+assert_rejected("give test.yml and release.yml separate copies of the suite") do |directory|
+  site = windows_go_call_site(directory, "test.yml", "separate copies of the suite")
+  FileUtils.cp(site.callee_path, File.join(directory, "windows-go-copy.yml"))
+  site.job["uses"] = "./.github/workflows/windows-go-copy.yml"
+  File.write(site.caller_path, YAML.dump(site.caller_workflow))
+end
+
+assert_rejected("delete the reusable workflow both callers point at") do |directory|
+  site = windows_go_call_site(directory, "test.yml", "delete the reusable workflow")
+  FileUtils.rm(site.callee_path)
+end
+
+# ---------------------------------------------------------------------------
+# The suite: ways it could be called and still not test what it claims to.
+# Asserted once, because there is one file now -- weakening it weakens the
+# branch push and the release together, which is exactly the property the move
+# was for.
+# ---------------------------------------------------------------------------
+
+assert_rejected("make the suite unreachable by dropping workflow_call") do |directory|
+  mutate_windows_go_call(directory, "drop workflow_call") do |site|
+    workflow = site.callee_workflow
+    raise "fixture missing: callee declares no trigger" unless workflow.key?("on") || workflow.key?(true)
+
+    workflow.delete("on")
+    workflow.delete(true)
+    workflow["on"] = { "push" => { "branches" => ["main"] } }
+  end
 end
 
 assert_rejected("move the Go suite off Windows") do |directory|
-  mutate_windows_go_job(directory, "move the Go suite off Windows") { |_jobs, _name, job, _step| job["runs-on"] = "ubuntu-latest" }
+  mutate_windows_go_call(directory, "move the Go suite off Windows") { |site| site.suite_job["runs-on"] = "ubuntu-latest" }
 end
 
 assert_rejected("narrow the Windows Go suite to one package") do |directory|
-  mutate_windows_go_job(directory, "narrow the Windows Go suite to one package") do |_jobs, _name, _job, step|
-    raise "fixture missing: Windows go test names no ./..." unless step.fetch("run").include?("./...")
+  mutate_windows_go_call(directory, "narrow the Windows Go suite to one package") do |site|
+    raise "fixture missing: Windows go test names no ./..." unless site.go_step.fetch("run").include?("./...")
 
-    step["run"] = step.fetch("run").sub("./...", "./internal/harness")
+    site.go_step["run"] = site.go_step.fetch("run").sub("./...", "./internal/harness")
   end
 end
 
 assert_rejected("narrow the Windows Go suite with -run") do |directory|
-  mutate_windows_go_job(directory, "narrow the Windows Go suite with -run") do |_jobs, _name, _job, step|
-    step["run"] = step.fetch("run").sub(/\bgo\s+test\b/, "go test -run TestCmdline")
+  mutate_windows_go_call(directory, "narrow the Windows Go suite with -run") do |site|
+    site.go_step["run"] = site.go_step.fetch("run").sub(/\bgo\s+test\b/, "go test -run TestCmdline")
+  end
+end
+
+assert_rejected("drop the Windows fixture build tag") do |directory|
+  mutate_windows_go_call(directory, "drop the Windows fixture build tag") do |site|
+    raise "fixture missing: Windows go test carries no -tags vctestfixture" unless site.go_step.fetch("run").include?("-tags vctestfixture")
+
+    site.go_step["run"] = site.go_step.fetch("run").sub(/\s*-tags vctestfixture/, "")
   end
 end
 
 assert_rejected("allow the Windows Go job to fail") do |directory|
-  mutate_windows_go_job(directory, "allow the Windows Go job to fail") { |_jobs, _name, job, _step| job["continue-on-error"] = true }
+  mutate_windows_go_call(directory, "allow the Windows Go job to fail") { |site| site.suite_job["continue-on-error"] = true }
 end
 
 assert_rejected("allow the Windows go test step to fail") do |directory|
-  mutate_windows_go_job(directory, "allow the Windows go test step to fail") { |_jobs, _name, _job, step| step["continue-on-error"] = true }
+  mutate_windows_go_call(directory, "allow the Windows go test step to fail") { |site| site.go_step["continue-on-error"] = true }
 end
 
-assert_rejected("drop the Windows fixture build tag") do |directory|
-  mutate_windows_go_job(directory, "drop the Windows fixture build tag") do |_jobs, _name, _job, step|
-    raise "fixture missing: Windows go test carries no -tags vctestfixture" unless step.fetch("run").include?("-tags vctestfixture")
-
-    step["run"] = step.fetch("run").sub(/\s*-tags vctestfixture/, "")
-  end
+assert_rejected("run the Windows Go job unconditionally with always()") do |directory|
+  mutate_windows_go_call(directory, "if: always() on the Windows Go job") { |site| site.suite_job["if"] = "${{ always() }}" }
 end
 
-# The release-side Windows gate, mutated the same structural way and for the
-# same reason -- its text is written by whoever implements it, not here. Each
-# of these is a way the gate could be present and still not gate: absent,
-# unreferenced by the job that builds, allowed to go red, skipped, narrowed to
-# a package or a -run filter, compiled without the fixture tag the rest of the
-# repository uses, or hung off a moving action tag. A release that survives any
-# of them is a release the Windows suite did not qualify.
-def mutate_release_windows_go_job(directory, label, &block)
-  mutate_windows_go_job(directory, label, "release.yml", &block)
-end
-
-assert_rejected("remove the release Windows Go job") do |directory|
-  mutate_release_windows_go_job(directory, "remove the release Windows Go job") { |jobs, name, _job, _step| jobs.delete(name) }
-end
-
-assert_rejected("run the release Windows Go job beside the build instead of before it") do |directory|
-  mutate_release_windows_go_job(directory, "detach the release Windows Go job from build") do |jobs, name, _job, _step|
-    build = jobs.fetch("build")
-    dependencies = Array(build.fetch("needs"))
-    raise "fixture missing: release.yml build does not need #{name}" unless dependencies.include?(name)
-
-    build["needs"] = dependencies - [name]
-  end
-end
-
-assert_rejected("move the release Go suite off Windows") do |directory|
-  mutate_release_windows_go_job(directory, "move the release Go suite off Windows") { |_jobs, _name, job, _step| job["runs-on"] = "ubuntu-latest" }
-end
-
-assert_rejected("allow the release Windows Go job to fail") do |directory|
-  mutate_release_windows_go_job(directory, "allow the release Windows Go job to fail") { |_jobs, _name, job, _step| job["continue-on-error"] = true }
-end
-
-assert_rejected("allow the release Windows go test step to fail") do |directory|
-  mutate_release_windows_go_job(directory, "allow the release Windows go test step to fail") { |_jobs, _name, _job, step| step["continue-on-error"] = true }
-end
-
-assert_rejected("run the release Windows Go job unconditionally with always()") do |directory|
-  mutate_release_windows_go_job(directory, "if: always() on the release Windows Go job") { |_jobs, _name, job, _step| job["if"] = "${{ always() }}" }
-end
-
-assert_rejected("skip the release Windows go test step by condition") do |directory|
-  mutate_release_windows_go_job(directory, "if on the release Windows go test step") { |_jobs, _name, _job, step| step["if"] = "${{ always() }}" }
-end
-
-assert_rejected("narrow the release Windows Go suite to one package") do |directory|
-  mutate_release_windows_go_job(directory, "narrow the release Windows Go suite to one package") do |_jobs, _name, _job, step|
-    raise "fixture missing: release Windows go test names no ./..." unless step.fetch("run").include?("./...")
-
-    step["run"] = step.fetch("run").sub("./...", "./internal/harness")
-  end
-end
-
-assert_rejected("narrow the release Windows Go suite with -run") do |directory|
-  mutate_release_windows_go_job(directory, "narrow the release Windows Go suite with -run") do |_jobs, _name, _job, step|
-    step["run"] = step.fetch("run").sub(/\bgo\s+test\b/, "go test -run TestCmdline")
-  end
-end
-
-assert_rejected("drop the release Windows fixture build tag") do |directory|
-  mutate_release_windows_go_job(directory, "drop the release Windows fixture build tag") do |_jobs, _name, _job, step|
-    raise "fixture missing: release Windows go test carries no -tags vctestfixture" unless step.fetch("run").include?("-tags vctestfixture")
-
-    step["run"] = step.fetch("run").sub(/\s*-tags vctestfixture/, "")
-  end
+assert_rejected("skip the Windows go test step by condition") do |directory|
+  mutate_windows_go_call(directory, "if on the Windows go test step") { |site| site.go_step["if"] = "${{ always() }}" }
 end
 
 ["actions/checkout", "actions/setup-go"].each do |action|
-  assert_rejected("unpin #{action} in the release Windows Go job") do |directory|
-    mutate_release_windows_go_job(directory, "unpin #{action}") do |_jobs, _name, job, _step|
-      step = Array(job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("#{action}@") }
-      raise "fixture missing: release Windows job does not use #{action}" unless step
+  assert_rejected("unpin #{action} in the Windows Go suite") do |directory|
+    mutate_windows_go_call(directory, "unpin #{action}") do |site|
+      step = Array(site.suite_job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("#{action}@") }
+      raise "fixture missing: Windows Go job does not use #{action}" unless step
 
       step["uses"] = "#{action}@v4"
     end
   end
 end
 
-assert_rejected("float the release Windows Go toolchain off .go-version") do |directory|
-  mutate_release_windows_go_job(directory, "float the release Windows Go toolchain") do |_jobs, _name, job, _step|
-    step = Array(job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("actions/setup-go@") }
-    raise "fixture missing: release Windows job does not use actions/setup-go" unless step
-    raise "fixture missing: release setup-go does not read .go-version" unless step.fetch("with", {})["go-version-file"] == ".go-version"
+assert_rejected("float the Windows Go toolchain off .go-version") do |directory|
+  mutate_windows_go_call(directory, "float the Windows Go toolchain") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("actions/setup-go@") }
+    raise "fixture missing: Windows Go job does not use actions/setup-go" unless step
+    raise "fixture missing: setup-go does not read .go-version" unless step.fetch("with", {})["go-version-file"] == ".go-version"
 
     step["with"] = step.fetch("with").merge("go-version-file" => nil, "go-version" => "1.21")
+  end
+end
+
+# The permissions block, which is the one thing about a called workflow that
+# fails OPEN when it is simply absent: no block means the caller's token, and
+# release.yml's token can push and sign. Nothing about that is visible at the
+# call site, so it is asserted at the file and mutated here.
+
+assert_rejected("let the suite inherit the caller's token by dropping its permissions block") do |directory|
+  mutate_windows_go_call(directory, "drop the callee permissions block") do |site|
+    raise "fixture missing: callee declares no permissions block" unless site.callee_workflow.key?("permissions")
+
+    site.callee_workflow.delete("permissions")
+  end
+end
+
+assert_rejected("widen the suite's permissions to contents: write") do |directory|
+  mutate_windows_go_call(directory, "contents: write on the callee") do |site|
+    site.callee_workflow["permissions"] = { "contents" => "write" }
+  end
+end
+
+["id-token", "attestations", "packages"].each do |scope|
+  assert_rejected("grant the suite #{scope}: write on top of read-only contents") do |directory|
+    mutate_windows_go_call(directory, "#{scope}: write on the callee") do |site|
+      site.callee_workflow["permissions"] = { "contents" => "read", scope => "write" }
+    end
+  end
+end
+
+# One level down, where a read-only workflow block stops being the answer: a
+# job may declare its own, and a job block wins.
+assert_rejected("widen the suite job's permissions past the read-only workflow block") do |directory|
+  mutate_windows_go_call(directory, "contents: write on the callee job") do |site|
+    site.suite_job["permissions"] = { "contents" => "write" }
   end
 end
 
