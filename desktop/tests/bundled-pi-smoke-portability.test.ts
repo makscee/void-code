@@ -25,6 +25,13 @@ type Smoke = {
   piSmokeTarget: (input: { argv: string[]; env: Record<string, string | undefined> }) => Target;
   piSmokeRunEnv: (input: { target: Target; home: string; packageDir: string }) => Record<string, string>;
   piSmokeBootstrapPlan: (input: { target: Target; directory: string }) => { source: string; output: string };
+  piSmokeExpectedNative: (input: { target: Target }) => string[];
+  bundleForSmoke: (input: {
+    piRoot: string;
+    target: Target;
+    bundle: (piRoot: string, platform: string) => Promise<unknown>;
+    list: (bundleRoot: string) => Promise<string[]>;
+  }) => Promise<unknown>;
 };
 // Imported per test so a missing module reds each one under its own name rather than collapsing the
 // file into "no tests", which reads as though the suite shrank.
@@ -113,5 +120,78 @@ describe('one bootstrap stub, not one per platform', () => {
     const built = (['darwin-arm64', 'win32-x64'] as const).map((target) => piSmokeBootstrapPlan({ target, directory: '/work' }));
     expect(new Set(built.map((plan) => plan.source)).size, 'the platforms are built from different bootstrap sources, so they can disagree').toBe(1);
     expect(built.every((plan) => plan.output !== ''), 'a platform got no bootstrap to run').toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The gap the whole previous round left open. piSmokeTarget is pinned four ways over, but between
+// "the function returned the right target" and "that target is what the bundle was built with"
+// there was one unpinned line, and swapping it back to `${process.platform}-${process.arch}` left
+// 854 tests green.
+//
+// No runner will catch it either: on all three jobs the host equals the target, and there the
+// mutation means nothing. It only shows where the two differ -- which, since assemblyTarget refuses
+// a cross-operating-system pair, means same OS and different architecture: asking a darwin-arm64
+// machine for darwin-x64. That is a real configuration and the macOS runner can do it today, but
+// nothing runs it, so the pin has to be here.
+//
+// It is closed by behaviour rather than by reading the script: bundlePiRuntime copies the native
+// module of the platform it was given, and those paths differ per target, so the bundle can be
+// asked what it was built for. The bundler is injected here, which is what lets the suite see the
+// platform that reached it without an esbuild run or a provisioned Pi tree.
+// ---------------------------------------------------------------------------
+describe('the bundle is built for the target that was asked for', () => {
+  const targets = ['darwin-arm64', 'darwin-x64', 'win32-x64'] as const;
+
+  it('expects a different native module for every target, which is what makes a wrong one visible', async () => {
+    const { piSmokeExpectedNative } = await smoke();
+    // If two targets expected the same file, a bundle built for the host would satisfy a check
+    // written for the target and this whole approach would prove nothing.
+    const expected = targets.map((target) => piSmokeExpectedNative({ target }).join('|'));
+    expect(new Set(expected).size, `two targets expect the same native module: ${expected.join(' / ')}`).toBe(targets.length);
+    expect(expected.every((paths) => paths.endsWith('.node')), 'a target expects no native module at all').toBe(true);
+  });
+
+  it('bundles with the target it was given, never with the host', async () => {
+    const { bundleForSmoke } = await smoke();
+    // The mutation itself, in the one place the suite can see it. The recorded argument is compared
+    // against the requested target, so `${process.platform}-${process.arch}` fails here on any
+    // machine -- including a runner where the two happen to agree, which is where every real run of
+    // this check takes place.
+    const asked: string[] = [];
+    const target = targets.find((candidate) => candidate !== `${process.platform}-${process.arch}`) as Target;
+    await bundleForSmoke({
+      piRoot: '/work/pi',
+      target,
+      bundle: async (_piRoot, platform) => { asked.push(platform); return { entry: '/work/pi/agent/pi~BUN.mjs' }; },
+      list: async () => (await smoke()).piSmokeExpectedNative({ target }),
+    });
+    expect(asked, `the bundler was asked for ${asked.join(', ')} when the task said ${target}`).toEqual([target]);
+  });
+
+  it('refuses a bundle carrying another target\'s native module', async () => {
+    const { bundleForSmoke, piSmokeExpectedNative } = await smoke();
+    // What the mutation produces, seen from the other side: the bundle is real and complete, it is
+    // simply for the wrong machine. On the target it would fail to start; here it is caught before
+    // anything is reported as verified.
+    const host = 'darwin-arm64' as const;
+    const target = 'darwin-x64' as const;
+    await expect(bundleForSmoke({
+      piRoot: '/work/pi',
+      target,
+      bundle: async () => ({ entry: '/work/pi/agent/pi~BUN.mjs' }),
+      list: async () => piSmokeExpectedNative({ target: host }),
+    })).rejects.toThrow();
+  });
+
+  it('accepts a bundle carrying its own target\'s native module, and hands the result back', async () => {
+    const { bundleForSmoke, piSmokeExpectedNative } = await smoke();
+    const built = { entry: '/work/pi/agent/pi~BUN.mjs' };
+    await expect(bundleForSmoke({
+      piRoot: '/work/pi',
+      target: 'win32-x64',
+      bundle: async () => built,
+      list: async () => ['agent/pi~BUN.mjs', ...piSmokeExpectedNative({ target: 'win32-x64' })],
+    })).resolves.toBe(built);
   });
 });

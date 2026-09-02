@@ -1,3 +1,4 @@
+// rails:pin-on-coverage the four containment tests at the foot of this file pin guards that already work, so nothing can go red; each was proved by deleting its guard from resources.ts and watching exactly one test fail -- except `runtime path escaped Pi tree`, which survives deletion and is reported as unreachable rather than covered
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -193,5 +194,57 @@ describe('a runtime asset that is gone is reported as gone', () => {
     const root = fixture();
     writeFileSync(path.join(root, 'node/bin/node'), 'changed');
     expect(() => resolvePrivateRuntime(root)).toThrow('Node resource hash mismatch');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The manifest names a Pi package directory, and that name leaves this process: it becomes
+// PI_PACKAGE_DIR in the environment of the child that runs Pi. A manifest is data read off disk, so
+// the guards that keep that name inside the Pi tree are the boundary between a tampered file and a
+// directory of somebody else's choosing -- Pi would read its package.json, its themes and its
+// settings out of whatever it was pointed at.
+//
+// Three of the four had no test at all. They are checked here the way every other refusal in this
+// file is: a real tree in a temporary directory and a manifest edited to point somewhere it should
+// not reach. Nothing is mocked and no Electron is involved.
+// ---------------------------------------------------------------------------
+describe('a manifest cannot point Pi out of its own tree', () => {
+  it('accepts a package directory that holds the entry point, and hands it back', () => {
+    // First, so that the refusals below are refusals of something specific rather than of
+    // everything: a well-formed packageDir is accepted and reaches the caller.
+    const root = withManifest(fixture(), (manifest) => { (manifest.pi as Record<string, unknown>).packageDir = 'pi'; });
+    expect(resolvePrivateRuntime(root).piPackageDir).toBe(path.join(root, 'pi'));
+  });
+
+  it('refuses a package directory that leaves the Pi tree', () => {
+    // 'vc' is a real directory of this fixture, not a symlink and not a traversal, so every earlier
+    // check passes it: it is exactly the shape a hostile manifest would use. What refuses it is the
+    // containment check and nothing else.
+    const root = withManifest(fixture(), (manifest) => { (manifest.pi as Record<string, unknown>).packageDir = 'vc'; });
+    expect(() => resolvePrivateRuntime(root)).toThrow('Pi package directory escaped Pi tree');
+  });
+
+  it('refuses a package directory that does not contain the entry point it is paired with', () => {
+    // Both inside the Pi tree, so the previous guard is satisfied and this one is the only thing
+    // standing. A package directory without its own entry point is somebody else's directory.
+    const root = fixture();
+    mkdirSync(path.join(root, 'pi/agent'));
+    writeFileSync(path.join(root, 'pi/agent/keep.js'), 'keep');
+    const manifest = JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8')) as { pi: Record<string, unknown> };
+    manifest.pi.packageDir = 'pi/agent';
+    manifest.pi.treeSha256 = treeSha256(path.join(root, 'pi'));
+    writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest));
+    expect(() => resolvePrivateRuntime(root)).toThrow('Pi entrypoint escaped its package directory');
+  });
+
+  it('refuses an entry point outside the Pi tree, package directory or no package directory', () => {
+    // The older guard beside the two new ones, uncovered until now for the same reason: it was
+    // added without a test. 'fixture/test.js' is a real file this manifest already names elsewhere.
+    for (const change of [
+      (manifest: Record<string, unknown>) => { (manifest.pi as Record<string, unknown>).entry = 'fixture/test.js'; },
+      (manifest: Record<string, unknown>) => { const pi = manifest.pi as Record<string, unknown>; pi.entry = 'fixture/test.js'; pi.packageDir = 'pi'; },
+    ]) {
+      expect(() => resolvePrivateRuntime(withManifest(fixture(), change))).toThrow('Pi entrypoint escaped Pi tree');
+    }
   });
 });
