@@ -26,7 +26,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { assemblyTarget, hoistPiBundledDependencies } from './resource-assembly-lib.mjs';
-import { bundleForSmoke, piSmokeBootstrapPlan, piSmokeRunEnv, piSmokeTarget } from './bundled-pi-smoke-lib.mjs';
+import { bundleForSmoke, inSmokeWorkspace, piSmokeBootstrapPlan, piSmokeRunEnv, piSmokeTarget } from './bundled-pi-smoke-lib.mjs';
 
 const desktop = path.resolve(import.meta.dirname, '..');
 const repo = path.resolve(desktop, '..');
@@ -70,8 +70,12 @@ async function main() {
   }
 
   const pins = JSON.parse(await readFile(path.join(desktop, 'scripts/resource-pins.json'), 'utf8'));
-  const work = await mkdtemp(path.join(os.tmpdir(), 'bundled-pi-smoke-'));
-  try {
+  // The workspace and its removal are one decision, held in one place, so that a thirteenth failure
+  // added later inherits the cleanup instead of having to remember it.
+  return inSmokeWorkspace({
+    create: () => mkdtemp(path.join(os.tmpdir(), 'bundled-pi-smoke-')),
+    remove: (workspace) => rm(workspace, { recursive: true, force: true }),
+  }, async (work) => {
     // The copy is not optional: bundlePiRuntime deletes node_modules, and doing that in the working
     // tree would mean repairing it by hand after every run.
     const piRoot = path.join(work, 'pi');
@@ -167,9 +171,7 @@ async function main() {
     }
 
     console.log(`bundled pi smoke: ${target} bundle, void-codex registered by the real extension (${models.join(', ')}), version ${printed}, node_modules gone`);
-  } finally {
-    await rm(work, { recursive: true, force: true });
-  }
+  });
 }
 
 // The one place a failure is reported and the process is ended. Everything above signals by throwing,

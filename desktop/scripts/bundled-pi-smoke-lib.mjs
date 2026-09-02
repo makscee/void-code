@@ -138,3 +138,42 @@ export async function bundleForSmoke({ piRoot, target, bundle = bundlePiRuntime,
   }
   return built;
 }
+
+/**
+ * Run `body` inside a workspace, and remove that workspace however the run ends.
+ *
+ * The creation and the removal are handed in for the same reason the bundler is: it is the only way
+ * a fixture can watch what happens on the failing path without making a real directory and a real
+ * failure. And the failing path is the one that leaked -- die() ended the run with process.exit,
+ * process.exit does not run `finally`, and every red run left an unpacked Pi tree behind. It leaked
+ * exactly when the check found what it exists to find, on the machine of somebody mid-bump of the Pi
+ * pin rather than on a runner that is thrown away.
+ *
+ * A failure while removing does not replace a failure from the body. Both went wrong, but only one
+ * of them says what the check found, and leaving somebody mid-bump with a message about a directory
+ * is how a readable refusal becomes "something went wrong during cleanup". When the body succeeded
+ * there is no such competition, and the cleanup failure is the only news there is.
+ */
+export async function inSmokeWorkspace({ create, remove }, body) {
+  const workspace = await create();
+  // Written without `finally` on purpose. The removal has to happen either way, but which failure
+  // reaches the caller is a decision, and inside a `finally` that decision is implied by where the
+  // throws sit -- which is also what no-unsafe-finally exists to object to. Sequential and explicit:
+  // run the body, remove the workspace whatever it did, then say which failure wins.
+  let outcome;
+  let bodyFailure;
+  try {
+    outcome = await body(workspace);
+  } catch (error) {
+    bodyFailure = { error };
+  }
+  let cleanupFailure;
+  try {
+    await remove(workspace);
+  } catch (error) {
+    cleanupFailure = { error };
+  }
+  if (bodyFailure !== undefined) throw bodyFailure.error;
+  if (cleanupFailure !== undefined) throw cleanupFailure.error;
+  return outcome;
+}
