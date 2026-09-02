@@ -27,12 +27,12 @@ end
 # the mutated tree. A mutation that cannot find its target raises rather than
 # passing vacuously, which is the failure mode that would make this whole file
 # decorative.
-def mutate_windows_go_job(directory, label)
-  path = File.join(directory, "test.yml")
+def mutate_windows_go_job(directory, label, file = "test.yml")
+  path = File.join(directory, file)
   workflow = YAML.load_file(path)
   jobs = workflow.fetch("jobs")
-  name, job = jobs.find { |_key, candidate| DesktopCiContract.windows_runner?(candidate) && DesktopCiContract.go_test_step(candidate) }
-  raise "fixture missing: test.yml has no Windows job running go test (#{label})" unless job
+  name, job = DesktopCiContract.windows_go_jobs(jobs).first
+  raise "fixture missing: #{file} has no Windows job running go test (#{label})" unless job
 
   yield jobs, name, job, DesktopCiContract.go_test_step(job)
   File.write(path, YAML.dump(workflow))
@@ -75,6 +75,94 @@ assert_rejected("drop the Windows fixture build tag") do |directory|
     raise "fixture missing: Windows go test carries no -tags vctestfixture" unless step.fetch("run").include?("-tags vctestfixture")
 
     step["run"] = step.fetch("run").sub(/\s*-tags vctestfixture/, "")
+  end
+end
+
+# The release-side Windows gate, mutated the same structural way and for the
+# same reason -- its text is written by whoever implements it, not here. Each
+# of these is a way the gate could be present and still not gate: absent,
+# unreferenced by the job that builds, allowed to go red, skipped, narrowed to
+# a package or a -run filter, compiled without the fixture tag the rest of the
+# repository uses, or hung off a moving action tag. A release that survives any
+# of them is a release the Windows suite did not qualify.
+def mutate_release_windows_go_job(directory, label, &block)
+  mutate_windows_go_job(directory, label, "release.yml", &block)
+end
+
+assert_rejected("remove the release Windows Go job") do |directory|
+  mutate_release_windows_go_job(directory, "remove the release Windows Go job") { |jobs, name, _job, _step| jobs.delete(name) }
+end
+
+assert_rejected("run the release Windows Go job beside the build instead of before it") do |directory|
+  mutate_release_windows_go_job(directory, "detach the release Windows Go job from build") do |jobs, name, _job, _step|
+    build = jobs.fetch("build")
+    dependencies = Array(build.fetch("needs"))
+    raise "fixture missing: release.yml build does not need #{name}" unless dependencies.include?(name)
+
+    build["needs"] = dependencies - [name]
+  end
+end
+
+assert_rejected("move the release Go suite off Windows") do |directory|
+  mutate_release_windows_go_job(directory, "move the release Go suite off Windows") { |_jobs, _name, job, _step| job["runs-on"] = "ubuntu-latest" }
+end
+
+assert_rejected("allow the release Windows Go job to fail") do |directory|
+  mutate_release_windows_go_job(directory, "allow the release Windows Go job to fail") { |_jobs, _name, job, _step| job["continue-on-error"] = true }
+end
+
+assert_rejected("allow the release Windows go test step to fail") do |directory|
+  mutate_release_windows_go_job(directory, "allow the release Windows go test step to fail") { |_jobs, _name, _job, step| step["continue-on-error"] = true }
+end
+
+assert_rejected("run the release Windows Go job unconditionally with always()") do |directory|
+  mutate_release_windows_go_job(directory, "if: always() on the release Windows Go job") { |_jobs, _name, job, _step| job["if"] = "${{ always() }}" }
+end
+
+assert_rejected("skip the release Windows go test step by condition") do |directory|
+  mutate_release_windows_go_job(directory, "if on the release Windows go test step") { |_jobs, _name, _job, step| step["if"] = "${{ always() }}" }
+end
+
+assert_rejected("narrow the release Windows Go suite to one package") do |directory|
+  mutate_release_windows_go_job(directory, "narrow the release Windows Go suite to one package") do |_jobs, _name, _job, step|
+    raise "fixture missing: release Windows go test names no ./..." unless step.fetch("run").include?("./...")
+
+    step["run"] = step.fetch("run").sub("./...", "./internal/harness")
+  end
+end
+
+assert_rejected("narrow the release Windows Go suite with -run") do |directory|
+  mutate_release_windows_go_job(directory, "narrow the release Windows Go suite with -run") do |_jobs, _name, _job, step|
+    step["run"] = step.fetch("run").sub(/\bgo\s+test\b/, "go test -run TestCmdline")
+  end
+end
+
+assert_rejected("drop the release Windows fixture build tag") do |directory|
+  mutate_release_windows_go_job(directory, "drop the release Windows fixture build tag") do |_jobs, _name, _job, step|
+    raise "fixture missing: release Windows go test carries no -tags vctestfixture" unless step.fetch("run").include?("-tags vctestfixture")
+
+    step["run"] = step.fetch("run").sub(/\s*-tags vctestfixture/, "")
+  end
+end
+
+["actions/checkout", "actions/setup-go"].each do |action|
+  assert_rejected("unpin #{action} in the release Windows Go job") do |directory|
+    mutate_release_windows_go_job(directory, "unpin #{action}") do |_jobs, _name, job, _step|
+      step = Array(job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("#{action}@") }
+      raise "fixture missing: release Windows job does not use #{action}" unless step
+
+      step["uses"] = "#{action}@v4"
+    end
+  end
+end
+
+assert_rejected("float the release Windows Go toolchain off .go-version") do |directory|
+  mutate_release_windows_go_job(directory, "float the release Windows Go toolchain") do |_jobs, _name, job, _step|
+    step = Array(job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("actions/setup-go@") }
+    raise "fixture missing: release Windows job does not use actions/setup-go" unless step
+    raise "fixture missing: release setup-go does not read .go-version" unless step.fetch("with", {})["go-version-file"] == ".go-version"
+
+    step["with"] = step.fetch("with").merge("go-version-file" => nil, "go-version" => "1.21")
   end
 end
 
