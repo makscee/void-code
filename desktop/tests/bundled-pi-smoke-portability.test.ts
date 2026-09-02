@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { stripComments } from '../scripts/pi-bun-contract-lib.mjs';
+import { describe, expect, it, vi } from 'vitest';
 
 // win32 has no executable verification path at all, and the panel's advisor was right that this is
 // one hole rather than three. The bundled smoke silences itself on Windows, bundles Pi for whatever
@@ -32,6 +34,10 @@ type Smoke = {
     bundle: (piRoot: string, platform: string) => Promise<unknown>;
     list: (bundleRoot: string) => Promise<string[]>;
   }) => Promise<unknown>;
+  inSmokeWorkspace: <T>(
+    handlers: { create: () => Promise<string>; remove: (workspace: string) => Promise<void> },
+    body: (workspace: string) => Promise<T>,
+  ) => Promise<T>;
 };
 // Imported per test so a missing module reds each one under its own name rather than collapsing the
 // file into "no tests", which reads as though the suite shrank.
@@ -193,5 +199,98 @@ describe('the bundle is built for the target that was asked for', () => {
       bundle: async () => built,
       list: async () => ['agent/pi~BUN.mjs', ...piSmokeExpectedNative({ target: 'win32-x64' })],
     })).resolves.toBe(built);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The workspace has to be removed on the way out of a failure, and the reason it was not is worth
+// keeping: `die()` ended the run with process.exit, and process.exit does not run `finally`. Proved
+// by running it, not by reading the docs -- `node -e 'try { process.exit(1) } finally {
+// console.log("ran") }'` prints nothing. Twelve failure sites sat after mkdtemp, so every red run
+// left an unpacked Pi tree, a bundle and a stub behind: 215 MB measured in one run, 512 MB over a
+// session.
+//
+// It leaked exactly when the check found what it exists to find, and the person who meets that path
+// is mid-bump of the Pi pin, iterating on red, on their own machine rather than an ephemeral runner.
+//
+// The root was not the twelve calls but that the file had TWO ways to fail -- `die()` exiting and
+// ordinary `throw` from bundleForSmoke -- which behaved differently. That is why the first attempt
+// to reproduce the leak failed: it forced the throwing kind, and `finally` ran.
+// ---------------------------------------------------------------------------
+describe('the workspace is removed however the smoke ends', () => {
+  const workspace = '/tmp/bundled-pi-smoke-fixture';
+  const handlers = () => {
+    const order: string[] = [];
+    return {
+      order,
+      create: vi.fn(async () => { order.push('create'); return workspace; }),
+      remove: vi.fn(async () => { order.push('remove'); }),
+    };
+  };
+
+  it('creates, runs, removes, and hands back what the body produced', async () => {
+    const { inSmokeWorkspace } = await smoke();
+    const { order, create, remove } = handlers();
+    await expect(inSmokeWorkspace({ create, remove }, async (given) => { order.push(`body ${given}`); return 'checked'; })).resolves.toBe('checked');
+    expect(order).toEqual(['create', `body ${workspace}`, 'remove']);
+  });
+
+  it('removes the workspace when the body fails, which is the case that leaked', async () => {
+    const { inSmokeWorkspace } = await smoke();
+    const { create, remove } = handlers();
+    const failure = new Error('BUNDLED PI SMOKE: RED');
+    // The original error, not a wrapper: the smoke's message is the whole diagnosis, and a cleanup
+    // layer that rewrites it turns a readable refusal into "something went wrong during cleanup".
+    await expect(inSmokeWorkspace({ create, remove }, async () => { throw failure; })).rejects.toBe(failure);
+    expect(remove, 'a failing run left its workspace on disk').toHaveBeenCalledOnce();
+  });
+
+  it('removes the workspace it was given, not one it worked out for itself', async () => {
+    const { inSmokeWorkspace } = await smoke();
+    const { create, remove } = handlers();
+    await inSmokeWorkspace({ create, remove }, async () => undefined);
+    expect(remove).toHaveBeenCalledWith(workspace);
+  });
+
+  it('has nothing to remove when the workspace was never created', async () => {
+    const { inSmokeWorkspace } = await smoke();
+    const { remove } = handlers();
+    const body = vi.fn(async () => undefined);
+    const failure = new Error('mkdtemp failed');
+    await expect(inSmokeWorkspace({ create: async () => { throw failure; }, remove }, body)).rejects.toBe(failure);
+    expect(body, 'the body ran without a workspace to run in').not.toHaveBeenCalled();
+    expect(remove, 'a workspace that was never created was removed anyway').not.toHaveBeenCalled();
+  });
+
+  it('lets the smoke\'s own failure through when removing the workspace fails too', async () => {
+    const { inSmokeWorkspace } = await smoke();
+    const { create } = handlers();
+    const failure = new Error('BUNDLED PI SMOKE: RED');
+    // Both went wrong; only one of them tells the reader what the check found. A cleanup error that
+    // replaced it would leave the person mid-bump with a message about a directory.
+    await expect(inSmokeWorkspace({ create, remove: async () => { throw new Error('EBUSY'); } }, async () => { throw failure; })).rejects.toBe(failure);
+  });
+});
+
+describe('there is one way out of the smoke, and it runs the cleanup', () => {
+  it('reaches no process.exit before the workspace has been unwound', () => {
+    // The cost of the chosen shape, named by the implementer himself: now that `finally` is the only
+    // cleanup, the only safe way to end badly is to throw. A thirteenth failure added later with
+    // process.exit would leak again, and nothing else in this suite would notice -- the same two
+    // ways of failing that already diverged in this very file once.
+    //
+    // Honest limits, and they are real: this is source text, it knows only the name `main`, and it
+    // would miss process.abort(), a process.exit inside a module this one imports, or a rename of
+    // main. It catches the regression that actually happened, and says nothing about the rest.
+    // Comments are removed first, and not out of caution: written the obvious way this very check
+    // went red on the comment that explains why process.exit is wrong, which quotes it. Same trap we
+    // fixed in the Pi contract two rounds ago, so the same stripper is reused rather than written a
+    // second time -- one implementation, not two that can disagree.
+    const source = stripComments(readFileSync(new URL('../scripts/check-bundled-pi-smoke.mjs', import.meta.url), 'utf8'));
+    const handler = source.indexOf('await main()');
+    expect(handler, 'could not find the `await main()` this check is anchored to').toBeGreaterThan(-1);
+    const above = source.slice(0, handler);
+    expect((source.match(/process\s*\.\s*exit/g) ?? []).length, 'the smoke ends the process in more than one place, so which one runs the cleanup is a question again').toBe(1);
+    expect(above, 'something above `await main()` ends the process with process.exit, and process.exit does not run finally -- the workspace it created stays on disk').not.toMatch(/process\s*\.\s*exit/);
   });
 });
