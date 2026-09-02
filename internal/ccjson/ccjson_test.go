@@ -10,17 +10,25 @@ import (
 	"github.com/makscee/void-code/internal/ccjson"
 )
 
-// windowsCredentialPermGap is printed instead of the 0600 assertion on Windows,
-// so a reader of a green Windows run still learns that the guarantee is missing
-// there rather than believing it was checked. Same statement as the KNOWN GAP
-// note on writeAtomic in ccjson.go; kept in both places because one is where
-// the code is changed and the other is where the run is read.
+// windowsCredentialPermGap stands in for the 0600 assertion on Windows, where the
+// mode bits do not exist to assert.
+//
+// It rides on t.Log, and that means it is NOT visible in a green CI run: `go test`
+// without -v suppresses the output of passing tests. Claiming otherwise was our own
+// unchecked assertion, and it is corrected here rather than papered over by turning
+// -v on for the whole suite — a switch that would print thousands of lines so that
+// one of them could be this. An operator-visible disclosure, if it is ever wanted,
+// wants its own workflow step or $GITHUB_STEP_SUMMARY, not a louder test runner.
+//
+// Who it is for, then: the reader of this file, and of a -v run someone asks for on
+// purpose. Same statement as the KNOWN GAP note on writeAtomic in ccjson.go.
 const windowsCredentialPermGap = "KNOWN GAP (windows): the 0600 assertion is not run here — " +
 	"~/.claude.json is a credential file and writeAtomic asks for 0600, but Windows has no POSIX " +
 	"mode bits (Chmod there only toggles the read-only attribute, and 0600 keeps owner-write, so it " +
-	"is a no-op and Stat reports 0666). The file is left with the NTFS ACL inherited from the user profile directory " +
-	"— on Windows it is NOT protected by permissions. Not a skipped check: an absent protection. " +
-	"See writeAtomic in ccjson.go."
+	"is a no-op and Stat reports 0666). The file is left with the NTFS ACL inherited from the user profile " +
+	"directory, which on a stock profile admits only SYSTEM, Administrators and the owner — close to 0600 in " +
+	"practice. What is absent is not the protection but the assertion of it: nothing here checks that the " +
+	"inheritance is the stock one. See writeAtomic in ccjson.go."
 
 // assertCredentialFilePerm asserts that the written credential file is
 // readable and writable by its owner only.
