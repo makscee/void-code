@@ -140,6 +140,30 @@ describe('a runtime asset that is gone is reported as gone', () => {
     });
   }
 
+  it('says so when the whole private runtime is gone, not just one file out of it', () => {
+    // The coarser half of the same fault, and no less likely: quarantine can take a directory, and a
+    // failed install never writes one. It arrives at a different check -- checkedRoot, before any
+    // manifest is read -- so nothing the six cases above pin covers it, and the raw ENOENT comes out
+    // with the path exactly as it used to for a single file.
+    const root = fixture();
+    rmSync(root, { recursive: true, force: true });
+
+    let thrown: Error | undefined;
+    try { resolvePrivateRuntime(root); } catch (error) { thrown = error as Error; }
+    expect(thrown, 'a runtime that is not there at all was accepted').toBeInstanceOf(Error);
+    const message = thrown?.message ?? '';
+
+    expect(message, 'the refusal carries a path, so it cannot be let through the diagnostic whitelist').not.toMatch(/[\\/]/);
+    expect(message, 'the refusal is a raw filesystem error').not.toContain('ENOENT');
+    expect(message, 'the refusal names the temporary root it happened to run in').not.toContain(root);
+    expect(message, 'the refusal does not say anything is missing').toMatch(/missing|absent|not found|gone/i);
+    expect(message, 'the refusal does not say what was missing').toMatch(/runtime/i);
+
+    const diagnostic = startupDiagnostic('runtime-validation', thrown, '0.1.0', '2026-09-03T00:00:00.000Z');
+    expect(diagnostic.error.message, 'the refusal is not on the diagnostic whitelist, so the person still sees "Unexpected startup error"').toBe(message);
+    expect(startupDialogMessage(diagnostic), 'the dialog does not tell the person a file is missing').toMatch(/missing|absent|not found|gone/i);
+  });
+
   it('tells the person their file is missing and what to do about it', async () => {
     // The end of the chain, built from the real error rather than from a string typed here: the
     // dialog is the only part of this a person ever reads, and pinning it against an invented

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { STARTUP_STAGES, startupDiagnostic, startupDialogMessage, writeStartupDiagnostic } from '../src/main/startup-diagnostic';
+import { STARTUP_STAGES, startupDiagnostic, startupDialogMessage, startupFailureReport, writeStartupDiagnostic } from '../src/main/startup-diagnostic';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -106,5 +106,56 @@ describe('the startup dialog says more only where it can', () => {
     const text = startupDialogMessage(startupDiagnostic('runtime-validation', hostile, '0.1.0', '2026-09-03T00:00:00.000Z'));
     expect(text).not.toContain(secret);
     expect(text).toBe(startupDialogMessage());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// failStartup built the diagnostic and then told the dialog nothing, so the message a person read
+// was the general one no matter what had happened -- the whole of the previous change was invisible
+// from outside. The function was pinned; its use was not.
+//
+// This is the sixth time in three days that the hole turned out to be one level above the one just
+// closed (LESSONS 50), and the answer that has worked twice already in this branch is to leave no
+// level: one call answers both questions at once, so index.ts has no wiring left to get wrong.
+// ---------------------------------------------------------------------------
+describe('one call answers both questions a startup failure raises', () => {
+  const missing = new Error('The vc executable is missing');
+
+  it('hands back the record to keep and the words to show, from one call', () => {
+    const report = startupFailureReport('runtime-validation', missing, '0.1.0', '2026-09-03T00:00:00.000Z');
+    expect(report.diagnostic.error.message, 'the record does not keep what happened').toBe(missing.message);
+    expect(report.dialogMessage, 'the person is not told a file is missing').toMatch(/missing|absent|not found|gone/i);
+  });
+
+  it('cannot write down one thing and say another', () => {
+    // The property that makes the pair worth having rather than two calls side by side: the text and
+    // the record are answers to the same question and cannot disagree about it.
+    for (const error of [missing, new Error('renderer failed to load'), new Error('Node resource hash mismatch'), new Error(`unlisted ${'TOKEN_very_secret_123'}`)]) {
+      const report = startupFailureReport('runtime-validation', error, '0.1.0', '2026-09-03T00:00:00.000Z');
+      expect(report.dialogMessage, `${error.message} is written down and described differently`).toBe(startupDialogMessage(report.diagnostic));
+    }
+  });
+
+  it('carries the sanitising with it, so the pair cannot become the leak', () => {
+    const secret = 'TOKEN_very_secret_123';
+    const hostile = new Error(`bootstrap exploded ${secret}`);
+    hostile.name = `${secret}Error`;
+    const report = startupFailureReport('renderer-load', hostile, '0.1.0', '2026-09-03T00:00:00.000Z');
+    expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
+  it('leaves index.ts no wiring of its own to get wrong', () => {
+    // The pin for the defect itself. Reverting the fix -- calling startupDialogMessage() with
+    // nothing -- passed every test and tsc alike, because nothing said where the dialog's words come
+    // from. With one call for both, the way to get it wrong stops existing, and this checks that it
+    // has stopped rather than merely been avoided this time.
+    //
+    // Honest limits: source text, and the call form rather than the bare name -- so a comment that
+    // quotes `startupDialogMessage(` would fail this wrongly. An import left behind unused is not
+    // matched here either; eslint's no-unused-vars is what catches that, and it runs in the same
+    // check this does.
+    const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    expect(main, 'index.ts does not build its failure report in one call').toMatch(/startupFailureReport\s*\(/);
+    expect(main, 'index.ts still composes the dialog text itself, which is the wiring that was wrong').not.toMatch(/startupDialogMessage\s*\(/);
   });
 });
