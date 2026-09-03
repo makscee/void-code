@@ -22,7 +22,7 @@ import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
-import { startupDiagnostic, startupDialogMessage, writeStartupDiagnostic, type StartupDiagnostic } from './startup-diagnostic';
+import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
 import type { SingleStartupWindow, StartupStageError } from './startup-lifecycle';
 
@@ -257,19 +257,16 @@ async function bootstrap(): Promise<void> {
 
 function failStartup(failure: StartupStageError): void {
   const userData = app.getPath('userData');
-  // Built once and used twice. The dialog used to be told nothing, so the only failure a person
-  // could be told apart from any other was none of them: a missing file and a failed renderer read
-  // the same. Declared outside the try so that a diagnostic which was built but could not be
-  // written still reaches the person -- storage failing is not a reason to tell them less.
-  let diagnostic: StartupDiagnostic | undefined;
-  try {
-    diagnostic = startupDiagnostic(failure.stage, failure.original, app.getVersion());
-    writeStartupDiagnostic(userData, diagnostic);
-  } catch { /* the native error remains available if durable storage fails */ }
+  // One call for both, so there is no join for this file to make. The dialog used to be told
+  // nothing, and every person read the same general sentence whatever had happened; the wiring that
+  // did it passed the whole suite and the compiler. Built before the write rather than with it, so
+  // that storage failing still leaves the person something true to read.
+  const report = startupFailureReport(failure.stage, failure.original, app.getVersion());
+  try { writeStartupDiagnostic(userData, report.diagnostic); } catch { /* the native error remains available if durable storage fails */ }
   try {
     if (!process.argv.includes('--void-startup-test-no-dialog')) dialog.showErrorBox(
       'Void Code could not start',
-      startupDialogMessage(diagnostic),
+      report.dialogMessage,
     );
   } catch { /* startup still terminates if the native error cannot be presented */ }
   try { manager?.teardownAll(); } catch { /* startup still terminates if cleanup reports an error */ }

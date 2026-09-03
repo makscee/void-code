@@ -52,6 +52,10 @@ const BUILD_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 // startup-diagnostic.ts takes this set rather than repeating it, so the words cannot be right in one
 // file and stale in the other.
 const RUNTIME_ASSETS = {
+  // The coarse case, and no less likely than a single file: quarantine can take a directory, and a
+  // failed installation never writes one. It arrives before any manifest is read, so none of the
+  // entries below can stand in for it.
+  runtime: 'The private runtime is missing',
   manifest: 'The runtime manifest is missing',
   vc: 'The vc executable is missing',
   node: 'The Node executable is missing',
@@ -75,7 +79,13 @@ function validateRelative(relative) {
   return parts;
 }
 function checkedRoot(root) {
-  const before = lstatSync(root);
+  let before;
+  try {
+    before = lstatSync(root);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error(RUNTIME_ASSETS.runtime);
+    throw error;
+  }
   if (before.isSymbolicLink() || !before.isDirectory()) throw new Error('private runtime root must be a non-symlink directory');
   const canonical = realpathSync(root);
   const after = lstatSync(root);

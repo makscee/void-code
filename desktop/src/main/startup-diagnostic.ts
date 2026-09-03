@@ -85,6 +85,26 @@ export function startupDialogMessage(diagnostic?: StartupDiagnostic): string {
   return 'Void Code could not open. Reinstall the application and try again. A startup-error.json diagnostic was saved in Void Code application data.';
 }
 
+export interface StartupFailureReport { diagnostic: StartupDiagnostic; dialogMessage: string; }
+
+/**
+ * Both answers a startup failure raises, from one call: the record to keep and the words to show.
+ *
+ * They were two calls, and the caller made the join -- which it got wrong in the only way that
+ * mattered, handing the dialog nothing and telling every person the same general sentence whatever
+ * had happened. The function was pinned and its use was not, and reverting the fix passed every test
+ * and the compiler alike.
+ *
+ * A pair rather than two exports is the answer to that: the text and the record are answers to the
+ * same question, so they cannot disagree about it, and the caller is left no wiring of its own to
+ * get wrong. It is the third time in this branch that the way to close a seam was to remove the
+ * level above it rather than to pin it.
+ */
+export function startupFailureReport(stage: StartupStage, error: unknown, appVersion: string, occurredAt?: string): StartupFailureReport {
+  const diagnostic = startupDiagnostic(stage, error, appVersion, occurredAt);
+  return { diagnostic, dialogMessage: startupDialogMessage(diagnostic) };
+}
+
 export function writeStartupDiagnostic(userData: string, diagnostic: StartupDiagnostic): string {
   mkdirSync(userData, { recursive: true, mode: 0o700 });
   const output = path.join(userData, 'startup-error.json');
