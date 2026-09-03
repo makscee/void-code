@@ -133,6 +133,18 @@ type winOpts struct {
 	// A status the host returns to EVERY attempt for the binary — a verdict
 	// that will not change however many times it is asked (403, 404).
 	primaryStatusAlways int
+	// The same for the checksum list, and needed for a different reason: a
+	// transient answer that never stops being transient is how "the list is
+	// there and we could not get it" actually arrives. Spelling it as "every
+	// attempt" rather than as a list of three keeps the fixture true whatever
+	// retry budget the installer settles on.
+	sumsStatusAlways int
+	// The checksum list answers 200, promises a length, delivers a prefix and
+	// drops the connection — the torn transfer of requirement 3, met on the file
+	// that decides whether the binary gets checked at all. Ends the same way as
+	// sumsStatusAlways (nothing to check against) by a route the host never
+	// named with a status code.
+	sumsTorn bool
 }
 
 type winResult struct {
@@ -252,6 +264,20 @@ func runWindowsInstall(t *testing.T, o winOpts) winResult {
 			sumsAttempts++
 			m := sumsAttempts
 			mu.Unlock()
+			if o.sumsStatusAlways != 0 {
+				http.Error(w, http.StatusText(o.sumsStatusAlways), o.sumsStatusAlways)
+				return
+			}
+			if o.sumsTorn {
+				full := winSHA256(winPrimaryBytes) + "  " + winAssetName + "\n"
+				w.Header().Set("Content-Length", fmt.Sprint(len(full)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(full[:20]))
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				panic(http.ErrAbortHandler)
+			}
 			if m <= len(o.sumsStatuses) {
 				http.Error(w, http.StatusText(o.sumsStatuses[m-1]), o.sumsStatuses[m-1])
 				return
@@ -890,6 +916,208 @@ func TestPowerShellInstallerRetriesTransientAnswersAndNotVerdicts(t *testing.T) 
 		if len(calls) != 1 {
 			t.Errorf("the missing list was asked for %d time(s) — that is the retry budget every install in the world pays until the next stable release publishes it\nrequests:\n%s",
 				len(calls), strings.Join(r.requests, "\n"))
+		}
+	})
+}
+
+// ── "nothing to check it against" is three different facts ───────────────────
+//
+// The install continues in all three, and that is deliberate — strictness here
+// breaks every Windows install until the next stable release publishes the list
+// (see the transitional case above). What is asserted below is not the outcome
+// but the SENTENCE: today one paragraph is printed for three unrelated events,
+// and in two of them it states a cause that is false.
+//
+//	the host answered 404          — the list does not exist yet, for anyone.
+//	     "published from the next stable release onwards" is true here and only
+//	     here.
+//	the host never delivered it    — 5xx to every attempt, or a torn transfer.
+//	     The list may well be published and complete; what happened is that this
+//	     run could not get it. After the release this is the shape of a silent
+//	     downgrade to an unverified install, and calling it "not published yet"
+//	     tells the user to wait for something that already happened.
+//	the list had no line for us    — it was fetched and read, and does not name
+//	     this asset. Neither "not published" nor "could not reach" is true.
+//
+// The installer already carries the means to tell them apart:
+// $script:VCLastDownloadStatus is the status of the last fetch (0 when the host
+// answered nothing at all), and Get-VCSha256Status is the one place that knows
+// whether the list was read and searched. Nothing below prescribes which of
+// them is used, or what the replacement sentences say — only which fact the
+// user is told, and which false ones they are not.
+//
+// Phrasings are matched as sets for that reason. An assertion pinned to one
+// exact sentence would be a spelling test; these ask whether the run makes the
+// "not published yet" claim, the "could not reach it" claim, or the "no entry
+// for this asset" claim, across the ways each is ordinarily written.
+
+var winNotPublishedYetMarkers = []string{
+	"next stable release",
+	"not published",
+	"not yet published",
+	"isn't published",
+	"is published from",
+	"does not exist yet",
+	"doesn't exist yet",
+	"no such list",
+	"not on the host yet",
+}
+
+var winUnreachableMarkers = []string{
+	"could not fetch",
+	"couldn't fetch",
+	"could not be fetched",
+	"could not reach",
+	"couldn't reach",
+	"could not be reached",
+	"could not download",
+	"couldn't download",
+	"failed to fetch",
+	"unreachable",
+	"did not answer",
+	"didn't answer",
+	"no answer",
+}
+
+var winNoEntryMarkers = []string{
+	"lists no",
+	"does not list",
+	"doesn't list",
+	"no entry",
+	"not listed",
+	"no sha256 for",
+	"no line for",
+	"has no line",
+}
+
+// winSaysAny returns the marker the run's output carries, or "" for none, plus
+// the line it was on — a failure message that names the offending sentence is
+// worth more than one asserting a boolean.
+func winSaysAny(out string, markers []string) (marker, line string) {
+	for _, l := range strings.Split(out, "\n") {
+		low := strings.ToLower(l)
+		for _, m := range markers {
+			if strings.Contains(low, m) {
+				return m, strings.TrimSpace(l)
+			}
+		}
+	}
+	return "", ""
+}
+
+// winInstalledCleanly is the half of every case below that must NOT change: the
+// bytes are installed and the run ends 0. Stated in each subtest because the
+// repair being asked for is a change to wording, and the way wording changes go
+// wrong is by turning a warning into a refusal.
+func winInstalledCleanly(t *testing.T, r winResult, why string) {
+	t.Helper()
+	if r.code != 0 {
+		t.Fatalf("installer exited %d when %s — the install must continue in every unchecked case, or every user is blocked by a warning\n%s",
+			r.code, why, r.combined)
+	}
+	if got := winReadFile(t, r.vcPath); got != winPrimaryBytes {
+		t.Errorf("vc.exe does not hold the served bytes when %s: got %.32q…", why, got)
+	}
+	if !strings.Contains(strings.ToLower(r.combined), "not verified") {
+		t.Errorf("the run never says the download is unverified when %s — the user is told nothing about installing unchecked bytes:\n%s",
+			why, r.combined)
+	}
+}
+
+func TestPowerShellInstallerNamesWhyTheDownloadWasNotChecked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the PowerShell installer against a local fixture host")
+	}
+
+	// The guard, and the only case where today's sentence is true. It passes
+	// now; the point of writing it down is that the repair below must not be
+	// made by deleting the explanation that is correct here. Until the next
+	// stable release this is the state of the world for every install.
+	t.Run("a list that is not on the host yet is called exactly that", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "missing"})
+
+		if calls := winRequestsFor(r, winSumsRoute); len(calls) == 0 {
+			t.Fatalf("the checksum list was never asked for\nrequests:\n%s", strings.Join(r.requests, "\n"))
+		}
+		winInstalledCleanly(t, r, "the host answers 404 for the checksum list")
+
+		if m, _ := winSaysAny(r.combined, winNotPublishedYetMarkers); m == "" {
+			t.Errorf("the host said there is no such list, and the run does not tell the user it is simply not published yet — that is the one case where waiting for the next release is the right advice:\n%s",
+				r.combined)
+		}
+	})
+
+	// Case 2, half one: the list route answers, and keeps answering 5xx. The
+	// retries are spent, the run gives up, and the install goes through
+	// unverified. Today it explains that by announcing a release that has
+	// nothing to do with what happened.
+	t.Run("a list the host never delivered is not called unpublished", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "ok", sumsStatusAlways: 503})
+
+		calls := winRequestsFor(r, winSumsRoute)
+		if len(calls) < 2 {
+			t.Fatalf("the checksum list was asked %d time(s) on a 503 — a transient answer was taken for a verdict, so this run never reached the case under test\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+		winInstalledCleanly(t, r, "the checksum list answers 503 to every attempt")
+
+		if m, line := winSaysAny(r.combined, winNotPublishedYetMarkers); m != "" {
+			t.Errorf("the list was there and answered 503 to every attempt, and the run tells the user it is not published yet (%q, on %q) — after the release that sentence sends a user to wait for something that already shipped, while their install silently went through unverified:\nfull output:\n%s",
+				m, line, r.combined)
+		}
+		if m, _ := winSaysAny(r.combined, winUnreachableMarkers); m == "" {
+			t.Errorf("the run never says the checksum list could not be fetched, so the one true fact about this install — nobody got the list — reaches the user in no form at all:\n%s",
+				r.combined)
+		}
+	})
+
+	// Case 2, half two: no status at all. The host accepts, promises a length
+	// and dies mid-body — $script:VCLastDownloadStatus is 0 here and 503 above,
+	// and the user's sentence must be the same one either way: we could not get
+	// it. Written as its own subtest because an implementation that keys only
+	// off "the status was 404" passes the 503 half by accident and fails here.
+	t.Run("a list torn mid-transfer is not called unpublished", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "ok", sumsTorn: true})
+
+		calls := winRequestsFor(r, winSumsRoute)
+		if len(calls) < 2 {
+			t.Fatalf("the checksum list was asked %d time(s) after a torn transfer — a broken stream is the failure this installer keeps meeting and is retried elsewhere in this file\nrequests:\n%s",
+				len(calls), strings.Join(r.requests, "\n"))
+		}
+		winInstalledCleanly(t, r, "the checksum list is torn mid-transfer on every attempt")
+
+		if m, line := winSaysAny(r.combined, winNotPublishedYetMarkers); m != "" {
+			t.Errorf("the transfer of the list broke and the run calls that \"not published yet\" (%q, on %q) — the host answered 200 and started sending it:\nfull output:\n%s",
+				m, line, r.combined)
+		}
+		if m, _ := winSaysAny(r.combined, winUnreachableMarkers); m == "" {
+			t.Errorf("the run never says the checksum list could not be fetched after the transfer broke:\n%s", r.combined)
+		}
+	})
+
+	// Case 3: fetched, read, and it does not name this asset. The list exists
+	// and is published, and this run reached it — so both of the other two
+	// explanations are false, and the third one is a fact neither of them can
+	// carry: the list is not the one these bytes belong to, or not complete.
+	t.Run("a list without our entry is called neither unpublished nor unreachable", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "noentry"})
+
+		if calls := winRequestsFor(r, winSumsRoute); len(calls) == 0 {
+			t.Fatalf("the checksum list was never asked for\nrequests:\n%s", strings.Join(r.requests, "\n"))
+		}
+		winInstalledCleanly(t, r, "the checksum list carries no entry for "+winAssetName)
+
+		if m, line := winSaysAny(r.combined, winNotPublishedYetMarkers); m != "" {
+			t.Errorf("the list was fetched and read, and the run tells the user it is not published yet (%q, on %q) — waiting for the next release fixes nothing here:\nfull output:\n%s",
+				m, line, r.combined)
+		}
+		if m, line := winSaysAny(r.combined, winUnreachableMarkers); m != "" {
+			t.Errorf("the list arrived intact, and the run tells the user it could not be fetched (%q, on %q):\nfull output:\n%s",
+				m, line, r.combined)
+		}
+		if m, _ := winSaysAny(r.combined, winNoEntryMarkers); m == "" {
+			t.Errorf("the run never says the list carries no entry for %s, so the user cannot tell a stale or wrong list from a missing one:\n%s",
+				winAssetName, r.combined)
 		}
 	})
 }

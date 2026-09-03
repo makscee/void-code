@@ -187,16 +187,47 @@ function Invoke-VCDownload {
 # nothing lenient here to pass anywhere.
 #
 # It prints the facts (which list, which hashes) and stops there.
+#
+# 'unchecked' arrives THREE ways, and one sentence used to be printed for all of
+# them — "that list is published from the next stable release onwards" — so two
+# installs out of three were told something untrue. A 404 is the only arrival
+# that sentence fits: the list is not on the host yet, for anyone. A list that
+# answered 5xx to every attempt, or whose transfer broke, may well be published
+# and complete; what happened is that this run did not get it, and after the
+# release that sentence sends the user off to wait for something that already
+# shipped while their install goes through unverified. A list that arrived and
+# does not name this asset is neither of those: it is stale, or not the list
+# these bytes belong to, and only saying so points at the thing to fix.
+#
+# The cause leaves the helper in $script:VCSumsUncheckedCause ('absent' |
+# 'unreachable' | 'no-entry') rather than in the return value. Callers switch on
+# the three-way status, and widening that into an object would put a shape change
+# on every one of them — the mirror path included, whose whole point is that
+# nothing lenient can be handed to it. $script:VCLastDownloadStatus already
+# carries a "why" out alongside a plain success/failure the same way, and it
+# alone cannot do this job: a torn transfer and a list with no entry for us both
+# leave it 0.
 function Get-VCSha256Status {
     param(
         [string]$FilePath,
         [string]$SumsUrl,
         [string]$AssetName
     )
+    $script:VCSumsUncheckedCause = ''
     $sumsTmp = New-VCTempPath '.sha256sums'
     try {
         if (-not (Invoke-VCDownload -Uri $SumsUrl -OutFile $sumsTmp)) {
-            Write-Host "vc: could not fetch $SumsUrl" -ForegroundColor Yellow
+            # 404/410 is the host's own answer that the file is not there; every
+            # other ending — 5xx to the last attempt, or nothing at all (status
+            # 0, the transfer broke) — is this run failing to get a file that may
+            # be sitting on the host perfectly well.
+            if ($script:VCLastDownloadStatus -eq 404 -or $script:VCLastDownloadStatus -eq 410) {
+                $script:VCSumsUncheckedCause = 'absent'
+                Write-Host "vc: no such list at $SumsUrl" -ForegroundColor Yellow
+            } else {
+                $script:VCSumsUncheckedCause = 'unreachable'
+                Write-Host "vc: could not fetch $SumsUrl" -ForegroundColor Yellow
+            }
             return 'unchecked'
         }
         # The release runs `sha256sum vc-* version.json` inside dist/, so the
@@ -212,6 +243,7 @@ function Get-VCSha256Status {
             }
         }
         if (-not $want) {
+            $script:VCSumsUncheckedCause = 'no-entry'
             Write-Host "vc: $SumsUrl lists no sha256 for $AssetName" -ForegroundColor Yellow
             return 'unchecked'
         }
@@ -332,7 +364,15 @@ if ($vcSumsStatus -eq 'mismatch') {
 if ($vcSumsStatus -ne 'ok') {
     Write-Host "vc: this download is NOT VERIFIED — there was nothing to check it against" -ForegroundColor Yellow
     Write-Host "    at $vcSumsUrl" -ForegroundColor Yellow
-    Write-Host "    (that list is published from the next stable release onwards)." -ForegroundColor Yellow
+    # One line per cause, and the transitional one stays word for word: it is the
+    # only one of the three that is true today, and the repair must not be made
+    # by deleting the explanation that is correct. An unset cause says nothing
+    # extra rather than guessing — silence beats a confident wrong reason.
+    switch ($script:VCSumsUncheckedCause) {
+        'absent'      { Write-Host "    (that list is published from the next stable release onwards)." -ForegroundColor Yellow }
+        'unreachable' { Write-Host "    That list could not be fetched: the host was asked and never delivered it." -ForegroundColor Yellow }
+        'no-entry'    { Write-Host "    That list has no line for $vcAssetName — it is stale, or not the list these bytes belong to." -ForegroundColor Yellow }
+    }
     Write-Host "    Continuing with the install." -ForegroundColor Yellow
 }
 
