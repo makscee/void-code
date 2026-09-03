@@ -16,6 +16,21 @@ import { describe, expect, it } from 'vitest';
 // countdown keeps ticking in a real backgrounded window — that needs a real Electron run, which
 // nothing in this test suite has.
 
+// Second reason, measured later and on a different injury -- kept here because the test that
+// carried it (tests/splash-window.test.ts, on the loading window that no longer exists separately)
+// was removed with the second window, and this evidence must not go with it.
+//
+// Chromium's native occlusion tracking was switching the loading document off entirely. On
+// WIN11-VCLAB the page reported visibilityState 'hidden' on 11 consecutive samples while hasFocus
+// was true -- parsed, laid out, correct colours, and dark. Launching with
+// --disable-features=CalculateNativeWinOcclusion gave 'visible' 16 times running; setting this one
+// option and passing no launch flags at all gave 'visible' 14 times running, with the whole page on
+// the screenshot.
+//
+// So one flag answers two different injuries: there, a document that kept rendering while its
+// timers were slowed; here, a window that stands and produces no frames whatever. Whoever reads
+// this option as redundant because the countdown no longer needs it brings back the blank window.
+
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
 
 describe('the main window disables Chromium\'s background timer throttling', () => {

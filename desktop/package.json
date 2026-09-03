@@ -61,7 +61,9 @@
       "node_modules/node-pty/**/*"
     ],
     "asarUnpack": [
-      "node_modules/node-pty/**/*"
+      "node_modules/node-pty/**/*",
+      "dist/main/private-runtime.js",
+      "dist/main/private-runtime-worker.js"
     ],
     "extraResources": [
       {

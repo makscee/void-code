@@ -1,7 +1,14 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-export type StartupStage = 'readiness' | 'runtime-validation' | 'window-creation' | 'renderer-load';
+// A value, not a union: a union is erased before anything can look at it, and this list is exactly
+// what a test needs to be able to read. The type is derived from it, so the two cannot disagree.
+//
+// The two page loads are separate stages because they fail for different reasons and send the
+// reader to different places: 'loading-page-load' is a window and a local scriptless page,
+// 'renderer-load' is the built application bundle.
+export const STARTUP_STAGES = ['readiness', 'runtime-validation', 'window-creation', 'loading-page-load', 'renderer-load'] as const;
+export type StartupStage = (typeof STARTUP_STAGES)[number];
 export interface StartupDiagnostic {
   schema: 1;
   code: 'STARTUP_FAILED';

@@ -1,0 +1,51 @@
+/* Every colour here is stated outright. Nothing inherits a default: a page that leans on the
+   platform's default text colour reads as black on the window's #101216 background — that is the
+   defect that shipped once already, when a policy dropped the styles and left black on black. */
+html { background: #101216; }
+body {
+  margin: 0;
+  background: #101216;
+  color: #c9ced6;
+  font: 13px/18px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  box-sizing: border-box;
+  text-align: center;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* The one moving thing on screen, and the only reason a person believes the app is alive rather
+   than wedged: a still window says nothing during a start that can run for minutes. Pure CSS —
+   the page loads no script and reaches no network. */
+.spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-top-color: #f0b357;
+  animation: loading-spin 900ms linear infinite;
+}
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+/* Slowed rather than stopped: a person who asks for less motion still needs to see that something
+   is happening, and a frozen spinner reads exactly like the frozen window this replaced. */
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+h1 {
+  margin: 0;
+  font: 400 11px/13px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #c9ced6;
+}
+p { margin: 0; }
+p.status { color: #848b95; }
+/* Не прижата к низу: окно теперь во весь размер приложения, и подпись у нижнего края
+   отрывается от того, к чему относится. Держится группой с остальным, центром окна. */
+p.hint { margin-top: 8px; font-size: 11px; line-height: 15px; color: #5f666f; }

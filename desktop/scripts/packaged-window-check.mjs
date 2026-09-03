@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { mainWindowMinimumEdge } from './window-thresholds.mjs';
 
 const mac = process.platform === 'darwin' && process.arch === 'arm64';
 const windows = process.platform === 'win32' && process.arch === 'x64';
@@ -65,9 +66,21 @@ try {
     if (renderer.title) break;
     await sleep(100);
   }
+  // The window census names one window per process -- the first on-screen layer-0 window on macOS,
+  // MainWindowHandle on Windows -- and it can be asked before that window is on screen at all: the
+  // renderer reports a title from the loading page while the window is still being placed. A single
+  // sample taken at that moment measures whatever the census had. (It used to be worse: there was a
+  // second, smaller window during startup, and the census could name that one instead.) Sample until
+  // the census settles on a window that satisfies the assertion below; when none ever does, the last
+  // sample falls through to the same assertion and the same failure as before.
+  let native;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    native = await inspectNativeWindow(primary.pid, root);
+    if (native.visible && native.width >= mainWindowMinimumEdge && native.height >= mainWindowMinimumEdge) break;
+    await sleep(100);
+  }
   const processes = inventory();
-  const native = await inspectNativeWindow(primary.pid, root);
-  if (renderer.title !== 'Void Code' || renderer.visibility !== 'visible' || !renderer.href.endsWith('/renderer/index.html') || !processes.some((process) => process.command.includes('--type=renderer')) || !native.visible || native.width < 500 || native.height < 500) throw new Error(`normal window assertion failed: ${JSON.stringify({ renderer, native, processes })}`);
+  if (renderer.title !== 'Void Code' || renderer.visibility !== 'visible' || !renderer.href.endsWith('/renderer/index.html') || !processes.some((process) => process.command.includes('--type=renderer')) || !native.visible || native.width < mainWindowMinimumEdge || native.height < mainWindowMinimumEdge) throw new Error(`normal window assertion failed: ${JSON.stringify({ renderer, native, processes })}`);
   minimizeNativeWindow(primary.pid);
   if (windows) {
     const minimized = await inspectNativeWindow(primary.pid, root);
