@@ -1,3 +1,4 @@
+// rails:pin-on-coverage the three workspace tests added last pin behaviour that is already right, so nothing can go red; each was proved by mutating the implementation -- swallowing a cleanup error on the green path, starting the removal without awaiting it, and moving the workspace out of the seam were all killed
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../scripts/pi-bun-contract-lib.mjs';
 import { describe, expect, it, vi } from 'vitest';
@@ -272,6 +273,38 @@ describe('the workspace is removed however the smoke ends', () => {
   });
 });
 
+  it('reports a cleanup failure when the check itself passed, because it is the only news there is', async () => {
+    // The branch none of the five covered, found by mutation rather than by reading: swallowing this
+    // error left all seventeen tests green. The four covered pairs were body-ok/remove-ok,
+    // body-fails/remove-ok, body-fails/remove-fails and create-fails; this is the fifth.
+    //
+    // It is the same silent leak the whole seam exists to prevent, only on the green path. `rm` is
+    // called with force: true, and force silences ENOENT and nothing else -- EBUSY, EPERM and EACCES
+    // on a busy or foreign file still throw. A green smoke that quietly failed to delete its tree
+    // would be the one nobody looks at twice.
+    const { inSmokeWorkspace } = await smoke();
+    const failure = new Error('EBUSY: resource busy or locked');
+    await expect(inSmokeWorkspace({ create: async () => '/tmp/w', remove: async () => { throw failure; } }, async () => 'checked'))
+      .rejects.toBe(failure);
+  });
+
+  it('waits for the removal to finish before it reports anything', async () => {
+    // The sister of the same hole, and the one the pair matrix does not show: cleanup that is
+    // started but not awaited. Every assertion above is satisfied by `remove(workspace)` without the
+    // await -- the call happened, the order is right -- and the workspace still survives, because the
+    // one process.exit at the bottom of the script fires while rm is still running.
+    //
+    // The delay is a timer rather than a resolved promise on purpose: a microtask would settle in
+    // the same turn as the assertion and let a missing await through by luck.
+    const { inSmokeWorkspace } = await smoke();
+    let removed = false;
+    await inSmokeWorkspace({
+      create: async () => '/tmp/w',
+      remove: () => new Promise((resolve) => { setTimeout(() => { removed = true; resolve(undefined); }, 5); }),
+    }, async () => 'checked');
+    expect(removed, 'the smoke finished while the removal was still running, so the process can end before the tree is gone').toBe(true);
+  });
+
 describe('there is one way out of the smoke, and it runs the cleanup', () => {
   it('reaches no process.exit before the workspace has been unwound', () => {
     // The cost of the chosen shape, named by the implementer himself: now that `finally` is the only
@@ -292,5 +325,36 @@ describe('there is one way out of the smoke, and it runs the cleanup', () => {
     const above = source.slice(0, handler);
     expect((source.match(/process\s*\.\s*exit/g) ?? []).length, 'the smoke ends the process in more than one place, so which one runs the cleanup is a question again').toBe(1);
     expect(above, 'something above `await main()` ends the process with process.exit, and process.exit does not run finally -- the workspace it created stays on disk').not.toMatch(/process\s*\.\s*exit/);
+  });
+
+  it('holds the workspace through that seam, rather than beside it', () => {
+    // The level above the one already pinned. "There is no second process.exit" says the wrong way
+    // out is closed; it says nothing about the right way being taken. An ordinary try/finally
+    // refactor in this script would keep every existing test green while the seam sat in the library
+    // unused -- covered, tested, and called by nobody.
+    //
+    // So: the script makes exactly one workspace and removes it in exactly one place, and both sit
+    // inside the inSmokeWorkspace call. A refactor that moves either out fails here.
+    //
+    // Honest limit, and it is the reason this is the weakest test in the file: it reads source text.
+    // It says the call is written, not that a run cleaned anything up. Doing better needs the script
+    // executed with a forced failure after the workspace exists -- which means a provisioned Pi tree
+    // and an esbuild bundle, and that is the smoke itself, not a unit test.
+    const source = stripComments(readFileSync(new URL('../scripts/check-bundled-pi-smoke.mjs', import.meta.url), 'utf8'));
+    const start = source.indexOf('inSmokeWorkspace(');
+    expect(start, 'the smoke no longer calls inSmokeWorkspace at all').toBeGreaterThan(-1);
+
+    let depth = 0;
+    let end = start + 'inSmokeWorkspace'.length;
+    for (; end < source.length; end += 1) {
+      if ('([{'.includes(source[end])) depth += 1;
+      else if (')]}'.includes(source[end]) && (depth -= 1) === 0) break;
+    }
+    const held = source.slice(start, end);
+
+    expect((source.match(/mkdtemp\(/g) ?? []).length, 'the smoke makes more than one workspace, so one of them is outside the seam').toBe(1);
+    expect((source.match(/\brm\(/g) ?? []).length, 'the smoke removes a directory somewhere else as well').toBe(1);
+    expect(held, 'the workspace is created outside the call that is supposed to own it').toMatch(/mkdtemp\(/);
+    expect(held, 'the removal is written outside the call that is supposed to own it').toMatch(/\brm\(/);
   });
 });
