@@ -11,6 +11,11 @@ export type RuntimePlatform = 'darwin-arm64' | 'darwin-x64' | 'win32-x64';
 // The array the running code reads, exported so the two spellings can be compared at runtime.
 export const RUNTIME_PLATFORMS: readonly RuntimePlatform[];
 
+// The messages a person can be shown when a file the manifest names is not there. Declared here and
+// consumed by startup-diagnostic.ts so the whitelist and the dialog cannot drift from what the
+// validation actually throws.
+export const MISSING_RUNTIME_ASSET_MESSAGES: readonly string[];
+
 export interface RuntimeManifest {
   schema: 1;
   platform: RuntimePlatform;
