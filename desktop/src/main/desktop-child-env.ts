@@ -11,7 +11,7 @@ function value(parent: NodeJS.ProcessEnv, name: string, platform: DesktopPlatfor
   return found?.trim() ? found : undefined;
 }
 
-export function desktopChildEnv(platform: DesktopPlatform, parent: NodeJS.ProcessEnv, privateNode: string, authority?: StatusWriteAuthority, piPackageDir?: string): Record<string, string> {
+export function desktopChildEnv(platform: DesktopPlatform, parent: NodeJS.ProcessEnv, privateNode: string, authority?: StatusWriteAuthority): Record<string, string> {
   const env: Record<string, string> = { TERM: 'xterm-256color', COLORTERM: 'truecolor' };
   if (platform === 'darwin') {
     const home = value(parent, 'HOME', platform);
@@ -47,13 +47,6 @@ export function desktopChildEnv(platform: DesktopPlatform, parent: NodeJS.Proces
   // a stand and not the chat. The fix for that is an application setting, not an environment
   // variable, and it is separate work.
   env.VC_ACCESS_CHECK_HOST = resolveAccessCheckHost({});
-  // The Windows runtime is bundled into a single file, and in that mode Pi resolves its own
-  // package directory from process.execPath -- the directory of node.exe. PI_PACKAGE_DIR is Pi's
-  // own documented override (`pi --help` lists it) and config.js checks it FIRST. The value comes
-  // from the manifest, never from the parent environment: the empty environment above is a defence,
-  // not an oversight, and the parent must not get to point Pi at a package directory of its
-  // choosing. Without the variable Pi does not fail -- it silently reports version 0.0.0.
-  if (piPackageDir) env.PI_PACKAGE_DIR = piPackageDir;
   if (authority) {
     env.VC_DESKTOP_STATUS_PATH = authority.path;
     env.VC_DESKTOP_CHAT_ID = authority.chatId;

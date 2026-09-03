@@ -1,7 +1,7 @@
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { assemblyTarget, assertPiSourcePins, assertWindowsInstallablePaths, bundlePiRuntime, hoistPiBundledDependencies, shaFile, treeHash, vcBuildPlan } from './resource-assembly-lib.mjs';
+import { assemblyTarget, assertPiSourcePins, assertWindowsInstallablePaths, hoistPiBundledDependencies, shaFile, treeHash, vcBuildPlan } from './resource-assembly-lib.mjs';
 import { readBuildVersion, vcBuildArgs } from './build-version.mjs';
 
 // The vc inside the Windows bundle is built from the tree being packaged, the
@@ -107,22 +107,15 @@ try {
   await rm(path.join(staging, 'pi/node_modules/.package-lock.json'), { force: true });
   await hoistPiBundledDependencies(path.join(staging, 'pi'));
   await materializeTreeLinks(path.join(staging, 'pi'));
-  // Here for two reasons, both about order: AFTER assertPiSourcePins above, so Pi's tree was
-  // authenticated against an untouched source rather than against something we rewrote ourselves;
-  // and BEFORE treeHash below, so the manifest describes what actually reaches the user rather than
-  // an installed tree the installer will not contain. What bundling costs is written out in
-  // resource-assembly-lib.mjs, above bundlePiRuntime.
-  const piBundle = await bundlePiRuntime(path.join(staging, 'pi'), target.platform);
   await assertWindowsInstallablePaths(staging);
+  const piPackage = JSON.parse(await readFile(path.join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8'));
   const manifest = {
     schema: 1,
     platform: target.platform,
     build: { version: buildVersion.packageVersion, describe: buildVersion.stamp },
     vc: { version: vcVersion, sourceCommit: commit, path: 'vc/vc.exe', sha256: await shaFile(stagedVc) },
     node: { version: nodeVersion, source: win.node.source, sourceArchiveSha256: win.node.sourceArchiveSha256, path: 'node/node.exe', sha256: nodeHash, npm: { version: execFileSync(stagedNode, [privateNpm, '--version'], { encoding: 'utf8' }).trim() } },
-    // packageDir exists only because bundle mode moves Pi's getPackageDir() to the directory of
-    // node.exe. Without it Pi silently reports version 0.0.0 -- reproduced, not assumed.
-    pi: { version: piBundle.version, entry: `pi/${piBundle.entry}`, packageDir: `pi/${piBundle.packageDir}`, sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },
+    pi: { version: piPackage.version, entry: 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', sourcePackageJsonSha256: pins.pi.packageJsonSha256, sourceLockSha256: pins.pi.packageLockSha256, treeSha256: await treeHash(path.join(staging, 'pi')) },
     fixture: { path: 'fixture/round-trip.js', sha256: await shaFile(path.join(staging, 'fixture/round-trip.js')) },
   };
   await writeFile(path.join(staging, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

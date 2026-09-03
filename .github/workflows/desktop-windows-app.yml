@@ -94,26 +94,6 @@ jobs:
               console.log(`verified ${item.into} against the pin`);
             }
           '
-      - name: Install the pinned Pi runtime the bundled smoke bundles
-        working-directory: desktop
-        # package:win installs Pi into its own staging directory with the private
-        # Node, and never into runtime/pi -- so the smoke below, which builds a
-        # bundle with the same bundlePiRuntime production uses, has nothing to
-        # bundle without this. Same command the macOS provision path runs.
-        run: npm ci --prefix runtime/pi --ignore-scripts --no-audit --no-fund
-      - name: Run the bundled Pi smoke against the win32-x64 bundle
-        working-directory: desktop
-        # The step this job did not have, and its absence is why win32 had no
-        # executable verification path at all: everything else here packages an
-        # installer and uploads it, so the artifact leaving this job had never
-        # been started on the system it is for.
-        #
-        # The target is written out rather than taken from the runner. It would
-        # look right either way on windows-latest, and that is the point: the
-        # same silence is what let the macOS jobs check a darwin bundle for
-        # months. Before packaging, so a bundle that cannot load its extension
-        # stops the job instead of becoming a downloadable installer.
-        run: node scripts/check-bundled-pi-smoke.mjs --target win32-x64
       - name: Package the Windows installer
         working-directory: desktop
         # Through the npm script, never electron-builder by hand: package:win is
