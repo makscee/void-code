@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 // The three vocabularies that meet in a cross build, written down once. Node and
@@ -15,6 +15,10 @@ const ASSEMBLY_PLATFORMS = {
   'darwin-x64': { goos: 'darwin', goarch: 'amd64' },
   'win32-x64': { goos: 'windows', goarch: 'amd64' },
 };
+
+// The same names the bundled smoke checks against. Exported rather than repeated there: a second
+// list of the platforms we build is a second thing to forget when a third architecture arrives.
+export const ASSEMBLY_PLATFORM_NAMES = Object.keys(ASSEMBLY_PLATFORMS);
 
 /**
  * The Node pin for one platform, carrying the platform it is for.
@@ -142,6 +146,173 @@ export async function hoistPiBundledDependencies(piRoot) {
     }
   }
   await rm(bundled, { recursive: true });
+}
+
+// ---------------------------------------------------------------------------
+// Bundling Pi's runtime into a single file.
+//
+// Defender charges by the NUMBER of files, not by their size: 12,000 files of 8 KB scan in 40.5 s,
+// the same 96 MB in 12 files in 7.7 s. Pi's tree is 19,069 files, and the runtime integrity check
+// reads every one of them at startup. Bundled, the tree is 17 files, and a cold Windows start went
+// from 278-280 s to 11.6 s -- measured on the Windows machine, not extrapolated. Pruning the tree by
+// extension was the earlier, smaller step (134.8 s) and remains the way back.
+//
+// The entry point is dist/bun/cli.js, not dist/cli.js. That is Pi's own entry for being built into a
+// single artifact: it statically registers bedrock and the OAuth flows, which pi-ai deliberately
+// hides from bundlers behind variable specifiers -- "so bundlers cannot follow the import", in its
+// own words. Bundled through dist/cli.js instead, Pi dies the first time a provider is used.
+//
+// The price is in the file name. Pi's extension loader, outside bun mode, builds jiti's aliases with
+// require.resolve("typebox") and friends, eagerly, before any extension asks for anything -- so with
+// no node_modules on disk it kills EVERY extension, including the transport extension vc installs,
+// which is how the app gets a provider at all. The one mode where Pi serves extensions from the
+// artifact itself (virtualModules) is selected by isBunBinary, and that is computed from exactly one
+// thing: import.meta.url.includes("$bunfs" | "~BUN" | "%7EBUN") -- config.js:16. Pi 0.84.1 has no
+// flag, export or environment variable for it; its dist was grepped. Hence the name pi~BUN.mjs.
+//
+// Along with the extension loader, the flag switches four more branches in config.js, and that is
+// the whole of the cost:
+//   1. getPackageDir() moves to dirname(process.execPath) -- the directory of node.exe. Hence the
+//      manifest's packageDir and PI_PACKAGE_DIR in desktop-child-env.ts (config.js checks it FIRST,
+//      ahead of execPath). Without it Pi does not fail: it silently becomes version 0.0.0.
+//   2. The asset layout goes flat -- theme/, assets/, export-html/ instead of dist/modes/... That is
+//      exactly what Pi's own copy-binary-assets produces.
+//   3. detectInstallMethod() returns 'bun-binary', so Pi's self-update is off. For a pinned runtime
+//      that is what we want, but it is a change in behaviour, not nothing.
+//   4. jiti is given tryNative:false. Extensions are still transpiled.
+//
+// Two checks stand against a Pi version bump quietly taking this away, both on the bump's own path
+// in provision-pinned-pi-smoke.sh: check-pi-bun-contract.mjs reads Pi's source, and
+// check-bundled-pi-smoke.mjs loads the real extension against a bundle with no node_modules.
+const PI_BUNDLE_FILE = 'pi~BUN.mjs';
+const PI_BUNDLE_DIR = 'agent';
+// Pi's CJS dependencies (cross-spawn among them) call require() from inside an ESM bundle, and
+// photon-node reads its .wasm relative to __dirname. The banner gives them both.
+const PI_BUNDLE_BANNER = [
+  'import{createRequire as __piCreateRequire}from"node:module";',
+  'import{fileURLToPath as __piFileURLToPath}from"node:url";',
+  'import{dirname as __piDirname}from"node:path";',
+  'const require=__piCreateRequire(import.meta.url);',
+  'const __filename=__piFileURLToPath(import.meta.url);',
+  'const __dirname=__piDirname(__filename);',
+].join('');
+// Files Pi reads from disk at runtime rather than importing: a bundler knows nothing about them.
+// Left is where the package keeps them, right is where the flat bun-binary layout looks for them.
+// The list was read out of config.js rather than guessed: getThemesDir, getInteractiveAssetsDir,
+// getExportTemplateDir, getPackageJsonPath, getReadmePath, getChangelogPath.
+const PI_BUNDLE_ASSETS = [
+  ['package.json', 'package.json'],
+  ['README.md', 'README.md'],
+  ['CHANGELOG.md', 'CHANGELOG.md'],
+  ['dist/modes/interactive/theme/dark.json', 'theme/dark.json'],
+  ['dist/modes/interactive/theme/light.json', 'theme/light.json'],
+  ['dist/modes/interactive/theme/theme-schema.json', 'theme/theme-schema.json'],
+  ['dist/modes/interactive/assets/clankolas.png', 'assets/clankolas.png'],
+  ['dist/core/export-html/template.html', 'export-html/template.html'],
+  ['dist/core/export-html/template.css', 'export-html/template.css'],
+  ['dist/core/export-html/template.js', 'export-html/template.js'],
+  ['dist/core/export-html/vendor/highlight.min.js', 'export-html/vendor/highlight.min.js'],
+  ['dist/core/export-html/vendor/marked.min.js', 'export-html/vendor/marked.min.js'],
+];
+// esbuild cannot bundle native modules and should not: pi-tui loads its .node files through
+// createRequire at <bundle dir>/native/... Only the target platform's module is staged -- the
+// darwin ones have no business in a Windows build.
+const PI_BUNDLE_NATIVE = {
+  'win32-x64': [['@earendil-works/pi-tui/native/win32/prebuilds/win32-x64/win32-console-mode.node', 'native/win32/prebuilds/win32-x64/win32-console-mode.node']],
+  'darwin-arm64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-arm64/darwin-modifiers.node', 'native/darwin/prebuilds/darwin-arm64/darwin-modifiers.node']],
+  'darwin-x64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-x64/darwin-modifiers.node', 'native/darwin/prebuilds/darwin-x64/darwin-modifiers.node']],
+};
+
+/**
+ * Where a bundle built for `platform` carries its native modules, relative to the bundle directory.
+ *
+ * The bundled smoke asks this to find out which platform a bundle was really built for, which is the
+ * one thing that distinguishes an honest run from one that quietly bundled the host. Exported rather
+ * than copied there: a second table would have to be kept in step with this one, and we have already
+ * found three defects of the shape "one agreement living in two places". A stale copy would fail
+ * safe -- an expected path that no longer exists makes the smoke red -- but red for the wrong reason
+ * is not free either, on a path that runs on every push and every release.
+ *
+ * The check it feeds is not made circular by sharing this table: the bundler is asked for the host's
+ * entry and the smoke for the target's, and it is that difference in key, not the paths themselves,
+ * that the pin is about.
+ */
+export function bundleNativeDestinations(platform) {
+  const staged = PI_BUNDLE_NATIVE[platform];
+  if (staged === undefined) throw new Error(`no Pi bundle layout for ${platform}`);
+  return staged.map(([, destination]) => destination);
+}
+
+// hoistPiBundledDependencies moves nested packages up a level, and it runs after the install, so
+// the same file lives in one of two places depending on whether it has been called yet. Ask both
+// rather than depend on the call order inside somebody else's script.
+async function piDependencyFile(piRoot, relative) {
+  const candidates = [
+    path.join(piRoot, 'node_modules', relative),
+    path.join(piRoot, 'node_modules/@earendil-works/pi-coding-agent/node_modules', relative),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await lstat(candidate);
+      return candidate;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  throw new Error(`Pi runtime dependency is missing: ${relative}`);
+}
+
+/**
+ * Collapse an installed Pi tree into one bundle plus the assets it reads from disk. Returns what the
+ * manifest needs: the entry path and the package directory, both relative to `piRoot`, and the
+ * package version -- read BEFORE node_modules stops existing.
+ *
+ * Call after assertPiSourcePins, so authenticity is checked against an untouched source, and before
+ * treeHash, so the manifest describes what actually ships.
+ */
+export async function bundlePiRuntime(piRoot, platform) {
+  const native = PI_BUNDLE_NATIVE[platform];
+  if (native === undefined) throw new Error(`no Pi bundle layout for ${platform}`);
+  const packageRoot = path.join(piRoot, 'node_modules/@earendil-works/pi-coding-agent');
+  const version = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8')).version;
+  const bundleDir = path.join(piRoot, PI_BUNDLE_DIR);
+  await mkdir(bundleDir, { recursive: true });
+
+  const { build } = await import('esbuild');
+  const result = await build({
+    entryPoints: [path.join(packageRoot, 'dist/bun/cli.js')],
+    outfile: path.join(bundleDir, PI_BUNDLE_FILE),
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    // This build's pinned Node, not the newest one esbuild knows about.
+    target: 'node22',
+    banner: { js: PI_BUNDLE_BANNER },
+    logLevel: 'warning',
+  });
+  if (result.errors.length > 0) throw new Error(`Pi bundle failed: ${JSON.stringify(result.errors)}`);
+
+  for (const [from, to] of PI_BUNDLE_ASSETS) {
+    const destination = path.join(bundleDir, to);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(path.join(packageRoot, from), destination);
+  }
+  // photon-node, inside the bundle, reads its .wasm as __dirname + '/photon_rs_bg.wasm'.
+  const photon = await piDependencyFile(piRoot, '@silvia-odwyer/photon-node/photon_rs_bg.wasm');
+  await cp(photon, path.join(bundleDir, 'photon_rs_bg.wasm'));
+  for (const [from, to] of native) {
+    const destination = path.join(bundleDir, to);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(await piDependencyFile(piRoot, from), destination);
+  }
+
+  // The line the whole exercise is for.
+  await rm(path.join(piRoot, 'node_modules'), { recursive: true, force: true });
+  return {
+    version,
+    entry: `${PI_BUNDLE_DIR}/${PI_BUNDLE_FILE}`,
+    packageDir: PI_BUNDLE_DIR,
+  };
 }
 
 export async function assertWindowsInstallablePaths(root) {

@@ -63,6 +63,10 @@ jobs:
         # Native, on every row: this step assembles for the runner and then runs
         # the pinned Pi smoke, which executes what it assembled. It is told
         # nothing about the row's architecture for exactly that reason.
+        #
+        # It also bundles Pi and runs that, which is a configuration macOS does
+        # not ship -- deliberately, and the reason is written beside the call in
+        # provision-pinned-pi-smoke.sh rather than repeated here.
         run: desktop/scripts/provision-pinned-pi-smoke.sh
       - name: Cache the pinned Node for the architecture this row builds
         # The private runtime staged into the bundle is architecture-specific,
