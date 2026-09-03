@@ -1,3 +1,4 @@
+// rails:pin-on-coverage the three dialog tests at the foot of this file guard scope rather than drive behaviour, so they cannot go red; each was proved against a candidate implementation -- answering "a file is missing" to every failure, making the argument required, and appending the diagnostic message to the dialog were all killed, and two of them only after this file's own weakness was mutated out
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,5 +62,49 @@ describe('a startup failure says which of the two screens failed', () => {
     expect(applicationPage, 'could not locate loadApplicationPage in src/main/index.ts').not.toBe('');
     expect(loadingPage, 'the loading page still reports itself as a plain renderer load').toMatch(/startupStage\('loading-page-load'/);
     expect(applicationPage, 'the application page no longer reports the renderer load stage').toMatch(/startupStage\('renderer-load'/);
+  });
+});
+
+describe('the startup dialog says more only where it can', () => {
+  // Deliberately not hoisted into a `const` at this level, and both reasons were found by mutating:
+  // a version that throws without an argument would take the whole file down at collection time
+  // instead of failing one named test, and an expectation derived from the implementation moves
+  // with it -- a dialog that answered "a file is missing" to everything would still equal itself.
+  const claimsSomethingIsMissing = /missing|absent|not found|gone/i;
+
+  it('still answers with the general message when nothing is handed to it', () => {
+    // The existing secret test calls startupDialogMessage() with no argument and pins its exact
+    // words. Making the parameter required would turn that test red, and the tempting repair is to
+    // edit the test -- which is how a check written against leaking secrets gets quietly reworded.
+    // So the no-argument call keeps working, and this says so out loud rather than leaving it to be
+    // discovered.
+    const text = startupDialogMessage();
+    expect(text).toContain('Reinstall');
+    expect(text, 'the message shown when the cause is unknown claims a file is missing').not.toMatch(claimsSomethingIsMissing);
+  });
+
+  it('leaves every other startup failure alone', () => {
+    // Scope. A renderer that failed to load is not a missing file, and nothing about this change
+    // should alter what that person is told.
+    for (const failure of [
+      startupDiagnostic('renderer-load', new Error('renderer failed to load'), '0.1.0', '2026-09-03T00:00:00.000Z'),
+      startupDiagnostic('window-creation', new Error('window creation failed'), '0.1.0', '2026-09-03T00:00:00.000Z'),
+      startupDiagnostic('runtime-validation', new Error('Node resource hash mismatch'), '0.1.0', '2026-09-03T00:00:00.000Z'),
+    ]) {
+      expect(startupDialogMessage(failure), `${failure.error.message} changed the dialog it produces`).toBe(startupDialogMessage());
+      expect(startupDialogMessage(failure), `${failure.error.message} is told a file is missing when it is not`).not.toMatch(claimsSomethingIsMissing);
+    }
+  });
+
+  it('cannot be turned into a leak by what it is now given', () => {
+    // The dialog used to take nothing, so it could not leak. It now takes data derived from an
+    // error, and that is a new surface: the whitelist upstream is what keeps it safe, and this
+    // proves the two still hold together rather than assuming it.
+    const secret = 'TOKEN_very_secret_123';
+    const hostile = new Error(`private runtime is missing ${secret}`);
+    hostile.name = `${secret}Error`;
+    const text = startupDialogMessage(startupDiagnostic('runtime-validation', hostile, '0.1.0', '2026-09-03T00:00:00.000Z'));
+    expect(text).not.toContain(secret);
+    expect(text).toBe(startupDialogMessage());
   });
 });

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolvePrivateRuntime, sha256File, treeSha256 } from '../src/main/resources';
+import { startupDiagnostic, startupDialogMessage } from '../src/main/startup-diagnostic';
 
 const roots: string[] = [];
 function fixture(): string {
@@ -81,5 +82,92 @@ describe('private runtime manifest', () => {
   it('preserves npm links outside the trusted Pi tree', () => {
     const root = fixture(); symlinkSync('node', path.join(root, 'node/bin/npm'), 'file'); symlinkSync('node', path.join(root, 'node/bin/npx'), 'file');
     expect(resolvePrivateRuntime(root).node).toBe(path.join(root, 'node/bin/node'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defender quarantined vc.exe out of an installed application on a live machine -- five
+// Trojan:Win32/Bearfoos.A!ml detections in seven hours, one of them inside the installer as it
+// unpacked. Integrity checking then did its job: the tree no longer matched the manifest and the app
+// refused to start. What the person saw was "Unexpected startup error".
+//
+// That text is not carelessness, and it took reproducing the whole chain to see why: startupDiagnostic
+// passes through only messages on a whitelist, and Node's ENOENT carries the full path of the file.
+// Letting it through would hand the diagnostic exactly what the whitelist exists to keep out. So the
+// hole is not the wording -- it is that no safe message for "the file is gone" exists to put on the
+// list.
+//
+// checkedPath is where it belongs: every file a manifest names passes through it, and it is the only
+// place that can tell "not there" from "contents differ". A fixed string with the kind of asset and
+// no place on disk is safe by construction, which is what makes it listable.
+// ---------------------------------------------------------------------------
+describe('a runtime asset that is gone is reported as gone', () => {
+  for (const [asset, target, names] of [
+    ['the runtime manifest', 'manifest.json', /manifest/i],
+    ['vc', 'vc/bin/vc', /\bvc\b/i],
+    ['Node', 'node/bin/node', /node/i],
+    ['the round-trip fixture', 'fixture/test.js', /fixture/i],
+    ['the Pi entry point', 'pi/cli.js', /pi/i],
+    ['the Pi tree', 'pi', /pi/i],
+  ] as const) {
+    it(`says ${asset} is missing, without saying where it was`, () => {
+      const root = fixture();
+      rmSync(path.join(root, target), { recursive: true, force: true });
+
+      let thrown: Error | undefined;
+      try { resolvePrivateRuntime(root); } catch (error) { thrown = error as Error; }
+      expect(thrown, `a missing ${asset} was accepted`).toBeInstanceOf(Error);
+      const message = thrown?.message ?? '';
+
+      // The load-bearing half. Node's own ENOENT reads "ENOENT: no such file or directory, lstat
+      // '/var/folders/.../pi/cli.js'" -- a whole path, including the user's account name on a real
+      // installation. A message with nothing locational in it is one the whitelist can carry.
+      expect(message, 'the refusal carries a path, so it cannot be let through the diagnostic whitelist').not.toMatch(/[\\/]/);
+      expect(message, 'the refusal is a raw filesystem error').not.toContain('ENOENT');
+      expect(message, 'the refusal names the temporary root it happened to run in').not.toContain(root);
+      expect(message, 'the refusal repeats the manifest-relative path').not.toContain(target);
+
+      // The other half: it has to say what is wrong and about what, or it is no better than the
+      // "Unexpected startup error" it replaces.
+      expect(message, 'the refusal does not say the asset is missing').toMatch(/missing|absent|not found|gone/i);
+      expect(message, `the refusal does not say it was ${asset}`).toMatch(names);
+
+      // And the point of all of it: this message reaches the person. A refusal that the whitelist
+      // still swallows leaves the app saying "Unexpected startup error" exactly as it does today,
+      // and this whole change would be invisible from outside.
+      const diagnostic = startupDiagnostic('runtime-validation', thrown, '0.1.0', '2026-09-03T00:00:00.000Z');
+      expect(diagnostic.error.message, 'the refusal is not on the diagnostic whitelist, so the person still sees "Unexpected startup error"').toBe(message);
+    });
+  }
+
+  it('tells the person their file is missing and what to do about it', async () => {
+    // The end of the chain, built from the real error rather than from a string typed here: the
+    // dialog is the only part of this a person ever reads, and pinning it against an invented
+    // message would prove the test agrees with itself.
+    const root = fixture();
+    rmSync(path.join(root, 'vc/bin/vc'));
+    let thrown: Error | undefined;
+    try { resolvePrivateRuntime(root); } catch (error) { thrown = error as Error; }
+    const text = startupDialogMessage(startupDiagnostic('runtime-validation', thrown, '0.1.0', '2026-09-03T00:00:00.000Z'));
+
+    expect(text, 'the dialog does not say a file is missing').toMatch(/missing|absent|not found|gone/i);
+    expect(text, 'the dialog does not say what to do about it').toMatch(/reinstall|install again/i);
+    expect(text, 'the dialog leaks a path').not.toMatch(/[\\/]/);
+
+    // The implementer's caveat, and it is right: a missing file is not proof of an antivirus. A bad
+    // install and a disk cleaner do the same thing, and the advice is the same either way -- so if
+    // the text names a culprit at all, it has to name it as the likely one and not as the fact.
+    if (/antivirus|anti-virus|defender|security software/i.test(text)) {
+      expect(text, 'the dialog states an antivirus removed the file as though it knew').toMatch(/usually|often|most commonly|typically|may |might |can be|sometimes|likely/i);
+    }
+  });
+
+  it('still tells a changed file apart from a missing one', () => {
+    // Missing and tampered are different faults with different answers -- reinstall against
+    // reinstall-and-suspect-the-disk -- and collapsing them into one message would be a cheaper way
+    // to pass everything above.
+    const root = fixture();
+    writeFileSync(path.join(root, 'node/bin/node'), 'changed');
+    expect(() => resolvePrivateRuntime(root)).toThrow('Node resource hash mismatch');
   });
 });
