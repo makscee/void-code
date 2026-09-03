@@ -38,12 +38,37 @@ jobs:
       - name: Validate auth-sync commit message
         run: ruby .github/scripts/check-release-auth-commit-message.rb
 
+  # The Windows Go suite gated pull requests and gated nothing that publishes.
+  # This workflow ran one `go test`, on ubuntu-latest, and the chain
+  # test + desktop-pinned-pi-smoke -> build -> release -> publish-auth never
+  # mentioned Windows: internal/harness/cmdline_windows_test.go and
+  # internal/update/replace_windows_test.go are not so much as compiled there,
+  # and the only thing here that ever built GOOS=windows was the cross-build
+  # matrix below, which compiles the product and runs none of its tests. So a
+  # Windows-only defect could go red on the pull request and be merged anyway,
+  # or arrive by a path that had no pull request at all, and ship in
+  # vc-windows-amd64.exe and in the installer built around it with every gate on
+  # the release run green.
+  #
+  # This call is that gate, and it is deliberately the same file test.yml calls
+  # on every branch push -- not a job of the same shape written out here. A copy
+  # in a tag-triggered workflow is a description no branch push can reach: free
+  # to drift, and the copy that drifts is the one nobody runs, so a green branch
+  # run would say nothing about what qualifies the release. Everything the gate
+  # owes -- the whole module, the fixture build tag, actions pinned by commit
+  # SHA, no continue-on-error and no `if:` -- is written once, in that file.
+  # What is owed here is the call itself: unconditional, and named in
+  # `build.needs` so publication cannot outrun it.
+  test-windows:
+    name: Test (Windows)
+    uses: ./.github/workflows/windows-go-tests.yml
+
   desktop-pinned-pi-smoke:
     name: Full desktop Vitest gate
     uses: ./.github/workflows/desktop-tests.yml
 
   build:
-    needs: [test, desktop-pinned-pi-smoke]
+    needs: [test, test-windows, desktop-pinned-pi-smoke]
     name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:

@@ -4,10 +4,56 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/makscee/void-code/internal/ccjson"
 )
+
+// windowsCredentialPermGap stands in for the 0600 assertion on Windows, where the
+// mode bits do not exist to assert.
+//
+// It rides on t.Log, and that means it is NOT visible in a green CI run: `go test`
+// without -v suppresses the output of passing tests. Claiming otherwise was our own
+// unchecked assertion, and it is corrected here rather than papered over by turning
+// -v on for the whole suite — a switch that would print thousands of lines so that
+// one of them could be this. An operator-visible disclosure, if it is ever wanted,
+// wants its own workflow step or $GITHUB_STEP_SUMMARY, not a louder test runner.
+//
+// Who it is for, then: the reader of this file, and of a -v run someone asks for on
+// purpose. Same statement as the KNOWN GAP note on writeAtomic in ccjson.go.
+const windowsCredentialPermGap = "KNOWN GAP (windows): the 0600 assertion is not run here — " +
+	"~/.claude.json is a credential file and writeAtomic asks for 0600, but Windows has no POSIX " +
+	"mode bits (Chmod there only toggles the read-only attribute, and 0600 keeps owner-write, so it " +
+	"is a no-op and Stat reports 0666). The file is left with the NTFS ACL inherited from the user profile " +
+	"directory, which on a stock profile admits only SYSTEM, Administrators and the owner — close to 0600 in " +
+	"practice. What is absent is not the protection but the assertion of it: nothing here checks that the " +
+	"inheritance is the stock one. See writeAtomic in ccjson.go."
+
+// assertCredentialFilePerm asserts that the written credential file is
+// readable and writable by its owner only.
+//
+// On POSIX that is the literal mode check the package promises. On Windows the
+// property does not exist to be checked — see windowsCredentialPermGap — so the
+// gap is reported and only what Windows can still answer is asserted: that the
+// path is a regular file that was actually created.
+func assertCredentialFilePerm(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Log(windowsCredentialPermGap)
+		if !info.Mode().IsRegular() {
+			t.Errorf("mode: want a regular file, got %v", info.Mode())
+		}
+		return
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("file perm: want 0600, got %04o", perm)
+	}
+}
 
 // TestEnsureDefaults_Absent verifies that EnsureDefaults writes the full seed
 // when ~/.claude.json does not exist.
@@ -36,14 +82,8 @@ func TestEnsureDefaults_Absent(t *testing.T) {
 		t.Errorf("theme: want \"dark\", got %v", v)
 	}
 
-	// Verify mode is 0600.
-	info, err := os.Stat(target)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("file perm: want 0600, got %04o", perm)
-	}
+	// Verify mode is 0600 (POSIX only — see assertCredentialFilePerm).
+	assertCredentialFilePerm(t, target)
 }
 
 // TestEnsureDefaults_PartialFalse verifies that a file with
@@ -278,13 +318,7 @@ func TestEnsureFolderTrust_Absent(t *testing.T) {
 	if obj["hasCompletedOnboarding"] != true {
 		t.Errorf("hasCompletedOnboarding: want true, got %v", obj["hasCompletedOnboarding"])
 	}
-	info, err := os.Stat(target)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("perm: want 0600 got %04o", perm)
-	}
+	assertCredentialFilePerm(t, target)
 }
 
 // TestEnsureFolderTrust_PreservesExisting: merges trust without clobbering

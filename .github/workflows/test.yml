@@ -35,6 +35,22 @@ jobs:
       - name: Validate desktop CI gate and mutations
         run: ruby .github/scripts/test-desktop-ci-contract.rb
 
+  # The Windows Go suite is described in exactly one place --
+  # .github/workflows/windows-go-tests.yml -- and both callers reach it through
+  # `uses:`. Here, unconditionally: every branch push and every pull request
+  # runs it. In release.yml the same file is called before anything publishes.
+  # That is what makes a green run on a branch evidence about the release: the
+  # steps are not similar, they are the same file. It was briefly written out
+  # inline in both, which is two descriptions free to drift, and the copy in the
+  # tag-triggered workflow was the one no branch push ever ran.
+  #
+  # Why it exists at all, and what it costs, is stated in that file rather than
+  # restated here, because restating it here is the mistake this arrangement
+  # removes.
+  test-windows:
+    name: Test (Windows)
+    uses: ./.github/workflows/windows-go-tests.yml
+
   desktop-pinned-pi-smoke:
     name: Full desktop Vitest gate
     uses: ./.github/workflows/desktop-tests.yml

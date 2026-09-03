@@ -6,9 +6,65 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// vcBinaryName is the file name to build the subprocess-under-test into.
+//
+// The ".exe" is not cosmetic on Windows, it is the whole test. `go build -o
+// <name>` writes exactly <name>: cmd/go appends cfg.ExeSuffix only when -o is
+// absent or names a directory (cmd/go/internal/work/build.go, runBuild). The
+// resulting extension-less file is a valid PE, but exec.Command can never start
+// it: for a path containing ':' or a separator, os/exec on Windows resolves the
+// name through findExecutable (lp_windows.go), which for a name without an
+// extension tries only <name>+PATHEXT entries — <name> itself is never tried —
+// and returns ErrNotExist. CombinedOutput then reports an error with empty
+// output and no elapsed time, which is exactly what the windows-latest run
+// recorded: `vc output ""` and `vc elapsed: 0s`. The process never ran, so the
+// assertion about its message was the only one that could fail.
+func vcBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "vc.exe"
+	}
+	return "vc"
+}
+
+// childEnv builds the environment for the vc subprocess.
+//
+// The three VC-relevant entries are the whole point of the test and are set on
+// every platform. Everything else is Windows-only because a Windows process
+// cannot be handed a three-entry environment and be expected to behave:
+//
+//   - USERPROFILE, not HOME, is what os.UserHomeDir reads on Windows, and it is
+//     what internal/config.CacheDir builds ~/.void-code from. Without it the
+//     child would either fall back to the real user profile (reading the
+//     developer's actual token) or fail home resolution outright — neither is
+//     the "no usable token" condition this test means to create.
+//   - SystemRoot, PATH, PATHEXT, TEMP and TMP are how Windows locates system
+//     DLLs, helper executables and scratch space; a process started without
+//     them fails for reasons unrelated to auth.
+//
+// Names absent from the parent environment are not forwarded as empty entries.
+func childEnv(homeDir, authHost string) []string {
+	env := []string{
+		"HOME=" + homeDir,
+		"VC_AUTH_HOST=" + authHost,
+		// Prevent any auto-update network calls
+		"VC_DISABLE_UPDATE_CHECK=1",
+	}
+	if runtime.GOOS != "windows" {
+		return env
+	}
+	env = append(env, "USERPROFILE="+homeDir)
+	for _, name := range []string{"SystemRoot", "PATH", "PATHEXT", "TEMP", "TMP"} {
+		if v, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
+}
 
 // TestIsStdinTTY_NotATTY verifies isStdinTTY returns false when stdin is a regular file.
 func TestIsStdinTTY_NotATTY(t *testing.T) {
@@ -63,7 +119,7 @@ func TestNonTTY_ExpiredToken_FailsFast(t *testing.T) {
 
 	// Build vc binary into a temp dir.
 	tmpDir := t.TempDir()
-	vcBin := filepath.Join(tmpDir, "vc")
+	vcBin := filepath.Join(tmpDir, vcBinaryName())
 	buildCmd := exec.Command("go", "build",
 		"-ldflags", "-X github.com/makscee/void-code/internal/version.Version=test",
 		"-o", vcBin, ".")
@@ -75,6 +131,15 @@ func TestNonTTY_ExpiredToken_FailsFast(t *testing.T) {
 
 	// Plant a fake token so token-missing fast-path is not triggered;
 	// the 401 from the auth server will trigger the expired-token path.
+	//
+	// NOTE (measured, not fixed here): this plants nothing vc reads. The token
+	// vc loads is <home>/.void-code/token (internal/auth/tokenstore.go
+	// tokenDir+tokenPath), not <home>/void-code-home/token, so on every
+	// platform the run below exercises the token-MISSING branch of the gate,
+	// not the expired one — the observed stderr is "session token missing or
+	// expired", and the 401 stub is never called. Left as is: pointing the file
+	// at the real path would flip the gate to logged-in and spawn Pi, which is
+	// a different test. Fixing that belongs with whoever owns this assertion.
 	vcHome := filepath.Join(tmpDir, "void-code-home")
 	if err := os.MkdirAll(vcHome, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -85,8 +150,8 @@ func TestNonTTY_ExpiredToken_FailsFast(t *testing.T) {
 	}
 
 	// Run vc -- -p "say OK" with:
-	//   stdin  = /dev/null  (non-TTY)
-	//   HOME   = tmpDir     (so ~/.void-code resolves to tmpDir/.void-code)
+	//   stdin  = /dev/null  (NUL on Windows — non-TTY either way)
+	//   home   = tmpDir     (HOME on POSIX, USERPROFILE on Windows — see childEnv)
 	//   VC_AUTH_HOST = authSrv.URL (points at the 401-returning stub)
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -96,12 +161,7 @@ func TestNonTTY_ExpiredToken_FailsFast(t *testing.T) {
 
 	cmd := exec.Command(vcBin, "--", "-p", "say OK")
 	cmd.Stdin = devNull
-	cmd.Env = []string{
-		"HOME=" + tmpDir,
-		"VC_AUTH_HOST=" + authSrv.URL,
-		// Prevent any auto-update network calls
-		"VC_DISABLE_UPDATE_CHECK=1",
-	}
+	cmd.Env = childEnv(tmpDir, authSrv.URL)
 
 	start := time.Now()
 	out, err := cmd.CombinedOutput()

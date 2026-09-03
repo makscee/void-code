@@ -447,7 +447,12 @@ const settings = optInSettings(releaseText);
 // A census of release.yml as it stands on 2026-08-23, which is the whole point:
 // after the desktop half is added, an ordinary tag must still produce exactly
 // this and nothing else.
-const TODAYS_JOBS = ['build', 'desktop-pinned-pi-smoke', 'publish-auth', 'release', 'test'];
+// test-windows joined the census on 2026-09-02: the Windows Go suite, called
+// from here and from test.yml through `uses:` so the release is qualified by
+// the same file a branch push runs. It is a gate, not a route to packaging --
+// it publishes nothing and carries no condition, which is why it belongs in
+// the set that runs on an ordinary tag.
+const TODAYS_JOBS = ['build', 'desktop-pinned-pi-smoke', 'publish-auth', 'release', 'test', 'test-windows'];
 const TODAYS_ASSETS = [
   'dist/SHA256SUMS',
   'dist/vc-darwin-amd64',

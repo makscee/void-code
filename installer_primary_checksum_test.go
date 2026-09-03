@@ -90,6 +90,7 @@ func requireSaidUnverified(t *testing.T, r mirrorResult) {
 }
 
 func TestShellInstallerVerifiesThePrimaryDownloadToo(t *testing.T) {
+	skipInstallShOnWindows(t)
 	if testing.Short() {
 		t.Skip("runs the shell installer with command fixtures")
 	}
