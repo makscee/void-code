@@ -22,6 +22,19 @@
 #
 # Local script params:
 #   -WithPi -WithoutPi -WithClaude -WithCodex
+#
+# TWO COPIES, AND THIS ONE IS THE SOURCE. On every stable release
+# .github/workflows/release.yml copies this file over
+# void-auth/public/vc/install.ps1 — the copy served at /vc/install.ps1, the one
+# every `irm | iex` actually runs. The direction is one-way: edit here, and the
+# release carries it across. A fix made only in void-auth is erased by the next
+# stable release, and a fix made here reaches users only once one happens, so an
+# urgent one has to be applied in both places by hand.
+#
+# install.sh has carried this note on both of its copies for a while; install.ps1
+# carried it on neither, and the cost showed: the served copy sat 209 lines behind
+# this file — no sha256 check, no retries, no BOM — and nothing here said the other
+# copy existed.
 
 param(
     [switch]$WithPi,
