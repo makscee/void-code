@@ -24,6 +24,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
+import { clearTimeout, setTimeout } from 'node:timers';
 import path from 'node:path';
 import { assemblyTarget, hoistPiBundledDependencies } from './resource-assembly-lib.mjs';
 import { bundleForSmoke, inSmokeWorkspace, piSmokeBootstrapPlan, piSmokeRunEnv, piSmokeTarget } from './bundled-pi-smoke-lib.mjs';
@@ -81,19 +82,6 @@ async function main() {
     const piRoot = path.join(work, 'pi');
     await cp(piSource, piRoot, { recursive: true, verbatimSymlinks: true });
     await hoistPiBundledDependencies(piRoot);
-    // Built through bundleForSmoke rather than by calling the bundler directly: it is what compares the
-    // platform the bundler was handed, and the native module the finished bundle carries, against the
-    // target that was asked for. Bundling for the host instead was a mutation the entire suite missed.
-    const bundle = await bundleForSmoke({ piRoot, target });
-
-    // The premise everything below rests on. If node_modules survived, green means nothing: the
-    // extension could have loaded the old way, through aliases resolved from disk.
-    if (existsSync(path.join(piRoot, 'node_modules'))) {
-      die('the smoke\'s premise', '  node_modules survived the bundling, so the checks below prove nothing:\n  the loader\'s aliases can still be resolved from disk.');
-    }
-
-    const entry = path.join(piRoot, bundle.entry);
-    const packageDir = path.join(piRoot, bundle.packageDir);
     const home = path.join(work, 'home');
     await mkdir(home, { recursive: true });
 
@@ -154,7 +142,10 @@ async function main() {
         die('building the bootstrap stub, not the bundle', `  go build failed for ${stub.source}:\n${`${error.stdout ?? ''}${error.stderr ?? ''}${error.message ?? ''}`.split('\n').slice(0, 8).map((line) => `    ${line}`).join('\n')}`);
       }
 
-      const run = (args, env) => {
+      // The entry point is an argument because this smoke now runs two of them: the installed tree
+      // before bundling, and the bundle after. They are the two roads the extension reaches Pi's
+      // Responses helpers by, and each is a product -- macOS ships the first, Windows the second.
+      const run = (entry, packageDir, args, env) => {
         try {
           return execFileSync(process.execPath, [entry, ...args], {
             cwd: work,
@@ -168,8 +159,30 @@ async function main() {
         }
       };
 
+      const turn = ['-e', extension, '--provider', 'void-codex', '--model', models[0], '-p', 'PING'];
+      const turnEnv = { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, PI_SKIP_VERSION_CHECK: '1' };
+
+      // 0. The road macOS ships on, and it has to be checked before the tree is bundled because
+      // bundling destroys it. Every target this smoke runs is bundled, so without this the resolver
+      // road is exercised by nothing at all -- and it is half the product.
+      const installed = path.join(piRoot, 'node_modules/@earendil-works/pi-coding-agent');
+      const onInstalled = run(path.join(installed, 'dist/cli.js'), installed, turn, turnEnv);
+      if (onInstalled.failed !== undefined || !onInstalled.includes(reply)) {
+        die('holding a conversation on the installed tree, before any bundling', `  This is what macOS ships: Pi installed, its Responses helpers reached through\n  import.meta.resolve. A failure here is not about the bundle at all.\n${`${onInstalled.failed ?? onInstalled}`.split('\n').slice(0, 10).map((line) => `    ${line}`).join('\n')}`);
+      }
+
+      // Built through bundleForSmoke rather than by calling the bundler directly: it is what compares
+      // the platform the bundler was handed, and the native module the finished bundle carries,
+      // against the target that was asked for. Bundling for the host was a mutation the suite missed.
+      const bundle = await bundleForSmoke({ piRoot, target });
+      if (existsSync(path.join(piRoot, 'node_modules'))) {
+        die('the smoke\'s premise', '  node_modules survived the bundling, so the checks below prove nothing:\n  the loader\'s aliases can still be resolved from disk.');
+      }
+      const entry = path.join(piRoot, bundle.entry);
+      const packageDir = path.join(piRoot, bundle.packageDir);
+
       // 1. The provider the app connects a model through.
-      const listed = run(['-e', extension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer });
+      const listed = run(entry, packageDir, ['-e', extension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer });
       if (listed.failed !== undefined) {
         die('running the bundle with the real extension', `  The entry point did not survive --list-models. Output:\n${listed.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
       }
@@ -183,7 +196,7 @@ async function main() {
       }
 
       // 2. The other silent failure of the same mode: the package directory is not found.
-      const version = run(['--version'], {});
+      const version = run(entry, packageDir, ['--version'], {});
       if (version.failed !== undefined) die('running the bundle', `  --version did not survive:\n${version.failed.split('\n').slice(0, 8).map((line) => `    ${line}`).join('\n')}`);
       const printed = version.trim();
       if (printed === '0.0.0') {
@@ -196,13 +209,7 @@ async function main() {
       // 3. The turn itself, which is the whole point and was the thing nobody checked. Registration and
       // the version are still asserted above, because they name a different failure: "no provider at
       // all" and "a provider that cannot answer" send a reader to different places.
-      const spoken = run(['-e', extension, '--provider', 'void-codex', '--model', models[0], '-p', 'PING'], {
-        VC_BOOTSTRAP_EXECUTABLE: stub.output,
-        VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer,
-        // The same thing vc sets for the desktop, and for the same reason: a check that reaches the
-        // internet to ask about versions is a check that fails when the internet does.
-        PI_SKIP_VERSION_CHECK: '1',
-      });
+      const spoken = run(entry, packageDir, turn, turnEnv);
         if (spoken.failed !== undefined) {
         die('holding a conversation on the bundled runtime', `  The bundle registers its provider and lists its models, and then cannot answer. Output:\n${spoken.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}\n\n  The usual cause: something in the extension resolves a module path on disk -- the transport\n  extension calls import.meta.resolve('@earendil-works/pi-ai/compat') and loads a file next to\n  it -- and a bundle has no disk to resolve against. Registration does not touch that path;\n  building the request does.`);
       }
@@ -210,7 +217,7 @@ async function main() {
         die('holding a conversation on the bundled runtime', `  The turn ended without the answer the canned relay sent. Expected ${reply} in:\n${spoken.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
       }
 
-      console.log(`bundled pi smoke: ${target} bundle, void-codex registered by the real extension (${models.join(', ')}), a turn answered ${reply}, version ${printed}, node_modules gone`);
+      console.log(`bundled pi smoke: ${target} bundle, void-codex registered by the real extension (${models.join(', ')}), a turn answered ${reply} on the installed tree and on the bundle, version ${printed}, node_modules gone`);
     } finally {
       relay.kill();
     }

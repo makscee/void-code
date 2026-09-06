@@ -262,6 +262,84 @@ async function piDependencyFile(piRoot, relative) {
   throw new Error(`Pi runtime dependency is missing: ${relative}`);
 }
 
+// The one thing the extension cannot get through a bundle, and the reason it needs a copy on disk.
+//
+// vc's transport extension asks for `@earendil-works/pi-ai/compat` with import.meta.resolve and then
+// loads `api/openai-responses-shared.js` from beside it -- the helpers that turn a conversation into
+// a Responses request and a Responses stream back into a message. Unbundled that works, because Pi's
+// extension loader hands jiti an alias map pointing at the real file. A bundle takes the other branch
+// (virtualModules), which serves imports and cannot answer import.meta.resolve at all -- measured,
+// including with the package staged beside the bundle and with NODE_PATH, both of which fail.
+//
+// So the files come along, and the extension reaches them by path. Not copied logic: the same files
+// from the same pinned tree, arriving by a different road.
+//
+// The closure is walked rather than listed. A list of fifteen names would be right on the day it was
+// written and silently short the first time Pi adds an import, and the failure would surface as a
+// broken conversation rather than a broken build.
+//
+// The way out that was named and not taken: pi-ai already registers bedrock and the OAuth flows for
+// its own bun build through explicit calls (setBedrockProviderModule, registerBundledOAuthFlowLoaders).
+// openai-responses-shared could be registered the same way and none of this would be needed. Asking
+// upstream for that was decided against on 2026-09-03, so this stays a symptom deliberately treated.
+const PI_VENDOR_DIR = 'vendor';
+const PI_VENDOR_ENTRY = 'api/openai-responses-shared.js';
+
+/** Every file `entry` reaches by static import, plus the bare specifiers it cannot reach by path. */
+async function importClosure(entry) {
+  const files = new Set();
+  const external = new Set();
+  const pending = [entry];
+  const specifiers = /(?:^|\n)\s*(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (files.has(file)) continue;
+    let source;
+    try {
+      source = await readFile(file, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
+    files.add(file);
+    for (const match of source.matchAll(specifiers)) {
+      const specifier = match[1] ?? match[2];
+      if (specifier === undefined) continue;
+      if (specifier.startsWith('.')) {
+        const resolved = path.resolve(path.dirname(file), specifier);
+        pending.push(resolved.endsWith('.js') ? resolved : `${resolved}.js`);
+      } else if (!specifier.startsWith('node:')) {
+        external.add(specifier);
+      }
+    }
+  }
+  return { files: [...files], external: [...external] };
+}
+
+/**
+ * Stage the Responses helpers the transport extension loads by path, and whatever they import.
+ *
+ * Laid out so ordinary resolution works from inside the copy: the pi-ai files keep their positions
+ * relative to `dist`, and the packages they name by bare specifier go in a node_modules beside them,
+ * which is the first place Node looks walking up from `vendor/pi-ai/api`.
+ */
+async function stagePiVendor(piRoot, bundleDir) {
+  const piAi = await piDependencyFile(piRoot, '@earendil-works/pi-ai/package.json');
+  const dist = path.join(path.dirname(piAi), 'dist');
+  const { files, external } = await importClosure(path.join(dist, PI_VENDOR_ENTRY));
+  const vendor = path.join(bundleDir, PI_VENDOR_DIR);
+  for (const file of files) {
+    const destination = path.join(vendor, 'pi-ai', path.relative(dist, file));
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(file, destination);
+  }
+  for (const name of external) {
+    const packageJson = await piDependencyFile(piRoot, `${name}/package.json`);
+    await cp(path.dirname(packageJson), path.join(vendor, 'node_modules', name), { recursive: true });
+  }
+  return { files: files.length, external };
+}
+
 /**
  * Collapse an installed Pi tree into one bundle plus the assets it reads from disk. Returns what the
  * manifest needs: the entry path and the package directory, both relative to `piRoot`, and the
@@ -306,12 +384,16 @@ export async function bundlePiRuntime(piRoot, platform) {
     await cp(await piDependencyFile(piRoot, from), destination);
   }
 
+  // Staged before node_modules goes, because that is where these files come from.
+  const vendor = await stagePiVendor(piRoot, bundleDir);
+
   // The line the whole exercise is for.
   await rm(path.join(piRoot, 'node_modules'), { recursive: true, force: true });
   return {
     version,
     entry: `${PI_BUNDLE_DIR}/${PI_BUNDLE_FILE}`,
     packageDir: PI_BUNDLE_DIR,
+    vendor,
   };
 }
 
