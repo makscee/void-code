@@ -93,12 +93,49 @@ func IsInstalled() bool {
 	return err == nil
 }
 
-// InstallInstructions returns copy-pasteable Pi install guidance.
-func InstallInstructions() string {
-	return "Re-run the VC installer to provision its managed Pi runtime."
+// vcDownloadPage is where a person gets an installed copy of VC. A bare binary
+// taken from the release page cannot install the runtime itself — vc resolves
+// the managed runtime and never provisions it — so the address has to travel
+// inside the message. 27.08 an external tester ran vc-darwin-arm64 from the
+// release page and was told to re-run an installer she had never run.
+const vcDownloadPage = "https://auth.makscee.ru/download"
+
+// installMarker is the directory a VC installation owns. Its presence is what
+// separates "VC was never installed here" from "VC is installed and its runtime
+// is broken": the runtime below it is the part reported missing.
+const installMarker = ".void-code"
+
+// MissingMessage returns the missing-runtime message for the current user.
+func MissingMessage() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Without a home directory there is no installation to speak of, and the
+		// bare-binary text is the one that holds true either way.
+		return MissingMessageFor("")
+	}
+	return MissingMessageFor(home)
 }
 
-// MissingMessage returns a concise missing-runtime message plus instructions.
-func MissingMessage() string {
-	return fmt.Sprintf("VC managed Pi runtime not found — Pi must be provisioned by VC\n%s", InstallInstructions())
+// MissingMessageFor returns the missing-runtime message for the installation
+// rooted at installRoot. The two situations it separates need opposite actions:
+// a binary that was never installed has to be installed, an installation whose
+// runtime is gone has to be repaired. One text for both sends half the readers
+// nowhere.
+func MissingMessageFor(installRoot string) string {
+	if installRoot == "" || !hasManagedInstall(installRoot) {
+		return fmt.Sprintf(
+			"VC is not installed on this computer — this is only the downloaded vc file, "+
+				"without the managed Pi runtime it needs to work.\n"+
+				"Install VC from %s and start it from there.",
+			vcDownloadPage)
+	}
+	return fmt.Sprintf(
+		"VC is installed on this computer, but its managed Pi runtime is missing or damaged: %s\n"+
+			"Install VC again from %s to put it back.",
+		filepath.Join(installRoot, installMarker, "runtime"), vcDownloadPage)
+}
+
+func hasManagedInstall(installRoot string) bool {
+	info, err := os.Stat(filepath.Join(installRoot, installMarker))
+	return err == nil && info.IsDir()
 }
