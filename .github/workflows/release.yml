@@ -263,6 +263,41 @@ jobs:
           merge-multiple: true
           path: desktop-installers
 
+      - name: Checksums for the bundles this run produced
+        # The bundles are 570 MB a person downloads and double-clicks, and until
+        # this step nothing on any route said what their bytes should be. The
+        # list the `release` job writes covers `vc-*` and version.json and is
+        # written by operands typed out by hand -- and it is that job's alone.
+        # This one does not amend it, append to it or re-upload it: a re-run of a
+        # desktop build must not be able to rewrite the bytes install.sh checks
+        # the CLI download against. A bundle with no published checksum costs one
+        # person one unverified download; a raced rewrite of the shared list
+        # costs everyone their installation. Two lists, two owners, no shared
+        # write.
+        #
+        # `*` rather than the three names, and written from inside the directory
+        # rather than into it, and both for reasons:
+        #
+        #   - the glob is whatever the download above brought back, so a fourth
+        #     architecture added to desktop-mac-app.yml's matrix lands in the
+        #     list with no edit here -- the same reason that download is by
+        #     pattern;
+        #   - written from inside, `sha256sum` prints bare basenames, which is
+        #     what install.sh's `awk '$2 == n'` looks a download up by. Run from
+        #     the workspace root it would print `desktop-installers/<name>`, a
+        #     list nothing can read;
+        #   - written INTO desktop-installers, so the two steps below carry it
+        #     with no path of its own: the subject-path signs it and the attach
+        #     glob publishes it, which is also why this step stands before them
+        #     rather than after. A path naming a file no artifact contains is
+        #     what this job's own gate refuses.
+        #
+        # It does not name itself: bash expands `*` before it performs the
+        # redirection, so the file does not exist when the glob is evaluated.
+        # Measured on fixtures in a scratch directory, not assumed.
+        working-directory: desktop-installers
+        run: sha256sum * > SHA256SUMS-desktop
+
       - name: Sign build provenance for the desktop builds
         # The same glob the attach step uses, over a directory holding nothing
         # but what the download brought back, so what is signed and what is
