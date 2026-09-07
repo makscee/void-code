@@ -1,9 +1,6 @@
 package pibin
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,14 +104,16 @@ const legacyMissingMessage = "VC managed Pi runtime not found — Pi must be pro
 // installer to re-run.
 const legacyInstallInstruction = "Re-run the VC installer to provision its managed Pi runtime."
 
-// messageForRoot is the message as it would be produced on a machine whose install
-// root is root. Both variables are set because os.UserHomeDir reads HOME on Unix and
-// USERPROFILE on Windows.
-func messageForRoot(t *testing.T, root string) string {
+// installManagedRuntime puts a managed installation into root whose Pi runtime is
+// gone: ~/.void-code/runtime exists, the entrypoint under it does not. Only the
+// directory is created, so an implementation may recognise the installation by
+// ~/.void-code or by ~/.void-code/runtime; which of the two it looks at is its own
+// decision.
+func installManagedRuntime(t *testing.T, root string) {
 	t.Helper()
-	t.Setenv("HOME", root)
-	t.Setenv("USERPROFILE", root)
-	return MissingMessage()
+	if err := os.MkdirAll(filepath.Join(root, ".void-code", "runtime"), 0700); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestMissingMessageSeparatesBareBinaryFromBrokenInstall pins the difference, not the
@@ -130,16 +129,11 @@ func TestMissingMessageSeparatesBareBinaryFromBrokenInstall(t *testing.T) {
 
 	// No managed installation at all — someone who unpacked a release binary into
 	// ~/Downloads and ran it from there.
-	bare := messageForRoot(t, root)
+	bare := MissingMessageFor(root)
 
-	// The same machine, now carrying a managed installation whose Pi runtime is gone.
-	// Only the directory is created, so an implementation may look for the install by
-	// ~/.void-code or by ~/.void-code/runtime and either way sees an installation here
-	// and none above. Which of the two it looks at is its own decision.
-	if err := os.MkdirAll(filepath.Join(root, ".void-code", "runtime"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	managed := messageForRoot(t, root)
+	// The same machine, now carrying an installation whose Pi runtime is gone.
+	installManagedRuntime(t, root)
+	managed := MissingMessageFor(root)
 
 	if strings.TrimSpace(bare) == strings.TrimSpace(managed) {
 		t.Fatalf("a binary that was never installed and an installation with a broken runtime get the same text: %q", bare)
@@ -172,38 +166,82 @@ func TestMissingMessageSeparatesBareBinaryFromBrokenInstall(t *testing.T) {
 		t.Fatalf("bare-binary message still sends a person to re-run an installer that was never run: %q", bare)
 	}
 
-	// The broken-install case keeps the old meaning — reinstall — but has to say which
-	// installation is broken, and the only way to know that is to have looked at the
-	// install root.
-	if !strings.Contains(managed, ".void-code") {
-		t.Fatalf("broken-install message does not name the managed runtime location: %q", managed)
+	// The difference has to be structural, not decorative — this is the thing the
+	// reader takes away from the message. Nothing is installed, so the bare-binary
+	// text has no installation to point at and must point at none; the broken-install
+	// text names the one it found, which is how the reader learns VC is installed here
+	// and where to look. Two texts that both name the path differ in wording only, and
+	// a person reading either one still cannot tell which situation they are in.
+	if strings.Contains(bare, root) {
+		t.Fatalf("bare-binary message points at an installation under %q where none exists: %q", root, bare)
+	}
+	if !strings.Contains(managed, filepath.Join(root, ".void-code")) {
+		t.Fatalf("broken-install message does not name the installation it found under %q: %q", root, managed)
 	}
 }
 
-// TestMissingMessageTakesTheInstallRootAsAnArgument keeps the decision reachable
-// without rewriting the environment: the install root has to arrive as a parameter,
-// the way desktop-child-env.ts takes the platform as one instead of reading
-// process.platform. MissingMessage() stays for its callers as the thin wrapper that
-// reads the home directory and passes it in.
-func TestMissingMessageTakesTheInstallRootAsAnArgument(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "pibin.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "MissingMessage") {
-			continue
+// TestMissingMessageForAnswersAboutItsArgument makes the argument load-bearing. A
+// function that takes installRoot and then asks os.UserHomeDir anyway is
+// indistinguishable from an honest one while the two agree, so here they disagree:
+// the environment and the argument are put in opposite situations, and the message
+// has to be about the argument. The install root travels as a parameter for this
+// reason, the way desktop-child-env.ts takes the platform as one instead of reading
+// process.platform.
+func TestMissingMessageForAnswersAboutItsArgument(t *testing.T) {
+	installed := t.TempDir()
+	installManagedRuntime(t, installed)
+	bare := t.TempDir()
+
+	// HOME and USERPROFILE both, because os.UserHomeDir reads HOME on Unix and
+	// USERPROFILE on Windows.
+	t.Run("argument bare, environment installed", func(t *testing.T) {
+		t.Setenv("HOME", installed)
+		t.Setenv("USERPROFILE", installed)
+		if got := MissingMessageFor(bare); strings.Contains(got, installed) {
+			t.Fatalf("MissingMessageFor(%q) describes the installation under the home directory %q instead: %q", bare, installed, got)
 		}
-		for _, param := range fn.Type.Params.List {
-			if ident, ok := param.Type.(*ast.Ident); ok && ident.Name == "string" {
-				return
+	})
+
+	t.Run("argument installed, environment bare", func(t *testing.T) {
+		t.Setenv("HOME", bare)
+		t.Setenv("USERPROFILE", bare)
+		if got := MissingMessageFor(installed); !strings.Contains(got, installed) {
+			t.Fatalf("MissingMessageFor(%q) never names the installation it was handed, so it answered about something else: %q", installed, got)
+		}
+	})
+}
+
+// TestMissingMessageDelegatesForTheCurrentHome covers the entry point every caller in
+// cmd/vc actually reaches: it has to be the same decision, taken about the machine it
+// runs on, and not a third text drifting beside the two above.
+func TestMissingMessageDelegatesForTheCurrentHome(t *testing.T) {
+	for _, tc := range []struct {
+		situation string
+		installed bool
+	}{
+		{"bare binary", false},
+		{"broken managed install", true},
+	} {
+		t.Run(tc.situation, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.installed {
+				installManagedRuntime(t, root)
 			}
-		}
+			t.Setenv("HOME", root)
+			t.Setenv("USERPROFILE", root)
+
+			// On macOS t.TempDir lives under /var, which is a symlink to /private/var.
+			// An implementation that canonicalizes the home before building the text is
+			// right to do so, so either spelling is accepted — the same correction
+			// TestResolveUsesManagedRuntimeNotPath carries above.
+			canonical, err := filepath.EvalSymlinks(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := MissingMessageFor(root)
+			if got := MissingMessage(); got != want && got != MissingMessageFor(canonical) {
+				t.Fatalf("MissingMessage() = %q, want the message for its own install root: %q", got, want)
+			}
+		})
 	}
-	t.Fatal("no MissingMessage* function in pibin.go takes the install root as a string argument: " +
-		"the message is built from whatever os.UserHomeDir returns inside the function, so neither " +
-		"situation can be produced deliberately. Add e.g. MissingMessageFor(installRoot string) string " +
-		"and leave MissingMessage() as its wrapper.")
 }
