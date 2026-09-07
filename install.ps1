@@ -23,18 +23,24 @@
 # Local script params:
 #   -WithPi -WithoutPi -WithClaude -WithCodex
 #
-# TWO COPIES, AND THIS ONE IS THE SOURCE. On every stable release
-# .github/workflows/release.yml copies this file over
-# void-auth/public/vc/install.ps1 — the copy served at /vc/install.ps1, the one
-# every `irm | iex` actually runs. The direction is one-way: edit here, and the
-# release carries it across. A fix made only in void-auth is erased by the next
-# stable release, and a fix made here reaches users only once one happens, so an
-# urgent one has to be applied in both places by hand.
+# TWO COPIES OF THIS FILE EXIST, and the one you are reading may be either.
+# The source is void-code/install.ps1; the served copy is void-auth/public/vc/install.ps1, the one
+# every `irm | iex` downloads. On every stable release void-code's release.yml copies
+# the source over the served copy — the step is called "Sync installers to
+# canonical routes" — verbatim, this note included. That is why the note does not
+# say "this one is the source": such a sentence travels to the copy and lies there.
+# It did exactly that on 07.09, in both installers at once.
 #
-# install.sh has carried this note on both of its copies for a while; install.ps1
-# carried it on neither, and the cost showed: the served copy sat 209 lines behind
-# this file — no sha256 check, no retries, no BOM — and nothing here said the other
-# copy existed.
+# The direction is one-way. A fix made only in void-auth is erased by the next
+# stable release; a fix made only in void-code reaches people only once a release
+# happens. An urgent one goes into both by hand.
+#
+# And landing an edit is not delivering it. The served copy reaches people only
+# when the void-auth image is rebuilt AND deployed; on 07.09 the host was still
+# serving version.json 0.2.48 while three releases sat in git, because the deploy
+# job is fail-closed behind vars.VOID_AUTH_AUTO_DEPLOY and nobody has set it.
+# What a person actually gets:
+#     curl -s https://auth.makscee.ru/vc/version.json
 
 param(
     [switch]$WithPi,
