@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	term "github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
+	"github.com/makscee/void-code/internal/childenv"
 	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
@@ -396,7 +398,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 			return fmt.Errorf("cannot write Pi relay extension: %w", err)
 		}
 	}
-	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+	env := withBuiltPiPath(buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath), os.Environ())
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
 	return spawnHarness(context.Background(), piPath, buildPiArgs(nil, extPath), env)
@@ -451,6 +453,46 @@ func ensurePiVoidCodexExtension() (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// withBuiltPiPath replaces the PATH Pi would otherwise inherit with the one VC
+// composes around the Node it bundled — the fix for the failure a person hit on
+// 06.09, where `vc` answered the first prompt with
+//
+//	TypeError: zlib.createZstdDecompress is not a function
+//
+// from inside undici. Nothing about VC was broken: Pi starts through
+// `#!/usr/bin/env node`, the child had the user's whole environment, and the nvm
+// v22.12.0 that won the PATH lookup has no zlib.createZstdDecompress. The Node
+// in ~/.void-code/runtime does — both binaries were run to check.
+//
+// A runtime without a bundled Node keeps the inherited PATH, and that is a
+// decision rather than a leftover: install.sh never provisions runtime/node — it
+// npm-installs Pi with whatever Node the machine already has (install.sh:751) —
+// so building a PATH for those installs would name a directory that does not
+// exist and leave `#!/usr/bin/env node` with nothing to find, breaking a whole
+// install channel to protect it. Where VC did ship a Node it is the only one Pi
+// may see; where it shipped none, the machine's own is still the one Pi has
+// always run on.
+//
+// The parent is passed rather than read inside so the same environment feeds the
+// lookup and the strip, and PATH is matched without regard to case because
+// Windows writes Path as often as PATH and two entries would both reach the
+// child.
+func withBuiltPiPath(env, parent []string) []string {
+	privateNode, err := pibin.ResolveNode()
+	if err != nil {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, "PATH") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "PATH="+childenv.PiPath(runtime.GOOS, parent, privateNode))
 }
 
 // buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay

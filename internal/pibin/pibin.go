@@ -23,6 +23,60 @@ func managedPiPathForOS(home, goos string) string {
 
 func managedPiPath(home string) string { return managedPiPathForOS(home, runtime.GOOS) }
 
+// managedNodePathForOS names the Node executable VC installs beside its managed
+// Pi. npm's Windows distribution keeps node.exe at the root of the extracted
+// archive; the unix tarballs keep it under bin/. Both are what the desktop
+// assembly scripts record in the runtime manifest as node/node.exe and
+// node/bin/node.
+func managedNodePathForOS(home, goos string) string {
+	if goos == "windows" {
+		return filepath.Join(home, ".void-code", "runtime", "node", "node.exe")
+	}
+	return filepath.Join(home, ".void-code", "runtime", "node", "bin", "node")
+}
+
+func managedNodePath(home string) string { return managedNodePathForOS(home, runtime.GOOS) }
+
+// ResolveNode returns the absolute path of the Node executable VC installs with
+// its managed Pi, on the same terms Resolve uses for the Pi entrypoint: a fixed
+// place under the canonical home, never PATH. Pi starts through
+// `#!/usr/bin/env node`, so this is the binary VC means to run it, and it is
+// handed a VC token — a PATH-selected or symlink-redirected node would receive
+// that token exactly as the wrong Pi would.
+//
+// An absent Node is a normal state, not a broken install: install.sh provisions
+// only runtime/pi and npm-installs it with the Node already on the machine. The
+// error says which, and it is for the caller to decide what a missing bundled
+// Node means for the environment it is building.
+func ResolveNode() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve VC home: %w", err)
+	}
+	canonicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize VC home: %w", err)
+	}
+	path := managedNodePath(canonicalHome)
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("bundled Node path is not absolute")
+	}
+	if err := rejectSymlinkComponents(canonicalHome, path); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("bundled Node is not a regular file: %s", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("bundled Node is not executable: %s", path)
+	}
+	return path, nil
+}
+
 // Resolve returns VC's absolute, installed Pi entrypoint. It intentionally does
 // not consult PATH: a PATH-selected Pi must not receive VC credentials.
 //
