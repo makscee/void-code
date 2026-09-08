@@ -17,8 +17,19 @@ type TerminalClipboardTarget = {
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
   paste(value: string): void;
 };
+// The reservation is created at keydown, before the async read. emit() captures the
+// synchronous xterm onData caused by paste() in that reservation's FIFO position.
+type TerminalInputReservation = {
+  emit(action: () => void): void;
+  discard(): void;
+};
+type OrderedTerminalInputSink = {
+  send(data: string): void;
+  reserve(): TerminalInputReservation;
+};
 type ClipboardShortcutsModule = {
-  installWindowsClipboardShortcuts(target: TerminalClipboardTarget, platform: string, readTrustedClipboard: () => Promise<ClipboardReadResult>): void;
+  createOrderedTerminalInputSink(send: (data: string) => void): OrderedTerminalInputSink;
+  installWindowsClipboardShortcuts(target: TerminalClipboardTarget, platform: string, readTrustedClipboard: () => Promise<ClipboardReadResult>, terminalInput: OrderedTerminalInputSink): void;
 };
 
 // These modules are deliberately loaded inside each test. On the pre-fix tree, every assertion
@@ -158,12 +169,15 @@ describe('desktop clipboard read stays in the trusted main-process boundary', ()
 class FakeTerminal implements TerminalClipboardTarget {
   handler: ((event: KeyboardEvent) => boolean) | undefined;
   pasted: string[] = [];
+  onPaste: ((value: string) => void) | undefined;
 
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void { this.handler = handler; }
-  paste(value: string): void { this.pasted.push(value); }
+  paste(value: string): void { this.pasted.push(value); this.onPaste?.(value); }
 }
 
-function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'type' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>> = {}): KeyboardEvent {
+type TestKeyEvent = KeyboardEvent & { preventDefault: ReturnType<typeof vi.fn> };
+
+function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'type' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey' | 'repeat'>> = {}): TestKeyEvent {
   return {
     type: 'keydown',
     key,
@@ -172,16 +186,56 @@ function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'type' | 'code'
     shiftKey: false,
     altKey: false,
     metaKey: false,
+    repeat: false,
+    preventDefault: vi.fn(),
     ...modifiers,
-  } as KeyboardEvent;
+  } as TestKeyEvent;
+}
+
+class RecordingOrderedTerminalInput implements OrderedTerminalInputSink {
+  sent: string[] = [];
+  private readonly entries: Array<{ ready: boolean; data: string[] }> = [];
+  private active: { ready: boolean; data: string[] } | undefined;
+
+  send(data: string): void {
+    if (this.active) this.active.data.push(data);
+    else { this.entries.push({ ready: true, data: [data] }); this.flush(); }
+  }
+
+  reserve(): TerminalInputReservation {
+    const entry = { ready: false, data: [] as string[] };
+    this.entries.push(entry);
+    return {
+      emit: (action) => {
+        this.active = entry;
+        try { action(); } finally { this.active = undefined; entry.ready = true; this.flush(); }
+      },
+      discard: () => { entry.ready = true; this.flush(); },
+    };
+  }
+
+  private flush(): void {
+    while (this.entries[0]?.ready) this.sent.push(...this.entries.shift()!.data);
+  }
+}
+
+function inertTerminalInput(): OrderedTerminalInputSink {
+  return { send: () => undefined, reserve: () => ({ emit: (action) => action(), discard: () => undefined }) };
 }
 
 async function install(result: ClipboardReadResult) {
   const { installWindowsClipboardShortcuts } = await rendererClipboard();
   const terminal = new FakeTerminal();
   const requestTrustedClipboard = vi.fn(async () => result);
-  installWindowsClipboardShortcuts(terminal, 'win32', requestTrustedClipboard);
+  installWindowsClipboardShortcuts(terminal, 'win32', requestTrustedClipboard, inertTerminalInput());
   return { terminal, requestTrustedClipboard };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+  return { promise, resolve, reject };
 }
 
 async function afterMicrotasks(): Promise<void> {
@@ -198,16 +252,19 @@ describe('Windows terminal paste shortcuts', () => {
     const { terminal, requestTrustedClipboard } = await install({ kind: 'image-path', path: 'C:\\void-temp\\pasted.png' });
 
     expect(terminal.handler?.(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
     await afterMicrotasks();
 
     expect(requestTrustedClipboard).toHaveBeenCalledOnce();
     expect(terminal.pasted).toEqual(['C:\\void-temp\\pasted.png']);
   });
 
-  it('consumes physical Ctrl+V under a Russian layout, reads once, and pastes once', async () => {
+  it('consumes physical Ctrl+V under a Russian layout, prevents its default, reads once, and pastes once', async () => {
     const { terminal, requestTrustedClipboard } = await install({ kind: 'text', text: 'paste exactly once' });
+    const event = key('м', { code: 'KeyV', ctrlKey: true });
 
-    expect(terminal.handler?.(key('м', { code: 'KeyV', ctrlKey: true }))).toBe(false);
+    expect(terminal.handler?.(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
     await afterMicrotasks();
 
     expect(requestTrustedClipboard).toHaveBeenCalledOnce();
@@ -217,25 +274,84 @@ describe('Windows terminal paste shortcuts', () => {
   it('does not intercept a non-V physical key just because its layout key is v', async () => {
     const { terminal, requestTrustedClipboard } = await install({ kind: 'text', text: 'must not paste' });
 
-    expect(terminal.handler?.(key('v', { code: 'KeyQ', ctrlKey: true }))).toBe(true);
+    const unrelated = key('v', { code: 'KeyQ', ctrlKey: true });
+    expect(terminal.handler?.(unrelated)).toBe(true);
     await afterMicrotasks();
 
+    expect(unrelated.preventDefault).not.toHaveBeenCalled();
     expect(requestTrustedClipboard).not.toHaveBeenCalled();
     expect(terminal.pasted).toEqual([]);
   });
 
   // xterm invokes the custom handler for both halves of one physical Ctrl+V gesture.
-  it('consumes Windows Ctrl+V keydown once but passes its keyup through', async () => {
+  it('consumes Windows Ctrl+V keydown once but leaves keyup default behavior alone', async () => {
     const { terminal, requestTrustedClipboard } = await install({ kind: 'text', text: 'paste exactly once' });
+    const keydown = key('v', { type: 'keydown', ctrlKey: true });
+    const keyup = key('v', { type: 'keyup', ctrlKey: true });
 
-    const keydownResult = terminal.handler?.(key('v', { type: 'keydown', ctrlKey: true }));
-    const keyupResult = terminal.handler?.(key('v', { type: 'keyup', ctrlKey: true }));
+    const keydownResult = terminal.handler?.(keydown);
+    const keyupResult = terminal.handler?.(keyup);
     await afterMicrotasks();
 
     expect(requestTrustedClipboard).toHaveBeenCalledOnce();
     expect(terminal.pasted).toEqual(['paste exactly once']);
     expect(keydownResult).toBe(false);
     expect(keyupResult).toBe(true);
+    expect(keydown.preventDefault).toHaveBeenCalledOnce();
+    expect(keyup.preventDefault).not.toHaveBeenCalled();
+  });
+
+  // A held shortcut repeats keydown events; only the initial gesture may read the clipboard.
+  it('consumes and prevents repeated Ctrl+V keydown without starting another clipboard read', async () => {
+    const { installWindowsClipboardShortcuts } = await rendererClipboard();
+    const terminal = new FakeTerminal();
+    const pending = deferred<ClipboardReadResult>();
+    const readTrustedClipboard = vi.fn(() => pending.promise);
+    installWindowsClipboardShortcuts(terminal, 'win32', readTrustedClipboard, inertTerminalInput());
+    const initial = key('v', { ctrlKey: true });
+    const repeated = key('v', { ctrlKey: true, repeat: true });
+
+    expect(terminal.handler?.(initial)).toBe(false);
+    expect(terminal.handler?.(repeated)).toBe(false);
+    expect(readTrustedClipboard).toHaveBeenCalledOnce();
+    expect(initial.preventDefault).toHaveBeenCalledOnce();
+    expect(repeated.preventDefault).toHaveBeenCalledOnce();
+
+    pending.resolve({ kind: 'text', text: 'paste once' });
+    await afterMicrotasks();
+
+    expect(terminal.pasted).toEqual(['paste once']);
+  });
+
+  // Without the reservation created at keydown, later xterm onData reaches Pi before the async clipboard result.
+  it('sends a deferred clipboard paste through the terminal-input sink before later terminal data', async () => {
+    const { installWindowsClipboardShortcuts } = await rendererClipboard();
+    const terminalInput = new RecordingOrderedTerminalInput();
+    const terminal = new FakeTerminal();
+    terminal.onPaste = (value) => { terminalInput.send(value); };
+    const pending = deferred<ClipboardReadResult>();
+    installWindowsClipboardShortcuts(terminal, 'win32', () => pending.promise, terminalInput);
+
+    expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
+    terminalInput.send('later terminal data');
+    pending.resolve({ kind: 'text', text: 'clipboard text' });
+    await afterMicrotasks();
+
+    expect(terminal.pasted).toEqual(['clipboard text']);
+    expect(terminalInput.sent).toEqual(['clipboard text', 'later terminal data']);
+  });
+
+  // The real renderer must use the same reservation semantics, not only satisfy the shortcut seam with a fake sink.
+  it('keeps terminal data sent during an emitted reservation behind that reservation', async () => {
+    const { createOrderedTerminalInputSink } = await rendererClipboard();
+    const sent: string[] = [];
+    const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+    const reservation = terminalInput.reserve();
+
+    terminalInput.send('later terminal data');
+    reservation.emit(() => { terminalInput.send('clipboard text'); });
+
+    expect(sent).toEqual(['clipboard text', 'later terminal data']);
   });
 
   it('inserts text from the same trusted result path', async () => {
@@ -252,7 +368,7 @@ describe('Windows terminal paste shortcuts', () => {
     const { installWindowsClipboardShortcuts } = await rendererClipboard();
     const terminal = new FakeTerminal();
     const empty = vi.fn(async (): Promise<ClipboardReadResult> => ({ kind: 'empty' }));
-    installWindowsClipboardShortcuts(terminal, 'win32', empty);
+    installWindowsClipboardShortcuts(terminal, 'win32', empty, inertTerminalInput());
 
     expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
     await afterMicrotasks();
@@ -265,7 +381,7 @@ describe('Windows terminal paste shortcuts', () => {
     const { installWindowsClipboardShortcuts } = await rendererClipboard();
     const terminal = new FakeTerminal();
     const failed = vi.fn(async (): Promise<ClipboardReadResult> => { throw new Error('clipboard unavailable'); });
-    installWindowsClipboardShortcuts(terminal, 'win32', failed);
+    installWindowsClipboardShortcuts(terminal, 'win32', failed, inertTerminalInput());
 
     expect(terminal.handler?.(key('v', { altKey: true }))).toBe(false);
     await afterMicrotasks();
@@ -282,9 +398,10 @@ describe('Windows terminal paste shortcuts', () => {
     const { installWindowsClipboardShortcuts } = await rendererClipboard();
     const terminal = new FakeTerminal();
     const requestTrustedClipboard = vi.fn(async (): Promise<ClipboardReadResult> => ({ kind: 'text', text: label }));
-    installWindowsClipboardShortcuts(terminal, platform, requestTrustedClipboard);
+    installWindowsClipboardShortcuts(terminal, platform, requestTrustedClipboard, inertTerminalInput());
 
     expect(terminal.handler?.(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
     expect(requestTrustedClipboard).not.toHaveBeenCalled();
     expect(terminal.pasted).toEqual([]);
   });
@@ -320,7 +437,7 @@ function objectProperty(object: ts.ObjectLiteralExpression | undefined, name: st
 
 // Deleting either boundary call silently removes Windows paste despite both units being tested.
 describe('Windows clipboard process-boundary wiring', () => {
-  it('installs the trusted clipboard handler on the terminal created by launch before open or onData', () => {
+  it('installs the trusted clipboard handler and routes its xterm onData through one ordered sink before open', () => {
     const source = sourceFile('../src/renderer/index.ts');
     const launch = namedFunction(source, 'launch');
     expect(launch, 'the real renderer launch path exists').toBeDefined();
@@ -332,6 +449,12 @@ describe('Windows clipboard process-boundary wiring', () => {
       && statement.declarationList.declarations.some((declaration) => ts.isObjectBindingPattern(declaration.name)
         && ts.isIdentifier(declaration.initializer) && declaration.initializer.text === 'created'
         && declaration.name.elements.some((element) => ts.isIdentifier(element.name) && element.name.text === 'terminal')));
+    const inputIndex = statements.findIndex((statement) => ts.isVariableStatement(statement)
+      && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && ts.isCallExpression(declaration.initializer)
+        && ts.isIdentifier(declaration.initializer.expression) && declaration.initializer.expression.text === 'createOrderedTerminalInputSink'));
+    const inputDeclaration = inputIndex < 0 ? undefined : (statements[inputIndex] as ts.VariableStatement).declarationList.declarations.find((declaration) => ts.isIdentifier(declaration.name)
+      && ts.isCallExpression(declaration.initializer) && ts.isIdentifier(declaration.initializer.expression)
+      && declaration.initializer.expression.text === 'createOrderedTerminalInputSink');
     const installerIndex = statements.findIndex((statement) => Boolean(directCall(statement, 'installWindowsClipboardShortcuts')));
     const openIndex = statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)
       && ts.isPropertyAccessExpression(statement.expression.expression) && ts.isIdentifier(statement.expression.expression.expression)
@@ -343,7 +466,12 @@ describe('Windows clipboard process-boundary wiring', () => {
 
     expect(createdIndex).toBeGreaterThan(-1);
     expect(terminalIndex).toBeGreaterThan(createdIndex);
-    expect(installerIndex).toBeGreaterThan(terminalIndex);
+    expect(inputDeclaration, 'launch creates the ordered terminal-input sink').toBeDefined();
+    if (!inputDeclaration || !ts.isIdentifier(inputDeclaration.name) || !ts.isCallExpression(inputDeclaration.initializer)) return;
+    const terminalInput = inputDeclaration.name.text;
+    const createInput = inputDeclaration.initializer;
+    expect(inputIndex).toBeGreaterThan(terminalIndex);
+    expect(installerIndex).toBeGreaterThan(inputIndex);
     expect(installerIndex).toBeLessThan(openIndex);
     expect(installerIndex).toBeLessThan(onDataIndex);
     expect(ts.isIdentifier(installer!.arguments[0]) && installer!.arguments[0].text).toBe('terminal');
@@ -353,6 +481,16 @@ describe('Windows clipboard process-boundary wiring', () => {
     expect(ts.isCallExpression((trustedRead as ts.ArrowFunction).body)).toBe(true);
     const read = (trustedRead as ts.ArrowFunction).body as ts.CallExpression;
     expect(ts.isPropertyAccessExpression(read.expression) && read.expression.getText(source)).toBe('window.voidTerminal.clipboard.read');
+    expect(ts.isIdentifier(installer!.arguments[3]) && installer!.arguments[3].text).toBe(terminalInput);
+    const forward = createInput.arguments[0];
+    expect(ts.isArrowFunction(forward), 'the ordered sink forwards to the owned terminal-input IPC').toBe(true);
+    expect(forward?.getText(source)).toContain('window.voidTerminal.input');
+    const onData = (statements[onDataIndex] as ts.ExpressionStatement).expression as ts.CallExpression;
+    const listener = onData.arguments[0];
+    expect(ts.isArrowFunction(listener), 'terminal onData is routed into the ordered sink').toBe(true);
+    if (!ts.isArrowFunction(listener)) return;
+    const data = listener.parameters[0]?.name.getText(source);
+    expect(listener.getText(source)).toContain(`${terminalInput}.send(${data})`);
   });
 
   it('preload exposes clipboard.read as the narrow clipboardRead IPC invocation', () => {
