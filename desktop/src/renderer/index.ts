@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
 import { appVersionLabel } from './app-version';
+import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
@@ -68,6 +69,7 @@ let codeTimer: ReturnType<typeof setInterval> | undefined;
 // next launch attempt — it is what keeps the sign-in screens visible in place of the generic
 // "chat could not start" screen, overriding the usual "a chat is selected" preflight-hides rule.
 let signinOnStartFailure = false;
+let chatTabRename: ChatTabRenameState = { editing: null };
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
 function showEnded(code: Exclude<RecoveryCode, 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'WORKSPACE_MISSING'>, runtime: Runtime): void {
@@ -187,6 +189,24 @@ function dispose(id: string): void {
 }
 async function stop(id: string): Promise<void> { try { await window.voidTerminal.stop({ sessionId: id }); } catch { /* sleeping or exited */ } dispose(id); }
 function selectedTab(): RendererTabRecord | undefined { return view.workspace?.tabs.find((tab) => tab.id === view.workspace?.selectedId); }
+function applyChatTabRename(event: ChatTabRenameEvent): ChatTabRenameResult {
+  const result = reduceChatTabRename(chatTabRename, event);
+  chatTabRename = result.state;
+  for (const effect of result.effects) {
+    if (effect.type === 'select') void selectChat(effect.sessionId);
+    else void renameChat(effect.sessionId, effect.title);
+  }
+  return result;
+}
+async function renameChat(sessionId: string, title: string): Promise<void> {
+  try {
+    view = await window.voidTerminal.workspace.rename(sessionId, title);
+    render();
+  } catch {
+    announce('Chat title could not be saved.');
+    render();
+  }
+}
 
 async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promise<void> {
   const workspace = view.workspace; if (!workspace || view.recoveryPath || runtimes.has(tab.id)) return;
@@ -254,10 +274,37 @@ function render(): void {
     const item = document.createElement('div'); item.className = `tab${tab.id === workspace.selectedId ? ' selected' : ''}`;
     const status = chatStatuses.get(tab.id);
     const badge = status ? `${status.state === 'running' ? 'Running' : status.state === 'working' ? 'Working' : 'Ready'}${status.unread ? ' •' : ''}` : (runtimes.has(tab.id) ? 'Running' : 'Sleeping');
-    const select = document.createElement('button'); select.textContent = `${tab.title}  ${badge}`; select.title = status?.diagnostic ?? (runtimes.has(tab.id) ? 'Chat process active' : 'Sleeping — select to resume');
-    select.addEventListener('click', () => { void selectChat(tab.id); });
-    const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', `Close ${tab.title}`); close.addEventListener('click', () => { void closeChat(tab.id); });
-    item.append(select, close); tabsElement.append(item);
+    item.title = status?.diagnostic ?? (runtimes.has(tab.id) ? 'Chat process active' : 'Sleeping — select to resume');
+    item.addEventListener('click', () => { void selectChat(tab.id); });
+    const editing = chatTabRename.editing?.sessionId === tab.id;
+    if (editing) {
+      const input = document.createElement('input'); input.className = 'tab-title-input'; input.value = chatTabRename.editing!.draft;
+      input.setAttribute('aria-label', `Rename ${tab.title}`);
+      input.addEventListener('click', (event) => { event.stopPropagation(); });
+      input.addEventListener('input', () => { applyChatTabRename({ type: 'input', value: input.value }); });
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== 'Escape') return;
+        event.preventDefault(); event.stopPropagation();
+        applyChatTabRename(event.key === 'Enter' ? { type: 'commit', trigger: 'enter' } : { type: 'escape' }); render();
+      });
+      input.addEventListener('blur', () => { applyChatTabRename({ type: 'commit', trigger: 'blur' }); render(); });
+      item.append(input);
+      requestAnimationFrame(() => {
+        if (!input.isConnected) return;
+        input.focus(); input.setSelectionRange(chatTabRename.editing?.selectionStart ?? 0, chatTabRename.editing?.selectionEnd ?? input.value.length);
+      });
+    } else {
+      const title = document.createElement('button'); title.className = 'tab-title'; title.textContent = tab.title; title.setAttribute('aria-label', `Rename ${tab.title}`);
+      title.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const result = applyChatTabRename({ type: 'title-click', sessionId: tab.id, title: tab.title, selectedId: workspace.selectedId });
+        if (result.effects.length === 0) render();
+      });
+      item.append(title);
+    }
+    const statusElement = document.createElement('span'); statusElement.className = 'tab-status'; statusElement.textContent = badge;
+    const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', `Close ${tab.title}`); close.addEventListener('click', (event) => { event.stopPropagation(); void closeChat(tab.id); });
+    item.append(statusElement, close); tabsElement.append(item);
   }
   for (const runtime of runtimes.values()) runtime.container.hidden = true;
   const selected = workspace.selectedId ? runtimes.get(workspace.selectedId) : undefined;
@@ -279,9 +326,9 @@ function render(): void {
   }
   fitAfterLayout();
 }
-async function selectChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.select(id); const status = chatStatuses.get(id); if (status) chatStatuses.set(id, { ...status, unread: false }); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); else if (tab) { const runtime = runtimes.get(id); if (runtime) await fitRuntime(id, runtime); chatStatuses.set(id, (await window.voidTerminal.lifecycleStatus({ sessionId: id })).status); } render(); }
-async function closeChat(id: string): Promise<void> { await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
-async function resumeChat(id: string): Promise<void> { view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
+async function selectChat(id: string): Promise<void> { chatTabRename = { editing: null }; view = await window.voidTerminal.workspace.select(id); const status = chatStatuses.get(id); if (status) chatStatuses.set(id, { ...status, unread: false }); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); else if (tab) { const runtime = runtimes.get(id); if (runtime) await fitRuntime(id, runtime); chatStatuses.set(id, (await window.voidTerminal.lifecycleStatus({ sessionId: id })).status); } render(); }
+async function closeChat(id: string): Promise<void> { chatTabRename = { editing: null }; await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
+async function resumeChat(id: string): Promise<void> { chatTabRename = { editing: null }; view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {
   const chosen = await window.voidTerminal.workspace.choose(); if (!chosen) return; view = chosen;
   announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions.'); render();
@@ -296,7 +343,7 @@ recentToggleButton.addEventListener('click', () => { setRecentOpen(!recentOpen);
 recentCloseButton.addEventListener('click', () => { setRecentOpen(false); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && recentOpen) { event.preventDefault(); setRecentOpen(false); } });
 removeWorkspaceButton.addEventListener('click', async () => { for (const id of [...runtimes.keys()]) await stop(id); view = await window.voidTerminal.workspace.remove(); render(); });
-newChatButton.addEventListener('click', async () => { const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
+newChatButton.addEventListener('click', async () => { chatTabRename = { editing: null }; const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
 restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
 signinStartButton.addEventListener('click', () => {
