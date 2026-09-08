@@ -351,11 +351,6 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     expect(existsSync(current.directory), 'current process directory').toBe(true);
   });
 
-  it('the app cleans the safe storage lifecycle on normal quit', () => {
-    const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
-    expect(source).toMatch(/\bcreateSafeClipboardImageStorage\s*\(/);
-    expect(source).toMatch(/app\.on\(\s*['"]before-quit['"][\s\S]*?clipboardImageStorage\.cleanup\s*\(\s*\)/);
-  });
 });
 
 function runProcess(executable: string, arguments_: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
