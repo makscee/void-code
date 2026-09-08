@@ -37,6 +37,7 @@ type ClipboardShortcutsModule = {
     readTrustedClipboard: () => Promise<ClipboardReadResult>,
     terminalInput: OrderedTerminalInputSink,
     writeTrustedClipboard?: (text: string) => Promise<void>,
+    now?: () => number,
   ): void;
 };
 type ClipboardContractModule = {
@@ -480,25 +481,44 @@ describe('Windows terminal paste shortcuts', () => {
     }
   });
 
-  it('G4 — discards a clipboard promise that settles after its deadline before the stalled timeout callback can run', async () => {
+  it('does not discard a prompt clipboard result when Date.now jumps forward', async () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date(0));
+      const { installWindowsClipboardShortcuts } = await rendererClipboard();
+      const terminal = new FakeTerminal();
+      const pending = deferred<ClipboardReadResult>();
+      installWindowsClipboardShortcuts(terminal, 'win32', () => pending.promise, inertTerminalInput());
+
+      expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
+      vi.setSystemTime(new Date(60_000));
+      pending.resolve({ kind: 'text', text: 'on-time clipboard text' });
+      await afterMicrotasks();
+
+      expect(terminal.pasted).toEqual(['on-time clipboard text']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('G4 — discards a clipboard promise that settles after its deadline before the stalled timeout callback can run', async () => {
+    vi.useFakeTimers();
+    try {
       const { createOrderedTerminalInputSink, installWindowsClipboardShortcuts } = await rendererClipboard();
       const sent: string[] = [];
       const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
       const terminal = new FakeTerminal();
       terminal.onPaste = (value) => { terminalInput.send(value); };
       const pending = deferred<ClipboardReadResult>();
-      installWindowsClipboardShortcuts(terminal, 'win32', () => pending.promise, terminalInput);
+      let elapsed = 0;
+      installWindowsClipboardShortcuts(terminal, 'win32', () => pending.promise, terminalInput, undefined, () => elapsed);
 
       expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
       terminalInput.send('queued after paste');
       expect(sent).toEqual([]);
 
-      // setSystemTime advances the clock without executing overdue timer callbacks. This models a
-      // renderer event-loop stall followed by the IPC promise microtask winning the next turn.
-      vi.setSystemTime(new Date(5_001));
+      // Advance the injected elapsed-time clock without executing the overdue timeout callback.
+      elapsed = 5_001;
       expect(vi.getTimerCount(), 'the five-second timeout callback has not run').toBe(1);
       pending.resolve({ kind: 'text', text: 'already too late' });
       await afterMicrotasks();
