@@ -1,10 +1,21 @@
+import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { clipboardWriteRequest, type ClipboardReadResult } from '../shared/contract';
 
 const CLIPBOARD_DIRECTORY_PREFIX = 'void-code-clipboard-';
+const CLIPBOARD_STORAGE_ROOT_PREFIX = 'void-code-clipboard-storage-';
 const CLIPBOARD_DIRECTORY_NAME = /^void-code-clipboard-([1-9]\d*)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/;
 const CLIPBOARD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Electron userData scopes the single-instance lock, so its stable digest also scopes pruning.
+// The namespace is a direct child of temp: Windows gives that new child the per-user temp DACL.
+export function clipboardStorageRoot(temporaryDirectory: string, userData: string): string {
+  const normalizedTemporaryDirectory = path.resolve(temporaryDirectory);
+  const normalizedUserData = path.resolve(userData);
+  const namespace = createHash('sha256').update(normalizedUserData).digest('hex');
+  return path.join(normalizedTemporaryDirectory, `${CLIPBOARD_STORAGE_ROOT_PREFIX}${namespace}`);
+}
 
 export type ClipboardReadDependencies = {
   clipboard: {

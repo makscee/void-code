@@ -21,7 +21,7 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
-import { createClipboardImageStorage as createPrimaryClipboardImageStorage, createSafeClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardImageStorage, type ClipboardReadDependencies } from './clipboard-paste';
+import { clipboardStorageRoot, createClipboardImageStorage as createPrimaryClipboardImageStorage, createSafeClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardImageStorage, type ClipboardReadDependencies } from './clipboard-paste';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { runQuitCleanup } from './quit-cleanup';
 import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
@@ -296,7 +296,7 @@ function failStartup(failure: StartupStageError): void {
 if (!app.requestSingleInstanceLock()) app.exit(0);
 else {
   clipboardImageStorage = createSafeClipboardImageStorage(process.platform, () => createPrimaryClipboardImageStorage({
-    temporaryDirectory: os.tmpdir,
+    temporaryDirectory: () => clipboardStorageRoot(os.tmpdir(), app.getPath('userData')),
     uniqueId: randomUUID,
     processId: process.pid,
     now: Date.now,
