@@ -398,7 +398,10 @@ func runSpawn(_ *cobra.Command, args []string) error {
 			return fmt.Errorf("cannot write Pi relay extension: %w", err)
 		}
 	}
-	env := withBuiltPiPath(buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath), os.Environ())
+	env, err := withBuiltPiPath(buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath), os.Environ())
+	if err != nil {
+		return fmt.Errorf("cannot resolve bundled Node: %w", err)
+	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
 	return spawnHarness(context.Background(), piPath, buildPiArgs(nil, extPath), env)
@@ -479,10 +482,13 @@ func ensurePiVoidCodexExtension() (string, error) {
 // lookup and the strip, and PATH is matched without regard to case because
 // Windows writes Path as often as PATH and two entries would both reach the
 // child.
-func withBuiltPiPath(env, parent []string) []string {
+func withBuiltPiPath(env, parent []string) ([]string, error) {
 	privateNode, err := pibin.ResolveNode()
 	if err != nil {
-		return env
+		if os.IsNotExist(err) {
+			return env, nil
+		}
+		return nil, err
 	}
 	out := make([]string, 0, len(env)+1)
 	for _, entry := range env {
@@ -492,7 +498,7 @@ func withBuiltPiPath(env, parent []string) []string {
 		}
 		out = append(out, entry)
 	}
-	return append(out, "PATH="+childenv.PiPath(runtime.GOOS, parent, privateNode))
+	return append(out, "PATH="+childenv.PiPath(runtime.GOOS, parent, privateNode)), nil
 }
 
 // buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay
