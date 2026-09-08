@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
 import { appVersionLabel } from './app-version';
-import { installWindowsClipboardShortcuts } from './clipboard-shortcuts';
+import { createOrderedTerminalInputSink, installWindowsClipboardShortcuts } from './clipboard-shortcuts';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
@@ -195,8 +195,9 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const container = document.createElement('div'); container.className = 'terminal'; container.hidden = tab.id !== workspace.selectedId; terminalsElement.append(container);
   const created = createProductTerminal({ activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } });
   const { terminal } = created;
-  installWindowsClipboardShortcuts(terminal, rendererPlatform, () => window.voidTerminal.clipboard.read());
-  terminal.open(container); activateProductRenderer(created); terminal.onData((data: string) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
+  const terminalInput = createOrderedTerminalInputSink((data) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
+  installWindowsClipboardShortcuts(terminal, rendererPlatform, () => window.voidTerminal.clipboard.read(), terminalInput);
+  terminal.open(container); activateProductRenderer(created); terminal.onData((data: string) => { terminalInput.send(data); });
   let offOutput = (): void => undefined; let offExit = (): void => undefined; let offStatus = (): void => undefined;
   const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false, recoveryCode: 'NONE' as RecoveryCode }) as Runtime; runtimes.set(tab.id, runtime);
   try {
