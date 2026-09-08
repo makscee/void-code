@@ -44,9 +44,10 @@ vc update             # self-update
 
 Desktop sessions install the managed `void-code-ui.ts` extension in Pi's user
 extension directory. While tools are running it shows each call as an
-accent-coloured row, including parallel calls; completed calls collapse into one
-short history line each. Full calls/results remain available through `Ctrl+O`,
-and Pi's native reasoning can be toggled with `Ctrl+T`.
+accent-coloured row, including parallel calls, plus the latest ten streaming
+output lines. Completed calls collapse into one short history line each. Full
+calls/results remain available through `Ctrl+O`, and Pi's native reasoning can
+be toggled with `Ctrl+T`.
 
 The extension is globally discoverable by Pi but inert unless the
 `vc desktop-session` command mints `VC_DESKTOP_SESSION=1`; terminal `vc` sessions keep Pi's

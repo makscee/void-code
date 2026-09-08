@@ -121,6 +121,17 @@ function resultText(rawResult: unknown): string {
 		.join("\n");
 }
 
+function renderActiveToolOutput(rawResult: unknown, theme: Theme, isPartial: boolean): Text {
+	if (!isPartial) return new Text("", 0, 0);
+	const output = resultText(rawResult).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+	if (!output) return new Text("", 0, 0);
+	const lines = output
+		.split("\n")
+		.slice(-10)
+		.map((line) => theme.fg("toolOutput", redactCommand(line)));
+	return new Text(lines.join("\n"), 0, 0);
+}
+
 function describeToolCall(name: string, rawArgs: unknown): string {
 	const args = asRecord(rawArgs);
 	if (name === "bash") return `$ ${compactText(redactCommand(args.command)) || "…"}`;
@@ -550,11 +561,9 @@ export default function (pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}`, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
+		renderResult(result, { expanded, isPartial }, theme, _context) {
 			// Minimal mode: show nothing in collapsed state
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded mode: show full output
 			const textContent = result.content.find((c) => c.type === "text");
@@ -593,11 +602,9 @@ export default function (pi: ExtensionAPI) {
 			return new Text(theme.fg("toolTitle", theme.bold(`$ ${command}`)) + timeoutSuffix, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
+		renderResult(result, { expanded, isPartial }, theme, _context) {
 			// Minimal mode: show nothing in collapsed state
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded mode: show full output
 			const textContent = result.content.find((c) => c.type === "text");
@@ -645,11 +652,9 @@ export default function (pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("write"))} ${pathDisplay}${lineInfo}`, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
+		renderResult(result, { expanded, isPartial }, theme, _context) {
 			// Minimal mode: show nothing (file was written)
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded mode: show error if any
 			if (result.content.some((c) => c.type === "text" && c.text)) {
@@ -687,11 +692,9 @@ export default function (pi: ExtensionAPI) {
 			return new Text(`${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
+		renderResult(result, { expanded, isPartial }, theme, _context) {
 			// Minimal mode: show nothing in collapsed state
-			if (!expanded) {
-				return new Text("", 0, 0);
-			}
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded mode: show diff or error
 			const textContent = result.content.find((c) => c.type === "text");
@@ -741,8 +744,8 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) return new Text("", 0, 0);
+		renderResult(result, { expanded, isPartial }, theme, _context) {
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded: show full results
 			const textContent = result.content.find((c) => c.type === "text");
@@ -795,8 +798,8 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) return new Text("", 0, 0);
+		renderResult(result, { expanded, isPartial }, theme, _context) {
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded: show full results
 			const textContent = result.content.find((c) => c.type === "text");
@@ -843,8 +846,8 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme, _context) {
-			if (!expanded) return new Text("", 0, 0);
+		renderResult(result, { expanded, isPartial }, theme, _context) {
+			if (!expanded) return renderActiveToolOutput(result, theme, isPartial);
 
 			// Expanded: show full listing
 			const textContent = result.content.find((c) => c.type === "text");
