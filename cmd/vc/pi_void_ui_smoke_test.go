@@ -24,6 +24,9 @@ type piUISmokeSnapshot struct {
 	CollapsedReadRunning             []string `json:"collapsedReadRunning"`
 	CollapsedReadCompleted           []string `json:"collapsedReadCompleted"`
 	RunningBash                      []string `json:"runningBash"`
+	RunningOutputPreview             []string `json:"runningOutputPreview"`
+	CompletedOutputPreview           []string `json:"completedOutputPreview"`
+	ExpandedOutput                   []string `json:"expandedOutput"`
 	ExpandedRead                     []string `json:"expandedRead"`
 	RunningCallUsesAccent            bool     `json:"runningCallUsesAccent"`
 	WorkingHiddenWhileTools          bool     `json:"workingHiddenWhileTools"`
@@ -116,6 +119,20 @@ func TestPiVoidCodeUIExtensionSmoke(t *testing.T) {
 	runningBash := strings.Join(got.RunningBash, "\n")
 	if strings.Contains(runningBash, "top-secret") || !strings.Contains(runningBash, "API_TOKEN=REDACTED") {
 		t.Errorf("running command did not redact its secret: %q", got.RunningBash)
+	}
+	preview := strings.Join(got.RunningOutputPreview, "\n")
+	if len(got.RunningOutputPreview) != 10 || strings.Contains(preview, "line-05") || !strings.Contains(preview, "line-06") || !strings.Contains(preview, "line-15") {
+		t.Errorf("running output preview is not the latest 10 lines: %q", got.RunningOutputPreview)
+	}
+	if strings.Contains(preview, "top-secret") || !strings.Contains(preview, "API_TOKEN=REDACTED") {
+		t.Errorf("running output preview leaked a common secret: %q", got.RunningOutputPreview)
+	}
+	if len(got.CompletedOutputPreview) != 0 {
+		t.Errorf("completed tool left its streaming preview behind: %q", got.CompletedOutputPreview)
+	}
+	expandedOutput := strings.Join(got.ExpandedOutput, "\n")
+	if !strings.Contains(expandedOutput, "line-01") || !strings.Contains(expandedOutput, "line-15") {
+		t.Errorf("Ctrl+O output lost lines outside the live preview: %q", got.ExpandedOutput)
 	}
 	if len(got.ExpandedRead) == 0 || !strings.Contains(strings.Join(got.ExpandedRead, "\n"), "secret.txt") {
 		t.Errorf("expanded read lost Ctrl+O detail: %q", got.ExpandedRead)
@@ -218,6 +235,11 @@ const collapsedReadRunning = read.renderCall({ path: "secret.txt" }, theme, { ex
 const runningCallUsesAccent = colorCalls.some((call) => call.color === "accent" && String(call.value).includes("● read secret.txt"));
 const collapsedReadCompleted = read.renderCall({ path: "secret.txt" }, theme, { expanded: false, executionStarted: true, isPartial: false }).render(80);
 const runningBash = bash.renderCall({ command: "API_TOKEN=top-secret node ./task.js" }, theme, { expanded: false, executionStarted: true, isPartial: true }).render(120);
+const outputLines = Array.from({ length: 15 }, (_item, index) => "line-" + String(index + 1).padStart(2, "0") + (index === 10 ? " API_TOKEN=top-secret" : ""));
+const streamingResult = { content: [{ type: "text", text: outputLines.join("\n") }] };
+const runningOutputPreview = bash.renderResult(streamingResult, { expanded: false, isPartial: true }, theme, { args: {}, executionStarted: true, isPartial: true }).render(120);
+const completedOutputPreview = bash.renderResult(streamingResult, { expanded: false, isPartial: false }, theme, { args: {}, executionStarted: true, isPartial: false }).render(120);
+const expandedOutput = bash.renderResult(streamingResult, { expanded: true, isPartial: true }, theme, { args: {}, executionStarted: true, isPartial: true }).render(120);
 const expandedRead = read.renderCall({ path: "secret.txt" }, theme, { expanded: true, executionStarted: true, isPartial: true }).render(80);
 const statuses = active.timeline.filter((item) => item.kind === "status").map((item) => String(item.value ?? ""));
 
@@ -231,6 +253,9 @@ console.log(JSON.stringify({
   collapsedReadRunning,
   collapsedReadCompleted,
   runningBash,
+  runningOutputPreview,
+  completedOutputPreview,
+  expandedOutput,
   expandedRead,
   runningCallUsesAccent,
   workingHiddenWhileTools,
