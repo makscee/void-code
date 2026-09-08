@@ -1,3 +1,4 @@
+// rails:pin-on-coverage clipboardStorageRoot already normalized userData, but the old path.join-built equivalent normalized before reaching production; a literal unused/.. spelling now kills hashing raw userData
 import { existsSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -92,7 +93,8 @@ describe('clipboard storage root is scoped to Electron userData', () => {
     const sandbox = temporaryRoot();
     const temporaryDirectory = path.join(sandbox, 'temp');
     const userData = path.join(sandbox, 'profiles', 'primary');
-    const equivalentUserData = path.join(sandbox, 'profiles', 'unused', '..', 'primary');
+    const equivalentUserData = `${sandbox}${path.sep}profiles${path.sep}unused${path.sep}..${path.sep}primary`;
+    expect(equivalentUserData).toContain(`${path.sep}unused${path.sep}..${path.sep}`);
 
     const first = namespaceRoot(module, temporaryDirectory, userData);
     const second = namespaceRoot(module, temporaryDirectory, equivalentUserData);
