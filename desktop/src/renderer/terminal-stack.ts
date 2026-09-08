@@ -10,6 +10,7 @@ const query = new URLSearchParams(location.search);
 const probe = query.get('productionTerminalProbe') === '1' ? query.get('productionTerminalPerturb') : null;
 const palette: ITheme = {
   background: '#0f1117', foreground: '#d8dee9', cursor: '#f8f8f2', cursorAccent: '#0f1117', selectionBackground: '#3b4252',
+  scrollbarSliderBackground: 'transparent', scrollbarSliderHoverBackground: 'rgba(216, 222, 233, 0.18)', scrollbarSliderActiveBackground: 'rgba(216, 222, 233, 0.28)',
   black: '#2e3440', red: '#bf616a', green: '#a3be8c', yellow: '#ebcb8b', blue: '#81a1c1', magenta: '#b48ead', cyan: '#88c0d0', white: '#e5e9f0',
   brightBlack: '#4c566a', brightRed: '#d57780', brightGreen: '#b1d196', brightYellow: '#f0d399', brightBlue: '#8fbcdb', brightMagenta: '#c895bf', brightCyan: '#93ccdc', brightWhite: '#eceff4',
 };

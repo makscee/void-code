@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, renameRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntimeAsync } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
@@ -116,6 +116,7 @@ function registerIpc(): void {
     try { manager.clearUnread(event.sender.id, selected); } catch { /* sleeping chat has no live status channel */ }
     return view;
   });
+  ipcMain.handle(IPC.workspaceRename, (event, raw: unknown) => { assertRenderer(event); const request = renameRequest(raw); return workspace.rename(request.sessionId, request.title); });
   ipcMain.handle(IPC.workspaceClose, (event, raw: unknown) => { assertRenderer(event); return closeWorkspaceChat(manager, workspace, event.sender.id, raw); });
   ipcMain.handle(IPC.workspaceResume, (event, raw: unknown) => { assertRenderer(event); return workspace.resume(chatRequest(raw).sessionId); });
   ipcMain.handle(IPC.openLink, async (event, raw: unknown) => { assertRenderer(event); return shell.openExternal(linkRequest(raw)); });

@@ -19,6 +19,7 @@ export type StartRequest = RealStartRequest | FixtureStartRequest;
 export interface InputRequest { sessionId: SessionId; data: string }
 export interface ResizeRequest { sessionId: SessionId; cols: number; rows: number }
 export interface SessionRequest { sessionId: SessionId }
+export interface RenameRequest extends SessionRequest { title: string }
 export interface SubscribeRequest extends SessionRequest { kind: SubscriptionKind; subscriptionId: string }
 export interface OutputEvent { sessionId: SessionId; data: string }
 export interface ExitEvent { sessionId: SessionId; exitCode: number; signal?: number }
@@ -36,6 +37,7 @@ export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
 export type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
 
 export interface TerminalApi {
+  getPathForFile(file: File): string;
   start(request: StartRequest): Promise<StartReply>;
   input(request: InputRequest): Promise<void>;
   resize(request: ResizeRequest): Promise<void>;
@@ -63,6 +65,7 @@ export interface TerminalApi {
     remove(): Promise<WorkspaceView>;
     newChat(): Promise<NewChatReply>;
     select(sessionId: SessionId): Promise<WorkspaceView>;
+    rename(sessionId: SessionId, title: string): Promise<WorkspaceView>;
     close(sessionId: SessionId): Promise<WorkspaceView>;
     resume(sessionId: SessionId): Promise<WorkspaceView>;
   };
@@ -116,6 +119,13 @@ export function supportRequest(value: unknown): SupportRequest {
 }
 export function sessionRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId, true) }; }
 export function chatRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId) }; }
+export function renameRequest(value: unknown): RenameRequest {
+  const object = ownedObject(value, ['sessionId', 'title']);
+  if (typeof object.title !== 'string') throw new Error('invalid title');
+  const title = object.title.trim();
+  if (title.length < 1 || title.length > 80) throw new Error('invalid title');
+  return { sessionId: sessionId(object.sessionId), title };
+}
 export function inputRequest(value: unknown): InputRequest {
   const object = ownedObject(value, ['sessionId', 'data']);
   if (typeof object.data !== 'string' || Buffer.byteLength(object.data, 'utf8') > 65_536) throw new Error('invalid input data');
