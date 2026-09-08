@@ -68,8 +68,13 @@ export class WorkspaceStore {
     const workspace = this.available();
     const tab = workspace.tabs.find((candidate) => candidate.id === request.sessionId);
     if (!tab) throw new Error('unknown chat');
+    const previousTitle = tab.title;
     tab.title = request.title;
-    this.save(); return this.view();
+    try { this.save(); } catch (error) {
+      tab.title = previousTitle;
+      throw error;
+    }
+    return this.view();
   }
   assertClose(id: string): void { this.tab(this.available(), id, 'active'); }
   close(id: string): WorkspaceView {
