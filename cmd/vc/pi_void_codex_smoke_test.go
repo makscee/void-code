@@ -34,10 +34,10 @@ import (
 
 // The models the extension is willing to publish for the codex provider (pi_extension.go filters
 // whatever the bootstrap offers against this set).
-var voidCodexSmokeModels = []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+var voidCodexSmokeModels = []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"}
 
 const voidCodexSmokeBootstrap = `{"version":1,"relayUrl":"https://relay.invalid","authToken":"smoke",` +
-	`"providers":[{"kind":"codex","relayProviderId":"smoke-provider","models":["gpt-5.6-terra","gpt-5.6-sol","gpt-5.6-luna"]}]}`
+	`"providers":[{"kind":"codex","relayProviderId":"smoke-provider","models":["gpt-5.6-terra","gpt-5.6-sol","gpt-5.6-luna","gpt-6-astra"]}]}`
 
 func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	if runtime.GOOS == "windows" {
