@@ -1,5 +1,5 @@
 // rails:pin-on-coverage clipboardStorageRoot already normalized userData, but the old path.join-built equivalent normalized before reaching production; a literal unused/.. spelling now kills hashing raw userData
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -51,7 +51,7 @@ async function clipboardStorage(): Promise<ClipboardStorageModule> {
 }
 
 function namespaceRoot(module: ClipboardStorageModule, temporaryDirectory: string, userData: string, canonicalizeNativeUserData?: NativeUserDataCanonicalizer): string {
-  expect(module.clipboardStorageRoot, 'the pure userData-scoped clipboard storage-root seam is absent').toBeTypeOf('function');
+  expect(module.clipboardStorageRoot, 'the userData-scoped clipboard storage-root seam is absent').toBeTypeOf('function');
   return module.clipboardStorageRoot!(temporaryDirectory, userData, canonicalizeNativeUserData);
 }
 
@@ -142,19 +142,40 @@ describe('clipboard storage root is scoped to Electron userData', () => {
     expect(differentRoot).not.toBe(physicalRoot);
   });
 
-  it('lets the safe factory disable image storage when native userData canonicalization fails', async () => {
+  it('keeps image storage available when native canonicalization first sees a fresh absent userData', async () => {
     const module = await clipboardStorage();
     expect(module.createSafeClipboardImageStorage, 'safe clipboard image-storage factory is absent').toBeTypeOf('function');
     const sandbox = temporaryRoot();
     const temporaryDirectory = path.join(sandbox, 'temp');
-    const userData = path.join(sandbox, 'UserData');
-    mkdirSync(userData);
+    const userData = path.join(sandbox, 'profiles', 'fresh-userData');
+    const canonicalizeNativeUserData = vi.fn((candidate: string) => realpathSync.native(candidate));
+    expect(existsSync(userData)).toBe(false);
+    expect(() => realpathSync.native(userData), 'the fixture must exercise native realpath on an absent profile').toThrow();
 
     const storage = module.createSafeClipboardImageStorage!('win32', () => {
-      const root = namespaceRoot(module, temporaryDirectory, userData, () => {
-        throw new Error('native canonicalization unavailable');
-      });
+      const root = namespaceRoot(module, temporaryDirectory, userData, canonicalizeNativeUserData);
       return imageStorage(module)(storageOptions(root, 5301, deterministicUuid(5), Date.UTC(2026, 8, 8)));
+    });
+
+    expect(storage.directory, 'fresh userData must not silently downgrade image storage').not.toBe('');
+    expect(existsSync(userData), 'userData must exist before native canonicalization').toBe(true);
+    expect(path.dirname(storage.directory)).toBe(namespaceRoot(module, temporaryDirectory, userData, canonicalizeNativeUserData));
+    const image = storage.writeImage(Buffer.from('fresh profile image'));
+    expect(existsSync(image), 'fresh-profile image storage must be writable').toBe(true);
+  });
+
+  it('lets the safe factory disable image storage when userData genuinely cannot be created', async () => {
+    const module = await clipboardStorage();
+    expect(module.createSafeClipboardImageStorage, 'safe clipboard image-storage factory is absent').toBeTypeOf('function');
+    const sandbox = temporaryRoot();
+    const temporaryDirectory = path.join(sandbox, 'temp');
+    const blockingFile = path.join(sandbox, 'not-a-directory');
+    const userData = path.join(blockingFile, 'UserData');
+    writeFileSync(blockingFile, 'blocks recursive directory creation');
+
+    const storage = module.createSafeClipboardImageStorage!('win32', () => {
+      const root = namespaceRoot(module, temporaryDirectory, userData, (candidate) => realpathSync.native(candidate));
+      return imageStorage(module)(storageOptions(root, 5302, deterministicUuid(6), Date.UTC(2026, 8, 8)));
     });
 
     expect(storage.directory).toBe('');
@@ -234,6 +255,9 @@ describe('clipboard storage namespace production wiring', () => {
 
     const rootCalls = callsNamed(temporaryDirectory.body, 'clipboardStorageRoot');
     expect(rootCalls, 'storage must derive its root through the userData namespace seam, not pass os.tmpdir directly').toHaveLength(1);
+    const allRootCalls = callsNamed(source, 'clipboardStorageRoot');
+    expect(allRootCalls, 'userData creation and canonicalization must stay after the single-instance lock').toHaveLength(1);
+    expect(allRootCalls[0].getStart(source)).toBe(rootCalls[0].getStart(source));
     expect(rootCalls[0].arguments.map((argument) => argument.getText(source))).toEqual([
       'os.tmpdir()',
       "app.getPath('userData')",
