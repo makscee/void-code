@@ -1,10 +1,12 @@
 import { File as NodeFile } from 'node:buffer';
 import { readFileSync } from 'node:fs';
-import { Terminal } from '@xterm/xterm';
+import { StdinBuffer } from '../runtime/pi/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/stdin-buffer.js';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 const installerModulePath = '../src/renderer/file-drop';
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
 
 type DropEvent = {
   dataTransfer: { types: readonly string[]; files: ArrayLike<File>; dropEffect?: string };
@@ -13,10 +15,11 @@ type DropEvent = {
 type DropTarget = {
   addEventListener: (type: 'dragover' | 'drop', listener: (event: DropEvent) => void) => void;
 };
+type InputSink = (data: string) => void;
 type Installer = (dependencies: {
   target: DropTarget;
   getPathForFile: (file: File) => string;
-  getCurrentTerminal: () => { paste(value: string): void } | undefined;
+  getCurrentInput: () => InputSink | undefined;
 }) => void;
 
 async function loadInstaller(): Promise<Installer | undefined> {
@@ -75,12 +78,31 @@ function insideLaunch(node: ts.Node): boolean {
   return false;
 }
 
+function legacyTerminal(): { paste: ReturnType<typeof vi.fn> } {
+  return { paste: vi.fn() };
+}
+
+function installWithInput(
+  install: Installer,
+  dependencies: Parameters<Installer>[0],
+  terminal = legacyTerminal(),
+): ReturnType<typeof legacyTerminal> {
+  // This extra legacy dependency lets the currently shipped implementation run so RED is an
+  // assertion about choosing Terminal.paste instead of the injected input sink, not a TypeError.
+  install({ ...dependencies, getCurrentTerminal: () => terminal } as Parameters<Installer>[0]);
+  return terminal;
+}
+
+function installWithoutInput(install: Installer, dependencies: Parameters<Installer>[0]): void {
+  install({ ...dependencies, getCurrentTerminal: () => undefined } as Parameters<Installer>[0]);
+}
+
 describe('file-drop installer', () => {
   it('uses protected-mode types for dragover, leaving text drags alone', async () => {
     const install = await loadInstaller();
     if (!install) return;
     const { target, listeners } = targetWithListeners();
-    install({ target, getPathForFile: vi.fn(), getCurrentTerminal: vi.fn() });
+    install({ target, getPathForFile: vi.fn(), getCurrentInput: vi.fn() });
     const dragover = listeners.get('dragover');
     expect(dragover, 'dragover handler is missing').toBeTypeOf('function');
     if (!dragover) return;
@@ -101,9 +123,9 @@ describe('file-drop installer', () => {
     if (!install) return;
     const { target, listeners } = targetWithListeners();
     const first = file('first'); const unavailable = file('unavailable'); const last = file('last');
-    const paste = vi.fn();
+    const input = vi.fn();
     const resolve = vi.fn((dropped: File) => dropped === first ? '/tmp/one file' : dropped === last ? '/tmp/東京.txt' : '');
-    install({ target, getPathForFile: resolve, getCurrentTerminal: () => ({ paste }) });
+    const terminal = installWithInput(install, { target, getPathForFile: resolve, getCurrentInput: () => input });
     const drop = listeners.get('drop');
     expect(drop, 'drop handler is missing').toBeTypeOf('function');
     if (!drop) return;
@@ -114,18 +136,19 @@ describe('file-drop installer', () => {
     expect(resolve).toHaveBeenNthCalledWith(2, unavailable);
     expect(resolve).toHaveBeenNthCalledWith(3, last);
     expect(dropped.preventDefault).toHaveBeenCalledOnce();
-    expect(paste).toHaveBeenCalledWith('/tmp/one file\n/tmp/東京.txt');
-    expect(paste.mock.calls[0]?.[0]).not.toMatch(/\n$/);
+    expect(input).toHaveBeenCalledWith(`${PASTE_START}/tmp/one file\n/tmp/東京.txt${PASTE_END}`);
+    expect(input.mock.calls[0]?.[0]).not.toMatch(/\n${PASTE_END}$/);
+    expect(terminal.paste).not.toHaveBeenCalled();
   });
 
-  it('resolves and filters an all-empty file drop with a live terminal', async () => {
+  it('resolves and filters an all-empty file drop with a live input sink', async () => {
     const install = await loadInstaller();
     if (!install) return;
     const { target, listeners } = targetWithListeners();
-    const paste = vi.fn();
+    const input = vi.fn();
     const missing = file('gone');
     const resolve = vi.fn(() => '');
-    install({ target, getPathForFile: resolve, getCurrentTerminal: () => ({ paste }) });
+    const terminal = installWithInput(install, { target, getPathForFile: resolve, getCurrentInput: () => input });
     const drop = listeners.get('drop');
     expect(drop, 'drop handler is missing').toBeTypeOf('function');
     if (!drop) return;
@@ -135,35 +158,36 @@ describe('file-drop installer', () => {
     expect(empty.preventDefault).toHaveBeenCalledOnce();
     expect(resolve).toHaveBeenCalledOnce();
     expect(resolve).toHaveBeenCalledWith(missing);
-    expect(paste).not.toHaveBeenCalled();
+    expect(input).not.toHaveBeenCalled();
+    expect(terminal.paste).not.toHaveBeenCalled();
   });
 
-  it('consumes terminal-less file drops without resolving paths or injecting text', async () => {
+  it('consumes input-less file drops without resolving paths or injecting text', async () => {
     const install = await loadInstaller();
     if (!install) return;
     const { target, listeners } = targetWithListeners();
     const resolve = vi.fn(() => '/tmp/must-not-be-exposed');
-    install({ target, getPathForFile: resolve, getCurrentTerminal: () => undefined });
+    installWithoutInput(install, { target, getPathForFile: resolve, getCurrentInput: () => undefined });
     const drop = listeners.get('drop');
     expect(drop, 'drop handler is missing').toBeTypeOf('function');
     if (!drop) return;
 
-    const noTerminal = event(['Files'], { 0: file('present'), length: 1 });
+    const noInput = event(['Files'], { 0: file('present'), length: 1 });
     const text = event(['text/plain'], { 0: file('must not resolve'), length: 1 });
-    drop(noTerminal);
+    drop(noInput);
     drop(text);
-    expect(noTerminal.preventDefault).toHaveBeenCalledOnce();
+    expect(noInput.preventDefault).toHaveBeenCalledOnce();
     expect(text.preventDefault).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it('looks up the live terminal when each drop occurs and installs exactly one listener pair', async () => {
+  it('looks up the live input sink when each drop occurs and installs exactly one listener pair', async () => {
     const install = await loadInstaller();
     if (!install) return;
     const { target, listeners, add } = targetWithListeners();
-    const first = { paste: vi.fn() }; const later = { paste: vi.fn() };
-    let current: { paste(value: string): void } | undefined = first;
-    install({ target, getPathForFile: () => '/tmp/file', getCurrentTerminal: () => current });
+    const first = vi.fn(); const later = vi.fn();
+    let current: InputSink | undefined = first;
+    const terminal = installWithInput(install, { target, getPathForFile: () => '/tmp/file', getCurrentInput: () => current });
     expect(add).toHaveBeenCalledTimes(2);
     expect(add.mock.calls.map(([type]) => type).sort()).toEqual(['dragover', 'drop']);
     const drop = listeners.get('drop');
@@ -172,25 +196,43 @@ describe('file-drop installer', () => {
     drop(event(['Files'], { 0: file('first'), length: 1 }));
     current = later;
     drop(event(['Files'], { 0: file('later'), length: 1 }));
-    expect(first.paste).toHaveBeenCalledWith('/tmp/file');
-    expect(later.paste).toHaveBeenCalledWith('/tmp/file');
+    expect(first).toHaveBeenCalledWith(`${PASTE_START}/tmp/file${PASTE_END}`);
+    expect(later).toHaveBeenCalledWith(`${PASTE_START}/tmp/file${PASTE_END}`);
+    expect(terminal.paste).not.toHaveBeenCalled();
   });
 
-  it('drives xterm paste/onData through a real file drop', async () => {
+  it('emits one explicit bracketed-paste transaction that the shipped Pi parser treats as one no-submit paste', async () => {
     const install = await loadInstaller();
     if (!install) return;
     const { target, listeners } = targetWithListeners();
-    const terminal = new Terminal();
-    (terminal as unknown as { _core: { textarea: { value: string } } })._core.textarea = { value: '' };
-    const received: string[] = [];
-    terminal.onData((data) => received.push(data));
-    install({ target, getPathForFile: (dropped) => dropped.name === 'first' ? '/tmp/with spaces/one' : '/tmp/東京.txt', getCurrentTerminal: () => terminal });
+    const input = vi.fn();
+    const terminal = installWithInput(install, {
+      target,
+      getPathForFile: (dropped) => dropped.name === 'first' ? '/tmp/with spaces/one' : '/tmp/東京.txt',
+      getCurrentInput: () => input,
+    });
     const drop = listeners.get('drop');
     expect(drop, 'drop handler is missing').toBeTypeOf('function');
-    if (drop) drop(event(['Files'], { 0: file('first'), 1: file('last'), length: 2 }));
-    expect(received).toEqual(['/tmp/with spaces/one\r/tmp/東京.txt']);
-    expect(received[0]).not.toMatch(/\r$/);
-    terminal.dispose();
+    if (!drop) return;
+
+    drop(event(['Files'], { 0: file('first'), 1: file('last'), length: 2 }));
+    const transaction = `${PASTE_START}/tmp/with spaces/one\n/tmp/東京.txt${PASTE_END}`;
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(input).toHaveBeenCalledWith(transaction);
+    expect(terminal.paste).not.toHaveBeenCalled();
+
+    const emitted = input.mock.calls[0]?.[0];
+    if (emitted === undefined) return;
+    const stdin = new StdinBuffer();
+    const pastes: string[] = [];
+    const data: string[] = [];
+    stdin.on('paste', (value) => pastes.push(value));
+    stdin.on('data', (value) => data.push(value));
+    stdin.process(emitted);
+    expect(pastes).toEqual(['/tmp/with spaces/one\n/tmp/東京.txt']);
+    expect(data).toEqual([]);
+    expect(data).not.toContain('\r');
+    stdin.destroy();
   });
 });
 
@@ -238,11 +280,13 @@ describe('file-drop production wiring', () => {
     }
   });
 
-  it('imports and installs the seam once outside launch with the preload bridge and selected live runtime resolver', () => {
+  it('installs the input seam once outside launch with the preload bridge and selected live runtime input', () => {
     const renderer = source('../src/renderer/index.ts');
+    const seam = source('../src/renderer/file-drop.ts');
     const importsSeam = renderer.statements.some((statement) => ts.isImportDeclaration(statement)
       && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text.endsWith('/file-drop'));
     expect(importsSeam, 'renderer does not import the file-drop seam').toBe(true);
+    expect(callsNamed(seam, 'paste'), 'file drops must not use Terminal.paste').toHaveLength(0);
     const installs = callsNamed(renderer, 'installFileDropHandlers');
     expect(installs, 'renderer must install file-drop handlers once').toHaveLength(1);
     if (installs.length !== 1) return;
@@ -259,11 +303,11 @@ describe('file-drop production wiring', () => {
     const pathBridgeCall = pathBridge.initializer.body;
     expect(ts.isCallExpression(pathBridgeCall) && propertyPath(pathBridgeCall.expression) === 'window.voidTerminal.getPathForFile', 'installer must use the preload path bridge').toBe(true);
 
-    const terminalResolver = options.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property)
-      && ts.isIdentifier(property.name) && property.name.text === 'getCurrentTerminal');
-    expect(terminalResolver && ts.isArrowFunction(terminalResolver.initializer), 'installer must receive a terminal resolver callback').toBe(true);
-    if (!terminalResolver || !ts.isArrowFunction(terminalResolver.initializer) || !ts.isBlock(terminalResolver.initializer.body)) return;
-    const declarations = terminalResolver.initializer.body.statements.flatMap((statement) => ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []);
+    const inputResolver = options.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property)
+      && ts.isIdentifier(property.name) && property.name.text === 'getCurrentInput');
+    expect(inputResolver && ts.isArrowFunction(inputResolver.initializer), 'installer must receive a current-input resolver callback').toBe(true);
+    if (!inputResolver || !ts.isArrowFunction(inputResolver.initializer) || !ts.isBlock(inputResolver.initializer.body)) return;
+    const declarations = inputResolver.initializer.body.statements.flatMap((statement) => ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []);
     const selected = declarations.find((declaration) => ts.isIdentifier(declaration.name)
       && ts.isCallExpression(declaration.initializer) && ts.isIdentifier(declaration.initializer.expression)
       && declaration.initializer.expression.text === 'selectedTab' && declaration.initializer.arguments.length === 0);
@@ -284,10 +328,10 @@ describe('file-drop production wiring', () => {
     expect(ts.isPropertyAccessExpression(lookupId) && ts.isIdentifier(lookupId.expression)
       && lookupId.expression.text === selected.name.text && lookupId.name.text === 'id', 'runtimes.get must receive the selected tab id').toBe(true);
 
-    const returns = terminalResolver.initializer.body.statements.filter(ts.isReturnStatement);
-    expect(returns, 'resolver must return only the live runtime terminal').toHaveLength(1);
+    const returns = inputResolver.initializer.body.statements.filter(ts.isReturnStatement);
+    expect(returns, 'resolver must return only a live input sink').toHaveLength(1);
     const result = returns[0]?.expression;
-    expect(result && ts.isConditionalExpression(result), 'resolver must conditionally return a terminal').toBe(true);
+    expect(result && ts.isConditionalExpression(result), 'resolver must conditionally return an input sink').toBe(true);
     if (!result || !ts.isConditionalExpression(result)) return;
     const isLiveRuntime = ts.isBinaryExpression(result.condition) && result.condition.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
       && ts.isIdentifier(result.condition.left) && result.condition.left.text === runtime.name.text
@@ -295,8 +339,28 @@ describe('file-drop production wiring', () => {
       && ts.isPropertyAccessExpression(result.condition.right.operand) && ts.isIdentifier(result.condition.right.operand.expression)
       && result.condition.right.operand.expression.text === runtime.name.text && result.condition.right.operand.name.text === 'exited';
     expect(isLiveRuntime, 'resolver must reject an exited runtime').toBe(true);
-    expect(ts.isPropertyAccessExpression(result.whenTrue) && ts.isIdentifier(result.whenTrue.expression)
-      && result.whenTrue.expression.text === runtime.name.text && result.whenTrue.name.text === 'terminal', 'resolver must return only the live runtime terminal').toBe(true);
+    expect(ts.isArrowFunction(result.whenTrue), 'live runtime must produce an input sink').toBe(true);
     expect(ts.isIdentifier(result.whenFalse) && result.whenFalse.text === 'undefined', 'resolver must not return an exited or missing runtime').toBe(true);
+    if (!ts.isArrowFunction(result.whenTrue)) return;
+
+    const sink = result.whenTrue;
+    expect(sink.parameters).toHaveLength(1);
+    const dataParameter = sink.parameters[0]?.name;
+    expect(dataParameter && ts.isIdentifier(dataParameter), 'input sink must receive the dropped bytes').toBe(true);
+    if (!dataParameter || !ts.isIdentifier(dataParameter)) return;
+    const boundaryCalls = callsNamed(sink.body, 'input').filter((call) => propertyPath(call.expression) === 'window.voidTerminal.input');
+    expect(boundaryCalls, 'input sink must call window.voidTerminal.input once').toHaveLength(1);
+    const boundary = boundaryCalls[0];
+    const request = boundary?.arguments[0];
+    expect(request && ts.isObjectLiteralExpression(request), 'input boundary must receive a request object').toBe(true);
+    if (!request || !ts.isObjectLiteralExpression(request)) return;
+    const sessionId = request.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property)
+      && ts.isIdentifier(property.name) && property.name.text === 'sessionId');
+    const data = request.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property)
+      && ts.isIdentifier(property.name) && property.name.text === 'data');
+    expect(sessionId && ts.isPropertyAccessExpression(sessionId.initializer)
+      && ts.isIdentifier(sessionId.initializer.expression) && sessionId.initializer.expression.text === selected.name.text
+      && sessionId.initializer.name.text === 'id', 'input must use the selected tab id').toBe(true);
+    expect(data && ts.isIdentifier(data.initializer) && data.initializer.text === dataParameter.text, 'input must receive the bracketed bytes from the sink').toBe(true);
   });
 });
