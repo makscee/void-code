@@ -23,7 +23,7 @@ import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { clipboardStorageRoot, createClipboardImageStorage as createPrimaryClipboardImageStorage, createSafeClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardImageStorage, type ClipboardReadDependencies } from './clipboard-paste';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
-import { runQuitCleanup } from './quit-cleanup';
+import { createOwnedCleanupCoordinator } from './quit-cleanup';
 import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
 import type { SingleStartupWindow, StartupStageError } from './startup-lifecycle';
@@ -60,6 +60,13 @@ const desktopClipboardDependencies: ClipboardReadDependencies & { clipboard: Cli
   clipboard,
   writeImage: (png) => clipboardImageStorage.writeImage(png),
 };
+// The coordinator owns every termination path. Its actions observe the current placeholders until
+// the winning instance has initialized its real resources, so the losing instance creates nothing.
+const ownedCleanup = createOwnedCleanupCoordinator({
+  teardownSessions: () => manager?.teardownAll(),
+  cleanupClipboardImages: () => clipboardImageStorage.cleanup(),
+  cleanupProbe: () => { if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); },
+});
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   return wrapPty(spawnDesktopRequest(runtime, request, pty.spawn, authority));
@@ -191,9 +198,9 @@ async function createWindow(): Promise<StartupWindow> {
   // Renderer IPC begins during load, so authority must name this exact window before loading it.
   mainWindow = window;
   installNavigationPolicy(window.webContents);
+  if (process.platform === 'win32') window.on('session-end', () => ownedCleanup.cleanup());
   const headless = headlessProbe;
   if (headless) {
-    const ownerId = window.webContents.id;
     window.webContents.on('page-title-updated', (event, title) => {
       const pixelPrefix = 'VOID_PRODUCTION_PIXEL_REQUEST:';
       if (productionProbeOutput && title.startsWith(pixelPrefix)) {
@@ -220,7 +227,7 @@ async function createWindow(): Promise<StartupWindow> {
       if (!title.startsWith(headless.prefix)) return;
       event.preventDefault(); const result = JSON.parse(title.slice(headless.prefix.length)) as { ok: boolean };
       writeFileSync(headless.output, `${JSON.stringify(result, null, 2)}
-`, { mode: 0o600 }); manager.teardownOwner(ownerId); app.exit(result.ok ? 0 : 1);
+`, { mode: 0o600 }); ownedCleanup.cleanup(); app.exit(result.ok ? 0 : 1);
     });
   }
   const applicationPage = () => {
@@ -289,12 +296,15 @@ function failStartup(failure: StartupStageError): void {
       report.dialogMessage,
     );
   } catch { /* startup still terminates if the native error cannot be presented */ }
-  try { manager?.teardownAll(); } catch { /* startup still terminates if cleanup reports an error */ }
+  ownedCleanup.cleanup();
   app.exit(1);
 }
 
-if (!app.requestSingleInstanceLock()) app.exit(0);
-else {
+if (!app.requestSingleInstanceLock()) {
+  // app.exit bypasses before-quit. The placeholder coordinator owns no files in a losing instance.
+  ownedCleanup.cleanup();
+  app.exit(0);
+} else {
   clipboardImageStorage = createSafeClipboardImageStorage(process.platform, () => createPrimaryClipboardImageStorage({
     temporaryDirectory: () => clipboardStorageRoot(os.tmpdir(), app.getPath('userData')),
     uniqueId: randomUUID,
@@ -304,9 +314,5 @@ else {
   app.on('second-instance', () => focusExistingWindow(mainWindow));
   void runBootstrap(bootstrap, failStartup);
 }
-app.on('before-quit', () => runQuitCleanup({
-  teardownSessions: () => manager?.teardownAll(),
-  cleanupClipboardImages: () => clipboardImageStorage.cleanup(),
-  cleanupProbe: () => { if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); },
-}));
+app.on('before-quit', () => ownedCleanup.cleanup());
 app.on('window-all-closed', () => app.quit());

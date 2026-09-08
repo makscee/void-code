@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { clipboardWriteRequest, type ClipboardReadResult } from '../shared/contract';
 
@@ -8,12 +8,31 @@ const CLIPBOARD_STORAGE_ROOT_PREFIX = 'void-code-clipboard-storage-';
 const CLIPBOARD_DIRECTORY_NAME = /^void-code-clipboard-([1-9]\d*)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/;
 const CLIPBOARD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+export type NativeUserDataCanonicalizer = (userData: string) => string;
+
+// realpathSync.native preserves Windows' own junction and volume handling. Case-fold after it so
+// alternate spellings of one NTFS directory cannot create independent retention namespaces.
+export function canonicalizeNativeUserData(userData: string): string {
+  if (process.platform !== 'win32') return path.resolve(userData);
+  return realpathSync.native(path.resolve(userData)).toLowerCase();
+}
+
+function canonicalUserDataIdentity(userData: string, canonicalize: NativeUserDataCanonicalizer): string {
+  const canonical = canonicalize(userData);
+  if (typeof canonical !== 'string' || canonical.length === 0) throw new Error('native userData canonicalization failed');
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
 // Electron userData scopes the single-instance lock, so its stable digest also scopes pruning.
 // The namespace is a direct child of temp: Windows gives that new child the per-user temp DACL.
-export function clipboardStorageRoot(temporaryDirectory: string, userData: string): string {
+export function clipboardStorageRoot(
+  temporaryDirectory: string,
+  userData: string,
+  canonicalizer: NativeUserDataCanonicalizer = canonicalizeNativeUserData,
+): string {
   const normalizedTemporaryDirectory = path.resolve(temporaryDirectory);
-  const normalizedUserData = path.resolve(userData);
-  const namespace = createHash('sha256').update(normalizedUserData).digest('hex');
+  const canonicalUserData = canonicalUserDataIdentity(userData, canonicalizer);
+  const namespace = createHash('sha256').update(canonicalUserData).digest('hex');
   return path.join(normalizedTemporaryDirectory, `${CLIPBOARD_STORAGE_ROOT_PREFIX}${namespace}`);
 }
 
