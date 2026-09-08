@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { IPC, accessRequestRequest, chatRequest, clipboardWriteRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntimeAsync } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
@@ -114,6 +114,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.appVersion, (event) => { assertRenderer(event); return app.getVersion(); });
   ipcMain.handle(IPC.supportCopy, (event, raw: unknown) => { assertRenderer(event); return copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)); });
   ipcMain.handle(IPC.clipboardRead, (event) => { assertRenderer(event); return process.platform === 'win32' ? readDesktopClipboard(desktopClipboardDependencies) : { kind: 'empty' }; });
+  ipcMain.handle(IPC.clipboardWrite, (event, raw: unknown) => { assertRenderer(event); const text = clipboardWriteRequest(raw); clipboard.writeText(text); });
   ipcMain.handle(IPC.supportSave, async (event, raw: unknown) => { assertRenderer(event);
     const report = supportReport(raw);
     const stamp = report.generatedAt.slice(0, 19).replaceAll(':', '-');

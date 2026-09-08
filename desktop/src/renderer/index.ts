@@ -196,7 +196,7 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const created = createProductTerminal({ activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } });
   const { terminal } = created;
   const terminalInput = createOrderedTerminalInputSink((data) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
-  installWindowsClipboardShortcuts(terminal, rendererPlatform, () => window.voidTerminal.clipboard.read(), terminalInput);
+  installWindowsClipboardShortcuts(terminal, rendererPlatform, () => window.voidTerminal.clipboard.read(), terminalInput, (text) => window.voidTerminal.clipboard.write(text));
   terminal.open(container); activateProductRenderer(created); terminal.onData((data: string) => { terminalInput.send(data); });
   let offOutput = (): void => undefined; let offExit = (): void => undefined; let offStatus = (): void => undefined;
   const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false, recoveryCode: 'NONE' as RecoveryCode }) as Runtime; runtimes.set(tab.id, runtime);

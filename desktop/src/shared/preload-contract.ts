@@ -5,7 +5,7 @@ export const IPC = {
   workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
   workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
   supportCopy: 'support:copy', supportSave: 'support:save',
-  clipboardRead: 'clipboard:read',
+  clipboardRead: 'clipboard:read', clipboardWrite: 'clipboard:write',
   authStatus: 'auth:status', authLoginStart: 'auth:login-start', authLoginEvent: 'auth:login-event', authCodeCopy: 'auth:code-copy',
   authAccessRequest: 'auth:access-request',
   appVersion: 'app:version',

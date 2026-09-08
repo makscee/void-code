@@ -62,6 +62,7 @@ const api: TerminalApi = {
   }),
   clipboard: Object.freeze({
     read: () => ipcRenderer.invoke(IPC.clipboardRead),
+    write: (text) => ipcRenderer.invoke(IPC.clipboardWrite, { text }),
   }),
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),

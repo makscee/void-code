@@ -16,7 +16,7 @@ export type ClipboardReadDependencies = {
 // This reader is only exposed by the Windows IPC handler. win32.join keeps the path suitable for
 // Pi's Windows input even when its deterministic seam is exercised from another host platform.
 function clipboardImagePath(temporaryDirectory: string, uniqueId: string): string {
-  return path.win32.join(temporaryDirectory, `void-code-clipboard-${uniqueId}.png`);
+  return path.win32.join(path.win32.resolve(temporaryDirectory), `void-code-clipboard-${uniqueId}.png`);
 }
 
 export function readDesktopClipboard(dependencies: ClipboardReadDependencies): ClipboardReadResult {

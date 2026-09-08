@@ -51,6 +51,7 @@ export interface TerminalApi {
   };
   clipboard: {
     read(): Promise<ClipboardReadResult>;
+    write(text: string): Promise<void>;
   };
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;
@@ -152,4 +153,9 @@ export function codeCopyRequest(value: unknown): string {
   const object = ownedObject(value, ['code']);
   if (typeof object.code !== 'string' || object.code.length === 0 || object.code.length > 64) throw new Error('invalid code');
   return object.code;
+}
+export function clipboardWriteRequest(value: unknown): string {
+  const object = ownedObject(value, ['text']);
+  if (typeof object.text !== 'string' || object.text.length === 0) throw new Error('invalid clipboard text');
+  return object.text;
 }

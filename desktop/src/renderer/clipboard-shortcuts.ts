@@ -2,6 +2,7 @@ import type { ClipboardReadResult } from '../shared/contract';
 
 export type TerminalClipboardTarget = {
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
+  getSelection(): string;
   paste(value: string): void;
 };
 
@@ -69,6 +70,10 @@ function isWindowsPasteShortcut(event: KeyboardEvent): boolean {
   return (event.ctrlKey && !event.altKey) || (event.altKey && !event.ctrlKey && !event.shiftKey);
 }
 
+function isWindowsCopyShortcut(event: KeyboardEvent): boolean {
+  return event.code === 'KeyC' && event.ctrlKey && !event.altKey && !event.metaKey;
+}
+
 function pasteTrustedClipboard(target: TerminalClipboardTarget, result: ClipboardReadResult): void {
   if (result.kind === 'text') target.paste(result.text);
   else if (result.kind === 'image-path') target.paste(result.path);
@@ -79,23 +84,50 @@ export function installWindowsClipboardShortcuts(
   platform: string,
   readTrustedClipboard: () => Promise<ClipboardReadResult>,
   terminalInput: OrderedTerminalInputSink,
+  writeTrustedClipboard?: (text: string) => Promise<void>,
 ): void {
   target.attachCustomKeyEventHandler((event) => {
-    if (platform !== 'win32' || event.type !== 'keydown' || !isWindowsPasteShortcut(event)) return true;
+    if (platform !== 'win32' || event.type !== 'keydown') return true;
+
+    if (isWindowsCopyShortcut(event)) {
+      const selection = target.getSelection();
+      // Ctrl+C without a selection is the terminal's interrupt. Ctrl+Shift+C is always an
+      // explicit copy gesture, including an empty one, so it must not become an interrupt.
+      if (selection === '' && !event.shiftKey) return true;
+      event.preventDefault();
+      if (!event.repeat && selection !== '' && writeTrustedClipboard) {
+        try {
+          void writeTrustedClipboard(selection).catch(() => undefined);
+        } catch {
+          // A broken trusted bridge must not inject, paste, or revive the browser default.
+        }
+      }
+      return false;
+    }
+
+    if (!isWindowsPasteShortcut(event)) return true;
     event.preventDefault();
     if (event.repeat) return false;
 
     const reservation = terminalInput.reserve();
+    let settled = false;
+    const discard = (): void => {
+      if (settled) return;
+      settled = true;
+      reservation.discard();
+    };
+    const timeout = setTimeout(discard, 5_000);
     void (async () => {
       try {
         const result = await readTrustedClipboard();
-        if (result.kind === 'empty') {
-          reservation.discard();
-          return;
-        }
-        reservation.emit(() => { pasteTrustedClipboard(target, result); });
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (result.kind === 'empty') reservation.discard();
+        else reservation.emit(() => { pasteTrustedClipboard(target, result); });
       } catch {
-        reservation.discard();
+        clearTimeout(timeout);
+        discard();
       }
     })();
     return false;
