@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
@@ -285,5 +287,92 @@ describe('Windows terminal paste shortcuts', () => {
     expect(terminal.handler?.(event)).toBe(true);
     expect(requestTrustedClipboard).not.toHaveBeenCalled();
     expect(terminal.pasted).toEqual([]);
+  });
+});
+
+function sourceFile(path: string): ts.SourceFile {
+  return ts.createSourceFile(path, readFileSync(new URL(path, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
+
+function namedFunction(source: ts.SourceFile, name: string): ts.FunctionDeclaration | undefined {
+  return source.statements.find((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
+}
+
+function directCall(statement: ts.Statement | undefined, name: string): ts.CallExpression | undefined {
+  if (!statement || !ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression)
+    || !ts.isIdentifier(statement.expression.expression) || statement.expression.expression.text !== name) return undefined;
+  return statement.expression;
+}
+
+function objectLiteral(expression: ts.Expression | undefined): ts.ObjectLiteralExpression | undefined {
+  if (expression && ts.isObjectLiteralExpression(expression)) return expression;
+  if (expression && ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)
+    && ts.isIdentifier(expression.expression.expression) && expression.expression.expression.text === 'Object'
+    && expression.expression.name.text === 'freeze' && ts.isObjectLiteralExpression(expression.arguments[0])) return expression.arguments[0];
+  return undefined;
+}
+
+function objectProperty(object: ts.ObjectLiteralExpression | undefined, name: string): ts.Expression | undefined {
+  const property = object?.properties.find((item): item is ts.PropertyAssignment => ts.isPropertyAssignment(item)
+    && (ts.isIdentifier(item.name) || ts.isStringLiteral(item.name)) && item.name.text === name);
+  return property?.initializer;
+}
+
+// Deleting either boundary call silently removes Windows paste despite both units being tested.
+describe('Windows clipboard process-boundary wiring', () => {
+  it('installs the trusted clipboard handler on the terminal created by launch before open or onData', () => {
+    const source = sourceFile('../src/renderer/index.ts');
+    const launch = namedFunction(source, 'launch');
+    expect(launch, 'the real renderer launch path exists').toBeDefined();
+    const statements = (launch!.body as ts.Block).statements;
+    const createdIndex = statements.findIndex((statement) => ts.isVariableStatement(statement)
+      && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && ts.isCallExpression(declaration.initializer)
+        && ts.isIdentifier(declaration.initializer.expression) && declaration.name.text === 'created' && declaration.initializer.expression.text === 'createProductTerminal'));
+    const terminalIndex = statements.findIndex((statement) => ts.isVariableStatement(statement)
+      && statement.declarationList.declarations.some((declaration) => ts.isObjectBindingPattern(declaration.name)
+        && ts.isIdentifier(declaration.initializer) && declaration.initializer.text === 'created'
+        && declaration.name.elements.some((element) => ts.isIdentifier(element.name) && element.name.text === 'terminal')));
+    const installerIndex = statements.findIndex((statement) => Boolean(directCall(statement, 'installWindowsClipboardShortcuts')));
+    const openIndex = statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)
+      && ts.isPropertyAccessExpression(statement.expression.expression) && ts.isIdentifier(statement.expression.expression.expression)
+      && statement.expression.expression.expression.text === 'terminal' && statement.expression.expression.name.text === 'open');
+    const onDataIndex = statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)
+      && ts.isPropertyAccessExpression(statement.expression.expression) && ts.isIdentifier(statement.expression.expression.expression)
+      && statement.expression.expression.expression.text === 'terminal' && statement.expression.expression.name.text === 'onData');
+    const installer = directCall(statements[installerIndex]!, 'installWindowsClipboardShortcuts');
+
+    expect(createdIndex).toBeGreaterThan(-1);
+    expect(terminalIndex).toBeGreaterThan(createdIndex);
+    expect(installerIndex).toBeGreaterThan(terminalIndex);
+    expect(installerIndex).toBeLessThan(openIndex);
+    expect(installerIndex).toBeLessThan(onDataIndex);
+    expect(ts.isIdentifier(installer!.arguments[0]) && installer!.arguments[0].text).toBe('terminal');
+    expect(ts.isIdentifier(installer!.arguments[1]) && installer!.arguments[1].text).toBe('rendererPlatform');
+    const trustedRead = installer!.arguments[2];
+    expect(ts.isArrowFunction(trustedRead)).toBe(true);
+    expect(ts.isCallExpression((trustedRead as ts.ArrowFunction).body)).toBe(true);
+    const read = (trustedRead as ts.ArrowFunction).body as ts.CallExpression;
+    expect(ts.isPropertyAccessExpression(read.expression) && read.expression.getText(source)).toBe('window.voidTerminal.clipboard.read');
+  });
+
+  it('preload exposes clipboard.read as the narrow clipboardRead IPC invocation', () => {
+    const source = sourceFile('../src/preload/index.ts');
+    const apiStatement = source.statements.find((statement): statement is ts.VariableStatement => ts.isVariableStatement(statement)
+      && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'api'));
+    const apiDeclaration = apiStatement?.declarationList.declarations.find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'api');
+    const api = objectLiteral(apiDeclaration?.initializer);
+    const clipboard = objectLiteral(objectProperty(api, 'clipboard'));
+    const read = objectProperty(clipboard, 'read');
+
+    expect(read, 'preload exposes clipboard.read').toBeDefined();
+    if (!read) return;
+    expect(ts.isArrowFunction(read)).toBe(true);
+    const body = (read as ts.ArrowFunction).body;
+    expect(ts.isCallExpression(body), 'clipboard.read directly invokes IPC').toBe(true);
+    const invocation = body as ts.CallExpression;
+    expect(ts.isPropertyAccessExpression(invocation.expression) && invocation.expression.expression.getText(source)).toBe('ipcRenderer');
+    expect(ts.isPropertyAccessExpression(invocation.expression) && invocation.expression.name.text).toBe('invoke');
+    expect(invocation.arguments).toHaveLength(1);
+    expect(invocation.arguments[0].getText(source)).toBe('IPC.clipboardRead');
   });
 });
