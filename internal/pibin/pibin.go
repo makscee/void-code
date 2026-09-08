@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 const managedPiRelativePath = ".void-code/runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
@@ -37,6 +38,24 @@ func managedNodePathForOS(home, goos string) string {
 
 func managedNodePath(home string) string { return managedNodePathForOS(home, runtime.GOOS) }
 
+// managedNodeRuntimePath is the root of the tree provisioned only by the
+// bundled-runtime installer. install.sh's legacy channel deliberately omits
+// this whole tree and uses the machine Node instead.
+func managedNodeRuntimePath(home string) string {
+	return filepath.Join(home, ".void-code", "runtime", "node")
+}
+
+// ErrBundledNodeUnprovisioned is returned directly when the entire managed
+// runtime/node tree is absent. Its PathError form preserves the historical
+// os.IsNotExist behavior for callers that only need missing-file diagnostics;
+// callers deciding whether PATH fallback is safe must use errors.Is with this
+// sentinel, rather than treating every missing inner component as legacy.
+var ErrBundledNodeUnprovisioned = &os.PathError{
+	Op:   "resolve bundled Node runtime",
+	Path: ".void-code/runtime/node",
+	Err:  syscall.ENOENT,
+}
+
 // ResolveNode returns the absolute path of the Node executable VC installs with
 // its managed Pi, on the same terms Resolve uses for the Pi entrypoint: a fixed
 // place under the canonical home, never PATH. Pi starts through
@@ -61,6 +80,9 @@ func ResolveNode() (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("bundled Node path is not absolute")
 	}
+	if err := bundledNodeTreeProvisioned(canonicalHome); err != nil {
+		return "", err
+	}
 	if err := rejectSymlinkComponents(canonicalHome, path); err != nil {
 		return "", err
 	}
@@ -75,6 +97,31 @@ func ResolveNode() (string, error) {
 		return "", fmt.Errorf("bundled Node is not executable: %s", path)
 	}
 	return path, nil
+}
+
+// bundledNodeTreeProvisioned distinguishes the legacy absence of the complete
+// runtime/node tree from a broken component inside a tree VC did provision.
+// Check each parent for symlinks before classifying ENOENT, so a dangling
+// redirected runtime remains a rejection rather than a legacy fallback.
+func bundledNodeTreeProvisioned(home string) error {
+	root := managedNodeRuntimePath(home)
+	if err := rejectSymlinkComponents(home, filepath.Dir(root)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrBundledNodeUnprovisioned
+		}
+		return err
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrBundledNodeUnprovisioned
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("managed Pi path contains symlink component: %s", root)
+	}
+	return nil
 }
 
 // Resolve returns VC's absolute, installed Pi entrypoint. It intentionally does

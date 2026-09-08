@@ -485,7 +485,7 @@ func ensurePiVoidCodexExtension() (string, error) {
 func withBuiltPiPath(env, parent []string) ([]string, error) {
 	privateNode, err := pibin.ResolveNode()
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, pibin.ErrBundledNodeUnprovisioned) {
 			return env, nil
 		}
 		return nil, err
