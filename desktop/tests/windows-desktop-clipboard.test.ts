@@ -161,10 +161,11 @@ class FakeTerminal implements TerminalClipboardTarget {
   paste(value: string): void { this.pasted.push(value); }
 }
 
-function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'type' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>> = {}): KeyboardEvent {
+function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'type' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>> = {}): KeyboardEvent {
   return {
     type: 'keydown',
     key,
+    code: /^[a-z]$/i.test(key) ? `Key${key.toUpperCase()}` : '',
     ctrlKey: false,
     shiftKey: false,
     altKey: false,
@@ -199,6 +200,26 @@ describe('Windows terminal paste shortcuts', () => {
 
     expect(requestTrustedClipboard).toHaveBeenCalledOnce();
     expect(terminal.pasted).toEqual(['C:\\void-temp\\pasted.png']);
+  });
+
+  it('consumes physical Ctrl+V under a Russian layout, reads once, and pastes once', async () => {
+    const { terminal, requestTrustedClipboard } = await install({ kind: 'text', text: 'paste exactly once' });
+
+    expect(terminal.handler?.(key('м', { code: 'KeyV', ctrlKey: true }))).toBe(false);
+    await afterMicrotasks();
+
+    expect(requestTrustedClipboard).toHaveBeenCalledOnce();
+    expect(terminal.pasted).toEqual(['paste exactly once']);
+  });
+
+  it('does not intercept a non-V physical key just because its layout key is v', async () => {
+    const { terminal, requestTrustedClipboard } = await install({ kind: 'text', text: 'must not paste' });
+
+    expect(terminal.handler?.(key('v', { code: 'KeyQ', ctrlKey: true }))).toBe(true);
+    await afterMicrotasks();
+
+    expect(requestTrustedClipboard).not.toHaveBeenCalled();
+    expect(terminal.pasted).toEqual([]);
   });
 
   // xterm invokes the custom handler for both halves of one physical Ctrl+V gesture.
