@@ -351,6 +351,13 @@ describe('file-drop production wiring', () => {
     const boundaryCalls = callsNamed(sink.body, 'input').filter((call) => propertyPath(call.expression) === 'window.voidTerminal.input');
     expect(boundaryCalls, 'input sink must call window.voidTerminal.input once').toHaveLength(1);
     const boundary = boundaryCalls[0];
+    const rejectionHandler = boundary?.parent;
+    expect(ts.isPropertyAccessExpression(rejectionHandler) && rejectionHandler.expression === boundary
+      && rejectionHandler.name.text === 'catch', 'input promise must be the receiver of .catch(...)').toBe(true);
+    if (!ts.isPropertyAccessExpression(rejectionHandler) || rejectionHandler.expression !== boundary || rejectionHandler.name.text !== 'catch') return;
+    const caught = rejectionHandler.parent;
+    expect(ts.isCallExpression(caught) && caught.expression === rejectionHandler
+      && caught.arguments.length > 0 && ts.isFunctionLike(caught.arguments[0]), 'input rejection must have a catch callback').toBe(true);
     const request = boundary?.arguments[0];
     expect(request && ts.isObjectLiteralExpression(request), 'input boundary must receive a request object').toBe(true);
     if (!request || !ts.isObjectLiteralExpression(request)) return;
