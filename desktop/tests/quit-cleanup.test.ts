@@ -142,6 +142,34 @@ describe('owned cleanup coordinator', () => {
     expect(calls).toEqual(['sessions', 'clipboard', 'probe']);
     expect(maximumActiveTeardowns).toBe(1);
   });
+
+  it('retries a transient clipboard cleanup failure without repeating completed actions or retrying on re-entry', async () => {
+    const calls: string[] = [];
+    let clipboardAttempts = 0;
+    const teardownSessions = vi.fn(() => { calls.push('sessions'); });
+    const cleanupClipboardImages = vi.fn(() => {
+      clipboardAttempts += 1;
+      calls.push(`clipboard:${clipboardAttempts}`);
+      if (clipboardAttempts === 1) {
+        coordinator.cleanup();
+        throw new Error('clipboard directory is temporarily locked');
+      }
+    });
+    const cleanupProbe = vi.fn(() => { calls.push('probe'); });
+    const coordinator = await ownedCleanupCoordinator({ teardownSessions, cleanupClipboardImages, cleanupProbe });
+
+    expect(() => coordinator.cleanup()).not.toThrow();
+    expect(calls).toEqual(['sessions', 'clipboard:1', 'probe']);
+
+    coordinator.cleanup();
+    expect(calls).toEqual(['sessions', 'clipboard:1', 'probe', 'clipboard:2']);
+
+    coordinator.cleanup();
+    expect(teardownSessions).toHaveBeenCalledOnce();
+    expect(cleanupClipboardImages).toHaveBeenCalledTimes(2);
+    expect(cleanupProbe).toHaveBeenCalledOnce();
+    expect(calls).toEqual(['sessions', 'clipboard:1', 'probe', 'clipboard:2']);
+  });
 });
 
 function sourceFile(): ts.SourceFile {
