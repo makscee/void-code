@@ -1,3 +1,4 @@
+// rails:pin-on-coverage moving cleaned=true after runQuitCleanup lets synchronous teardown re-entry run all three cleanup actions twice; exact calls and action depth kill that mutation
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
@@ -113,6 +114,33 @@ describe('owned cleanup coordinator', () => {
     failStartupExit();
 
     expect(calls).toEqual(['sessions', 'clipboard', 'probe']);
+  });
+
+  // Marking ownership after actions lets synchronous teardown re-entry start a second cleanup pass.
+  it('does not recurse into cleanup actions when the first action re-enters the same coordinator', async () => {
+    const calls: string[] = [];
+    let activeTeardowns = 0;
+    let maximumActiveTeardowns = 0;
+    let reentered = false;
+    const coordinator: OwnedCleanupCoordinator = await ownedCleanupCoordinator({
+      teardownSessions: () => {
+        activeTeardowns += 1;
+        maximumActiveTeardowns = Math.max(maximumActiveTeardowns, activeTeardowns);
+        calls.push('sessions');
+        if (!reentered) {
+          reentered = true;
+          coordinator.cleanup();
+        }
+        activeTeardowns -= 1;
+      },
+      cleanupClipboardImages: () => { calls.push('clipboard'); },
+      cleanupProbe: () => { calls.push('probe'); },
+    });
+
+    coordinator.cleanup();
+
+    expect(calls).toEqual(['sessions', 'clipboard', 'probe']);
+    expect(maximumActiveTeardowns).toBe(1);
   });
 });
 
