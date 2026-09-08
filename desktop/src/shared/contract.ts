@@ -34,6 +34,7 @@ export type RuntimeSupportState = 'not_started' | 'running' | 'ended' | 'start_f
 export type RecoveryCode = 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'SESSION_START_FAILED' | 'RUNTIME_EXITED' | 'WORKSPACE_MISSING' | 'SESSION_MISSING';
 export interface SupportRequest { runtime: RuntimeSupportState; recoveryCode: RecoveryCode }
 export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
+export type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
 
 export interface TerminalApi {
   getPathForFile(file: File): string;
@@ -49,6 +50,10 @@ export interface TerminalApi {
   support: {
     copy(request: SupportRequest): Promise<SupportResult>;
     save(request: SupportRequest): Promise<SupportResult>;
+  };
+  clipboard: {
+    read(): Promise<ClipboardReadResult>;
+    write(text: string): Promise<void>;
   };
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;
@@ -158,4 +163,9 @@ export function codeCopyRequest(value: unknown): string {
   const object = ownedObject(value, ['code']);
   if (typeof object.code !== 'string' || object.code.length === 0 || object.code.length > 64) throw new Error('invalid code');
   return object.code;
+}
+export function clipboardWriteRequest(value: unknown): string {
+  const object = ownedObject(value, ['text']);
+  if (typeof object.text !== 'string' || object.text.length === 0) throw new Error('invalid clipboard text');
+  return object.text;
 }

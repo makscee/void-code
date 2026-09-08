@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
 import { appVersionLabel } from './app-version';
+import { wireProductTerminalClipboard } from './clipboard-shortcuts';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import { installFileDropHandlers } from './file-drop';
@@ -70,6 +71,7 @@ let codeTimer: ReturnType<typeof setInterval> | undefined;
 // next launch attempt — it is what keeps the sign-in screens visible in place of the generic
 // "chat could not start" screen, overriding the usual "a chat is selected" preflight-hides rule.
 let signinOnStartFailure = false;
+const rendererPlatform = navigator.userAgent.includes('Windows') ? 'win32' : 'other';
 let chatTabRename: ChatTabRenameState = { editing: null };
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }
@@ -228,7 +230,14 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
   const container = document.createElement('div'); container.className = 'terminal'; container.hidden = tab.id !== workspace.selectedId; terminalsElement.append(container);
   const created = createProductTerminal({ activate: (_event: MouseEvent, text: string) => { void window.voidTerminal.openLink(text); } });
   const { terminal } = created;
-  terminal.open(container); activateProductRenderer(created); terminal.onData((data: string) => { void window.voidTerminal.input({ sessionId: tab.id, data }); });
+  wireProductTerminalClipboard(
+    terminal,
+    rendererPlatform,
+    () => window.voidTerminal.clipboard.read(),
+    (text) => window.voidTerminal.clipboard.write(text),
+    (data) => { void window.voidTerminal.input({ sessionId: tab.id, data }); },
+  );
+  terminal.open(container); activateProductRenderer(created);
   let offOutput = (): void => undefined; let offExit = (): void => undefined; let offStatus = (): void => undefined;
   const runtime = Object.assign(created, { container, offOutput, offExit, offStatus, exited: false, recoveryCode: 'NONE' as RecoveryCode }) as Runtime; runtimes.set(tab.id, runtime);
   try {

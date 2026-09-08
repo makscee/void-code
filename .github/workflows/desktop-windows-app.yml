@@ -50,6 +50,9 @@ jobs:
       - name: Install the desktop dependencies from the lockfile
         working-directory: desktop
         run: npm ci
+      - name: Run the Windows clipboard DACL acceptance
+        working-directory: desktop
+        run: npm test -- --run tests/windows-clipboard-dacl.test.ts
       - name: Fetch the pinned Windows Node archive, verifying its digest
         working-directory: desktop
         # scripts/assemble-windows-resources.mjs reads one file that no checkout
