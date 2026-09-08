@@ -124,3 +124,36 @@ func TestPiPathNeverPutsTheWorkingDirectoryOnPath(t *testing.T) {
 		}
 	}
 }
+
+// npm's Windows pi.cmd invokes bare `node`. cmd.exe normally considers the
+// selected project/current directory before PATH, so PATH isolation alone does
+// not stop a project-controlled node.exe from receiving VC_AUTH_TOKEN. Keep
+// platform explicit: this Windows rule must be exercised by the macOS suite.
+func TestPiEnvDisablesWindowsCurrentDirectoryExecutableSearch(t *testing.T) {
+	const privateNode = `C:\Users\real\.void-code\runtime\node\node.exe`
+	env := []string{
+		"VC_AUTH_TOKEN=admitted-token",
+		`Path=C:\selected-project`,
+		"nodefaultcurrentdirectoryinexepath=0",
+		"NODEFAULTCURRENTDIRECTORYINEXEPATH=stale",
+	}
+
+	got := PiEnv("windows", env, []string{`SYSTEMROOT=D:\Windows`}, privateNode)
+	values := map[string][]string{}
+	for _, entry := range got {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[strings.ToLower(name)] = append(values[strings.ToLower(name)], value)
+		}
+	}
+
+	if path := values["path"]; len(path) != 1 || path[0] != `C:\Users\real\.void-code\runtime\node;D:\Windows\System32` {
+		t.Fatalf("Windows Pi PATH = %q, want the private Node first and no project path", path)
+	}
+	if guard := values["nodefaultcurrentdirectoryinexepath"]; len(guard) != 1 || guard[0] != "1" {
+		t.Fatalf("NoDefaultCurrentDirectoryInExePath entries = %q, want exactly one forced value of 1", guard)
+	}
+	if token := values["vc_auth_token"]; len(token) != 1 || token[0] != "admitted-token" {
+		t.Fatalf("unrelated token-bearing environment changed: %q", token)
+	}
+}

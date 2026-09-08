@@ -137,7 +137,7 @@ func TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath(t *testing.T) {
 }
 
 func TestRunSpawnRejectsCorruptBundledNodeWithoutRestoringForeignPath(t *testing.T) {
-	for _, kind := range []string{"symlink", "directory", "not executable"} {
+	for _, kind := range []string{"symlink", "directory", "not executable", "owner mode 0001"} {
 		t.Run(kind, func(t *testing.T) {
 			if runtime.GOOS == "windows" && kind != "directory" {
 				t.Skip("Windows symlink privileges and executable mode do not provide this fixture")
@@ -158,6 +158,15 @@ func TestRunSpawnRejectsCorruptBundledNodeWithoutRestoringForeignPath(t *testing
 				}
 			case "not executable":
 				if err := os.WriteFile(nodePath, []byte("not executable"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "owner mode 0001":
+				// This process creates and therefore owns the fixture. An execute bit
+				// for "other" must not make it executable by that owner.
+				if err := os.WriteFile(nodePath, []byte("not executable by owner"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(nodePath, 0001); err != nil {
 					t.Fatal(err)
 				}
 			}
