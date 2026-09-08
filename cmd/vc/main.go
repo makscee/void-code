@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	term "github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
+	"github.com/makscee/void-code/internal/childenv"
 	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
@@ -367,12 +369,28 @@ func runSpawn(_ *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 		}
 	}
-	// Resolve the VC-managed entrypoint exactly once, after live admission and
-	// before constructing token-bearing child environment. Never substitute a
-	// PATH result here: that binary would inherit VC_AUTH_TOKEN.
-	piPath, err := pibin.Resolve()
-	if err != nil {
-		return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+	// Resolve launch artifacts after live admission but before constructing a
+	// token-bearing child environment. A bundled runtime starts its already
+	// resolved private Node directly, never through Pi's shebang or pi.cmd. The
+	// legacy install.sh channel has no bundled Node, so it keeps its existing Pi
+	// entrypoint launch and inherited PATH exactly.
+	privateNode, nodeErr := pibin.ResolveNode()
+	launchPath := ""
+	modulePath := ""
+	switch {
+	case nodeErr == nil:
+		modulePath, err = pibin.ResolveModule()
+		if err != nil {
+			return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+		}
+		launchPath = privateNode
+	case errors.Is(nodeErr, pibin.ErrBundledNodeUnprovisioned):
+		launchPath, err = pibin.Resolve()
+		if err != nil {
+			return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+		}
+	default:
+		return fmt.Errorf("cannot resolve bundled Node: %w", nodeErr)
 	}
 	extPath, extErr := reconcileManagedPiExtension()
 	if extErr != nil {
@@ -397,9 +415,16 @@ func runSpawn(_ *cobra.Command, args []string) error {
 		}
 	}
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
+	if privateNode != "" {
+		env = withBuiltPiPath(env, os.Environ(), privateNode)
+	}
+	piArgs := buildPiArgs(nil, extPath)
+	if modulePath != "" {
+		piArgs = append([]string{modulePath}, piArgs...)
+	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), piPath, buildPiArgs(nil, extPath), env)
+	return spawnHarness(context.Background(), launchPath, piArgs, env)
 }
 
 var (
@@ -451,6 +476,26 @@ func ensurePiVoidCodexExtension() (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// withBuiltPiPath replaces the PATH Pi would otherwise inherit with the one VC
+// composes around the already resolved Node it bundled — the fix for the failure
+// a person hit on 06.09, where `vc` answered the first prompt with
+//
+//	TypeError: zlib.createZstdDecompress is not a function
+//
+// from inside undici. Nothing about VC was broken: Pi's shebang started `node`
+// from the user's whole environment, and the nvm v22.12.0 that won the PATH
+// lookup has no zlib.createZstdDecompress. The Node in ~/.void-code/runtime
+// does — both binaries were run to check.
+//
+// The parent is passed rather than read inside so the same environment feeds the
+// lookup and the strip, and PATH is matched without regard to case because
+// Windows writes Path as often as PATH and two entries would both reach the
+// child. Legacy install.sh callers intentionally do not call this: they have no
+// private Node and retain their inherited PATH.
+func withBuiltPiPath(env, parent []string, privateNode string) []string {
+	return childenv.PiEnv(runtime.GOOS, env, parent, privateNode)
 }
 
 // buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay

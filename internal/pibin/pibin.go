@@ -1,4 +1,4 @@
-// Package pibin resolves VC's managed Pi entrypoint and install guidance.
+// Package pibin resolves VC's managed Pi launch artifacts and install guidance.
 package pibin
 
 import (
@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 const managedPiRelativePath = ".void-code/runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
@@ -22,6 +23,148 @@ func managedPiPathForOS(home, goos string) string {
 }
 
 func managedPiPath(home string) string { return managedPiPathForOS(home, runtime.GOOS) }
+
+// managedNodePathForOS names the Node executable VC installs beside its managed
+// Pi. npm's Windows distribution keeps node.exe at the root of the extracted
+// archive; the unix tarballs keep it under bin/. Both are what the desktop
+// assembly scripts record in the runtime manifest as node/node.exe and
+// node/bin/node.
+func managedNodePathForOS(home, goos string) string {
+	if goos == "windows" {
+		return filepath.Join(home, ".void-code", "runtime", "node", "node.exe")
+	}
+	return filepath.Join(home, ".void-code", "runtime", "node", "bin", "node")
+}
+
+func managedNodePath(home string) string { return managedNodePathForOS(home, runtime.GOOS) }
+
+// managedNodeRuntimePath is the root of the tree provisioned only by the
+// bundled-runtime installer. install.sh's legacy channel deliberately omits
+// this whole tree and uses the machine Node instead.
+func managedNodeRuntimePath(home string) string {
+	return filepath.Join(home, ".void-code", "runtime", "node")
+}
+
+// ErrBundledNodeUnprovisioned is returned directly when the entire managed
+// runtime/node tree and bundled manifest are absent. Its PathError form preserves the historical
+// os.IsNotExist behavior for callers that only need missing-file diagnostics;
+// callers deciding whether PATH fallback is safe must use errors.Is with this
+// sentinel, rather than treating every missing inner component as legacy.
+var ErrBundledNodeUnprovisioned = &os.PathError{
+	Op:   "resolve bundled Node runtime",
+	Path: ".void-code/runtime/node",
+	Err:  syscall.ENOENT,
+}
+
+// ErrBundledNodeCorrupt reports a bundled runtime whose manifest remains but
+// whose required Node tree has been removed.
+var ErrBundledNodeCorrupt = fmt.Errorf("bundled Node runtime is corrupt")
+
+// ResolveNode returns the absolute path of the Node executable VC installs with
+// its managed Pi, on the same terms Resolve uses for the Pi entrypoint: a fixed
+// place under the canonical home, never PATH. Pi starts through
+// `#!/usr/bin/env node`, so this is the binary VC means to run it, and it is
+// handed a VC token — a PATH-selected or symlink-redirected node would receive
+// that token exactly as the wrong Pi would.
+//
+// An absent Node without a bundled manifest is a normal legacy install.sh
+// state: it provisions only runtime/pi and npm-installs it with the Node already
+// on the machine. A remaining bundled manifest instead reports corruption.
+func ResolveNode() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve VC home: %w", err)
+	}
+	canonicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize VC home: %w", err)
+	}
+	path := managedNodePath(canonicalHome)
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("bundled Node path is not absolute")
+	}
+	if err := bundledNodeTreeProvisioned(canonicalHome); err != nil {
+		return "", err
+	}
+	if err := rejectSymlinkComponents(canonicalHome, path); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("bundled Node is not a regular file: %s", path)
+	}
+	if !nodeIsExecutable(path) {
+		return "", fmt.Errorf("bundled Node is not executable: %s", path)
+	}
+	return path, nil
+}
+
+// bundledNodeTreeProvisioned distinguishes the legacy absence of the complete
+// runtime/node tree from a broken component inside a tree VC did provision.
+// Check each parent for symlinks before classifying ENOENT, so a dangling
+// redirected runtime remains a rejection rather than a legacy fallback.
+func bundledNodeTreeProvisioned(home string) error {
+	root := managedNodeRuntimePath(home)
+	if err := rejectSymlinkComponents(home, filepath.Dir(root)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrBundledNodeUnprovisioned
+		}
+		return err
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		manifest := filepath.Join(filepath.Dir(root), "manifest.json")
+		if _, manifestErr := os.Lstat(manifest); manifestErr == nil {
+			return fmt.Errorf("%w: %s exists but %s is missing", ErrBundledNodeCorrupt, manifest, root)
+		} else if !os.IsNotExist(manifestErr) {
+			return manifestErr
+		}
+		return ErrBundledNodeUnprovisioned
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("managed Pi path contains symlink component: %s", root)
+	}
+	return nil
+}
+
+// ResolveModule returns VC's absolute, installed Pi JavaScript module. It is
+// the fixed module passed as argv[0] when VC launches its bundled Node directly.
+// Unlike Resolve, a JavaScript module need not be executable.
+//
+// This is not provenance verification and is not race-safe against the account
+// owner: ~/.void-code and the token are both in that user's trust boundary. The
+// component checks only reject accidental or lower-authority symlink redirection.
+func ResolveModule() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve VC home: %w", err)
+	}
+	canonicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize VC home: %w", err)
+	}
+	path := filepath.Join(canonicalHome, filepath.FromSlash(managedPiRelativePath))
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("managed Pi module path is not absolute")
+	}
+	if err := rejectSymlinkComponents(canonicalHome, path); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("managed Pi module is not a regular file: %s", path)
+	}
+	return path, nil
+}
 
 // Resolve returns VC's absolute, installed Pi entrypoint. It intentionally does
 // not consult PATH: a PATH-selected Pi must not receive VC credentials.
