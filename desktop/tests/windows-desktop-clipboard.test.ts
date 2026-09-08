@@ -700,9 +700,10 @@ function objectLiteral(expression: ts.Expression | undefined): ts.ObjectLiteralE
 }
 
 function objectProperty(object: ts.ObjectLiteralExpression | undefined, name: string): ts.Expression | undefined {
-  const property = object?.properties.find((item): item is ts.PropertyAssignment => ts.isPropertyAssignment(item)
+  const property = object?.properties.find((item) => (ts.isPropertyAssignment(item) || ts.isShorthandPropertyAssignment(item))
     && (ts.isIdentifier(item.name) || ts.isStringLiteral(item.name)) && item.name.text === name);
-  return property?.initializer;
+  if (property && ts.isPropertyAssignment(property)) return property.initializer;
+  return property && ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
 }
 
 // Deleting a boundary call silently removes Windows paste/copy despite the seam units being tested.
@@ -806,19 +807,28 @@ describe('Windows clipboard process-boundary wiring', () => {
     expect(`${preload}\n${renderer}`).not.toMatch(/navigator\.clipboard|document\.execCommand\s*\(|new\s+ClipboardEvent\s*\(/);
   });
 
-  it('registers one owned-renderer main-process writer that validates before Electron clipboard.writeText', () => {
-    const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
-    const handlers = [...main.matchAll(/ipcMain\.handle\(IPC\.clipboardWrite,[\s\S]{0,600}?\}\);/g)].map((match) => match[0]);
+  it('delegates both main-process clipboard channels exactly once with owned-renderer authority', () => {
+    const source = sourceFile('../src/main/index.ts');
+    const register = namedFunction(source, 'registerIpc');
+    expect(register?.body, 'the real main-process IPC registration path exists').toBeDefined();
 
-    expect(handlers, 'clipboardWrite must have exactly one main-process handler').toHaveLength(1);
-    const handler = handlers[0];
-    const authorize = handler.indexOf('assertRenderer(event)');
-    const validate = handler.indexOf('clipboardWriteRequest(raw)');
-    const write = handler.indexOf('clipboard.writeText');
-    expect(authorize, 'clipboardWrite does not reject non-owned renderers').toBeGreaterThan(-1);
-    expect(validate, 'clipboardWrite does not pass raw input through the strict validator').toBeGreaterThan(authorize);
-    expect(write, 'clipboardWrite does not use Electron main-process clipboard.writeText').toBeGreaterThan(validate);
-    expect(handler).not.toMatch(/navigator\.clipboard|writeFile|readImage|toPNG/);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && node.expression.text === 'registerDesktopClipboardHandlers') calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(register!.body!);
+
+    expect(calls, 'the executable clipboard registrar must be delegated to exactly once').toHaveLength(1);
+    expect(calls[0].arguments).toHaveLength(1);
+    const options = objectLiteral(calls[0].arguments[0]);
+    expect(options, 'the clipboard registrar receives explicit production dependencies').toBeDefined();
+    expect(objectProperty(options, 'ipcMain')?.getText(source)).toBe('ipcMain');
+    expect(objectProperty(options, 'channels')?.getText(source)).toBe('IPC');
+    expect(objectProperty(options, 'platform')?.getText(source)).toBe('process.platform');
+    expect(objectProperty(options, 'authorize')?.getText(source)).toBe('assertRenderer');
+    expect(objectProperty(options, 'dependencies')?.getText(source)).toBe('desktopClipboardDependencies');
   });
 
   it('names a distinct write channel instead of overloading terminal input or clipboard read', () => {
