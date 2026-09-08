@@ -275,7 +275,7 @@ function deterministicUuid(sequence: number): string {
 // G3 uses the real filesystem for permission and deletion assertions. Time and apparent process
 // liveness are injected, so strict seven-day pruning needs neither a sleep nor a real reused PID.
 describe('G3 — process-owned clipboard image storage and strict age-based crash retention', () => {
-  it('creates one absolute 0700 owned directory, writes 0600 PNGs inside it, and removes it on cleanup', async () => {
+  it('creates one absolute owned directory, writes unique PNGs inside it, and removes it on cleanup', async () => {
     const module = await clipboardPanelModule();
     expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
     const root = temporaryRoot();
@@ -286,7 +286,6 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     expect(path.dirname(store.directory)).toBe(path.resolve(root));
     expect(path.basename(store.directory)).toBe(`void-code-clipboard-4101-${ownedId}`);
     expect(statSync(store.directory).isDirectory()).toBe(true);
-    expect(statSync(store.directory).mode & 0o777).toBe(0o700);
 
     const first = store.writeImage(Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]));
     const second = store.writeImage(Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]));
@@ -295,8 +294,14 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     expect(path.extname(first)).toBe('.png');
     expect(path.extname(second)).toBe('.png');
     expect(first).not.toBe(second);
-    expect(statSync(first).mode & 0o777).toBe(0o600);
-    expect(statSync(second).mode & 0o777).toBe(0o600);
+
+    // Node's mode bits are POSIX evidence only. Windows confidentiality is asserted separately
+    // from the native DACL in windows-clipboard-dacl.test.ts on a real Windows runner.
+    if (process.platform !== 'win32') {
+      expect(statSync(store.directory).mode & 0o777).toBe(0o700);
+      expect(statSync(first).mode & 0o777).toBe(0o600);
+      expect(statSync(second).mode & 0o777).toBe(0o600);
+    }
 
     store.cleanup();
     expect(existsSync(store.directory)).toBe(false);
