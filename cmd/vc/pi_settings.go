@@ -94,6 +94,24 @@ func ensurePiDefaultModel() error {
 	})
 }
 
+// ensurePiDesktopUIDefaults seeds the presentation defaults used by the desktop
+// app. They are defaults rather than policy: the presence of either key means
+// the user or Pi already chose it, so that key is preserved exactly as-is.
+func ensurePiDesktopUIDefaults() error {
+	return updatePiSettings(func(settings map[string]any) bool {
+		changed := false
+		if _, exists := settings["tuiMode"]; !exists {
+			settings["tuiMode"] = "fullscreen"
+			changed = true
+		}
+		if _, exists := settings["hideThinkingBlock"]; !exists {
+			settings["hideThinkingBlock"] = false
+			changed = true
+		}
+		return changed
+	})
+}
+
 // piSettingsLockWait is how long a writer waits for the other one to finish.
 //
 // The floor is set by the widest critical section anything here has: a slow

@@ -510,6 +510,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 		"VC_RELAY_CA":              true,
 		"VC_AUTH_TOKEN":            true,
 		"VC_BOOTSTRAP_EXECUTABLE":  true,
+		"VC_DESKTOP_SESSION":       true,
 		"ANTHROPIC_CUSTOM_HEADERS": true,
 	}
 	if p.Kind == provider.Relay || p.Kind == provider.RelayProvider {

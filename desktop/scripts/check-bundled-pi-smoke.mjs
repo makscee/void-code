@@ -99,6 +99,17 @@ async function main() {
     const extension = path.join(work, 'extension.ts');
     await writeFile(extension, extensionSource);
 
+    // The desktop UI is embedded into vc from this real TypeScript source. Load
+    // the same bytes here so bundle mode proves it can resolve the built-in tool
+    // and TUI imports the desktop extension needs, not only the transport's
+    // provider imports.
+    const uiExtensionSource = await readFile(path.join(repo, 'cmd/vc/pi_ui_extension.ts'), 'utf8');
+    if (!uiExtensionSource.startsWith('// void-code-managed-pi-ui-extension:v1')) {
+      die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_ui_extension.ts does not start with its ownership marker.');
+    }
+    const uiExtension = path.join(work, 'void-code-ui.ts');
+    await writeFile(uiExtension, uiExtensionSource);
+
     // The extension asks vc which providers are granted, through
     // execFileSync(VC_BOOTSTRAP_EXECUTABLE, ['pi-bootstrap']). Hand it an answer: what this needs is a
     // registered provider, not a live relay. One stub for every platform -- see piSmokeBootstrapPlan
@@ -159,8 +170,8 @@ async function main() {
         }
       };
 
-      const turn = ['-e', extension, '--provider', 'void-codex', '--model', models[0], '-p', 'PING'];
-      const turnEnv = { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, PI_SKIP_VERSION_CHECK: '1' };
+      const turn = ['-e', extension, '-e', uiExtension, '--provider', 'void-codex', '--model', models[0], '-p', 'PING'];
+      const turnEnv = { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, VC_DESKTOP_SESSION: '1', PI_SKIP_VERSION_CHECK: '1' };
 
       // 0. The road macOS ships on, and it has to be checked before the tree is bundled because
       // bundling destroys it. Every target this smoke runs is bundled, so without this the resolver
@@ -182,7 +193,7 @@ async function main() {
       const packageDir = path.join(piRoot, bundle.packageDir);
 
       // 1. The provider the app connects a model through.
-      const listed = run(entry, packageDir, ['-e', extension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer });
+      const listed = run(entry, packageDir, ['-e', extension, '-e', uiExtension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, VC_DESKTOP_SESSION: '1' });
       if (listed.failed !== undefined) {
         die('running the bundle with the real extension', `  The entry point did not survive --list-models. Output:\n${listed.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
       }

@@ -38,6 +38,20 @@ vc update             # self-update
 | `VC_RELAY_HOST` | `relay.makscee.ru:443` | relay host:port |
 | `VC_AUTH_HOST` | `https://auth.makscee.ru` | auth base URL |
 | `VC_RELAY_CA` | _(embedded)_ | relay CA PEM path |
+| `VC_PI_COMPACT_UI` | enabled | set to `false` to remove and disable the managed compact UI in desktop sessions |
+
+### Desktop compact interface
+
+Desktop sessions install the managed `void-code-ui.ts` extension in Pi's user
+extension directory. It keeps the current activity on one line, stores one short
+line per completed tool, and hides full calls/results until `Ctrl+O` expands
+them. Pi's native reasoning remains available and can be toggled with `Ctrl+T`.
+
+The extension is globally discoverable by Pi but inert unless the
+`vc desktop-session` command mints `VC_DESKTOP_SESSION=1`; terminal `vc` sessions keep Pi's
+normal presentation. On first desktop launch VC seeds `tuiMode: fullscreen` and
+`hideThinkingBlock: false` only when those settings are absent. Existing user
+choices are never overwritten.
 
 ## Runtime and token trust model
 
