@@ -3,7 +3,7 @@ export const IPC = {
   chooseFolder: 'terminal:choose-folder', openLink: 'terminal:open-link', subscribe: 'terminal:subscribe', unsubscribe: 'terminal:unsubscribe',
   output: 'terminal:output', exit: 'terminal:exit', lifecycle: 'chat:lifecycle', lifecycleStatus: 'chat:lifecycle-status',
   workspaceLoad: 'workspace:load', workspaceChoose: 'workspace:choose', workspaceRemove: 'workspace:remove',
-  workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
+  workspaceNewChat: 'workspace:new-chat', workspaceSelect: 'workspace:select', workspaceRename: 'workspace:rename', workspaceClose: 'workspace:close', workspaceResume: 'workspace:resume',
   supportCopy: 'support:copy', supportSave: 'support:save',
   authStatus: 'auth:status', authLoginStart: 'auth:login-start', authLoginEvent: 'auth:login-event', authCodeCopy: 'auth:code-copy',
   authAccessRequest: 'auth:access-request',

@@ -70,6 +70,7 @@ const api: TerminalApi = {
     remove: () => ipcRenderer.invoke(IPC.workspaceRemove),
     newChat: () => ipcRenderer.invoke(IPC.workspaceNewChat),
     select: (id) => ipcRenderer.invoke(IPC.workspaceSelect, { sessionId: id }),
+    rename: (id, title) => ipcRenderer.invoke(IPC.workspaceRename, { sessionId: id, title }),
     close: (id) => ipcRenderer.invoke(IPC.workspaceClose, { sessionId: id }),
     resume: (id) => ipcRenderer.invoke(IPC.workspaceResume, { sessionId: id }),
   }),

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { renameRequest } from '../shared/contract';
 
 export type TabLocation = 'active' | 'recent';
 export interface TabRecord { id: string; title: string; location: TabLocation }
@@ -62,6 +63,14 @@ export class WorkspaceStore {
     this.save(); return this.view();
   }
   select(id: string): WorkspaceView { const workspace = this.available(); this.tab(workspace, id, 'active'); workspace.selectedId = id; this.save(); return this.view(); }
+  rename(id: string, title: string): WorkspaceView {
+    const request = renameRequest({ sessionId: id, title });
+    const workspace = this.available();
+    const tab = workspace.tabs.find((candidate) => candidate.id === request.sessionId);
+    if (!tab) throw new Error('unknown chat');
+    tab.title = request.title;
+    this.save(); return this.view();
+  }
   assertClose(id: string): void { this.tab(this.available(), id, 'active'); }
   close(id: string): WorkspaceView {
     const workspace = this.available(); const tab = this.tab(workspace, id, 'active'); tab.location = 'recent';
