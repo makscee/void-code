@@ -200,6 +200,34 @@ func TestRunSpawnRejectsCorruptBundledNodeWithoutRestoringForeignPath(t *testing
 	}
 }
 
+func TestRunSpawnRejectsBundledNodeTreeWithMissingExecutable(t *testing.T) {
+	home, foreignPath := preparePiPathLaunch(t)
+	if err := os.MkdirAll(filepath.Join(home, ".void-code", "runtime", "node"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pibin.ResolveNode(); !os.IsNotExist(err) {
+		t.Fatalf("fixture must have a bundled Node tree but no expected executable, got %v", err)
+	}
+
+	spawned := false
+	spawnPath := ""
+	savedSpawn := spawnHarness
+	spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
+		spawned = true
+		spawnPath = pathFromEnv(env)
+		return nil
+	}
+	t.Cleanup(func() { spawnHarness = savedSpawn })
+
+	err := runSpawn(nil, nil)
+	if spawned {
+		t.Fatalf("token-bearing Pi spawn was reached with a partial bundled Node tree; child PATH %q inherited foreign PATH %q", spawnPath, foreignPath)
+	}
+	if err == nil {
+		t.Fatal("runSpawn succeeded with a bundled Node tree missing its expected executable")
+	}
+}
+
 func TestRunSpawnPreservesInheritedPathWhenBundledNodeIsAbsent(t *testing.T) {
 	_, foreignPath := preparePiPathLaunch(t)
 	if _, err := pibin.ResolveNode(); !os.IsNotExist(err) {
