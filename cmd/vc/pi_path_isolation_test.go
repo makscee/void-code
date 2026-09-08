@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -133,6 +134,53 @@ func TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath(t *testing.T) {
 		if sameDirectory(entry, foreignNodeDir) {
 			t.Fatalf("the user's own node directory reached Pi: %s", got)
 		}
+	}
+}
+
+func TestRunSpawnExecutesBundledNodeWithFixedPiModule(t *testing.T) {
+	home, _ := preparePiPathLaunch(t)
+
+	privateNode := privateNodeFixturePath(home)
+	if err := os.MkdirAll(filepath.Dir(privateNode), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutableFixture(t, privateNode, "fixture")
+	wantNode, err := pibin.ResolveNode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	piModule := filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")
+	if err := os.MkdirAll(filepath.Dir(piModule), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutableFixture(t, piModule, "fixture")
+	wantModule, err := filepath.EvalSymlinks(piModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensionDir := filepath.Join(home, "pi-agent")
+	t.Setenv("PI_CODING_AGENT_DIR", extensionDir)
+
+	var executable string
+	var args []string
+	savedSpawn := spawnHarness
+	spawnHarness = func(_ context.Context, gotExecutable string, gotArgs []string, _ []string) error {
+		executable = gotExecutable
+		args = append([]string(nil), gotArgs...)
+		return nil
+	}
+	t.Cleanup(func() { spawnHarness = savedSpawn })
+
+	if err := runSpawn(nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(executable) || executable != wantNode {
+		t.Errorf("spawn executable = %q, want validated bundled Node %q", executable, wantNode)
+	}
+	wantArgs := []string{wantModule, "-e", filepath.Join(extensionDir, "extensions", "void-code.ts")}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Errorf("spawn args = %#v, want fixed Pi module followed by existing extension args %#v", args, wantArgs)
 	}
 }
 
