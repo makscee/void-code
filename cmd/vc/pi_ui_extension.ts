@@ -7,7 +7,7 @@
  * normal per-tool calls and full results for inspection.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	createBashTool,
 	createEditTool,
@@ -124,7 +124,8 @@ function resultText(rawResult: unknown): string {
 function describeToolCall(name: string, rawArgs: unknown): string {
 	const args = asRecord(rawArgs);
 	if (name === "bash") return `$ ${compactText(redactCommand(args.command)) || "…"}`;
-	if (name === "read" || name === "edit" || name === "write") {
+	if (name === "read") return `read ${describeReadTarget(args)}`;
+	if (name === "edit" || name === "write") {
 		return `${name} ${shortenPath(compactText(args.path) || "…")}`;
 	}
 	if (name === "grep") {
@@ -135,6 +136,16 @@ function describeToolCall(name: string, rawArgs: unknown): string {
 	}
 	if (name === "ls") return `ls ${shortenPath(compactText(args.path) || ".")}`;
 	return name;
+}
+
+function renderActiveToolCall(
+	name: string,
+	args: unknown,
+	theme: Theme,
+	context: { executionStarted: boolean; isPartial: boolean },
+): Text {
+	if (!context.executionStarted || !context.isPartial) return new Text("", 0, 0);
+	return new Text(theme.fg("accent", `● ${describeToolCall(name, args)}`), 0, 0);
 }
 
 function legacyCompletedDescription(call: CompactToolCall): string {
@@ -454,7 +465,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_execution_start", (event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		ctx.ui.setWorkingVisible(true);
+		ctx.ui.setWorkingVisible(false);
 		const call: CompactToolCall = {
 			id: event.toolCallId,
 			name: event.toolName,
@@ -483,6 +494,7 @@ export default function (pi: ExtensionAPI) {
 			const pending = [...currentCalls].reverse().find((item) => !item.done);
 			const nextStatus = pending?.activity ?? statusAfterTool(call.name, call.args, call.isError, event.result);
 			updateWorkingStatus(ctx, nextStatus);
+			ctx.ui.setWorkingVisible(pending === undefined);
 		}
 	});
 
@@ -524,7 +536,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("read", args, theme, context);
 			const path = shortenPath(args.path || "");
 			let pathDisplay = path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
 
@@ -573,7 +585,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("bash", args, theme, context);
 			const command = args.command || "...";
 			const timeout = args.timeout as number | undefined;
 			const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
@@ -624,7 +636,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("write", args, theme, context);
 			const path = shortenPath(args.path || "");
 			const pathDisplay = path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
 			const lineCount = args.content ? args.content.split("\n").length : 0;
@@ -668,7 +680,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("edit", args, theme, context);
 			const path = shortenPath(args.path || "");
 			const pathDisplay = path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
 
@@ -715,7 +727,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("find", args, theme, context);
 			const pattern = args.pattern || "";
 			const path = shortenPath(args.path || ".");
 			const limit = args.limit;
@@ -765,7 +777,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("grep", args, theme, context);
 			const pattern = args.pattern || "";
 			const path = shortenPath(args.path || ".");
 			const glob = args.glob;
@@ -819,7 +831,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, context) {
-			if (!context.expanded) return new Text("", 0, 0);
+			if (!context.expanded) return renderActiveToolCall("ls", args, theme, context);
 			const path = shortenPath(args.path || ".");
 			const limit = args.limit;
 
