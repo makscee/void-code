@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type ClipboardImageStorage = {
   directory: string;
@@ -19,8 +19,10 @@ type ClipboardImageStorageOptions = {
   now(): number;
 };
 
+type NativeUserDataCanonicalizer = (userData: string) => string;
+
 type ClipboardStorageModule = {
-  clipboardStorageRoot?: (temporaryDirectory: string, userData: string) => string;
+  clipboardStorageRoot?: (temporaryDirectory: string, userData: string, canonicalizeNativeUserData?: NativeUserDataCanonicalizer) => string;
   createClipboardImageStorage?: (options: ClipboardImageStorageOptions) => ClipboardImageStorage;
 };
 
@@ -47,9 +49,9 @@ async function clipboardStorage(): Promise<ClipboardStorageModule> {
   return import(new URL('../src/main/clipboard-paste.ts', import.meta.url).href) as Promise<ClipboardStorageModule>;
 }
 
-function namespaceRoot(module: ClipboardStorageModule, temporaryDirectory: string, userData: string): string {
+function namespaceRoot(module: ClipboardStorageModule, temporaryDirectory: string, userData: string, canonicalizeNativeUserData?: NativeUserDataCanonicalizer): string {
   expect(module.clipboardStorageRoot, 'the pure userData-scoped clipboard storage-root seam is absent').toBeTypeOf('function');
-  return module.clipboardStorageRoot!(temporaryDirectory, userData);
+  return module.clipboardStorageRoot!(temporaryDirectory, userData, canonicalizeNativeUserData);
 }
 
 function imageStorage(module: ClipboardStorageModule): NonNullable<ClipboardStorageModule['createClipboardImageStorage']> {
@@ -102,6 +104,38 @@ describe('clipboard storage root is scoped to Electron userData', () => {
     expect(first).toBe(second);
     expect(path.isAbsolute(first)).toBe(true);
     expect(path.dirname(first)).toBe(path.resolve(temporaryDirectory));
+  });
+
+  // path.resolve preserves both Windows spelling differences. Hashing it would let one physical
+  // Electron profile retain multiple roots, so the injectable native seam must decide identity first.
+  it('hashes an injected native userData identity, making case and junction aliases one namespace', async () => {
+    const module = await clipboardStorage();
+    const sandbox = temporaryRoot();
+    const temporaryDirectory = path.join(sandbox, 'temp');
+    const physicalUserData = String.raw`C:\Users\Ada\AppData\Roaming\Void Code`;
+    const caseVariant = String.raw`c:\users\ada\appdata\roaming\VOID CODE`;
+    const junctionAlias = String.raw`C:\void-code-aliases\ada-profile`;
+    const differentPhysicalUserData = String.raw`C:\Users\Ada\AppData\Roaming\Void Code Second Profile`;
+    const canonicalPrimary = String.raw`\\?\C:\Users\Ada\AppData\Roaming\Void Code`;
+    const canonicalOther = String.raw`\\?\C:\Users\Ada\AppData\Roaming\Void Code Second Profile`;
+    const canonicalizeNativeUserData = vi.fn((spelling: string): string => {
+      if (spelling === physicalUserData || spelling === caseVariant || spelling === junctionAlias) return canonicalPrimary;
+      if (spelling === differentPhysicalUserData) return canonicalOther;
+      throw new Error(`unexpected userData spelling: ${spelling}`);
+    });
+
+    const physicalRoot = namespaceRoot(module, temporaryDirectory, physicalUserData, canonicalizeNativeUserData);
+    const caseRoot = namespaceRoot(module, temporaryDirectory, caseVariant, canonicalizeNativeUserData);
+    const junctionRoot = namespaceRoot(module, temporaryDirectory, junctionAlias, canonicalizeNativeUserData);
+    const differentRoot = namespaceRoot(module, temporaryDirectory, differentPhysicalUserData, canonicalizeNativeUserData);
+
+    expect(canonicalizeNativeUserData).toHaveBeenNthCalledWith(1, physicalUserData);
+    expect(canonicalizeNativeUserData).toHaveBeenNthCalledWith(2, caseVariant);
+    expect(canonicalizeNativeUserData).toHaveBeenNthCalledWith(3, junctionAlias);
+    expect(canonicalizeNativeUserData).toHaveBeenNthCalledWith(4, differentPhysicalUserData);
+    expect(caseRoot).toBe(physicalRoot);
+    expect(junctionRoot).toBe(physicalRoot);
+    expect(differentRoot).not.toBe(physicalRoot);
   });
 
   it('gives different userData paths different opaque roots without leaking either raw path into a basename', async () => {

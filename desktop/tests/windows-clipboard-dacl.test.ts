@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -131,6 +131,42 @@ describe('Windows clipboard image storage uses the per-user temp DACL', () => {
     } finally {
       cleanup?.();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Windows accepts both spellings of a directory and junction aliases, but path.resolve preserves
+// their text. This runs the production canonicalizer against the NTFS identities that a packaged
+// desktop actually receives; non-Windows hosts cannot make that claim and skip it.
+describe('Windows clipboard storage namespace uses native userData identity', () => {
+  windowsIt('maps a case variant and a real junction to the physical userData namespace only', () => {
+    const temporaryDirectory = path.resolve(os.tmpdir());
+    const sandbox = mkdtempSync(path.join(temporaryDirectory, 'void-code-clipboard-canonical-userdata-'));
+    const physicalUserData = path.join(sandbox, 'UserData-Primary');
+    const caseVariant = path.join(sandbox, 'uSERdATA-pRIMARY');
+    const junctionAlias = path.join(sandbox, 'UserData-Junction');
+    const differentPhysicalUserData = path.join(sandbox, 'UserData-Second');
+
+    try {
+      mkdirSync(physicalUserData);
+      mkdirSync(differentPhysicalUserData);
+      symlinkSync(physicalUserData, junctionAlias, 'junction');
+
+      expect(existsSync(caseVariant), 'windows-latest must resolve the case-variant spelling to the directory it names').toBe(true);
+      expect(realpathSync.native(caseVariant)).toBe(realpathSync.native(physicalUserData));
+      expect(realpathSync.native(junctionAlias)).toBe(realpathSync.native(physicalUserData));
+      expect(realpathSync.native(differentPhysicalUserData)).not.toBe(realpathSync.native(physicalUserData));
+
+      const physicalRoot = (clipboardPaste as ClipboardStorageNamespaceSeam).clipboardStorageRoot!(temporaryDirectory, physicalUserData);
+      const caseRoot = (clipboardPaste as ClipboardStorageNamespaceSeam).clipboardStorageRoot!(temporaryDirectory, caseVariant);
+      const junctionRoot = (clipboardPaste as ClipboardStorageNamespaceSeam).clipboardStorageRoot!(temporaryDirectory, junctionAlias);
+      const differentRoot = (clipboardPaste as ClipboardStorageNamespaceSeam).clipboardStorageRoot!(temporaryDirectory, differentPhysicalUserData);
+
+      expect(caseRoot).toBe(physicalRoot);
+      expect(junctionRoot).toBe(physicalRoot);
+      expect(differentRoot).not.toBe(physicalRoot);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
     }
   });
 });

@@ -7,8 +7,12 @@ type QuitCleanupActions = {
   cleanupClipboardImages(): void;
   cleanupProbe(): void;
 };
+type OwnedCleanupCoordinator = {
+  cleanup(): void;
+};
 type QuitCleanupModule = {
   runQuitCleanup?(actions: QuitCleanupActions): void;
+  createOwnedCleanupCoordinator?(actions: QuitCleanupActions): OwnedCleanupCoordinator;
 };
 
 async function quitCleanupModule(): Promise<QuitCleanupModule> {
@@ -19,6 +23,12 @@ async function runQuitCleanup(actions: QuitCleanupActions): Promise<void> {
   const module = await quitCleanupModule();
   expect(module.runQuitCleanup, 'quit cleanup seam is absent').toBeTypeOf('function');
   module.runQuitCleanup!(actions);
+}
+
+async function ownedCleanupCoordinator(actions: QuitCleanupActions): Promise<OwnedCleanupCoordinator> {
+  const module = await quitCleanupModule();
+  expect(module.createOwnedCleanupCoordinator, 'idempotent owned-cleanup coordinator seam is absent').toBeTypeOf('function');
+  return module.createOwnedCleanupCoordinator!(actions);
 }
 
 // The ordinary lifecycle is the baseline: each owned resource is released once, in dependency
@@ -81,42 +91,181 @@ describe('quit cleanup isolates owned-resource failures', () => {
   });
 });
 
-function beforeQuitListener(source: ts.SourceFile): ts.ArrowFunction | ts.FunctionExpression {
-  const registrations: ts.CallExpression[] = [];
+// app.exit bypasses before-quit. The coordinator is the behavioral ownership boundary shared by
+// every exit origin below, so a normal quit followed by a session-end notification cannot double
+// tear down a PTY or delete a directory twice.
+describe('owned cleanup coordinator', () => {
+  it('runs each owned teardown once when before-quit is followed by session-end and both app.exit paths', async () => {
+    const calls: string[] = [];
+    const coordinator = await ownedCleanupCoordinator({
+      teardownSessions: () => { calls.push('sessions'); },
+      cleanupClipboardImages: () => { calls.push('clipboard'); },
+      cleanupProbe: () => { calls.push('probe'); },
+    });
+    const beforeQuit = (): void => coordinator.cleanup();
+    const browserWindowSessionEnd = (): void => coordinator.cleanup();
+    const headlessProbeExit = (): void => coordinator.cleanup();
+    const failStartupExit = (): void => coordinator.cleanup();
+
+    beforeQuit();
+    browserWindowSessionEnd();
+    headlessProbeExit();
+    failStartupExit();
+
+    expect(calls).toEqual(['sessions', 'clipboard', 'probe']);
+  });
+});
+
+function sourceFile(): ts.SourceFile {
+  return ts.createSourceFile(
+    'index.ts',
+    readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+}
+
+function eventListeners(source: ts.SourceFile, receiver: string, event: string): Array<ts.ArrowFunction | ts.FunctionExpression> {
+  const listeners: Array<ts.ArrowFunction | ts.FunctionExpression> = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-      && node.expression.expression.getText(source) === 'app' && node.expression.name.text === 'on'
-      && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === 'before-quit') registrations.push(node);
+      && node.expression.expression.getText(source) === receiver && node.expression.name.text === 'on'
+      && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === event) {
+      const listener = node.arguments[1];
+      if (listener && (ts.isArrowFunction(listener) || ts.isFunctionExpression(listener))) listeners.push(listener);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return listeners;
+}
+
+function ownedCleanupCoordinatorName(source: ts.SourceFile): string | undefined {
+  const creations: ts.VariableDeclaration[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)
+      && ts.isIdentifier(node.initializer.expression) && node.initializer.expression.text === 'createOwnedCleanupCoordinator') creations.push(node);
     ts.forEachChild(node, visit);
   };
   visit(source);
 
-  expect(registrations, 'main must register one before-quit listener').toHaveLength(1);
-  const listener = registrations[0].arguments[1];
-  expect(listener, 'before-quit must provide a callback').toBeDefined();
-  expect(ts.isArrowFunction(listener!) || ts.isFunctionExpression(listener!), 'before-quit callback must be a function').toBe(true);
-  return listener! as ts.ArrowFunction | ts.FunctionExpression;
+  expect(creations, 'main must construct one idempotent owned-cleanup coordinator').toHaveLength(1);
+  const binding = creations[0]?.name;
+  expect(binding && ts.isIdentifier(binding), 'the coordinator must have one identifier binding for all lifecycle origins').toBe(true);
+  return binding && ts.isIdentifier(binding) ? binding.text : undefined;
 }
 
-// index.ts cannot be imported without starting Electron. This intentionally checks only the one
-// integration boundary: quit handling must delegate to the behaviorally tested seam, not rebuild
-// its cleanup chain inline.
-describe('production before-quit wiring', () => {
-  it('delegates directly to the quit cleanup seam', () => {
-    const source = ts.createSourceFile(
-      'index.ts',
-      readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    const listener = beforeQuitListener(source);
-    const statements = ts.isBlock(listener.body) ? listener.body.statements : [ts.factory.createExpressionStatement(listener.body)];
+function ownedCleanupCalls(root: ts.Node, source: ts.SourceFile, coordinator: string): ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(source) === coordinator && node.expression.name.text === 'cleanup') calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return calls;
+}
 
-    expect(statements, 'before-quit must only delegate; cleanup ownership lives in runQuitCleanup').toHaveLength(1);
-    const statement = statements[0];
-    expect(ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)).toBe(true);
-    const call = (statement as ts.ExpressionStatement).expression as ts.CallExpression;
-    expect(ts.isIdentifier(call.expression) && call.expression.text === 'runQuitCleanup').toBe(true);
+function assertOnlyOwnedCleanupDelegate(listener: ts.ArrowFunction | ts.FunctionExpression | undefined, source: ts.SourceFile, coordinator: string, lifecycle: string): void {
+  expect(listener, `${lifecycle} must provide a callback`).toBeDefined();
+  if (!listener) return;
+  const statements = ts.isBlock(listener.body) ? listener.body.statements : [ts.factory.createExpressionStatement(listener.body)];
+  expect(statements, `${lifecycle} must only delegate to the idempotent cleanup coordinator`).toHaveLength(1);
+  expect(ownedCleanupCalls(listener, source, coordinator), `${lifecycle} must invoke the shared cleanup coordinator`).toHaveLength(1);
+}
+
+function callsAppExit(root: ts.Node, source: ts.SourceFile): ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(source) === 'app' && node.expression.name.text === 'exit') calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return calls;
+}
+
+function namedFunction(source: ts.SourceFile, name: string): ts.FunctionDeclaration | undefined {
+  let found: ts.FunctionDeclaration | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+function enclosingFunction(node: ts.Node): ts.Node | undefined {
+  let current = node.parent;
+  while (current) {
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current) || ts.isFunctionDeclaration(current)) return current;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function assertCleanupPrecedesExit(scope: ts.Node | undefined, exit: ts.CallExpression | undefined, source: ts.SourceFile, exitPath: string): void {
+  expect(scope, `${exitPath} must have a cleanup-owning callback`).toBeDefined();
+  expect(exit, `${exitPath} must call app.exit`).toBeDefined();
+  if (!scope || !exit) return;
+  const cleanups: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'cleanup') cleanups.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  expect(cleanups, `${exitPath} must invoke cleanup because app.exit bypasses before-quit`).toHaveLength(1);
+  if (cleanups.length !== 1) return;
+  expect(cleanups[0].getStart(source), `${exitPath} must clean before app.exit`).toBeLessThan(exit.getStart(source));
+  const coordinator = ownedCleanupCoordinatorName(source);
+  if (!coordinator) return;
+  expect(ownedCleanupCalls(scope, source, coordinator), `${exitPath} must use the same coordinator as every other lifecycle origin`).toEqual(cleanups);
+}
+
+// index.ts cannot be imported without starting Electron. These deliberately narrow AST checks are
+// backed by the coordinator's executable idempotency contract above; they only bind each Electron
+// lifecycle origin to that one behavior rather than reimplementing cleanup in source-text tests.
+describe('production owned cleanup wiring', () => {
+  it('constructs one coordinator to own every cleanup origin', () => {
+    ownedCleanupCoordinatorName(sourceFile());
+  });
+
+  it('delegates before-quit only to the shared coordinator', () => {
+    const source = sourceFile();
+    const beforeQuit = eventListeners(source, 'app', 'before-quit');
+    expect(beforeQuit, 'main must register one before-quit listener').toHaveLength(1);
+    const coordinator = ownedCleanupCoordinatorName(source);
+    if (!coordinator) return;
+    assertOnlyOwnedCleanupDelegate(beforeQuit[0], source, coordinator, 'before-quit');
+  });
+
+  it('delegates BrowserWindow session-end only to the shared coordinator', () => {
+    const source = sourceFile();
+    const sessionEnd = eventListeners(source, 'window', 'session-end');
+    expect(sessionEnd, 'every BrowserWindow must register one Windows session-end listener').toHaveLength(1);
+    const coordinator = ownedCleanupCoordinatorName(source);
+    if (!coordinator) return;
+    assertOnlyOwnedCleanupDelegate(sessionEnd[0], source, coordinator, 'BrowserWindow session-end');
+  });
+
+  it('cleans before headless-probe app.exit', () => {
+    const source = sourceFile();
+    const createWindow = namedFunction(source, 'createWindow');
+    expect(createWindow, 'main must retain the headless-probe window factory').toBeDefined();
+    if (!createWindow) return;
+    const headlessExits = callsAppExit(createWindow, source);
+    expect(headlessExits, 'headless probe must exit once after reporting its result').toHaveLength(1);
+    assertCleanupPrecedesExit(enclosingFunction(headlessExits[0]), headlessExits[0], source, 'headless probe app.exit');
+  });
+
+  it('cleans before failStartup app.exit', () => {
+    const source = sourceFile();
+    const failStartup = namedFunction(source, 'failStartup');
+    expect(failStartup, 'main must retain failStartup').toBeDefined();
+    if (!failStartup) return;
+    const startupExits = callsAppExit(failStartup, source);
+    expect(startupExits, 'failStartup must exit once after reporting its failure').toHaveLength(1);
+    assertCleanupPrecedesExit(failStartup, startupExits[0], source, 'failStartup app.exit');
   });
 });
