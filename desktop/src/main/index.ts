@@ -58,11 +58,6 @@ let clipboardImageStorage: ClipboardImageStorage = {
 };
 const desktopClipboardDependencies: ClipboardReadDependencies & { clipboard: ClipboardReadDependencies['clipboard'] & { writeText(text: string): void } } = {
   clipboard,
-  filesystem: {
-    temporaryDirectory: os.tmpdir,
-    writeFile: (file, png) => { writeFileSync(file, png, { mode: 0o600 }); },
-  },
-  uniqueId: randomUUID,
   writeImage: (png) => clipboardImageStorage.writeImage(png),
 };
 

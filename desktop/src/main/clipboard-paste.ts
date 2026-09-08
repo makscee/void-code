@@ -11,12 +11,7 @@ export type ClipboardReadDependencies = {
     readImage(): { isEmpty(): boolean; toPNG(): Buffer };
     readText(): string;
   };
-  filesystem: {
-    temporaryDirectory(): string;
-    writeFile(path: string, png: Buffer): void;
-  };
-  uniqueId(): string;
-  writeImage?(png: Buffer): string;
+  writeImage(png: Buffer): string;
 };
 
 export type ClipboardImageStorageOptions = {
@@ -98,12 +93,6 @@ export function createClipboardImageStorage(options: ClipboardImageStorageOption
   };
 }
 
-// This reader is only exposed by the Windows IPC handler. win32.join keeps the legacy deterministic
-// seam suitable for Pi's Windows input even when it is exercised from another host platform.
-function clipboardImagePath(temporaryDirectory: string, uniqueId: string): string {
-  return path.win32.join(path.win32.resolve(temporaryDirectory), `void-code-clipboard-${uniqueId}.png`);
-}
-
 export function readDesktopClipboard(dependencies: ClipboardReadDependencies): ClipboardReadResult {
   let image: ReturnType<ClipboardReadDependencies['clipboard']['readImage']>;
   try {
@@ -114,11 +103,10 @@ export function readDesktopClipboard(dependencies: ClipboardReadDependencies): C
 
   try {
     if (!image.isEmpty()) {
-      const png = image.toPNG();
-      if (dependencies.writeImage) return { kind: 'image-path', path: dependencies.writeImage(png) };
-      const destination = clipboardImagePath(dependencies.filesystem.temporaryDirectory(), dependencies.uniqueId());
-      dependencies.filesystem.writeFile(destination, png);
-      return { kind: 'image-path', path: destination };
+      // IPC inputs are runtime data despite the required TypeScript contract. A preferred image
+      // must have the process-owned persistence path or fail closed; it must never become text.
+      if (typeof dependencies.writeImage !== 'function') return { kind: 'empty' };
+      return { kind: 'image-path', path: dependencies.writeImage(image.toPNG()) };
     }
   } catch {
     return { kind: 'empty' };
