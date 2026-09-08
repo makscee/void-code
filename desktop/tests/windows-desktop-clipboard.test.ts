@@ -5,10 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
 type FakeImage = { isEmpty(): boolean; toPNG(): Buffer };
+// This is deliberately narrower than a filesystem seam: image persistence is owned by the
+// process-scoped store, and every valid reader dependency must carry that writer.
 type ClipboardReadDependencies = {
   clipboard: { readImage(): FakeImage; readText(): string };
-  filesystem: { temporaryDirectory(): string; writeFile(path: string, png: Buffer): void };
-  uniqueId(): string;
+  writeImage(png: Buffer): string;
 };
 type ClipboardPasteModule = {
   readDesktopClipboard(dependencies: ClipboardReadDependencies): ClipboardReadResult;
@@ -85,11 +86,13 @@ function dependencies(fixture: ClipboardFixture, ids = ['first', 'second']): Cli
         return fixture.text ?? '';
       },
     },
-    filesystem: {
-      temporaryDirectory: () => 'C:\\void-temp',
-      writeFile: (file, png) => writes.push({ path: file, png }),
+    writeImage: (png) => {
+      const id = ids.shift();
+      if (!id) throw new Error('test owned image store exhausted');
+      const file = `C:\\void-code-owned-images\\void-code-clipboard-${id}.png`;
+      writes.push({ path: file, png });
+      return file;
     },
-    uniqueId: () => ids.shift()!,
     writes,
     reads,
   };
@@ -105,7 +108,7 @@ function emptyImage(): FakeImage {
 
 // Regression for v0.2.51: a Windows image used to be discarded before Pi could receive a path.
 describe('desktop clipboard read stays in the trusted main-process boundary', () => {
-  it('prefers a non-empty image over text and writes each image as a distinct temporary PNG path', async () => {
+  it('prefers a non-empty image over text and writes its exact bytes to distinct absolute paths in the owned store', async () => {
     const { readDesktopClipboard } = await mainClipboard();
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]);
     const seam = dependencies({ image: nonEmptyImage(png), text: 'this text must lose to the image' });
@@ -113,41 +116,19 @@ describe('desktop clipboard read stays in the trusted main-process boundary', ()
     const first = readDesktopClipboard(seam);
     const second = readDesktopClipboard(seam);
 
-    expect(first).toEqual({ kind: 'image-path', path: 'C:\\void-temp\\void-code-clipboard-first.png' });
-    expect(second).toEqual({ kind: 'image-path', path: 'C:\\void-temp\\void-code-clipboard-second.png' });
+    expect(first).toEqual({ kind: 'image-path', path: 'C:\\void-code-owned-images\\void-code-clipboard-first.png' });
+    expect(second).toEqual({ kind: 'image-path', path: 'C:\\void-code-owned-images\\void-code-clipboard-second.png' });
     expect(seam.writes).toEqual([
-      { path: 'C:\\void-temp\\void-code-clipboard-first.png', png },
-      { path: 'C:\\void-temp\\void-code-clipboard-second.png', png },
+      { path: 'C:\\void-code-owned-images\\void-code-clipboard-first.png', png },
+      { path: 'C:\\void-code-owned-images\\void-code-clipboard-second.png', png },
     ]);
-    expect(seam.reads).toEqual({ image: 2, text: 0 });
-  });
-
-  it.each(['relative-temp', 'C:relative-temp'])('normalizes %s to an absolute contained directory while retaining unique PNG destinations', async (temporaryDirectory) => {
-    const { readDesktopClipboard } = await mainClipboard();
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]);
-    const seam = dependencies({ image: nonEmptyImage(png), text: 'text must lose to the image' });
-    seam.filesystem.temporaryDirectory = () => temporaryDirectory;
-
-    const first = readDesktopClipboard(seam);
-    const second = readDesktopClipboard(seam);
-
-    expect(first.kind).toBe('image-path');
-    expect(second.kind).toBe('image-path');
-    if (first.kind !== 'image-path' || second.kind !== 'image-path') throw new Error('non-empty images must produce image paths');
-    const root = path.win32.resolve(temporaryDirectory);
-    const destinations = [first.path, second.path];
-    for (const [index, destination] of destinations.entries()) {
-      const filename = `void-code-clipboard-${index === 0 ? 'first' : 'second'}.png`;
-      expect(path.win32.isAbsolute(destination)).toBe(true);
-      expect(path.win32.dirname(destination)).toBe(root);
-      expect(path.win32.relative(root, destination)).toBe(filename);
-      expect(path.win32.basename(destination)).toBe(filename);
+    for (const result of [first, second]) {
+      expect(result.kind).toBe('image-path');
+      if (result.kind === 'image-path') {
+        expect(path.win32.isAbsolute(result.path)).toBe(true);
+        expect(path.win32.dirname(result.path)).toBe('C:\\void-code-owned-images');
+      }
     }
-    expect(new Set(destinations).size).toBe(2);
-    expect(seam.writes).toEqual([
-      { path: first.path, png },
-      { path: second.path, png },
-    ]);
     expect(seam.reads).toEqual({ image: 2, text: 0 });
   });
 
@@ -185,13 +166,44 @@ describe('desktop clipboard read stays in the trusted main-process boundary', ()
     expect(seam.writes).toEqual([]);
   });
 
-  it('does not fall back to text when persisting the preferred image fails', async () => {
+  it('does not fall back to text when the owned image writer fails', async () => {
     const { readDesktopClipboard } = await mainClipboard();
-    const seam = dependencies({ image: nonEmptyImage(), text: 'do not fall back after a write failure' });
-    seam.filesystem.writeFile = () => { throw new Error('disk full'); };
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 3]);
+    const seam = dependencies({ image: nonEmptyImage(png), text: 'do not fall back after a write failure' });
+    const failedWrite = vi.fn((): string => { throw new Error('disk full'); });
+    seam.writeImage = failedWrite;
 
     expect(readDesktopClipboard(seam)).toEqual({ kind: 'empty' });
+    expect(failedWrite).toHaveBeenCalledOnce();
+    expect(failedWrite).toHaveBeenCalledWith(png);
     expect(seam.reads).toEqual({ image: 1, text: 0 });
+  });
+
+  it.each([
+    ['missing', {}],
+    ['malformed', { writeImage: null }],
+  ])('treats a %s owned image writer as an image-only failure, never as permission to write a loose shared-temp file', async (_label, malformedWriter) => {
+    const { readDesktopClipboard } = await mainClipboard();
+    const temporaryDirectory = vi.fn(() => 'C:\\shared-temp');
+    const writeFile = vi.fn();
+    const uniqueId = vi.fn(() => 'loose-file');
+    const looseFallback = {
+      clipboard: {
+        readImage: () => nonEmptyImage(Buffer.from([0x89, 0x50, 0x4e, 0x47, 4])),
+        readText: vi.fn(() => 'text must not be injected'),
+      },
+      filesystem: { temporaryDirectory, writeFile },
+      uniqueId,
+      ...malformedWriter,
+    };
+
+    // IPC inputs are runtime data. The deliberate cast reaches the malformed state that the
+    // required fixture contract forbids at compile time.
+    expect(readDesktopClipboard(looseFallback as unknown as ClipboardReadDependencies)).toEqual({ kind: 'empty' });
+    expect(temporaryDirectory).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(uniqueId).not.toHaveBeenCalled();
+    expect(looseFallback.clipboard.readText).not.toHaveBeenCalled();
   });
 
   it('rejects a caller other than the owned renderer before it touches the clipboard', async () => {
@@ -760,8 +772,43 @@ function objectProperty(object: ts.ObjectLiteralExpression | undefined, name: st
   return property && ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
 }
 
+function namedTypeMember(source: ts.SourceFile, typeName: string, memberName: string): ts.TypeElement | undefined {
+  const declaration = source.statements.find((statement): statement is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(statement)
+    && statement.name.text === typeName);
+  if (!declaration || !ts.isTypeLiteralNode(declaration.type)) return undefined;
+  return declaration.type.members.find((member) => (ts.isPropertySignature(member) || ts.isMethodSignature(member))
+    && (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) && member.name.text === memberName);
+}
+
+function namedVariableObject(source: ts.SourceFile, name: string): ts.ObjectLiteralExpression | undefined {
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    const declaration = statement.declarationList.declarations.find((candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === name);
+    if (declaration) return objectLiteral(declaration.initializer);
+  }
+  return undefined;
+}
+
 // Deleting a boundary call silently removes Windows paste/copy despite the seam units being tested.
 describe('Windows clipboard process-boundary wiring', () => {
+  it('makes the process-owned image writer required in production and leaves no loose-file persistence seam', () => {
+    const reader = sourceFile('../src/main/clipboard-paste.ts');
+    const writeImage = namedTypeMember(reader, 'ClipboardReadDependencies', 'writeImage');
+
+    expect(writeImage, 'ClipboardReadDependencies must name the owned image writer').toBeDefined();
+    expect(writeImage?.questionToken === undefined, 'omitting the production writer must fail TypeScript compilation').toBe(true);
+    expect(namedTypeMember(reader, 'ClipboardReadDependencies', 'filesystem'), 'the reader must not retain a shared-temp filesystem fallback').toBeUndefined();
+    expect(namedTypeMember(reader, 'ClipboardReadDependencies', 'uniqueId'), 'the reader must not retain a loose-file naming fallback').toBeUndefined();
+
+    const main = sourceFile('../src/main/index.ts');
+    const productionDependencies = namedVariableObject(main, 'desktopClipboardDependencies');
+    const productionWriter = objectProperty(productionDependencies, 'writeImage');
+    expect(productionWriter, 'production dependencies must supply the process-owned writer').toBeDefined();
+    expect(productionWriter?.getText(main)).toContain('clipboardImageStorage.writeImage');
+    expect(objectProperty(productionDependencies, 'filesystem')).toBeUndefined();
+    expect(objectProperty(productionDependencies, 'uniqueId')).toBeUndefined();
+  });
+
   it('delegates shortcuts and real xterm onData to the single product wiring seam before open', () => {
     const source = sourceFile('../src/renderer/index.ts');
     const clipboardImport = source.statements.find((statement): statement is ts.ImportDeclaration => ts.isImportDeclaration(statement)

@@ -17,9 +17,7 @@ type ClipboardIpcOptions<Event> = {
   authorize(event: Event): void;
   dependencies: {
     clipboard: { readImage(): FakeImage; readText(): string; writeText(text: string): void };
-    filesystem: { temporaryDirectory(): string; writeFile(file: string, png: Buffer): void };
-    uniqueId(): string;
-    writeImage?(png: Buffer): string;
+    writeImage(png: Buffer): string;
   };
 };
 type ClipboardImageStorageOptions = {
@@ -64,23 +62,22 @@ function ipcFixture(platform: string) {
   const ipcMain = new CapturedIpc<typeof owned>();
   const reads = { image: 0, text: 0 };
   const writes: string[] = [];
-  const fileWrites: string[] = [];
+  const imageWrites: Buffer[] = [];
   const dependencies: ClipboardIpcOptions<typeof owned>['dependencies'] = {
     clipboard: {
       readImage: () => { reads.image++; return image(true); },
       readText: () => { reads.text++; return 'trusted text'; },
       writeText: (text) => { writes.push(text); },
     },
-    filesystem: {
-      temporaryDirectory: () => 'C:\\owned-images',
-      writeFile: (file) => { fileWrites.push(file); },
+    writeImage: (png) => {
+      imageWrites.push(png);
+      return 'C:\\owned-images\\void-code-clipboard-ipc.png';
     },
-    uniqueId: () => 'ipc',
   };
   const authorize = vi.fn((event: typeof owned) => {
     if (event !== owned) throw new Error('renderer authority rejected');
   });
-  return { owned, foreign, ipcMain, reads, writes, fileWrites, dependencies, authorize, platform };
+  return { owned, foreign, ipcMain, reads, writes, imageWrites, dependencies, authorize, platform };
 }
 
 // F1: this calls the injectable registrar that production main must call. Capturing handlers and
@@ -125,7 +122,7 @@ describe('F1 — production clipboard IPC registration is executable, not source
 
     await expect(Promise.resolve().then(() => fixture.ipcMain.handlers.get('clipboard:read')!(fixture.owned))).resolves.toEqual({ kind: 'empty' });
     expect(fixture.reads).toEqual({ image: 0, text: 0 });
-    expect(fixture.fileWrites).toEqual([]);
+    expect(fixture.imageWrites).toEqual([]);
   });
 
   it('strictly validates writes before invoking Electron clipboard.writeText with the exact text', async () => {
