@@ -141,6 +141,72 @@ describe('file-drop installer', () => {
     expect(terminal.paste).not.toHaveBeenCalled();
   });
 
+  it('omits a forged bracketed-paste terminator path while preserving its safe neighbor as one parser-safe paste', async () => {
+    const install = await loadInstaller();
+    if (!install) return;
+    const { target, listeners } = targetWithListeners();
+    const malicious = file('Q4 report'); const safe = file('safe');
+    const maliciousPath = '/Users/ada/Desktop/Q4 report\x1b[201~\r\nordinary input after forged terminator.txt';
+    const safePath = '/Users/ada/Desktop/ready for review.md';
+    const input = vi.fn();
+    const resolve = vi.fn((dropped: File) => dropped === malicious ? maliciousPath : safePath);
+    const terminal = installWithInput(install, { target, getPathForFile: resolve, getCurrentInput: () => input });
+    const drop = listeners.get('drop');
+    expect(drop, 'drop handler is missing').toBeTypeOf('function');
+    if (!drop) return;
+
+    const dropped = event(['Files'], { 0: malicious, 1: safe, length: 2 });
+    drop(dropped);
+    const transaction = `${PASTE_START}${safePath}${PASTE_END}`;
+    expect(dropped.preventDefault).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenNthCalledWith(1, malicious);
+    expect(resolve).toHaveBeenNthCalledWith(2, safe);
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(input).toHaveBeenCalledWith(transaction);
+    expect(terminal.paste).not.toHaveBeenCalled();
+
+    const emitted = input.mock.calls[0]?.[0];
+    if (emitted === undefined) return;
+    const stdin = new StdinBuffer();
+    const pastes: string[] = [];
+    const data: string[] = [];
+    stdin.on('paste', (value) => pastes.push(value));
+    stdin.on('data', (value) => data.push(value));
+    stdin.process(emitted);
+    expect(pastes).toEqual([safePath]);
+    expect(data).toEqual([]);
+    stdin.destroy();
+  });
+
+  it('consumes an all-unsafe drop without framing any C0, DEL, or C1 path', async () => {
+    const install = await loadInstaller();
+    if (!install) return;
+    const { target, listeners } = targetWithListeners();
+    const controls = [
+      ...Array.from({ length: 0x20 }, (_, codePoint) => String.fromCodePoint(codePoint)),
+      String.fromCodePoint(0x7f),
+      ...Array.from({ length: 0x20 }, (_, offset) => String.fromCodePoint(0x80 + offset)),
+    ];
+    const files = controls.map((_, index) => file(`unsafe-${index}`));
+    const paths = new Map(files.map((dropped, index) => [
+      dropped,
+      `/Users/ada/Desktop/control-${index}${controls[index]}-name`,
+    ]));
+    const input = vi.fn();
+    const resolve = vi.fn((dropped: File) => paths.get(dropped) ?? '');
+    const terminal = installWithInput(install, { target, getPathForFile: resolve, getCurrentInput: () => input });
+    const drop = listeners.get('drop');
+    expect(drop, 'drop handler is missing').toBeTypeOf('function');
+    if (!drop) return;
+
+    const dropped = event(['Files'], files);
+    drop(dropped);
+    expect(dropped.preventDefault).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledTimes(controls.length);
+    expect(input).not.toHaveBeenCalled();
+    expect(terminal.paste).not.toHaveBeenCalled();
+  });
+
   it('resolves and filters an all-empty file drop with a live input sink', async () => {
     const install = await loadInstaller();
     if (!install) return;
