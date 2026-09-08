@@ -480,6 +480,40 @@ describe('Windows terminal paste shortcuts', () => {
     }
   });
 
+  it('G4 — discards a clipboard promise that settles after its deadline before the stalled timeout callback can run', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const { createOrderedTerminalInputSink, installWindowsClipboardShortcuts } = await rendererClipboard();
+      const sent: string[] = [];
+      const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+      const terminal = new FakeTerminal();
+      terminal.onPaste = (value) => { terminalInput.send(value); };
+      const pending = deferred<ClipboardReadResult>();
+      installWindowsClipboardShortcuts(terminal, 'win32', () => pending.promise, terminalInput);
+
+      expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
+      terminalInput.send('queued after paste');
+      expect(sent).toEqual([]);
+
+      // setSystemTime advances the clock without executing overdue timer callbacks. This models a
+      // renderer event-loop stall followed by the IPC promise microtask winning the next turn.
+      vi.setSystemTime(new Date(5_001));
+      expect(vi.getTimerCount(), 'the five-second timeout callback has not run').toBe(1);
+      pending.resolve({ kind: 'text', text: 'already too late' });
+      await afterMicrotasks();
+
+      expect(terminal.pasted).toEqual([]);
+      expect(sent).toEqual(['queued after paste']);
+
+      await vi.runOnlyPendingTimersAsync();
+      expect(terminal.pasted).toEqual([]);
+      expect(sent).toEqual(['queued after paste']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The real renderer must use the same reservation semantics, not only satisfy the shortcut seam with a fake sink.
   it('keeps terminal data sent during an emitted reservation behind that reservation', async () => {
     const { createOrderedTerminalInputSink } = await rendererClipboard();

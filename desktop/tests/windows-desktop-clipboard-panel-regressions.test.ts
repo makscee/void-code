@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
+import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
@@ -18,6 +19,7 @@ type ClipboardIpcOptions<Event> = {
     clipboard: { readImage(): FakeImage; readText(): string; writeText(text: string): void };
     filesystem: { temporaryDirectory(): string; writeFile(file: string, png: Buffer): void };
     uniqueId(): string;
+    writeImage?(png: Buffer): string;
   };
 };
 type ClipboardImageStorageOptions = {
@@ -35,6 +37,8 @@ type ClipboardImageStorage = {
 type ClipboardPanelModule = {
   registerDesktopClipboardHandlers?<Event>(options: ClipboardIpcOptions<Event>): void;
   createClipboardImageStorage?(options: ClipboardImageStorageOptions): ClipboardImageStorage;
+  createSafeClipboardImageStorage?(platform: string, create: () => ClipboardImageStorage): ClipboardImageStorage;
+  readDesktopClipboard?(dependencies: ClipboardIpcOptions<unknown>['dependencies']): ClipboardReadResult;
 };
 
 async function clipboardPanelModule(): Promise<ClipboardPanelModule> {
@@ -154,6 +158,98 @@ describe('F1 — production clipboard IPC registration is executable, not source
   });
 });
 
+function callsNamed(root: ts.Node, name: string): ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return calls;
+}
+
+function containsSingleInstanceLock(root: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText() === 'app' && node.expression.name.text === 'requestSingleInstanceLock') found = true;
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+// G2 separates optional image storage from the clipboard boundary. The factory is executable so a
+// thrown mkdir is proved harmless; the one source-level assertion is limited to the Electron lock,
+// which cannot be imported without starting the actual app.
+describe('G2 — clipboard image storage starts only for the winning Windows instance and degrades safely', () => {
+  it('creates storage only on Windows and returns the exact successful store', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.createSafeClipboardImageStorage, 'safe clipboard image-storage factory is absent').toBeTypeOf('function');
+    const expected: ClipboardImageStorage = {
+      directory: 'C:\\owned-images\\void-code-clipboard-current',
+      writeImage: () => 'C:\\owned-images\\void-code-clipboard-current\\image.png',
+      cleanup: vi.fn(),
+    };
+    const create = vi.fn(() => expected);
+
+    expect(module.createSafeClipboardImageStorage!('darwin', create).directory).toBe('');
+    expect(create).not.toHaveBeenCalled();
+    expect(module.createSafeClipboardImageStorage!('win32', create)).toBe(expected);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('turns Windows storage creation failure into image-only degradation while text paste and copy still work', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.createSafeClipboardImageStorage, 'safe clipboard image-storage factory is absent').toBeTypeOf('function');
+    expect(module.readDesktopClipboard, 'desktop clipboard reader is absent').toBeTypeOf('function');
+    const create = vi.fn((): ClipboardImageStorage => { throw new Error('temporary storage unavailable'); });
+    const store = module.createSafeClipboardImageStorage!('win32', create);
+    const fixture = ipcFixture('win32');
+    fixture.dependencies.writeImage = store.writeImage;
+    fixture.dependencies.clipboard.readImage = () => image(false);
+
+    expect(module.readDesktopClipboard!(fixture.dependencies)).toEqual({ kind: 'empty' });
+
+    fixture.dependencies.clipboard.readImage = () => image(true);
+    expect(module.readDesktopClipboard!(fixture.dependencies)).toEqual({ kind: 'text', text: 'trusted text' });
+
+    module.registerDesktopClipboardHandlers!({
+      ipcMain: fixture.ipcMain,
+      channels: { clipboardRead: 'clipboard:read', clipboardWrite: 'clipboard:write' },
+      platform: fixture.platform,
+      authorize: fixture.authorize,
+      dependencies: fixture.dependencies,
+    });
+    await expect(Promise.resolve(fixture.ipcMain.handlers.get('clipboard:write')!(fixture.owned, { text: 'copy still works' }))).resolves.toBeUndefined();
+    expect(fixture.writes).toEqual(['copy still works']);
+    expect(() => store.cleanup()).not.toThrow();
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('wires the safe factory once inside the branch reached only after the single-instance lock succeeds', () => {
+    const source = ts.createSourceFile(
+      'index.ts',
+      readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const lockBranch = source.statements.find((statement): statement is ts.IfStatement => ts.isIfStatement(statement)
+      && containsSingleInstanceLock(statement.expression));
+    expect(lockBranch, 'main has no single-instance-lock branch').toBeDefined();
+    expect(lockBranch?.elseStatement, 'winning-instance initialization must be in the lock branch else').toBeDefined();
+
+    const allSafeCreates = callsNamed(source, 'createSafeClipboardImageStorage');
+    const winningSafeCreates = lockBranch?.elseStatement ? callsNamed(lockBranch.elseStatement, 'createSafeClipboardImageStorage') : [];
+    expect(allSafeCreates, 'safe storage must be initialized exactly once').toHaveLength(1);
+    expect(winningSafeCreates, 'losing instances must not reach storage initialization').toHaveLength(1);
+    expect(winningSafeCreates[0]).toBe(allSafeCreates[0]);
+    expect(winningSafeCreates[0].arguments[0]?.getText(source)).toBe('process.platform');
+    expect(callsNamed(source, 'createClipboardImageStorage'), 'main must not eagerly invoke the throwing storage constructor').toHaveLength(0);
+  });
+});
+
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -175,9 +271,9 @@ function storageOptions(root: string, processId: number, id: string, now: number
   };
 }
 
-// F3 uses the real filesystem for permission and deletion assertions. Time and process liveness
-// are injected, so seven-day pruning needs neither a sleep nor a real competing process.
-describe('F3 — process-owned clipboard image storage and bounded crash retention', () => {
+// G3 uses the real filesystem for permission and deletion assertions. Time and apparent process
+// liveness are injected, so strict seven-day pruning needs neither a sleep nor a real reused PID.
+describe('G3 — process-owned clipboard image storage and strict age-based crash retention', () => {
   it('creates one absolute 0700 owned directory, writes 0600 PNGs inside it, and removes it on cleanup', async () => {
     const module = await clipboardPanelModule();
     expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
@@ -204,7 +300,7 @@ describe('F3 — process-owned clipboard image storage and bounded crash retenti
     expect(existsSync(store.directory)).toBe(false);
   });
 
-  it('prunes only dead app-owned directories older than seven days', async () => {
+  it('prunes every app-owned directory older than seven days even when its encoded PID appears live', async () => {
     const module = await clipboardPanelModule();
     expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
     const root = temporaryRoot();
@@ -225,35 +321,39 @@ describe('F3 — process-owned clipboard image storage and bounded crash retenti
 
     const unrelatedDirectory = path.join(root, 'another-app-cache');
     const unrelatedFile = path.join(root, 'void-code-clipboard-not-a-directory');
+    const prefixSymlink = path.join(root, 'void-code-clipboard-4999-symlink');
     mkdirSync(unrelatedDirectory, { mode: 0o700 });
     writeFileSync(unrelatedFile, 'not owned directory data', { mode: 0o600 });
+    symlinkSync(unrelatedDirectory, prefixSymlink, process.platform === 'win32' ? 'junction' : 'dir');
     utimesSync(unrelatedDirectory, old / 1000, old / 1000);
     utimesSync(unrelatedFile, old / 1000, old / 1000);
+    lutimesSync(prefixSymlink, old / 1000, old / 1000);
     chmodSync(unrelatedDirectory, 0o700);
     const retainedMtimes = new Map([
-      [staleLive.directory, statSync(staleLive.directory).mtimeMs],
-      [freshDead.directory, statSync(freshDead.directory).mtimeMs],
-      [boundaryDead.directory, statSync(boundaryDead.directory).mtimeMs],
-      [unrelatedDirectory, statSync(unrelatedDirectory).mtimeMs],
-      [unrelatedFile, statSync(unrelatedFile).mtimeMs],
+      [freshDead.directory, lstatSync(freshDead.directory).mtimeMs],
+      [boundaryDead.directory, lstatSync(boundaryDead.directory).mtimeMs],
+      [unrelatedDirectory, lstatSync(unrelatedDirectory).mtimeMs],
+      [unrelatedFile, lstatSync(unrelatedFile).mtimeMs],
+      [prefixSymlink, lstatSync(prefixSymlink).mtimeMs],
     ]);
 
     const current = module.createClipboardImageStorage!(storageOptions(root, 4299, 'current', now, new Set([4202, 4299])));
 
-    expect(existsSync(staleDead.directory), 'stale directory belonging to a dead process').toBe(false);
-    expect(existsSync(staleLive.directory), 'old directory belonging to a live process').toBe(true);
+    expect(existsSync(staleDead.directory), 'stale app directory with a dead encoded PID').toBe(false);
+    expect(existsSync(staleLive.directory), 'stale app directory with a reused/live encoded PID').toBe(false);
     expect(existsSync(freshDead.directory), 'fresh directory belonging to a dead process').toBe(true);
     expect(existsSync(boundaryDead.directory), 'directory exactly seven days old').toBe(true);
     expect(existsSync(unrelatedDirectory), 'unrelated old directory').toBe(true);
     expect(existsSync(unrelatedFile), 'prefix-matching non-directory').toBe(true);
-    for (const [entry, mtime] of retainedMtimes) expect(statSync(entry).mtimeMs, `pruning touched retained entry ${entry}`).toBe(mtime);
+    expect(lstatSync(prefixSymlink).isSymbolicLink(), 'prefix-matching old symlink').toBe(true);
+    for (const [entry, mtime] of retainedMtimes) expect(lstatSync(entry).mtimeMs, `pruning touched retained entry ${entry}`).toBe(mtime);
     expect(lstatSync(unrelatedFile).isFile()).toBe(true);
     expect(existsSync(current.directory), 'current process directory').toBe(true);
   });
 
-  it('the app owns one storage lifecycle and cleans that exact directory on normal quit', () => {
+  it('the app cleans the safe storage lifecycle on normal quit', () => {
     const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
-    expect(source).toMatch(/\bcreateClipboardImageStorage\s*\(/);
+    expect(source).toMatch(/\bcreateSafeClipboardImageStorage\s*\(/);
     expect(source).toMatch(/app\.on\(\s*['"]before-quit['"][\s\S]*?clipboardImageStorage\.cleanup\s*\(\s*\)/);
   });
 });
