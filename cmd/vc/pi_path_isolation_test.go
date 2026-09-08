@@ -228,6 +228,35 @@ func TestRunSpawnRejectsBundledNodeTreeWithMissingExecutable(t *testing.T) {
 	}
 }
 
+func TestRunSpawnRejectsMissingBundledNodeTreeWhenRuntimeManifestExists(t *testing.T) {
+	home, foreignPath := preparePiPathLaunch(t)
+	manifestPath := filepath.Join(home, ".void-code", "runtime", "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".void-code", "runtime", "node")); !os.IsNotExist(err) {
+		t.Fatalf("fixture must have no bundled Node tree, got %v", err)
+	}
+
+	spawned := false
+	spawnPath := ""
+	savedSpawn := spawnHarness
+	spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
+		spawned = true
+		spawnPath = pathFromEnv(env)
+		return nil
+	}
+	t.Cleanup(func() { spawnHarness = savedSpawn })
+
+	err := runSpawn(nil, nil)
+	if spawned {
+		t.Fatalf("token-bearing Pi spawn was reached for a damaged bundled runtime; child PATH %q inherited foreign PATH %q", spawnPath, foreignPath)
+	}
+	if err == nil {
+		t.Fatal("runSpawn succeeded with a runtime manifest but no bundled Node tree")
+	}
+}
+
 func TestRunSpawnPreservesInheritedPathWhenBundledNodeIsAbsent(t *testing.T) {
 	_, foreignPath := preparePiPathLaunch(t)
 	if _, err := pibin.ResolveNode(); !os.IsNotExist(err) {
