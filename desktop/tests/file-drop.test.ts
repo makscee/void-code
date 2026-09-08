@@ -246,10 +246,57 @@ describe('file-drop production wiring', () => {
     const installs = callsNamed(renderer, 'installFileDropHandlers');
     expect(installs, 'renderer must install file-drop handlers once').toHaveLength(1);
     if (installs.length !== 1) return;
-    expect(insideLaunch(installs[0])).toBe(false);
-    const wiring = installs[0].getText(renderer);
-    expect(wiring).toContain('window.voidTerminal.getPathForFile');
-    expect(wiring).toContain('selectedTab');
-    expect(wiring).toContain('runtimes.get');
+    const install = installs[0];
+    expect(insideLaunch(install)).toBe(false);
+
+    const options = install.arguments[0];
+    expect(options && ts.isObjectLiteralExpression(options), 'installer must receive an options object').toBe(true);
+    if (!options || !ts.isObjectLiteralExpression(options)) return;
+    const pathBridge = options.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property)
+      && ts.isIdentifier(property.name) && property.name.text === 'getPathForFile');
+    expect(pathBridge && ts.isArrowFunction(pathBridge.initializer), 'installer must receive the preload path bridge').toBe(true);
+    if (!pathBridge || !ts.isArrowFunction(pathBridge.initializer)) return;
+    const pathBridgeCall = pathBridge.initializer.body;
+    expect(ts.isCallExpression(pathBridgeCall) && propertyPath(pathBridgeCall.expression) === 'window.voidTerminal.getPathForFile', 'installer must use the preload path bridge').toBe(true);
+
+    const terminalResolver = options.properties.find((property): property is ts.PropertyAssignment => ts.isPropertyAssignment(property)
+      && ts.isIdentifier(property.name) && property.name.text === 'getCurrentTerminal');
+    expect(terminalResolver && ts.isArrowFunction(terminalResolver.initializer), 'installer must receive a terminal resolver callback').toBe(true);
+    if (!terminalResolver || !ts.isArrowFunction(terminalResolver.initializer) || !ts.isBlock(terminalResolver.initializer.body)) return;
+    const declarations = terminalResolver.initializer.body.statements.flatMap((statement) => ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []);
+    const selected = declarations.find((declaration) => ts.isIdentifier(declaration.name)
+      && ts.isCallExpression(declaration.initializer) && ts.isIdentifier(declaration.initializer.expression)
+      && declaration.initializer.expression.text === 'selectedTab' && declaration.initializer.arguments.length === 0);
+    expect(selected, 'resolver must call selectedTab()').toBeDefined();
+    if (!selected || !ts.isIdentifier(selected.name)) return;
+
+    const runtime = declarations.find((declaration) => ts.isIdentifier(declaration.name)
+      && ts.isConditionalExpression(declaration.initializer)
+      && ts.isIdentifier(declaration.initializer.condition) && declaration.initializer.condition.text === selected.name.text);
+    expect(runtime, 'resolver must look up the selected tab runtime').toBeDefined();
+    if (!runtime || !ts.isIdentifier(runtime.name) || !ts.isConditionalExpression(runtime.initializer)) return;
+    const lookup = runtime.initializer.whenTrue;
+    expect(ts.isCallExpression(lookup) && ts.isPropertyAccessExpression(lookup.expression)
+      && ts.isIdentifier(lookup.expression.expression) && lookup.expression.expression.text === 'runtimes'
+      && lookup.expression.name.text === 'get', 'resolver must call runtimes.get').toBe(true);
+    if (!ts.isCallExpression(lookup) || lookup.arguments.length !== 1) return;
+    const lookupId = lookup.arguments[0];
+    expect(ts.isPropertyAccessExpression(lookupId) && ts.isIdentifier(lookupId.expression)
+      && lookupId.expression.text === selected.name.text && lookupId.name.text === 'id', 'runtimes.get must receive the selected tab id').toBe(true);
+
+    const returns = terminalResolver.initializer.body.statements.filter(ts.isReturnStatement);
+    expect(returns, 'resolver must return only the live runtime terminal').toHaveLength(1);
+    const result = returns[0]?.expression;
+    expect(result && ts.isConditionalExpression(result), 'resolver must conditionally return a terminal').toBe(true);
+    if (!result || !ts.isConditionalExpression(result)) return;
+    const isLiveRuntime = ts.isBinaryExpression(result.condition) && result.condition.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      && ts.isIdentifier(result.condition.left) && result.condition.left.text === runtime.name.text
+      && ts.isPrefixUnaryExpression(result.condition.right) && result.condition.right.operator === ts.SyntaxKind.ExclamationToken
+      && ts.isPropertyAccessExpression(result.condition.right.operand) && ts.isIdentifier(result.condition.right.operand.expression)
+      && result.condition.right.operand.expression.text === runtime.name.text && result.condition.right.operand.name.text === 'exited';
+    expect(isLiveRuntime, 'resolver must reject an exited runtime').toBe(true);
+    expect(ts.isPropertyAccessExpression(result.whenTrue) && ts.isIdentifier(result.whenTrue.expression)
+      && result.whenTrue.expression.text === runtime.name.text && result.whenTrue.name.text === 'terminal', 'resolver must return only the live runtime terminal').toBe(true);
+    expect(ts.isIdentifier(result.whenFalse) && result.whenFalse.text === 'undefined', 'resolver must not return an exited or missing runtime').toBe(true);
   });
 });
