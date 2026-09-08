@@ -1,4 +1,4 @@
-// Package pibin resolves VC's managed Pi entrypoint and install guidance.
+// Package pibin resolves VC's managed Pi launch artifacts and install guidance.
 package pibin
 
 import (
@@ -131,6 +131,39 @@ func bundledNodeTreeProvisioned(home string) error {
 		return fmt.Errorf("managed Pi path contains symlink component: %s", root)
 	}
 	return nil
+}
+
+// ResolveModule returns VC's absolute, installed Pi JavaScript module. It is
+// the fixed module passed as argv[0] when VC launches its bundled Node directly.
+// Unlike Resolve, a JavaScript module need not be executable.
+//
+// This is not provenance verification and is not race-safe against the account
+// owner: ~/.void-code and the token are both in that user's trust boundary. The
+// component checks only reject accidental or lower-authority symlink redirection.
+func ResolveModule() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve VC home: %w", err)
+	}
+	canonicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize VC home: %w", err)
+	}
+	path := filepath.Join(canonicalHome, filepath.FromSlash(managedPiRelativePath))
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("managed Pi module path is not absolute")
+	}
+	if err := rejectSymlinkComponents(canonicalHome, path); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("managed Pi module is not a regular file: %s", path)
+	}
+	return path, nil
 }
 
 // Resolve returns VC's absolute, installed Pi entrypoint. It intentionally does
