@@ -85,9 +85,8 @@ function pasteTrustedClipboard(target: TerminalClipboardTarget, result: Clipboar
 
 export type ClipboardTransactionClock = () => number;
 
-// Date.now is sufficiently monotonic for a five-second renderer transaction and remains controllable
-// in tests; callers that need a stricter clock can provide one.
-const defaultClipboardTransactionClock: ClipboardTransactionClock = () => Date.now();
+// performance.now is monotonic in the Electron renderer; tests can still inject a clock.
+const defaultClipboardTransactionClock: ClipboardTransactionClock = () => performance.now();
 
 export function installWindowsClipboardShortcuts(
   target: TerminalClipboardTarget,
