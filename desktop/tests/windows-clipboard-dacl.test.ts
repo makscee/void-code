@@ -3,7 +3,13 @@ import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createClipboardImageStorage } from '../src/main/clipboard-paste';
+import * as clipboardPaste from '../src/main/clipboard-paste';
+
+const { createClipboardImageStorage } = clipboardPaste;
+
+type ClipboardStorageNamespaceSeam = typeof clipboardPaste & {
+  clipboardStorageRoot?: (temporaryDirectory: string, userData: string) => string;
+};
 import { asList, asMap, asText, parseWorkflow } from './workflow-yaml';
 
 const DACL_TEST = 'tests/windows-clipboard-dacl.test.ts';
@@ -73,17 +79,22 @@ $entries = foreach ($target in $args) {
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 
 describe('Windows clipboard image storage uses the per-user temp DACL', () => {
-  windowsIt('protects the real directory and PNG from broad Windows principals, then removes the directory', () => {
-    const root = path.resolve(os.tmpdir());
-    expect(path.isAbsolute(root), 'the real per-user temp directory must resolve to an absolute path').toBe(true);
+  windowsIt('keeps the scoped root, directory, and PNG inside the inherited per-user temp DACL, then removes them', () => {
+    const temporaryDirectory = path.resolve(os.tmpdir());
+    expect(path.isAbsolute(temporaryDirectory), 'the real per-user temp directory must resolve to an absolute path').toBe(true);
+    const storageRoot = (clipboardPaste as ClipboardStorageNamespaceSeam).clipboardStorageRoot;
+    expect(storageRoot, 'clipboard storage must have a userData namespace seam').toBeTypeOf('function');
+    if (!storageRoot) return;
 
+    const userData = path.join(temporaryDirectory, 'void-code-dacl-test-user-data');
+    const root = storageRoot(os.tmpdir(), userData);
     const expectedDirectory = path.join(root, `void-code-clipboard-${process.pid}-${TEST_UUID}`);
-    rmSync(expectedDirectory, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
     let cleanup: (() => void) | undefined;
 
     try {
       const store = createClipboardImageStorage({
-        temporaryDirectory: () => os.tmpdir(),
+        temporaryDirectory: () => root,
         uniqueId: () => TEST_UUID,
         processId: process.pid,
         now: () => Date.UTC(2026, 8, 8),
@@ -92,15 +103,17 @@ describe('Windows clipboard image storage uses the per-user temp DACL', () => {
       const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       const image = store.writeImage(png);
 
+      expect(root).toBe(path.join(temporaryDirectory, path.basename(root)));
       expect(store.directory).toBe(expectedDirectory);
       expect(path.dirname(store.directory)).toBe(root);
+      expect(statSync(root).isDirectory()).toBe(true);
       expect(statSync(store.directory).isDirectory()).toBe(true);
       expect(path.dirname(image)).toBe(store.directory);
       expect(path.extname(image)).toBe('.png');
       expect(readFileSync(image)).toEqual(png);
 
-      const report = inspectDacls([store.directory, image]);
-      expect(report.entries.map((entry) => entry.path)).toEqual([store.directory, image]);
+      const report = inspectDacls([root, store.directory, image]);
+      expect(report.entries.map((entry) => entry.path)).toEqual([root, store.directory, image]);
       expect(report.currentUserSid).toMatch(/^S-1-/);
       const insideTrustBoundary = new Set([report.currentUserSid, SYSTEM_SID, ADMINISTRATORS_SID]);
 
@@ -117,7 +130,7 @@ describe('Windows clipboard image storage uses the per-user temp DACL', () => {
       expect(existsSync(store.directory), 'normal cleanup retained the clipboard directory').toBe(false);
     } finally {
       cleanup?.();
-      rmSync(expectedDirectory, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
