@@ -6,6 +6,10 @@ export type TerminalClipboardTarget = {
   paste(value: string): void;
 };
 
+type TerminalClipboardDataTarget = TerminalClipboardTarget & {
+  onData(listener: (data: string) => void): unknown;
+};
+
 export type TerminalInputReservation = {
   emit(action: () => void): void;
   discard(): void;
@@ -132,4 +136,18 @@ export function installWindowsClipboardShortcuts(
     })();
     return false;
   });
+}
+
+// Keep the async clipboard transaction and xterm's synchronous onData on one ordered sink. This
+// is the sole composition used by the renderer and by the real-xterm fixture.
+export function wireProductTerminalClipboard(
+  terminal: TerminalClipboardDataTarget,
+  platform: string,
+  readTrustedClipboard: () => Promise<ClipboardReadResult>,
+  writeTrustedClipboard: (text: string) => Promise<void>,
+  sendTerminalInput: (data: string) => void,
+): void {
+  const terminalInput = createOrderedTerminalInputSink(sendTerminalInput);
+  installWindowsClipboardShortcuts(terminal, platform, readTrustedClipboard, terminalInput, writeTrustedClipboard);
+  terminal.onData((data) => { terminalInput.send(data); });
 }

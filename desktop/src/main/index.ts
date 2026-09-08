@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, accessRequestRequest, chatRequest, clipboardWriteRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntimeAsync } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
@@ -21,7 +21,7 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
-import { readDesktopClipboard, type ClipboardReadDependencies } from './clipboard-paste';
+import { createClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardReadDependencies } from './clipboard-paste';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
@@ -48,13 +48,24 @@ let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
 let runtime: PrivateRuntime;
 const loginDiagnostics = createLoginDiagnosticsStore();
-const desktopClipboardDependencies: ClipboardReadDependencies = {
+const clipboardImageStorage = createClipboardImageStorage({
+  temporaryDirectory: os.tmpdir,
+  uniqueId: randomUUID,
+  processId: process.pid,
+  now: Date.now,
+  isProcessAlive: (processId) => {
+    try { process.kill(processId, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+  },
+});
+const desktopClipboardDependencies: ClipboardReadDependencies & { clipboard: ClipboardReadDependencies['clipboard'] & { writeText(text: string): void } } = {
   clipboard,
   filesystem: {
     temporaryDirectory: os.tmpdir,
     writeFile: (file, png) => { writeFileSync(file, png, { mode: 0o600 }); },
   },
   uniqueId: randomUUID,
+  writeImage: clipboardImageStorage.writeImage,
 };
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
@@ -113,8 +124,13 @@ function registerIpc(): void {
   // disk instead would report the in-tree placeholder forever.
   ipcMain.handle(IPC.appVersion, (event) => { assertRenderer(event); return app.getVersion(); });
   ipcMain.handle(IPC.supportCopy, (event, raw: unknown) => { assertRenderer(event); return copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)); });
-  ipcMain.handle(IPC.clipboardRead, (event) => { assertRenderer(event); return process.platform === 'win32' ? readDesktopClipboard(desktopClipboardDependencies) : { kind: 'empty' }; });
-  ipcMain.handle(IPC.clipboardWrite, (event, raw: unknown) => { assertRenderer(event); const text = clipboardWriteRequest(raw); clipboard.writeText(text); });
+  registerDesktopClipboardHandlers({
+    ipcMain,
+    channels: IPC,
+    platform: process.platform,
+    authorize: assertRenderer,
+    dependencies: desktopClipboardDependencies,
+  });
   ipcMain.handle(IPC.supportSave, async (event, raw: unknown) => { assertRenderer(event);
     const report = supportReport(raw);
     const stamp = report.generatedAt.slice(0, 19).replaceAll(':', '-');
@@ -289,5 +305,5 @@ else {
   app.on('second-instance', () => focusExistingWindow(mainWindow));
   void runBootstrap(bootstrap, failStartup);
 }
-app.on('before-quit', () => { manager?.teardownAll(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
+app.on('before-quit', () => { manager?.teardownAll(); clipboardImageStorage.cleanup(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
 app.on('window-all-closed', () => app.quit());
