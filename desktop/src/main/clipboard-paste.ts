@@ -3,6 +3,7 @@ import path from 'node:path';
 import { clipboardWriteRequest, type ClipboardReadResult } from '../shared/contract';
 
 const CLIPBOARD_DIRECTORY_PREFIX = 'void-code-clipboard-';
+const CLIPBOARD_DIRECTORY_NAME = /^void-code-clipboard-([1-9]\d*)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/;
 const CLIPBOARD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type ClipboardReadDependencies = {
@@ -49,10 +50,8 @@ export function createSafeClipboardImageStorage(platform: string, create: () => 
 }
 
 function isOwnedClipboardDirectory(name: string): boolean {
-  const matched = new RegExp(`^${CLIPBOARD_DIRECTORY_PREFIX}(\\d+)-`).exec(name);
-  if (!matched) return false;
-  const processId = Number(matched[1]);
-  return Number.isSafeInteger(processId) && processId > 0;
+  const matched = CLIPBOARD_DIRECTORY_NAME.exec(name);
+  return matched !== null && Number.isSafeInteger(Number(matched[1]));
 }
 
 function pruneAbandonedClipboardDirectories(root: string, options: ClipboardImageStorageOptions): void {
