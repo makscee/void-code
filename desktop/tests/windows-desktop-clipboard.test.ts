@@ -16,6 +16,7 @@ type ClipboardPasteModule = {
 };
 type TerminalClipboardTarget = {
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
+  getSelection(): string;
   paste(value: string): void;
 };
 // The reservation is created at keydown, before the async read. emit() captures the
@@ -30,7 +31,16 @@ type OrderedTerminalInputSink = {
 };
 type ClipboardShortcutsModule = {
   createOrderedTerminalInputSink(send: (data: string) => void): OrderedTerminalInputSink;
-  installWindowsClipboardShortcuts(target: TerminalClipboardTarget, platform: string, readTrustedClipboard: () => Promise<ClipboardReadResult>, terminalInput: OrderedTerminalInputSink): void;
+  installWindowsClipboardShortcuts(
+    target: TerminalClipboardTarget,
+    platform: string,
+    readTrustedClipboard: () => Promise<ClipboardReadResult>,
+    terminalInput: OrderedTerminalInputSink,
+    writeTrustedClipboard?: (text: string) => Promise<void>,
+  ): void;
+};
+type ClipboardContractModule = {
+  clipboardWriteRequest?: (raw: unknown) => string;
 };
 
 // These modules are deliberately loaded inside each test. On the pre-fix tree, every assertion
@@ -45,6 +55,10 @@ async function rendererClipboard(): Promise<ClipboardShortcutsModule> {
   const module = await import(new URL('../src/renderer/clipboard-shortcuts.ts', import.meta.url).href).catch(() => undefined);
   expect(module, 'renderer shortcut interceptor is absent').toBeDefined();
   return module as ClipboardShortcutsModule;
+}
+
+async function clipboardContract(): Promise<ClipboardContractModule> {
+  return import(new URL('../src/shared/contract.ts', import.meta.url).href) as Promise<ClipboardContractModule>;
 }
 
 type ClipboardFixture = {
@@ -199,9 +213,11 @@ describe('desktop clipboard read stays in the trusted main-process boundary', ()
 class FakeTerminal implements TerminalClipboardTarget {
   handler: ((event: KeyboardEvent) => boolean) | undefined;
   pasted: string[] = [];
+  selection = '';
   onPaste: ((value: string) => void) | undefined;
 
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void { this.handler = handler; }
+  getSelection(): string { return this.selection; }
   paste(value: string): void { this.pasted.push(value); this.onPaste?.(value); }
 }
 
@@ -259,6 +275,19 @@ async function install(result: ClipboardReadResult) {
   const requestTrustedClipboard = vi.fn(async () => result);
   installWindowsClipboardShortcuts(terminal, 'win32', requestTrustedClipboard, inertTerminalInput());
   return { terminal, requestTrustedClipboard };
+}
+
+async function installCopy(selection: string, platform = 'win32', write = vi.fn(async () => undefined)) {
+  const { installWindowsClipboardShortcuts } = await rendererClipboard();
+  const terminal = new FakeTerminal();
+  terminal.selection = selection;
+  const readTrustedClipboard = vi.fn(async (): Promise<ClipboardReadResult> => ({ kind: 'text', text: 'must not read while copying' }));
+  const terminalInput = {
+    send: vi.fn(() => undefined),
+    reserve: vi.fn((): TerminalInputReservation => ({ emit: vi.fn(), discard: vi.fn() })),
+  };
+  installWindowsClipboardShortcuts(terminal, platform, readTrustedClipboard, terminalInput, write);
+  return { terminal, readTrustedClipboard, terminalInput, write };
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void } {
@@ -534,19 +563,116 @@ describe('Windows terminal paste shortcuts', () => {
     expect(terminal.pasted).toEqual([]);
   });
 
+});
+
+// xterm maps an unshifted Ctrl+C to the terminal interrupt byte. It may only be
+// consumed when there is an exact selection to send across the trusted write IPC.
+describe('Windows terminal copy shortcuts', () => {
   it.each([
-    ['Windows Ctrl+C', 'win32', key('c', { ctrlKey: true })],
-    ['macOS Command+V', 'darwin', key('v', { metaKey: true })],
-    ['Linux Ctrl+V', 'linux', key('v', { ctrlKey: true })],
-  ])('%s passes through unchanged and never requests Windows clipboard authority', async (label, platform, event) => {
-    const { installWindowsClipboardShortcuts } = await rendererClipboard();
-    const terminal = new FakeTerminal();
-    const requestTrustedClipboard = vi.fn(async (): Promise<ClipboardReadResult> => ({ kind: 'text', text: label }));
-    installWindowsClipboardShortcuts(terminal, platform, requestTrustedClipboard, inertTerminalInput());
+    ['Ctrl+C', key('c', { ctrlKey: true })],
+    ['Ctrl+Shift+C', key('c', { ctrlKey: true, shiftKey: true })],
+    ['physical Ctrl+C under a non-Latin layout', key('с', { code: 'KeyC', ctrlKey: true })],
+  ])('%s copies the exact non-empty xterm selection once and consumes the browser and xterm key paths', async (_label, event) => {
+    const selection = '  first line\r\nΔругая\tline  ';
+    const { terminal, readTrustedClipboard, terminalInput, write } = await installCopy(selection);
+
+    expect(terminal.handler?.(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    await afterMicrotasks();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith(selection);
+    expect(readTrustedClipboard).not.toHaveBeenCalled();
+    expect(terminalInput.reserve).not.toHaveBeenCalled();
+    expect(terminalInput.send).not.toHaveBeenCalled();
+    expect(terminal.pasted).toEqual([]);
+  });
+
+  it('leaves Ctrl+C with no selection untouched as the terminal interrupt', async () => {
+    const event = key('c', { ctrlKey: true });
+    const { terminal, readTrustedClipboard, terminalInput, write } = await installCopy('');
 
     expect(terminal.handler?.(event)).toBe(true);
+    await afterMicrotasks();
+
     expect(event.preventDefault).not.toHaveBeenCalled();
-    expect(requestTrustedClipboard).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(readTrustedClipboard).not.toHaveBeenCalled();
+    expect(terminalInput.reserve).not.toHaveBeenCalled();
+    expect(terminalInput.send).not.toHaveBeenCalled();
+    expect(terminal.pasted).toEqual([]);
+  });
+
+  it('consumes Ctrl+Shift+C with no selection as an inert copy gesture, never as an interrupt', async () => {
+    const event = key('c', { ctrlKey: true, shiftKey: true });
+    const { terminal, readTrustedClipboard, terminalInput, write } = await installCopy('');
+
+    expect(terminal.handler?.(event)).toBe(false);
+    await afterMicrotasks();
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(write).not.toHaveBeenCalled();
+    expect(readTrustedClipboard).not.toHaveBeenCalled();
+    expect(terminalInput.reserve).not.toHaveBeenCalled();
+    expect(terminalInput.send).not.toHaveBeenCalled();
+    expect(terminal.pasted).toEqual([]);
+  });
+
+  it('consumes repeat but lets keyup through without duplicating the one clipboard write', async () => {
+    const selection = 'one selection';
+    const { terminal, write } = await installCopy(selection);
+    const keydown = key('c', { type: 'keydown', ctrlKey: true });
+    const repeated = key('c', { type: 'keydown', ctrlKey: true, repeat: true });
+    const keyup = key('c', { type: 'keyup', ctrlKey: true });
+
+    expect(terminal.handler?.(keydown)).toBe(false);
+    expect(terminal.handler?.(repeated)).toBe(false);
+    expect(terminal.handler?.(keyup)).toBe(true);
+    await afterMicrotasks();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith(selection);
+    expect(keydown.preventDefault).toHaveBeenCalledOnce();
+    expect(repeated.preventDefault).toHaveBeenCalledOnce();
+    expect(keyup.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a rejected write', vi.fn(async (): Promise<void> => { throw new Error('clipboard unavailable'); })],
+    ['a synchronous write failure', vi.fn((): Promise<void> => { throw new Error('clipboard unavailable'); })],
+  ])('keeps %s inert: no crash, paste, read, queue reservation, or terminal injection', async (_label, failedWrite) => {
+    const { terminal, readTrustedClipboard, terminalInput } = await installCopy('private selection', 'win32', failedWrite);
+    const event = key('c', { ctrlKey: true });
+
+    expect(() => terminal.handler?.(event)).not.toThrow();
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    await afterMicrotasks();
+
+    expect(failedWrite).toHaveBeenCalledOnce();
+    expect(readTrustedClipboard).not.toHaveBeenCalled();
+    expect(terminalInput.reserve).not.toHaveBeenCalled();
+    expect(terminalInput.send).not.toHaveBeenCalled();
+    expect(terminal.pasted).toEqual([]);
+  });
+});
+
+describe('clipboard shortcut platform isolation', () => {
+  it.each([
+    ['Windows Ctrl+C without a selection', 'win32', key('c', { ctrlKey: true }), ''],
+    ['Windows Alt+C with a selection', 'win32', key('c', { altKey: true }), 'selected'],
+    ['macOS Command+V', 'darwin', key('v', { metaKey: true }), 'selected'],
+    ['macOS Command+C with a selection', 'darwin', key('c', { metaKey: true }), 'selected'],
+    ['Linux Ctrl+V', 'linux', key('v', { ctrlKey: true }), 'selected'],
+    ['Linux Ctrl+Shift+C with a selection', 'linux', key('c', { ctrlKey: true, shiftKey: true }), 'selected'],
+  ])('%s passes through unchanged and never requests clipboard authority', async (_label, platform, event, selection) => {
+    const { terminal, readTrustedClipboard, write } = await installCopy(selection, platform);
+
+    expect(terminal.handler?.(event)).toBe(true);
+    await afterMicrotasks();
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(readTrustedClipboard).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
     expect(terminal.pasted).toEqual([]);
   });
 });
@@ -579,7 +705,7 @@ function objectProperty(object: ts.ObjectLiteralExpression | undefined, name: st
   return property?.initializer;
 }
 
-// Deleting either boundary call silently removes Windows paste despite both units being tested.
+// Deleting a boundary call silently removes Windows paste/copy despite the seam units being tested.
 describe('Windows clipboard process-boundary wiring', () => {
   it('installs the trusted clipboard handler and routes its xterm onData through one ordered sink before open', () => {
     const source = sourceFile('../src/renderer/index.ts');
@@ -626,6 +752,19 @@ describe('Windows clipboard process-boundary wiring', () => {
     const read = (trustedRead as ts.ArrowFunction).body as ts.CallExpression;
     expect(ts.isPropertyAccessExpression(read.expression) && read.expression.getText(source)).toBe('window.voidTerminal.clipboard.read');
     expect(ts.isIdentifier(installer!.arguments[3]) && installer!.arguments[3].text).toBe(terminalInput);
+    const trustedWrite = installer!.arguments[4];
+    expect(trustedWrite, 'the real renderer gives copy shortcuts a trusted clipboard writer').toBeDefined();
+    if (!trustedWrite) return;
+    expect(ts.isArrowFunction(trustedWrite)).toBe(true);
+    if (!ts.isArrowFunction(trustedWrite)) return;
+    expect(trustedWrite.parameters).toHaveLength(1);
+    const selectedText = trustedWrite.parameters[0].name.getText(source);
+    expect(ts.isCallExpression(trustedWrite.body), 'the trusted writer directly calls the preload bridge').toBe(true);
+    if (!ts.isCallExpression(trustedWrite.body)) return;
+    const write = trustedWrite.body;
+    expect(ts.isPropertyAccessExpression(write.expression) && write.expression.getText(source)).toBe('window.voidTerminal.clipboard.write');
+    expect(write.arguments).toHaveLength(1);
+    expect(write.arguments[0].getText(source)).toBe(selectedText);
     const forward = createInput.arguments[0];
     expect(ts.isArrowFunction(forward), 'the ordered sink forwards to the owned terminal-input IPC').toBe(true);
     expect(forward?.getText(source)).toContain('window.voidTerminal.input');
@@ -637,7 +776,7 @@ describe('Windows clipboard process-boundary wiring', () => {
     expect(listener.getText(source)).toContain(`${terminalInput}.send(${data})`);
   });
 
-  it('preload exposes clipboard.read as the narrow clipboardRead IPC invocation', () => {
+  it('preload exposes only narrow clipboard read/write IPC calls', () => {
     const source = sourceFile('../src/preload/index.ts');
     const apiStatement = source.statements.find((statement): statement is ts.VariableStatement => ts.isVariableStatement(statement)
       && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'api'));
@@ -645,16 +784,88 @@ describe('Windows clipboard process-boundary wiring', () => {
     const api = objectLiteral(apiDeclaration?.initializer);
     const clipboard = objectLiteral(objectProperty(api, 'clipboard'));
     const read = objectProperty(clipboard, 'read');
+    const write = objectProperty(clipboard, 'write');
 
     expect(read, 'preload exposes clipboard.read').toBeDefined();
-    if (!read) return;
+    expect(write, 'preload exposes clipboard.write').toBeDefined();
+    if (!read || !write) return;
     expect(ts.isArrowFunction(read)).toBe(true);
-    const body = (read as ts.ArrowFunction).body;
-    expect(ts.isCallExpression(body), 'clipboard.read directly invokes IPC').toBe(true);
-    const invocation = body as ts.CallExpression;
-    expect(ts.isPropertyAccessExpression(invocation.expression) && invocation.expression.expression.getText(source)).toBe('ipcRenderer');
-    expect(ts.isPropertyAccessExpression(invocation.expression) && invocation.expression.name.text).toBe('invoke');
-    expect(invocation.arguments).toHaveLength(1);
-    expect(invocation.arguments[0].getText(source)).toBe('IPC.clipboardRead');
+    expect(ts.isArrowFunction(write)).toBe(true);
+    if (!ts.isArrowFunction(read) || !ts.isArrowFunction(write)) return;
+
+    expect(ts.isCallExpression(read.body), 'clipboard.read directly invokes IPC').toBe(true);
+    const readInvocation = read.body as ts.CallExpression;
+    expect(ts.isPropertyAccessExpression(readInvocation.expression) && readInvocation.expression.expression.getText(source)).toBe('ipcRenderer');
+    expect(ts.isPropertyAccessExpression(readInvocation.expression) && readInvocation.expression.name.text).toBe('invoke');
+    expect(readInvocation.arguments).toHaveLength(1);
+    expect(readInvocation.arguments[0].getText(source)).toBe('IPC.clipboardRead');
+
+    expect(write.parameters).toHaveLength(1);
+    const text = write.parameters[0].name.getText(source);
+    expect(ts.isCallExpression(write.body), 'clipboard.write directly invokes IPC').toBe(true);
+    const writeInvocation = write.body as ts.CallExpression;
+    expect(ts.isPropertyAccessExpression(writeInvocation.expression) && writeInvocation.expression.expression.getText(source)).toBe('ipcRenderer');
+    expect(ts.isPropertyAccessExpression(writeInvocation.expression) && writeInvocation.expression.name.text).toBe('invoke');
+    expect(writeInvocation.arguments).toHaveLength(2);
+    expect(writeInvocation.arguments[0].getText(source)).toBe('IPC.clipboardWrite');
+    expect(writeInvocation.arguments[1].getText(source).replaceAll(' ', '')).toBe(`{${text}}`);
+  });
+
+  it('keeps the clipboard bridge context-isolated and gives the renderer no browser-only copy fallback', () => {
+    const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const preload = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8');
+    const renderer = readFileSync(new URL('../src/renderer/clipboard-shortcuts.ts', import.meta.url), 'utf8');
+    const createWindow = main.match(/async function createWindow\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+    const browserWindow = createWindow.match(/new BrowserWindow\(\{[\s\S]*?\}\)\)/)?.[0] ?? '';
+
+    expect(browserWindow, 'the owned BrowserWindow construction is absent').not.toBe('');
+    expect(browserWindow).toMatch(/contextIsolation\s*:\s*true/);
+    expect(browserWindow).toMatch(/nodeIntegration\s*:\s*false/);
+    expect(browserWindow).toMatch(/sandbox\s*:\s*true/);
+    expect(preload).toMatch(/contextBridge\.exposeInMainWorld\(\s*['"]voidTerminal['"]\s*,\s*api\s*\)/);
+    expect(`${preload}\n${renderer}`).not.toMatch(/navigator\.clipboard|document\.execCommand\s*\(|new\s+ClipboardEvent\s*\(/);
+  });
+
+  it('registers one owned-renderer main-process writer that validates before Electron clipboard.writeText', () => {
+    const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    const handlers = [...main.matchAll(/ipcMain\.handle\(IPC\.clipboardWrite,[\s\S]{0,600}?\}\);/g)].map((match) => match[0]);
+
+    expect(handlers, 'clipboardWrite must have exactly one main-process handler').toHaveLength(1);
+    const handler = handlers[0];
+    const authorize = handler.indexOf('assertRenderer(event)');
+    const validate = handler.indexOf('clipboardWriteRequest(raw)');
+    const write = handler.indexOf('clipboard.writeText');
+    expect(authorize, 'clipboardWrite does not reject non-owned renderers').toBeGreaterThan(-1);
+    expect(validate, 'clipboardWrite does not pass raw input through the strict validator').toBeGreaterThan(authorize);
+    expect(write, 'clipboardWrite does not use Electron main-process clipboard.writeText').toBeGreaterThan(validate);
+    expect(handler).not.toMatch(/navigator\.clipboard|writeFile|readImage|toPNG/);
+  });
+
+  it('names a distinct write channel instead of overloading terminal input or clipboard read', () => {
+    const preloadContract = readFileSync(new URL('../src/shared/preload-contract.ts', import.meta.url), 'utf8');
+    expect(preloadContract).toMatch(/clipboardWrite\s*:\s*['"]clipboard:write['"]/);
+  });
+});
+
+describe('clipboard write IPC request validation', () => {
+  it('returns the exact non-empty text value from the sole owned field', async () => {
+    const module = await clipboardContract();
+    expect(module.clipboardWriteRequest, 'strict clipboardWriteRequest validator is absent').toBeTypeOf('function');
+    const text = '  selected\r\nΔ text\t ';
+    expect(module.clipboardWriteRequest!({ text })).toBe(text);
+  });
+
+  it.each([
+    null,
+    [],
+    {},
+    { text: '' },
+    { text: 7 },
+    { text: 'selected', path: 'C:\\escape.png' },
+    { text: 'selected', command: 'powershell.exe' },
+  ])('rejects malformed, empty, non-text, and widened write requests: %j', async (raw) => {
+    const module = await clipboardContract();
+    expect(module.clipboardWriteRequest, 'strict clipboardWriteRequest validator is absent').toBeTypeOf('function');
+    expect(() => module.clipboardWriteRequest!(raw)).toThrow();
   });
 });
