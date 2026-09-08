@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -102,6 +103,35 @@ describe('desktop clipboard read stays in the trusted main-process boundary', ()
     expect(seam.writes).toEqual([
       { path: 'C:\\void-temp\\void-code-clipboard-first.png', png },
       { path: 'C:\\void-temp\\void-code-clipboard-second.png', png },
+    ]);
+    expect(seam.reads).toEqual({ image: 2, text: 0 });
+  });
+
+  it.each(['relative-temp', 'C:relative-temp'])('normalizes %s to an absolute contained directory while retaining unique PNG destinations', async (temporaryDirectory) => {
+    const { readDesktopClipboard } = await mainClipboard();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]);
+    const seam = dependencies({ image: nonEmptyImage(png), text: 'text must lose to the image' });
+    seam.filesystem.temporaryDirectory = () => temporaryDirectory;
+
+    const first = readDesktopClipboard(seam);
+    const second = readDesktopClipboard(seam);
+
+    expect(first.kind).toBe('image-path');
+    expect(second.kind).toBe('image-path');
+    if (first.kind !== 'image-path' || second.kind !== 'image-path') throw new Error('non-empty images must produce image paths');
+    const root = path.win32.resolve(temporaryDirectory);
+    const destinations = [first.path, second.path];
+    for (const [index, destination] of destinations.entries()) {
+      const filename = `void-code-clipboard-${index === 0 ? 'first' : 'second'}.png`;
+      expect(path.win32.isAbsolute(destination)).toBe(true);
+      expect(path.win32.dirname(destination)).toBe(root);
+      expect(path.win32.relative(root, destination)).toBe(filename);
+      expect(path.win32.basename(destination)).toBe(filename);
+    }
+    expect(new Set(destinations).size).toBe(2);
+    expect(seam.writes).toEqual([
+      { path: first.path, png },
+      { path: second.path, png },
     ]);
     expect(seam.reads).toEqual({ image: 2, text: 0 });
   });
@@ -385,6 +415,40 @@ describe('Windows terminal paste shortcuts', () => {
 
     expect(terminal.pasted).toEqual([]);
     expect(sent).toEqual(['later terminal data']);
+  });
+
+  it('at exactly five seconds discards a pending trusted read, releases FIFO input, and ignores a late successful result', async () => {
+    vi.useFakeTimers();
+    try {
+      const { createOrderedTerminalInputSink, installWindowsClipboardShortcuts } = await rendererClipboard();
+      const sent: string[] = [];
+      const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+      const terminal = new FakeTerminal();
+      terminal.onPaste = (value) => { terminalInput.send(value); };
+      const pending = deferred<ClipboardReadResult>();
+      const readTrustedClipboard = vi.fn(() => pending.promise);
+      installWindowsClipboardShortcuts(terminal, 'win32', readTrustedClipboard, terminalInput);
+
+      expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
+      expect(readTrustedClipboard).toHaveBeenCalledOnce();
+      terminalInput.send('later terminal data');
+      expect(sent).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(sent).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(terminal.pasted).toEqual([]);
+      expect(sent).toEqual(['later terminal data']);
+
+      pending.resolve({ kind: 'text', text: 'late clipboard text' });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(readTrustedClipboard).toHaveBeenCalledOnce();
+      expect(terminal.pasted).toEqual([]);
+      expect(sent).toEqual(['later terminal data']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The real renderer must use the same reservation semantics, not only satisfy the shortcut seam with a fake sink.
