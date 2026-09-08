@@ -271,6 +271,10 @@ function storageOptions(root: string, processId: number, id: string, now: number
   };
 }
 
+function deterministicUuid(sequence: number): string {
+  return `00000000-0000-4000-8000-${sequence.toString().padStart(12, '0')}`;
+}
+
 // G3 uses the real filesystem for permission and deletion assertions. Time and apparent process
 // liveness are injected, so strict seven-day pruning needs neither a sleep nor a real reused PID.
 describe('G3 — process-owned clipboard image storage and strict age-based crash retention', () => {
@@ -278,11 +282,12 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     const module = await clipboardPanelModule();
     expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
     const root = temporaryRoot();
-    const store = module.createClipboardImageStorage!(storageOptions(root, 4101, 'current', Date.UTC(2026, 8, 8), new Set([4101])));
+    const ownedId = deterministicUuid(1);
+    const store = module.createClipboardImageStorage!(storageOptions(root, 4101, ownedId, Date.UTC(2026, 8, 8), new Set([4101])));
 
     expect(path.isAbsolute(store.directory)).toBe(true);
     expect(path.dirname(store.directory)).toBe(path.resolve(root));
-    expect(path.basename(store.directory)).toMatch(/^void-code-clipboard-/);
+    expect(path.basename(store.directory)).toBe(`void-code-clipboard-4101-${ownedId}`);
     expect(statSync(store.directory).isDirectory()).toBe(true);
     expect(statSync(store.directory).mode & 0o777).toBe(0o700);
 
@@ -300,7 +305,7 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     expect(existsSync(store.directory)).toBe(false);
   });
 
-  it('prunes every app-owned directory older than seven days even when its encoded PID appears live', async () => {
+  it('prunes old exact app-owned UUID directories but retains old prefix collisions', async () => {
     const module = await clipboardPanelModule();
     expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
     const root = temporaryRoot();
@@ -310,10 +315,10 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     const exactlySevenDays = now - 7 * 24 * 60 * 60 * 1000;
     const noLiveProcesses = new Set<number>();
 
-    const staleDead = module.createClipboardImageStorage!(storageOptions(root, 4201, 'stale-dead', old, noLiveProcesses));
-    const staleLive = module.createClipboardImageStorage!(storageOptions(root, 4202, 'stale-live', old, noLiveProcesses));
-    const freshDead = module.createClipboardImageStorage!(storageOptions(root, 4203, 'fresh-dead', old, noLiveProcesses));
-    const boundaryDead = module.createClipboardImageStorage!(storageOptions(root, 4204, 'seven-days', old, noLiveProcesses));
+    const staleDead = module.createClipboardImageStorage!(storageOptions(root, 4201, deterministicUuid(2), old, noLiveProcesses));
+    const staleLive = module.createClipboardImageStorage!(storageOptions(root, 4202, deterministicUuid(3), old, noLiveProcesses));
+    const freshDead = module.createClipboardImageStorage!(storageOptions(root, 4203, deterministicUuid(4), old, noLiveProcesses));
+    const boundaryDead = module.createClipboardImageStorage!(storageOptions(root, 4204, deterministicUuid(5), old, noLiveProcesses));
     utimesSync(staleDead.directory, old / 1000, old / 1000);
     utimesSync(staleLive.directory, old / 1000, old / 1000);
     utimesSync(freshDead.directory, fresh / 1000, fresh / 1000);
@@ -322,10 +327,18 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
     const unrelatedDirectory = path.join(root, 'another-app-cache');
     const unrelatedFile = path.join(root, 'void-code-clipboard-not-a-directory');
     const prefixSymlink = path.join(root, 'void-code-clipboard-4999-symlink');
+    const prefixCollisionDirectories = [
+      path.join(root, 'void-code-clipboard-123-backups'),
+      path.join(root, 'void-code-clipboard-123-00000000-0000-4000-8000-00000000000g'),
+      path.join(root, 'void-code-clipboard-123-00000000-0000-4000-8000-00000000000'),
+      path.join(root, `void-code-clipboard-123-${deterministicUuid(6)}-backups`),
+    ];
     mkdirSync(unrelatedDirectory, { mode: 0o700 });
+    for (const entry of prefixCollisionDirectories) mkdirSync(entry, { mode: 0o700 });
     writeFileSync(unrelatedFile, 'not owned directory data', { mode: 0o600 });
     symlinkSync(unrelatedDirectory, prefixSymlink, process.platform === 'win32' ? 'junction' : 'dir');
     utimesSync(unrelatedDirectory, old / 1000, old / 1000);
+    for (const entry of prefixCollisionDirectories) utimesSync(entry, old / 1000, old / 1000);
     utimesSync(unrelatedFile, old / 1000, old / 1000);
     lutimesSync(prefixSymlink, old / 1000, old / 1000);
     chmodSync(unrelatedDirectory, 0o700);
@@ -335,15 +348,17 @@ describe('G3 — process-owned clipboard image storage and strict age-based cras
       [unrelatedDirectory, lstatSync(unrelatedDirectory).mtimeMs],
       [unrelatedFile, lstatSync(unrelatedFile).mtimeMs],
       [prefixSymlink, lstatSync(prefixSymlink).mtimeMs],
+      ...prefixCollisionDirectories.map((entry) => [entry, lstatSync(entry).mtimeMs] as const),
     ]);
 
-    const current = module.createClipboardImageStorage!(storageOptions(root, 4299, 'current', now, new Set([4202, 4299])));
+    const current = module.createClipboardImageStorage!(storageOptions(root, 4299, deterministicUuid(7), now, new Set([4202, 4299])));
 
     expect(existsSync(staleDead.directory), 'stale app directory with a dead encoded PID').toBe(false);
     expect(existsSync(staleLive.directory), 'stale app directory with a reused/live encoded PID').toBe(false);
     expect(existsSync(freshDead.directory), 'fresh directory belonging to a dead process').toBe(true);
     expect(existsSync(boundaryDead.directory), 'directory exactly seven days old').toBe(true);
     expect(existsSync(unrelatedDirectory), 'unrelated old directory').toBe(true);
+    for (const entry of prefixCollisionDirectories) expect(existsSync(entry), `prefix collision ${path.basename(entry)}`).toBe(true);
     expect(existsSync(unrelatedFile), 'prefix-matching non-directory').toBe(true);
     expect(lstatSync(prefixSymlink).isSymbolicLink(), 'prefix-matching old symlink').toBe(true);
     for (const [entry, mtime] of retainedMtimes) expect(lstatSync(entry).mtimeMs, `pruning touched retained entry ${entry}`).toBe(mtime);
