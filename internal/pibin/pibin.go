@@ -71,7 +71,7 @@ func ResolveNode() (string, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return "", fmt.Errorf("bundled Node is not a regular file: %s", path)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+	if !nodeIsExecutable(path) {
 		return "", fmt.Errorf("bundled Node is not executable: %s", path)
 	}
 	return path, nil

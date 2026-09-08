@@ -490,15 +490,7 @@ func withBuiltPiPath(env, parent []string) ([]string, error) {
 		}
 		return nil, err
 	}
-	out := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		name, _, _ := strings.Cut(entry, "=")
-		if strings.EqualFold(name, "PATH") {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return append(out, "PATH="+childenv.PiPath(runtime.GOOS, parent, privateNode)), nil
+	return childenv.PiEnv(runtime.GOOS, env, parent, privateNode), nil
 }
 
 // buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay

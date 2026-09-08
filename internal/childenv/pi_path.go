@@ -26,6 +26,26 @@ func PiPath(platform string, parent []string, privateNode string) string {
 	return join(":", unixDirectoryOf(privateNode), "/usr/bin", "/bin")
 }
 
+// PiEnv replaces Pi's inherited PATH with PiPath. On Windows it also disables
+// cmd.exe's current-directory executable search, which otherwise precedes PATH
+// for the pi.cmd shim.
+func PiEnv(platform string, env, parent []string, privateNode string) []string {
+	out := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, "PATH") ||
+			(platform == "windows" && strings.EqualFold(name, "NoDefaultCurrentDirectoryInExePath")) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	out = append(out, "PATH="+PiPath(platform, parent, privateNode))
+	if platform == "windows" {
+		out = append(out, "NoDefaultCurrentDirectoryInExePath=1")
+	}
+	return out
+}
+
 // lookup reads a variable out of a raw environment, matching the name without
 // regard to case. Windows writes SystemRoot, SYSTEMROOT and Path as it likes;
 // a case-sensitive lookup finds nothing on the machines that chose another
