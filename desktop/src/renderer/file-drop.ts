@@ -5,14 +5,14 @@ type DropTarget = {
 type FileDropDependencies = {
   target: DropTarget;
   getPathForFile(file: File): string;
-  getCurrentTerminal(): { paste(value: string): void } | undefined;
+  getCurrentInput(): ((data: string) => void) | undefined;
 };
 
 function hasFiles(event: DragEvent): boolean {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files');
 }
 
-export function installFileDropHandlers({ target, getPathForFile, getCurrentTerminal }: FileDropDependencies): void {
+export function installFileDropHandlers({ target, getPathForFile, getCurrentInput }: FileDropDependencies): void {
   target.addEventListener('dragover', (event) => {
     if (!hasFiles(event)) return;
     event.preventDefault();
@@ -21,9 +21,9 @@ export function installFileDropHandlers({ target, getPathForFile, getCurrentTerm
   target.addEventListener('drop', (event) => {
     if (!hasFiles(event)) return;
     event.preventDefault();
-    const terminal = getCurrentTerminal();
-    if (!terminal || !event.dataTransfer) return;
+    const input = getCurrentInput();
+    if (!input || !event.dataTransfer) return;
     const paths = Array.from(event.dataTransfer.files, (file) => getPathForFile(file)).filter((path) => path !== '');
-    if (paths.length > 0) terminal.paste(paths.join('\n'));
+    if (paths.length > 0) input(`\x1b[200~${paths.join('\n')}\x1b[201~`);
   });
 }

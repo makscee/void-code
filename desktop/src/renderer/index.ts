@@ -193,10 +193,15 @@ function selectedTab(): RendererTabRecord | undefined { return view.workspace?.t
 installFileDropHandlers({
   target: document,
   getPathForFile: (file) => window.voidTerminal.getPathForFile(file),
-  getCurrentTerminal: () => {
+  getCurrentInput: () => {
     const tab = selectedTab();
     const runtime = tab ? runtimes.get(tab.id) : undefined;
-    return runtime && !runtime.exited ? runtime.terminal : undefined;
+    return runtime && !runtime.exited
+      ? (data) => {
+        if (!tab) return;
+        void window.voidTerminal.input({ sessionId: tab.id, data: data }).catch(() => undefined);
+      }
+      : undefined;
   },
 });
 function applyChatTabRename(event: ChatTabRenameEvent): ChatTabRenameResult {
