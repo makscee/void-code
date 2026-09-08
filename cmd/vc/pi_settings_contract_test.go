@@ -46,6 +46,15 @@ var piSettingsWriters = []struct {
 			}
 		},
 	},
+	{
+		name: "desktop UI defaults",
+		write: func(t *testing.T) {
+			t.Helper()
+			if err := ensurePiDesktopUIDefaults(); err != nil {
+				t.Fatalf("ensurePiDesktopUIDefaults() error = %v", err)
+			}
+		},
+	},
 }
 
 // Acceptance criterion 2: an integer past float64 precision survives a write by

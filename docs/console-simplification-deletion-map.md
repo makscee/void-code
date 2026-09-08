@@ -16,7 +16,8 @@
 |---|---|
 | One Pi runtime executable is checked then launched through the `internal/harness.Spawn` seam | `internal/pibin/`, `internal/harness/`, `cmd/vc/main.go` |
 | Subscription auth, budget admission, CA resolution and secret stripping | `internal/auth/`, `internal/config/`, `cmd/vc/main.go` |
-| Managed Pi extension and `pi-bootstrap` authenticate transport and register subscription-granted models for Pi's **native** selector | `cmd/vc/pi_extension.go`, `cmd/vc/pi_managed.go`, `cmd/vc/pi_bootstrap.go` |
+| Managed Pi transport extension and `pi-bootstrap` authenticate transport and register subscription-granted models for Pi's **native** selector | `cmd/vc/pi_extension.go`, `cmd/vc/pi_managed.go`, `cmd/vc/pi_bootstrap.go` |
+| Desktop-only compact Pi presentation (collapsed tool details, compact history and activity status) | `cmd/vc/pi_ui_extension.ts`, embedded by `cmd/vc/pi_ui_extension.go`; globally discovered but inert without the desktop-minted session marker |
 | Desktop private-Pi runtime hardening, update behavior and lifecycle channel | `cmd/vc/desktop_session.go` and desktop package; adapt only where it shares removed console choice state |
 
 Legacy `active_harness`, `active_provider`, and `active_provider_label` config keys are ignored. They are neither read nor rewritten.
