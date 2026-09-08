@@ -341,6 +341,52 @@ describe('Windows terminal paste shortcuts', () => {
     expect(terminalInput.sent).toEqual(['clipboard text', 'later terminal data']);
   });
 
+  // An empty async read must settle its reservation, or all later xterm input stays stuck behind it.
+  it('releases later terminal data without pasting when a pending trusted read resolves empty', async () => {
+    const { createOrderedTerminalInputSink, installWindowsClipboardShortcuts } = await rendererClipboard();
+    const sent: string[] = [];
+    const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+    const terminal = new FakeTerminal();
+    terminal.onPaste = (value) => { terminalInput.send(value); };
+    const pending = deferred<ClipboardReadResult>();
+    const readTrustedClipboard = vi.fn(() => pending.promise);
+    installWindowsClipboardShortcuts(terminal, 'win32', readTrustedClipboard, terminalInput);
+
+    expect(terminal.handler?.(key('v', { ctrlKey: true }))).toBe(false);
+    expect(readTrustedClipboard).toHaveBeenCalledOnce();
+    terminalInput.send('later terminal data');
+    expect(sent).toEqual([]);
+
+    pending.resolve({ kind: 'empty' });
+    await afterMicrotasks();
+
+    expect(terminal.pasted).toEqual([]);
+    expect(sent).toEqual(['later terminal data']);
+  });
+
+  // A failed async read must settle the same FIFO slot rather than permanently block later input.
+  it('releases later terminal data without pasting when a pending trusted read rejects', async () => {
+    const { createOrderedTerminalInputSink, installWindowsClipboardShortcuts } = await rendererClipboard();
+    const sent: string[] = [];
+    const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+    const terminal = new FakeTerminal();
+    terminal.onPaste = (value) => { terminalInput.send(value); };
+    const pending = deferred<ClipboardReadResult>();
+    const readTrustedClipboard = vi.fn(() => pending.promise);
+    installWindowsClipboardShortcuts(terminal, 'win32', readTrustedClipboard, terminalInput);
+
+    expect(terminal.handler?.(key('v', { altKey: true }))).toBe(false);
+    expect(readTrustedClipboard).toHaveBeenCalledOnce();
+    terminalInput.send('later terminal data');
+    expect(sent).toEqual([]);
+
+    pending.reject(new Error('clipboard unavailable'));
+    await afterMicrotasks();
+
+    expect(terminal.pasted).toEqual([]);
+    expect(sent).toEqual(['later terminal data']);
+  });
+
   // The real renderer must use the same reservation semantics, not only satisfy the shortcut seam with a fake sink.
   it('keeps terminal data sent during an emitted reservation behind that reservation', async () => {
     const { createOrderedTerminalInputSink } = await rendererClipboard();
@@ -352,6 +398,40 @@ describe('Windows terminal paste shortcuts', () => {
     reservation.emit(() => { terminalInput.send('clipboard text'); });
 
     expect(sent).toEqual(['clipboard text', 'later terminal data']);
+  });
+
+  // A reservation is one transaction: a second emit must not invoke another terminal paste.
+  it('allows only the first emit to contribute terminal data', async () => {
+    const { createOrderedTerminalInputSink } = await rendererClipboard();
+    const sent: string[] = [];
+    const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+    const terminal = new FakeTerminal();
+    terminal.onPaste = (value) => { terminalInput.send(value); };
+    const reservation = terminalInput.reserve();
+
+    terminalInput.send('later terminal data');
+    reservation.emit(() => { terminal.paste('first clipboard text'); });
+    reservation.emit(() => { terminal.paste('second clipboard text'); });
+
+    expect(terminal.pasted).toEqual(['first clipboard text']);
+    expect(sent).toEqual(['first clipboard text', 'later terminal data']);
+  });
+
+  // A discarded transaction cannot revive; the queued successor must be forwarded only once.
+  it('does not emit after discard and releases later terminal data exactly once', async () => {
+    const { createOrderedTerminalInputSink } = await rendererClipboard();
+    const sent: string[] = [];
+    const terminalInput = createOrderedTerminalInputSink((data) => { sent.push(data); });
+    const terminal = new FakeTerminal();
+    terminal.onPaste = (value) => { terminalInput.send(value); };
+    const reservation = terminalInput.reserve();
+
+    terminalInput.send('later terminal data');
+    reservation.discard();
+    reservation.emit(() => { terminal.paste('discarded clipboard text'); });
+
+    expect(terminal.pasted).toEqual([]);
+    expect(sent).toEqual(['later terminal data']);
   });
 
   it('inserts text from the same trusted result path', async () => {
