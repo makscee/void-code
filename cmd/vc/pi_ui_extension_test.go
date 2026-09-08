@@ -68,6 +68,29 @@ func TestManagedPiUIExtensionInstallsPrivatelyAndIdempotently(t *testing.T) {
 	}
 }
 
+// Windows CRLF checkout must not make vc reject or retain the managed file it installed itself.
+func TestManagedPiUIExtensionOwnsCRLFSourceOnWindowsCheckout(t *testing.T) {
+	piUIExtensionSandbox(t)
+	original := piVoidCodeUIExtensionSource
+	piVoidCodeUIExtensionSource = strings.ReplaceAll(strings.ReplaceAll(original, "\r\n", "\n"), "\n", "\r\n")
+	t.Cleanup(func() { piVoidCodeUIExtensionSource = original })
+
+	path, err := reconcileManagedPiUIExtension()
+	if err != nil {
+		t.Fatalf("initial CRLF install failed: %v", err)
+	}
+	if _, err := reconcileManagedPiUIExtension(); err != nil {
+		t.Fatalf("vc rejected its own CRLF extension on the next launch: %v", err)
+	}
+	t.Setenv("VC_PI_COMPACT_UI", "false")
+	if _, err := reconcileManagedPiUIExtension(); err != nil {
+		t.Fatalf("opt-out could not remove vc's CRLF extension: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("owned CRLF UI survived opt-out: stat error = %v", err)
+	}
+}
+
 // Product updates may replace only files carrying Void Code's ownership marker.
 func TestManagedPiUIExtensionNeverOverwritesForeignFile(t *testing.T) {
 	dir := piUIExtensionSandbox(t)
