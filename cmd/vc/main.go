@@ -469,8 +469,8 @@ func ensurePiVoidCodexExtension() (string, error) {
 // v22.12.0 that won the PATH lookup has no zlib.createZstdDecompress. The Node
 // in ~/.void-code/runtime does — both binaries were run to check.
 //
-// A runtime without a bundled Node keeps the inherited PATH, and that is a
-// decision rather than a leftover: install.sh never provisions runtime/node — it
+// A legacy runtime without a bundled Node or manifest keeps the inherited PATH,
+// and that is a decision rather than a leftover: install.sh never provisions runtime/node — it
 // npm-installs Pi with whatever Node the machine already has (install.sh:751) —
 // so building a PATH for those installs would name a directory that does not
 // exist and leave `#!/usr/bin/env node` with nothing to find, breaking a whole

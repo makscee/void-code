@@ -46,7 +46,7 @@ func managedNodeRuntimePath(home string) string {
 }
 
 // ErrBundledNodeUnprovisioned is returned directly when the entire managed
-// runtime/node tree is absent. Its PathError form preserves the historical
+// runtime/node tree and bundled manifest are absent. Its PathError form preserves the historical
 // os.IsNotExist behavior for callers that only need missing-file diagnostics;
 // callers deciding whether PATH fallback is safe must use errors.Is with this
 // sentinel, rather than treating every missing inner component as legacy.
@@ -56,6 +56,10 @@ var ErrBundledNodeUnprovisioned = &os.PathError{
 	Err:  syscall.ENOENT,
 }
 
+// ErrBundledNodeCorrupt reports a bundled runtime whose manifest remains but
+// whose required Node tree has been removed.
+var ErrBundledNodeCorrupt = fmt.Errorf("bundled Node runtime is corrupt")
+
 // ResolveNode returns the absolute path of the Node executable VC installs with
 // its managed Pi, on the same terms Resolve uses for the Pi entrypoint: a fixed
 // place under the canonical home, never PATH. Pi starts through
@@ -63,10 +67,9 @@ var ErrBundledNodeUnprovisioned = &os.PathError{
 // handed a VC token — a PATH-selected or symlink-redirected node would receive
 // that token exactly as the wrong Pi would.
 //
-// An absent Node is a normal state, not a broken install: install.sh provisions
-// only runtime/pi and npm-installs it with the Node already on the machine. The
-// error says which, and it is for the caller to decide what a missing bundled
-// Node means for the environment it is building.
+// An absent Node without a bundled manifest is a normal legacy install.sh
+// state: it provisions only runtime/pi and npm-installs it with the Node already
+// on the machine. A remaining bundled manifest instead reports corruption.
 func ResolveNode() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -113,10 +116,16 @@ func bundledNodeTreeProvisioned(home string) error {
 	}
 	info, err := os.Lstat(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return ErrBundledNodeUnprovisioned
+		if !os.IsNotExist(err) {
+			return err
 		}
-		return err
+		manifest := filepath.Join(filepath.Dir(root), "manifest.json")
+		if _, manifestErr := os.Lstat(manifest); manifestErr == nil {
+			return fmt.Errorf("%w: %s exists but %s is missing", ErrBundledNodeCorrupt, manifest, root)
+		} else if !os.IsNotExist(manifestErr) {
+			return manifestErr
+		}
+		return ErrBundledNodeUnprovisioned
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("managed Pi path contains symlink component: %s", root)
