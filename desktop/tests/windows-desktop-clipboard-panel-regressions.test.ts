@@ -282,7 +282,7 @@ function runProcess(executable: string, arguments_: string[], cwd: string): Prom
 // hidden window receives Electron input events; xterm owns the textarea, selection, key dispatch,
 // default action, Terminal.paste(), and onData path. Clipboard read/write remain injected spies.
 describe('F4 — shipped xterm keyboard/default-action/onData integration', () => {
-  it('consumes selected Ctrl+C and delivers one Ctrl+V paste through real xterm onData', async () => {
+  it('consumes selected Ctrl+C and delivers Ctrl+V plus ordinary typing through real xterm onData', async () => {
     const root = temporaryRoot();
     const rendererBundle = path.join(root, 'renderer.js');
     const mainBundle = path.join(root, 'main.cjs');
@@ -330,7 +330,7 @@ describe('F4 — shipped xterm keyboard/default-action/onData integration', () =
       implementation: '@xterm/xterm',
       instance: true,
       copied: ['selected text'],
-      terminalData: ['pasted once'],
+      terminalData: ['pasted once', 'x'],
       keydowns: [
         { code: 'KeyC', defaultPrevented: true },
         { code: 'KeyV', defaultPrevented: true },
@@ -344,9 +344,10 @@ describe('F4 — shipped xterm keyboard/default-action/onData integration', () =
     });
   });
 
-  it('the renderer launch path uses the same real-xterm wiring seam exercised by the fixture', () => {
+  it('the renderer launch path uses only the same real-xterm wiring seam exercised by the fixture', () => {
     const source = readFileSync(new URL('../src/renderer/index.ts', import.meta.url), 'utf8');
     expect(source).toMatch(/import\s*\{[^}]*\bwireProductTerminalClipboard\b[^}]*\}\s*from\s*['"]\.\/clipboard-shortcuts['"]/s);
     expect(source).toMatch(/wireProductTerminalClipboard\s*\(\s*terminal\s*,\s*rendererPlatform\s*,[\s\S]*?window\.voidTerminal\.clipboard\.read\(\)[\s\S]*?window\.voidTerminal\.clipboard\.write\([\s\S]*?window\.voidTerminal\.input\(/);
+    expect(source).not.toMatch(/\b(?:createOrderedTerminalInputSink|installWindowsClipboardShortcuts)\b/);
   });
 });

@@ -707,73 +707,53 @@ function objectProperty(object: ts.ObjectLiteralExpression | undefined, name: st
 
 // Deleting a boundary call silently removes Windows paste/copy despite the seam units being tested.
 describe('Windows clipboard process-boundary wiring', () => {
-  it('installs the trusted clipboard handler and routes its xterm onData through one ordered sink before open', () => {
+  it('delegates shortcuts and real xterm onData to the single product wiring seam before open', () => {
     const source = sourceFile('../src/renderer/index.ts');
+    const clipboardImport = source.statements.find((statement): statement is ts.ImportDeclaration => ts.isImportDeclaration(statement)
+      && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === './clipboard-shortcuts');
+    const importedNames = clipboardImport?.importClause?.namedBindings && ts.isNamedImports(clipboardImport.importClause.namedBindings)
+      ? clipboardImport.importClause.namedBindings.elements.map((element) => element.name.text)
+      : [];
+    expect(importedNames).toContain('wireProductTerminalClipboard');
+    expect(importedNames).not.toContain('createOrderedTerminalInputSink');
+    expect(importedNames).not.toContain('installWindowsClipboardShortcuts');
+
     const launch = namedFunction(source, 'launch');
     expect(launch, 'the real renderer launch path exists').toBeDefined();
     const statements = (launch!.body as ts.Block).statements;
-    const createdIndex = statements.findIndex((statement) => ts.isVariableStatement(statement)
-      && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && ts.isCallExpression(declaration.initializer)
-        && ts.isIdentifier(declaration.initializer.expression) && declaration.name.text === 'created' && declaration.initializer.expression.text === 'createProductTerminal'));
     const terminalIndex = statements.findIndex((statement) => ts.isVariableStatement(statement)
       && statement.declarationList.declarations.some((declaration) => ts.isObjectBindingPattern(declaration.name)
         && ts.isIdentifier(declaration.initializer) && declaration.initializer.text === 'created'
         && declaration.name.elements.some((element) => ts.isIdentifier(element.name) && element.name.text === 'terminal')));
-    const inputIndex = statements.findIndex((statement) => ts.isVariableStatement(statement)
-      && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && ts.isCallExpression(declaration.initializer)
-        && ts.isIdentifier(declaration.initializer.expression) && declaration.initializer.expression.text === 'createOrderedTerminalInputSink'));
-    const inputDeclaration = inputIndex < 0 ? undefined : (statements[inputIndex] as ts.VariableStatement).declarationList.declarations.find((declaration) => ts.isIdentifier(declaration.name)
-      && ts.isCallExpression(declaration.initializer) && ts.isIdentifier(declaration.initializer.expression)
-      && declaration.initializer.expression.text === 'createOrderedTerminalInputSink');
-    const installerIndex = statements.findIndex((statement) => Boolean(directCall(statement, 'installWindowsClipboardShortcuts')));
+    const wiringIndex = statements.findIndex((statement) => Boolean(directCall(statement, 'wireProductTerminalClipboard')));
     const openIndex = statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)
       && ts.isPropertyAccessExpression(statement.expression.expression) && ts.isIdentifier(statement.expression.expression.expression)
       && statement.expression.expression.expression.text === 'terminal' && statement.expression.expression.name.text === 'open');
-    const onDataIndex = statements.findIndex((statement) => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)
+    const directOnData = statements.find((statement) => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)
       && ts.isPropertyAccessExpression(statement.expression.expression) && ts.isIdentifier(statement.expression.expression.expression)
       && statement.expression.expression.expression.text === 'terminal' && statement.expression.expression.name.text === 'onData');
-    const installer = directCall(statements[installerIndex]!, 'installWindowsClipboardShortcuts');
+    const wiring = directCall(statements[wiringIndex]!, 'wireProductTerminalClipboard');
 
-    expect(createdIndex).toBeGreaterThan(-1);
-    expect(terminalIndex).toBeGreaterThan(createdIndex);
-    expect(inputDeclaration, 'launch creates the ordered terminal-input sink').toBeDefined();
-    if (!inputDeclaration || !ts.isIdentifier(inputDeclaration.name) || !ts.isCallExpression(inputDeclaration.initializer)) return;
-    const terminalInput = inputDeclaration.name.text;
-    const createInput = inputDeclaration.initializer;
-    expect(inputIndex).toBeGreaterThan(terminalIndex);
-    expect(installerIndex).toBeGreaterThan(inputIndex);
-    expect(installerIndex).toBeLessThan(openIndex);
-    expect(installerIndex).toBeLessThan(onDataIndex);
-    expect(ts.isIdentifier(installer!.arguments[0]) && installer!.arguments[0].text).toBe('terminal');
-    expect(ts.isIdentifier(installer!.arguments[1]) && installer!.arguments[1].text).toBe('rendererPlatform');
-    const trustedRead = installer!.arguments[2];
+    expect(terminalIndex).toBeGreaterThan(-1);
+    expect(wiringIndex).toBeGreaterThan(terminalIndex);
+    expect(wiringIndex).toBeLessThan(openIndex);
+    expect(directOnData, 'launch must not bypass the product seam with its own terminal.onData').toBeUndefined();
+    expect(wiring?.arguments).toHaveLength(5);
+    expect(ts.isIdentifier(wiring!.arguments[0]) && wiring!.arguments[0].text).toBe('terminal');
+    expect(ts.isIdentifier(wiring!.arguments[1]) && wiring!.arguments[1].text).toBe('rendererPlatform');
+
+    const trustedRead = wiring!.arguments[2];
     expect(ts.isArrowFunction(trustedRead)).toBe(true);
-    expect(ts.isCallExpression((trustedRead as ts.ArrowFunction).body)).toBe(true);
-    const read = (trustedRead as ts.ArrowFunction).body as ts.CallExpression;
-    expect(ts.isPropertyAccessExpression(read.expression) && read.expression.getText(source)).toBe('window.voidTerminal.clipboard.read');
-    expect(ts.isIdentifier(installer!.arguments[3]) && installer!.arguments[3].text).toBe(terminalInput);
-    const trustedWrite = installer!.arguments[4];
-    expect(trustedWrite, 'the real renderer gives copy shortcuts a trusted clipboard writer').toBeDefined();
-    if (!trustedWrite) return;
-    expect(ts.isArrowFunction(trustedWrite)).toBe(true);
-    if (!ts.isArrowFunction(trustedWrite)) return;
-    expect(trustedWrite.parameters).toHaveLength(1);
-    const selectedText = trustedWrite.parameters[0].name.getText(source);
-    expect(ts.isCallExpression(trustedWrite.body), 'the trusted writer directly calls the preload bridge').toBe(true);
-    if (!ts.isCallExpression(trustedWrite.body)) return;
-    const write = trustedWrite.body;
-    expect(ts.isPropertyAccessExpression(write.expression) && write.expression.getText(source)).toBe('window.voidTerminal.clipboard.write');
-    expect(write.arguments).toHaveLength(1);
-    expect(write.arguments[0].getText(source)).toBe(selectedText);
-    const forward = createInput.arguments[0];
-    expect(ts.isArrowFunction(forward), 'the ordered sink forwards to the owned terminal-input IPC').toBe(true);
-    expect(forward?.getText(source)).toContain('window.voidTerminal.input');
-    const onData = (statements[onDataIndex] as ts.ExpressionStatement).expression as ts.CallExpression;
-    const listener = onData.arguments[0];
-    expect(ts.isArrowFunction(listener), 'terminal onData is routed into the ordered sink').toBe(true);
-    if (!ts.isArrowFunction(listener)) return;
-    const data = listener.parameters[0]?.name.getText(source);
-    expect(listener.getText(source)).toContain(`${terminalInput}.send(${data})`);
+    expect(trustedRead.getText(source)).toContain('window.voidTerminal.clipboard.read()');
+
+    const trustedWrite = wiring!.arguments[3];
+    expect(ts.isArrowFunction(trustedWrite), 'the seam receives the trusted clipboard writer').toBe(true);
+    expect(trustedWrite.getText(source)).toContain('window.voidTerminal.clipboard.write');
+
+    const send = wiring!.arguments[4];
+    expect(ts.isArrowFunction(send), 'the seam receives the owned terminal-input sender').toBe(true);
+    expect(send.getText(source)).toContain('window.voidTerminal.input');
+    expect(send.getText(source)).toContain('sessionId: tab.id');
   });
 
   it('preload exposes only narrow clipboard read/write IPC calls', () => {
