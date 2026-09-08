@@ -2,7 +2,8 @@ package main
 
 const piVoidCodexExtensionSource = `// void-code-managed-pi-extension:v1
 import { execFileSync } from "node:child_process";
-import { renameSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -343,23 +344,10 @@ async function buildCodexBody(model: Model<any>, context: Context, options?: Sim
 	return body;
 }
 
-// The helpers that turn a conversation into a Responses request and a Responses stream back into a
-// message. They are Pi's, not ours -- reimplementing them here would be a copy of somebody else's
-// protocol handling that drifts silently the first time Pi moves -- and they are reachable two ways,
-// because Pi is installed two ways.
-//
-// Unbundled, import.meta.resolve answers: Pi's extension loader hands jiti an alias map pointing at
-// the real file, and everything beside it is on disk. That is the macOS product and the first road.
-//
-// Bundled, it cannot answer at all. A bundle takes Pi's other loader branch, which serves imports
-// from inside the artifact and has no path to give. So the desktop assembly stages these same files
-// next to the bundle and we load them by path. That is the Windows product and the second road.
-//
-// PI_PACKAGE_DIR is what tells the two apart, and the link is worth spelling out because it looks
-// accidental: the desktop sets it only for a bundled runtime, from manifest.pi.packageDir, which
-// only the bundling assembly writes -- Pi itself reads it as "where my package lives", and for a
-// bundle that is exactly the directory the vendored copy sits in. Unbundled it is unset, and this
-// falls through to the road above.
+// Use Pi's own request/stream helpers. Native child loaders can expose virtual modules even
+// when PI_PACKAGE_DIR is unset, so failure of import.meta.resolve does not identify a desktop
+// bundle. Prefer loader aliases, retain the desktop's explicit vendor contract, and otherwise
+// resolve the dependency from the running Pi package (not the extension directory or PATH).
 async function openAIResponsesShared(): Promise<any> {
 	let resolveFailure: unknown;
 	try {
@@ -371,7 +359,23 @@ async function openAIResponsesShared(): Promise<any> {
 	const packageDir = process.env.PI_PACKAGE_DIR;
 	const because = resolveFailure instanceof Error ? resolveFailure.message : String(resolveFailure);
 	if (!packageDir) {
-		throw new Error("cannot assemble the model's answer: Pi's Responses helpers were not found on this installation, and no bundled copy was pointed at (PI_PACKAGE_DIR is unset). Chat will not work until the application is reinstalled. Underlying failure: " + because);
+		try {
+			// pi-ai has import-only exports. Locate its package along the runtime's ancestor
+			// dependency directories, including hoisting, but exclude NODE_PATH/global modules.
+			let directory = getPackageDir();
+			for (;;) {
+				const dependency = path.join(directory, "node_modules/@earendil-works/pi-ai");
+				if (existsSync(path.join(dependency, "package.json"))) {
+					return await import(pathToFileURL(path.join(dependency, "dist/api/openai-responses-shared.js")).href);
+				}
+				const parent = path.dirname(directory);
+				if (parent === directory) throw new Error("running Pi's pi-ai dependency is missing");
+				directory = parent;
+			}
+		} catch (error) {
+			const runtimeFailure = error instanceof Error ? error.message : String(error);
+			throw new Error("cannot assemble the model's answer: Pi's Responses helpers are unavailable in the running runtime. Runtime: " + runtimeFailure + ". Resolver: " + because);
+		}
 	}
 	try {
 		return await import(new URL("./vendor/pi-ai/api/openai-responses-shared.js", pathToFileURL(packageDir + path.sep)).href);

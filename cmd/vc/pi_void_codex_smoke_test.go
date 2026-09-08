@@ -28,9 +28,9 @@ import (
 // ~/.pi/agent/extensions would register void-codex and the test would pass without exercising the
 // pinned tree at all.
 //
-// Honest limit: this proves that the extension registers the provider and its models under the
-// pinned runtime. It does not talk to a relay and it does not run a model -- the bootstrap is a
-// local stub, so everything downstream of registration is out of its reach.
+// After registration, the offline runtime matrix also exercises real request serialization and
+// tool-call SSE parsing under aliases, native-child virtual modules, and desktop vendor layout.
+// It uses fake bootstrap/transport: it does not prove live relay or model availability.
 
 // The models the extension is willing to publish for the codex provider (pi_extension.go filters
 // whatever the bootstrap offers against this set).
@@ -94,6 +94,9 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 			missing = append(missing, model)
 		}
 	}
+	t.Run("ResponsesRuntime", func(t *testing.T) {
+		runPiResponsesRuntime(t, prerequisites.node, filepath.Dir(filepath.Dir(prerequisites.piEntry)))
+	})
 	if len(missing) > 0 {
 		t.Fatalf("the pinned Pi did not register void-codex: %s not listed.\n"+
 			"In the app this looks like \"VC cannot see a provider\" and like nothing else: no model can be\n"+
