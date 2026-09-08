@@ -23,6 +23,7 @@ import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
 import { createClipboardImageStorage as createPrimaryClipboardImageStorage, createSafeClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardImageStorage, type ClipboardReadDependencies } from './clipboard-paste';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
+import { runQuitCleanup } from './quit-cleanup';
 import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
 import type { SingleStartupWindow, StartupStageError } from './startup-lifecycle';
@@ -308,5 +309,9 @@ else {
   app.on('second-instance', () => focusExistingWindow(mainWindow));
   void runBootstrap(bootstrap, failStartup);
 }
-app.on('before-quit', () => { manager?.teardownAll(); clipboardImageStorage.cleanup(); if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); });
+app.on('before-quit', () => runQuitCleanup({
+  teardownSessions: () => manager?.teardownAll(),
+  cleanupClipboardImages: () => clipboardImageStorage.cleanup(),
+  cleanupProbe: () => { if (productionProbeRoot) rmSync(productionProbeRoot, { recursive: true, force: true }); },
+}));
 app.on('window-all-closed', () => app.quit());
