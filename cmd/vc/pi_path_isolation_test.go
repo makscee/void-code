@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/pibin"
 )
 
 // TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath is about the class of
@@ -132,6 +134,135 @@ func TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath(t *testing.T) {
 			t.Fatalf("the user's own node directory reached Pi: %s", got)
 		}
 	}
+}
+
+func TestRunSpawnRejectsCorruptBundledNodeWithoutRestoringForeignPath(t *testing.T) {
+	for _, kind := range []string{"symlink", "directory", "not executable"} {
+		t.Run(kind, func(t *testing.T) {
+			if runtime.GOOS == "windows" && kind != "directory" {
+				t.Skip("Windows symlink privileges and executable mode do not provide this fixture")
+			}
+			home, foreignPath := preparePiPathLaunch(t)
+			nodePath := privateNodeFixturePath(home)
+			if err := os.MkdirAll(filepath.Dir(nodePath), 0700); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "symlink":
+				if err := os.Symlink(filepath.Join(foreignPath, nodeLookupName()), nodePath); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				if err := os.Mkdir(nodePath, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "not executable":
+				if err := os.WriteFile(nodePath, []byte("not executable"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, nodeErr := pibin.ResolveNode()
+			if nodeErr == nil {
+				t.Fatalf("fixture %q was accepted as a bundled Node", kind)
+			}
+
+			spawned := false
+			spawnPath := ""
+			savedSpawn := spawnHarness
+			spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
+				spawned = true
+				spawnPath = pathFromEnv(env)
+				return nil
+			}
+			t.Cleanup(func() { spawnHarness = savedSpawn })
+
+			err := runSpawn(nil, nil)
+			if spawned {
+				t.Fatalf("managed Pi spawn was reached for rejected bundled Node %q; child PATH %q silently restores foreign PATH %q", kind, spawnPath, foreignPath)
+			}
+			if err == nil {
+				t.Fatalf("runSpawn succeeded for rejected bundled Node %q", kind)
+			}
+			if !strings.Contains(err.Error(), nodeErr.Error()) {
+				t.Fatalf("runSpawn error %q does not report bundled Node rejection %q", err, nodeErr)
+			}
+		})
+	}
+}
+
+func TestRunSpawnPreservesInheritedPathWhenBundledNodeIsAbsent(t *testing.T) {
+	_, foreignPath := preparePiPathLaunch(t)
+	if _, err := pibin.ResolveNode(); !os.IsNotExist(err) {
+		t.Fatalf("fixture must represent a genuinely absent bundled Node, got %v", err)
+	}
+
+	spawned := false
+	spawnPath := ""
+	savedSpawn := spawnHarness
+	spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
+		spawned = true
+		spawnPath = pathFromEnv(env)
+		return nil
+	}
+	t.Cleanup(func() { spawnHarness = savedSpawn })
+
+	if err := runSpawn(nil, nil); err != nil {
+		t.Fatalf("legacy install.sh launch failed without a bundled Node: %v", err)
+	}
+	if !spawned {
+		t.Fatal("managed Pi was not spawned for a legacy install without bundled Node")
+	}
+	if spawnPath != foreignPath {
+		t.Fatalf("PATH for a genuinely absent bundled Node = %q, want inherited compatibility PATH %q", spawnPath, foreignPath)
+	}
+}
+
+func preparePiPathLaunch(t *testing.T) (home, foreignPath string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	foreignPath = filepath.Join(home, "foreign-node-bin")
+	if err := os.MkdirAll(foreignPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutableFixture(t, filepath.Join(foreignPath, nodeLookupName()), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", foreignPath)
+
+	managedPi := managedPiFixturePath(home)
+	if err := os.MkdirAll(filepath.Dir(managedPi), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutableFixture(t, managedPi, "#!/bin/sh\nexit 0\n")
+	assertManagedPiFixtureIsWhatResolverLooksFor(t, home)
+
+	caPath := filepath.Join(home, "relay-ca.pem")
+	if err := os.WriteFile(caPath, []byte("test CA"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VC_RELAY_CA", caPath)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"userId":"u1","email":"u@example.test"}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", server.URL)
+	if err := auth.Save("admitted-token"); err != nil {
+		t.Fatal(err)
+	}
+	return home, foreignPath
+}
+
+func pathFromEnv(env []string) string {
+	for _, entry := range env {
+		name, value, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, "PATH") {
+			return value
+		}
+	}
+	return ""
 }
 
 // sameDirectory compares two paths as directories, following symlinks where the
