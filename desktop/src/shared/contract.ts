@@ -36,6 +36,7 @@ export interface SupportRequest { runtime: RuntimeSupportState; recoveryCode: Re
 export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
 
 export interface TerminalApi {
+  getPathForFile(file: File): string;
   start(request: StartRequest): Promise<StartReply>;
   input(request: InputRequest): Promise<void>;
   resize(request: ResizeRequest): Promise<void>;

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC, preloadSessionId } from '../shared/preload-contract';
 import type { ChatSemanticStatus, ExitEvent, OutputEvent, SessionId, SubscribeRequest, SubscriptionKind, TerminalApi, Unsubscribe } from '../shared/contract';
 import type { AuthLoginPush } from '../main/auth-ipc';
@@ -47,6 +47,7 @@ function teardown(): void {
   }
 }
 const api: TerminalApi = {
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   start: (request) => ipcRenderer.invoke(IPC.start, request),
   input: (request) => ipcRenderer.invoke(IPC.input, request),
   resize: (request) => ipcRenderer.invoke(IPC.resize, request),

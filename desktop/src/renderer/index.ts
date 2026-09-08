@@ -4,6 +4,7 @@ import { RECOVERY_GUIDANCE } from './recovery';
 import { appVersionLabel } from './app-version';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
+import { installFileDropHandlers } from './file-drop';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
@@ -189,6 +190,15 @@ function dispose(id: string): void {
 }
 async function stop(id: string): Promise<void> { try { await window.voidTerminal.stop({ sessionId: id }); } catch { /* sleeping or exited */ } dispose(id); }
 function selectedTab(): RendererTabRecord | undefined { return view.workspace?.tabs.find((tab) => tab.id === view.workspace?.selectedId); }
+installFileDropHandlers({
+  target: document,
+  getPathForFile: (file) => window.voidTerminal.getPathForFile(file),
+  getCurrentTerminal: () => {
+    const tab = selectedTab();
+    const runtime = tab ? runtimes.get(tab.id) : undefined;
+    return runtime && !runtime.exited ? runtime.terminal : undefined;
+  },
+});
 function applyChatTabRename(event: ChatTabRenameEvent): ChatTabRenameResult {
   const result = reduceChatTabRename(chatTabRename, event);
   chatTabRename = result.state;
