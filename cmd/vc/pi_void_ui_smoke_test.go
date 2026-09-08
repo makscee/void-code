@@ -15,18 +15,28 @@ import (
 )
 
 type piUISmokeSnapshot struct {
-	InactiveTools                []string `json:"inactiveTools"`
-	InactiveHandlers             []string `json:"inactiveHandlers"`
-	ActiveTools                  []string `json:"activeTools"`
-	ActiveHandlers               []string `json:"activeHandlers"`
-	EntryRenderers               []string `json:"entryRenderers"`
-	CollapsedRead                []string `json:"collapsedRead"`
-	ExpandedRead                 []string `json:"expandedRead"`
-	HistoryAtText                bool     `json:"historyAtText"`
-	HistoryEntries               int      `json:"historyEntries"`
-	ReasoningMirrored            bool     `json:"reasoningMirrored"`
-	SecretLeaked                 bool     `json:"secretLeaked"`
-	WorkingHiddenDuringReasoning bool     `json:"workingHiddenDuringReasoning"`
+	InactiveTools                    []string `json:"inactiveTools"`
+	InactiveHandlers                 []string `json:"inactiveHandlers"`
+	ActiveTools                      []string `json:"activeTools"`
+	ActiveHandlers                   []string `json:"activeHandlers"`
+	EntryRenderers                   []string `json:"entryRenderers"`
+	CollapsedReadIdle                []string `json:"collapsedReadIdle"`
+	CollapsedReadRunning             []string `json:"collapsedReadRunning"`
+	CollapsedReadCompleted           []string `json:"collapsedReadCompleted"`
+	RunningBash                      []string `json:"runningBash"`
+	RunningOutputPreview             []string `json:"runningOutputPreview"`
+	CompletedOutputPreview           []string `json:"completedOutputPreview"`
+	ExpandedOutput                   []string `json:"expandedOutput"`
+	ExpandedRead                     []string `json:"expandedRead"`
+	RunningCallUsesAccent            bool     `json:"runningCallUsesAccent"`
+	WorkingHiddenWhileTools          bool     `json:"workingHiddenWhileTools"`
+	WorkingHiddenWithParallelPending bool     `json:"workingHiddenWithParallelPending"`
+	WorkingShownAfterTools           bool     `json:"workingShownAfterTools"`
+	HistoryAtText                    bool     `json:"historyAtText"`
+	HistoryEntries                   int      `json:"historyEntries"`
+	ReasoningMirrored                bool     `json:"reasoningMirrored"`
+	SecretLeaked                     bool     `json:"secretLeaked"`
+	WorkingHiddenDuringReasoning     bool     `json:"workingHiddenDuringReasoning"`
 }
 
 // The pinned Pi must load the real desktop UI, keep it inert outside desktop, and preserve the two ordering regressions found manually.
@@ -93,11 +103,45 @@ func TestPiVoidCodeUIExtensionSmoke(t *testing.T) {
 	if !containsString(got.EntryRenderers, "compact-tool-history-block") {
 		t.Errorf("compact history renderer missing: %v", got.EntryRenderers)
 	}
-	if len(got.CollapsedRead) != 0 {
-		t.Errorf("collapsed read leaked tool chrome/output: %q", got.CollapsedRead)
+	if len(got.CollapsedReadIdle) != 0 {
+		t.Errorf("tool appeared before execution started: %q", got.CollapsedReadIdle)
+	}
+	runningRead := strings.Join(got.CollapsedReadRunning, "\n")
+	if !strings.Contains(runningRead, "● read secret.txt") {
+		t.Errorf("running collapsed tool is not identified: %q", got.CollapsedReadRunning)
+	}
+	if !got.RunningCallUsesAccent {
+		t.Error("running collapsed tool is not rendered with the accent colour")
+	}
+	if len(got.CollapsedReadCompleted) != 0 {
+		t.Errorf("completed tool left a duplicate active row behind: %q", got.CollapsedReadCompleted)
+	}
+	runningBash := strings.Join(got.RunningBash, "\n")
+	if strings.Contains(runningBash, "top-secret") || !strings.Contains(runningBash, "API_TOKEN=REDACTED") {
+		t.Errorf("running command did not redact its secret: %q", got.RunningBash)
+	}
+	preview := strings.Join(got.RunningOutputPreview, "\n")
+	if len(got.RunningOutputPreview) != 10 || strings.Contains(preview, "line-05") || !strings.Contains(preview, "line-06") || !strings.Contains(preview, "line-15") {
+		t.Errorf("running output preview is not the latest 10 lines: %q", got.RunningOutputPreview)
+	}
+	if strings.Contains(preview, "top-secret") || !strings.Contains(preview, "API_TOKEN=REDACTED") {
+		t.Errorf("running output preview leaked a common secret: %q", got.RunningOutputPreview)
+	}
+	if len(got.CompletedOutputPreview) != 0 {
+		t.Errorf("completed tool left its streaming preview behind: %q", got.CompletedOutputPreview)
+	}
+	expandedOutput := strings.Join(got.ExpandedOutput, "\n")
+	if !strings.Contains(expandedOutput, "line-01") || !strings.Contains(expandedOutput, "line-15") {
+		t.Errorf("Ctrl+O output lost lines outside the live preview: %q", got.ExpandedOutput)
 	}
 	if len(got.ExpandedRead) == 0 || !strings.Contains(strings.Join(got.ExpandedRead, "\n"), "secret.txt") {
 		t.Errorf("expanded read lost Ctrl+O detail: %q", got.ExpandedRead)
+	}
+	if !got.WorkingHiddenWhileTools || !got.WorkingHiddenWithParallelPending {
+		t.Errorf("Working line duplicated active tool rows: hiddenAtStart=%v hiddenWithPending=%v", got.WorkingHiddenWhileTools, got.WorkingHiddenWithParallelPending)
+	}
+	if !got.WorkingShownAfterTools {
+		t.Error("Working line was not restored after the last parallel tool completed")
 	}
 	if !got.HistoryAtText || got.HistoryEntries != 1 {
 		t.Errorf("tool history was not inserted exactly once before final text: atText=%v entries=%d", got.HistoryAtText, got.HistoryEntries)
@@ -163,9 +207,15 @@ await fire("message_update", { assistantMessageEvent: { type: "thinking_end", co
 const visibilityAtThinking = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
 const workingHiddenDuringReasoning = visibilityAtThinking.at(-1) === false;
 await fire("tool_execution_start", { toolCallId: "1", toolName: "read", args: { path: "secret.txt" } });
-await fire("tool_execution_end", { toolCallId: "1", toolName: "read", result: { content: [{ type: "text", text: "secret" }] }, isError: false });
 await fire("tool_execution_start", { toolCallId: "2", toolName: "bash", args: { command: "API_TOKEN=top-secret node ./task.js" } });
+const visibilityAfterParallelStart = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingHiddenWhileTools = visibilityAfterParallelStart.at(-1) === false;
+await fire("tool_execution_end", { toolCallId: "1", toolName: "read", result: { content: [{ type: "text", text: "secret" }] }, isError: false });
+const visibilityWithParallelPending = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingHiddenWithParallelPending = visibilityWithParallelPending.at(-1) === false;
 await fire("tool_execution_end", { toolCallId: "2", toolName: "bash", result: { content: [{ type: "text", text: "done" }] }, isError: false });
+const visibilityAfterTools = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingShownAfterTools = visibilityAfterTools.at(-1) === true;
 await fire("turn_end", { toolResults: [{}, {}] });
 await fire("turn_start");
 await fire("message_update", { assistantMessageEvent: { type: "thinking_start" } });
@@ -175,10 +225,22 @@ const entriesAtText = active.timeline.filter((item) => item.kind === "entry").le
 await fire("turn_end", { toolResults: [] });
 await fire("agent_end");
 
-const theme = { fg: (_color, value) => value, bold: (value) => value };
+const colorCalls = [];
+const theme = { fg: (color, value) => { colorCalls.push({ color, value }); return value; }, bold: (value) => value };
 const read = ext.tools.get("read").definition;
-const collapsedRead = read.renderCall({ path: "secret.txt" }, theme, { expanded: false }).render(80);
-const expandedRead = read.renderCall({ path: "secret.txt" }, theme, { expanded: true }).render(80);
+const bash = ext.tools.get("bash").definition;
+const collapsedReadIdle = read.renderCall({ path: "secret.txt" }, theme, { expanded: false, executionStarted: false, isPartial: true }).render(80);
+colorCalls.length = 0;
+const collapsedReadRunning = read.renderCall({ path: "secret.txt" }, theme, { expanded: false, executionStarted: true, isPartial: true }).render(80);
+const runningCallUsesAccent = colorCalls.some((call) => call.color === "accent" && String(call.value).includes("● read secret.txt"));
+const collapsedReadCompleted = read.renderCall({ path: "secret.txt" }, theme, { expanded: false, executionStarted: true, isPartial: false }).render(80);
+const runningBash = bash.renderCall({ command: "API_TOKEN=top-secret node ./task.js" }, theme, { expanded: false, executionStarted: true, isPartial: true }).render(120);
+const outputLines = Array.from({ length: 15 }, (_item, index) => "line-" + String(index + 1).padStart(2, "0") + (index === 10 ? " API_TOKEN=top-secret" : ""));
+const streamingResult = { content: [{ type: "text", text: outputLines.join("\n") }] };
+const runningOutputPreview = bash.renderResult(streamingResult, { expanded: false, isPartial: true }, theme, { args: {}, executionStarted: true, isPartial: true }).render(120);
+const completedOutputPreview = bash.renderResult(streamingResult, { expanded: false, isPartial: false }, theme, { args: {}, executionStarted: true, isPartial: false }).render(120);
+const expandedOutput = bash.renderResult(streamingResult, { expanded: true, isPartial: true }, theme, { args: {}, executionStarted: true, isPartial: true }).render(120);
+const expandedRead = read.renderCall({ path: "secret.txt" }, theme, { expanded: true, executionStarted: true, isPartial: true }).render(80);
 const statuses = active.timeline.filter((item) => item.kind === "status").map((item) => String(item.value ?? ""));
 
 console.log(JSON.stringify({
@@ -187,8 +249,18 @@ console.log(JSON.stringify({
   activeTools: [...ext.tools.keys()],
   activeHandlers: [...ext.handlers.keys()],
   entryRenderers: [...ext.entryRenderers.keys()],
-  collapsedRead,
+  collapsedReadIdle,
+  collapsedReadRunning,
+  collapsedReadCompleted,
+  runningBash,
+  runningOutputPreview,
+  completedOutputPreview,
+  expandedOutput,
   expandedRead,
+  runningCallUsesAccent,
+  workingHiddenWhileTools,
+  workingHiddenWithParallelPending,
+  workingShownAfterTools,
   historyAtText: entriesBeforeText === 0 && entriesAtText === 1,
   historyEntries: active.timeline.filter((item) => item.kind === "entry").length,
   reasoningMirrored: statuses.some((status) => status.includes("PREVIOUS_REASONING")),
