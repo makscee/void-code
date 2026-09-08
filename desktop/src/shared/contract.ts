@@ -33,6 +33,7 @@ export type RuntimeSupportState = 'not_started' | 'running' | 'ended' | 'start_f
 export type RecoveryCode = 'NONE' | 'AUTH_PREFLIGHT_REQUIRED' | 'SESSION_START_FAILED' | 'RUNTIME_EXITED' | 'WORKSPACE_MISSING' | 'SESSION_MISSING';
 export interface SupportRequest { runtime: RuntimeSupportState; recoveryCode: RecoveryCode }
 export interface SupportResult { action: 'copied' | 'saved' | 'cancelled' }
+export type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
 
 export interface TerminalApi {
   start(request: StartRequest): Promise<StartReply>;
@@ -47,6 +48,9 @@ export interface TerminalApi {
   support: {
     copy(request: SupportRequest): Promise<SupportResult>;
     save(request: SupportRequest): Promise<SupportResult>;
+  };
+  clipboard: {
+    read(): Promise<ClipboardReadResult>;
   };
   onOutput(sessionId: SessionId, listener: (event: OutputEvent) => void): Unsubscribe;
   onExit(sessionId: SessionId, listener: (event: ExitEvent) => void): Unsubscribe;

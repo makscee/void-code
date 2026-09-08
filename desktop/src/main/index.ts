@@ -21,6 +21,7 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
+import { readDesktopClipboard, type ClipboardReadDependencies } from './clipboard-paste';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
@@ -47,6 +48,14 @@ let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
 let runtime: PrivateRuntime;
 const loginDiagnostics = createLoginDiagnosticsStore();
+const desktopClipboardDependencies: ClipboardReadDependencies = {
+  clipboard,
+  filesystem: {
+    temporaryDirectory: os.tmpdir,
+    writeFile: (file, png) => { writeFileSync(file, png, { mode: 0o600 }); },
+  },
+  uniqueId: randomUUID,
+};
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
   return wrapPty(spawnDesktopRequest(runtime, request, pty.spawn, authority));
@@ -104,6 +113,7 @@ function registerIpc(): void {
   // disk instead would report the in-tree placeholder forever.
   ipcMain.handle(IPC.appVersion, (event) => { assertRenderer(event); return app.getVersion(); });
   ipcMain.handle(IPC.supportCopy, (event, raw: unknown) => { assertRenderer(event); return copySupportReport(supportReport(raw), (text) => clipboard.writeText(text)); });
+  ipcMain.handle(IPC.clipboardRead, (event) => { assertRenderer(event); return process.platform === 'win32' ? readDesktopClipboard(desktopClipboardDependencies) : { kind: 'empty' }; });
   ipcMain.handle(IPC.supportSave, async (event, raw: unknown) => { assertRenderer(event);
     const report = supportReport(raw);
     const stamp = report.generatedAt.slice(0, 19).replaceAll(':', '-');

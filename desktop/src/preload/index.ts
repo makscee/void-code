@@ -60,6 +60,9 @@ const api: TerminalApi = {
     copy: (request) => ipcRenderer.invoke(IPC.supportCopy, request),
     save: (request) => ipcRenderer.invoke(IPC.supportSave, request),
   }),
+  clipboard: Object.freeze({
+    read: () => ipcRenderer.invoke(IPC.clipboardRead),
+  }),
   onOutput: (id, listener) => subscribe('output', id, listener),
   onExit: (id, listener) => subscribe('exit', id, listener),
   onStatus: (id, listener) => subscribe('status', id, listener),
