@@ -42,7 +42,7 @@ export default function (pi: ExtensionAPI) {
 	let managedSearchAvailable = false;
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
-			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna"]);
+			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
 			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
 			pi.registerProvider(CODEX_PROVIDER_ID, {
@@ -120,6 +120,7 @@ function loadBootstrap(): Bootstrap | undefined {
 function codexName(id: string): string {
 	if (id === "gpt-5.6-sol") return "GPT-5.6 Sol via Void relay";
 	if (id === "gpt-5.6-luna") return "GPT-5.6 Luna via Void relay";
+	if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";
 	return "GPT-5.6 Terra via Void relay";
 }
 
