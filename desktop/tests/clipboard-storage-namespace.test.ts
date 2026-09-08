@@ -1,5 +1,5 @@
 // rails:pin-on-coverage clipboardStorageRoot already normalized userData, but the old path.join-built equivalent normalized before reaching production; a literal unused/.. spelling now kills hashing raw userData
-import { existsSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -24,6 +24,7 @@ type NativeUserDataCanonicalizer = (userData: string) => string;
 type ClipboardStorageModule = {
   clipboardStorageRoot?: (temporaryDirectory: string, userData: string, canonicalizeNativeUserData?: NativeUserDataCanonicalizer) => string;
   createClipboardImageStorage?: (options: ClipboardImageStorageOptions) => ClipboardImageStorage;
+  createSafeClipboardImageStorage?: (platform: string, create: () => ClipboardImageStorage) => ClipboardImageStorage;
 };
 
 const roots: string[] = [];
@@ -112,16 +113,19 @@ describe('clipboard storage root is scoped to Electron userData', () => {
     const module = await clipboardStorage();
     const sandbox = temporaryRoot();
     const temporaryDirectory = path.join(sandbox, 'temp');
-    const physicalUserData = String.raw`C:\Users\Ada\AppData\Roaming\Void Code`;
-    const caseVariant = String.raw`c:\users\ada\appdata\roaming\VOID CODE`;
-    const junctionAlias = String.raw`C:\void-code-aliases\ada-profile`;
-    const differentPhysicalUserData = String.raw`C:\Users\Ada\AppData\Roaming\Void Code Second Profile`;
-    const canonicalPrimary = String.raw`\\?\C:\Users\Ada\AppData\Roaming\Void Code`;
-    const canonicalOther = String.raw`\\?\C:\Users\Ada\AppData\Roaming\Void Code Second Profile`;
+    const physicalUserData = path.join(sandbox, 'UserData-Primary');
+    const caseVariant = path.join(sandbox, 'uSERdATA-pRIMARY');
+    const junctionAlias = path.join(sandbox, 'UserData-Junction');
+    const differentPhysicalUserData = path.join(sandbox, 'UserData-Second');
+    mkdirSync(physicalUserData);
+    mkdirSync(differentPhysicalUserData);
+    symlinkSync(physicalUserData, junctionAlias, 'dir');
+
+    // macOS may use a case-sensitive volume, so the injected seam emulates Win32 case lookup while
+    // still resolving the real symlink and requiring both canonical targets to exist.
     const canonicalizeNativeUserData = vi.fn((spelling: string): string => {
-      if (spelling === physicalUserData || spelling === caseVariant || spelling === junctionAlias) return canonicalPrimary;
-      if (spelling === differentPhysicalUserData) return canonicalOther;
-      throw new Error(`unexpected userData spelling: ${spelling}`);
+      if (spelling.toLowerCase() === physicalUserData.toLowerCase()) return realpathSync.native(physicalUserData);
+      return realpathSync.native(spelling);
     });
 
     const physicalRoot = namespaceRoot(module, temporaryDirectory, physicalUserData, canonicalizeNativeUserData);
@@ -136,6 +140,26 @@ describe('clipboard storage root is scoped to Electron userData', () => {
     expect(caseRoot).toBe(physicalRoot);
     expect(junctionRoot).toBe(physicalRoot);
     expect(differentRoot).not.toBe(physicalRoot);
+  });
+
+  it('lets the safe factory disable image storage when native userData canonicalization fails', async () => {
+    const module = await clipboardStorage();
+    expect(module.createSafeClipboardImageStorage, 'safe clipboard image-storage factory is absent').toBeTypeOf('function');
+    const sandbox = temporaryRoot();
+    const temporaryDirectory = path.join(sandbox, 'temp');
+    const userData = path.join(sandbox, 'UserData');
+    mkdirSync(userData);
+
+    const storage = module.createSafeClipboardImageStorage!('win32', () => {
+      const root = namespaceRoot(module, temporaryDirectory, userData, () => {
+        throw new Error('native canonicalization unavailable');
+      });
+      return imageStorage(module)(storageOptions(root, 5301, deterministicUuid(5), Date.UTC(2026, 8, 8)));
+    });
+
+    expect(storage.directory).toBe('');
+    expect(() => storage.writeImage(Buffer.from('not written'))).toThrow('clipboard image storage unavailable');
+    expect(existsSync(temporaryDirectory)).toBe(false);
   });
 
   it('gives different userData paths different opaque roots without leaking either raw path into a basename', async () => {

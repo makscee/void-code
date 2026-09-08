@@ -87,6 +87,7 @@ describe('Windows clipboard image storage uses the per-user temp DACL', () => {
     if (!storageRoot) return;
 
     const userData = path.join(temporaryDirectory, 'void-code-dacl-test-user-data');
+    mkdirSync(userData, { recursive: true });
     const root = storageRoot(os.tmpdir(), userData);
     const expectedDirectory = path.join(root, `void-code-clipboard-${process.pid}-${TEST_UUID}`);
     rmSync(root, { recursive: true, force: true });
@@ -131,6 +132,7 @@ describe('Windows clipboard image storage uses the per-user temp DACL', () => {
     } finally {
       cleanup?.();
       rmSync(root, { recursive: true, force: true });
+      rmSync(userData, { recursive: true, force: true });
     }
   });
 });
