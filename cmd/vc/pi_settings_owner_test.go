@@ -339,6 +339,7 @@ func TestPiSettingsWritersFailSafeWhenTheLockIsHeld(t *testing.T) {
 		{name: "web-search package reconciler", call: func() error {
 			return reconcileManagedPackageSetting(contractPackagePath, true)
 		}},
+		{name: "desktop UI defaults", call: ensurePiDesktopUIDefaults},
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			start := time.Now()

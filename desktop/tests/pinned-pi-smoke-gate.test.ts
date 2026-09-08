@@ -99,5 +99,6 @@ describe('the pinned-Pi qualification cannot pass by finding nothing', () => {
     // Honest limit: this proves the call is written in the script, not that CI ran it.
     const checker = readFileSync(new URL('../scripts/check-pinned-pi-smoke.mjs', import.meta.url), 'utf8');
     expect(checker, 'check-pinned-pi-smoke.mjs still takes go\'s exit code at face value').toMatch(/pinned-pi-smoke-lib/);
+    expect(checker, 'the desktop UI smoke is not part of the pinned-Pi qualification').toContain('TestPiVoidCodeUIExtensionSmoke');
   });
 });
