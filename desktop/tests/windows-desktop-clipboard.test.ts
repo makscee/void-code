@@ -161,8 +161,9 @@ class FakeTerminal implements TerminalClipboardTarget {
   paste(value: string): void { this.pasted.push(value); }
 }
 
-function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>> = {}): KeyboardEvent {
+function key(key: string, modifiers: Partial<Pick<KeyboardEvent, 'type' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>> = {}): KeyboardEvent {
   return {
+    type: 'keydown',
     key,
     ctrlKey: false,
     shiftKey: false,
@@ -198,6 +199,20 @@ describe('Windows terminal paste shortcuts', () => {
 
     expect(requestTrustedClipboard).toHaveBeenCalledOnce();
     expect(terminal.pasted).toEqual(['C:\\void-temp\\pasted.png']);
+  });
+
+  // xterm invokes the custom handler for both halves of one physical Ctrl+V gesture.
+  it('consumes Windows Ctrl+V keydown once but passes its keyup through', async () => {
+    const { terminal, requestTrustedClipboard } = await install({ kind: 'text', text: 'paste exactly once' });
+
+    const keydownResult = terminal.handler?.(key('v', { type: 'keydown', ctrlKey: true }));
+    const keyupResult = terminal.handler?.(key('v', { type: 'keyup', ctrlKey: true }));
+    await afterMicrotasks();
+
+    expect(requestTrustedClipboard).toHaveBeenCalledOnce();
+    expect(terminal.pasted).toEqual(['paste exactly once']);
+    expect(keydownResult).toBe(false);
+    expect(keyupResult).toBe(true);
   });
 
   it('inserts text from the same trusted result path', async () => {
