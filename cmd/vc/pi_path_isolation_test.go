@@ -38,10 +38,9 @@ import (
 // It drives runSpawn rather than buildPiSpawnEnv on purpose. A test on the
 // builder alone passes while the caller still hands it nothing to build from,
 // and that caller is the whole of the defect: the environment reaching Pi is
-// what the person's session runs with. The end-to-end shape, the sandboxed
-// home, and the fixture-as-Pi trick are borrowed wholesale from
-// TestRunSpawnNeverExecutesPathPiWithCredentials in managed_runtime_test.go,
-// which guards the neighbouring claim about which Pi runs.
+// what the person's session runs with. The private-Node fixture is this test
+// executable in recorder mode, so it observes the environment at the direct
+// process boundary production uses rather than relying on Pi's old shebang.
 //
 // Windows behaviour is stated here as far as running on Windows can state it;
 // the platform-by-platform shape of the PATH string, which no run on one
@@ -81,15 +80,29 @@ func TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(privateNode), 0700); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutableFixture(t, privateNode, "#!/bin/sh\nexit 0\n")
-
 	recordedPath := filepath.Join(home, "recorded-path")
+	writePrivateNodePathRecorderFixture(t, privateNode, recordedPath)
+
 	managedPi := managedPiFixturePath(home)
 	if err := os.MkdirAll(filepath.Dir(managedPi), 0700); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutableFixture(t, managedPi, pathRecorderScript(t, recordedPath))
+	managedPiSource := "#!/bin/sh\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		managedPiSource = "@echo off\r\nexit /b 0\r\n"
+	}
+	writeExecutableFixture(t, managedPi, managedPiSource)
 	assertManagedPiFixtureIsWhatResolverLooksFor(t, home)
+
+	// Direct Node receives the package's JavaScript module, not the platform's
+	// legacy entrypoint. They are the same file on Unix and distinct on Windows.
+	piModule := filepath.Join(home, ".void-code", "runtime", "pi", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js")
+	if piModule != managedPi {
+		if err := os.MkdirAll(filepath.Dir(piModule), 0700); err != nil {
+			t.Fatal(err)
+		}
+		writeExecutableFixture(t, piModule, "fixture")
+	}
 
 	caPath := filepath.Join(home, "relay-ca.pem")
 	if err := os.WriteFile(caPath, []byte("test CA"), 0600); err != nil {
@@ -112,7 +125,7 @@ func TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath(t *testing.T) {
 	}
 	data, err := os.ReadFile(recordedPath)
 	if err != nil {
-		t.Fatalf("Pi did not run, so nothing was recorded: %v", err)
+		t.Fatalf("private Node did not run, so nothing was recorded: %v", err)
 	}
 	got := strings.TrimRight(string(data), "\r\n")
 
@@ -429,18 +442,33 @@ func systemMinimumPath() string {
 	return filepath.Join(systemRoot, "System32")
 }
 
-// pathRecorderScript returns a script that copies the PATH it was launched with
-// into sink, in the dialect the platform actually executes: a POSIX shell script
-// for the cli.js entrypoint, a batch file for the .cmd shim, which harness.Spawn
-// routes through cmd.exe. It mirrors tokenRecorderScript next door, for the same
-// reasons stated there.
-func pathRecorderScript(t *testing.T, sink string) string {
+const privateNodePathRecorderSink = "VC_TEST_PRIVATE_NODE_PATH_RECORDER_SINK"
+
+// init turns a copy of this test binary into a platform-native fake private
+// Node. It runs before the testing package parses the Pi module argument, records
+// exactly the PATH supplied to the child process, and works as node.exe on
+// Windows as well as node on Unix.
+func init() {
+	if sink := os.Getenv(privateNodePathRecorderSink); sink != "" {
+		if err := os.WriteFile(sink, []byte(os.Getenv("PATH")), 0600); err != nil {
+			panic(err)
+		}
+		os.Exit(0)
+	}
+}
+
+func writePrivateNodePathRecorderFixture(t *testing.T, path, sink string) {
 	t.Helper()
-	if runtime.GOOS != "windows" {
-		return "#!/bin/sh\nprintf %s \"$PATH\" > " + shellQuote(sink) + "\n"
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.ContainsAny(sink, "\"%") {
-		t.Fatalf("sink path %q cannot be quoted for cmd.exe", sink)
+	data, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return "@echo off\r\n> \"" + sink + "\" echo %PATH%\r\n"
+	if err := os.WriteFile(path, data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(privateNodePathRecorderSink, sink)
 }
