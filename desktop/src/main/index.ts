@@ -21,7 +21,7 @@ import { buildSupportReport, copySupportReport, saveSupportReport } from './supp
 import type { StatusWriteAuthority } from './status-channel';
 import { closeWorkspaceChat } from './workspace-ipc';
 import { WorkspaceStore } from './workspace-store';
-import { createClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardReadDependencies } from './clipboard-paste';
+import { createClipboardImageStorage as createPrimaryClipboardImageStorage, createSafeClipboardImageStorage, registerDesktopClipboardHandlers, type ClipboardImageStorage, type ClipboardReadDependencies } from './clipboard-paste';
 import { installNavigationPolicy, rendererAuthority, rendererUrl } from './renderer-authority';
 import { startupFailureReport, writeStartupDiagnostic } from './startup-diagnostic';
 import { focusExistingWindow, loadAndPresentWindow, loadRenderer, missingRendererRequested, rendererFilename, runBootstrap, startSingleWindow, startupStage } from './startup-lifecycle';
@@ -48,16 +48,13 @@ let workspace: WorkspaceStore;
 let mainWindow: BrowserWindow | undefined;
 let runtime: PrivateRuntime;
 const loginDiagnostics = createLoginDiagnosticsStore();
-const clipboardImageStorage = createClipboardImageStorage({
-  temporaryDirectory: os.tmpdir,
-  uniqueId: randomUUID,
-  processId: process.pid,
-  now: Date.now,
-  isProcessAlive: (processId) => {
-    try { process.kill(processId, 0); return true; }
-    catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
-  },
-});
+// This placeholder never creates files. The primary instance replaces it with a real Windows
+// store only after acquiring Electron's single-instance lock.
+let clipboardImageStorage: ClipboardImageStorage = {
+  directory: '',
+  writeImage: () => { throw new Error('clipboard image storage unavailable'); },
+  cleanup: () => undefined,
+};
 const desktopClipboardDependencies: ClipboardReadDependencies & { clipboard: ClipboardReadDependencies['clipboard'] & { writeText(text: string): void } } = {
   clipboard,
   filesystem: {
@@ -65,7 +62,7 @@ const desktopClipboardDependencies: ClipboardReadDependencies & { clipboard: Cli
     writeFile: (file, png) => { writeFileSync(file, png, { mode: 0o600 }); },
   },
   uniqueId: randomUUID,
-  writeImage: clipboardImageStorage.writeImage,
+  writeImage: (png) => clipboardImageStorage.writeImage(png),
 };
 
 function spawnRequest(runtime: PrivateRuntime, request: StartRequest, authority?: StatusWriteAuthority) {
@@ -302,6 +299,12 @@ function failStartup(failure: StartupStageError): void {
 
 if (!app.requestSingleInstanceLock()) app.exit(0);
 else {
+  clipboardImageStorage = createSafeClipboardImageStorage(process.platform, () => createPrimaryClipboardImageStorage({
+    temporaryDirectory: os.tmpdir,
+    uniqueId: randomUUID,
+    processId: process.pid,
+    now: Date.now,
+  }));
   app.on('second-instance', () => focusExistingWindow(mainWindow));
   void runBootstrap(bootstrap, failStartup);
 }

@@ -23,7 +23,6 @@ export type ClipboardImageStorageOptions = {
   uniqueId(): string;
   processId: number;
   now(): number;
-  isProcessAlive(processId: number): boolean;
 };
 
 export type ClipboardImageStorage = {
@@ -32,11 +31,28 @@ export type ClipboardImageStorage = {
   cleanup(): void;
 };
 
-function isOwnedClipboardDirectory(name: string): number | undefined {
+const unavailableClipboardImageStorage: ClipboardImageStorage = {
+  directory: '',
+  writeImage: () => { throw new Error('clipboard image storage unavailable'); },
+  cleanup: () => undefined,
+};
+
+// Image persistence is a Windows-only enhancement. It must never make the text clipboard path
+// unavailable when the temporary filesystem is not usable during startup.
+export function createSafeClipboardImageStorage(platform: string, create: () => ClipboardImageStorage): ClipboardImageStorage {
+  if (platform !== 'win32') return unavailableClipboardImageStorage;
+  try {
+    return create();
+  } catch {
+    return unavailableClipboardImageStorage;
+  }
+}
+
+function isOwnedClipboardDirectory(name: string): boolean {
   const matched = new RegExp(`^${CLIPBOARD_DIRECTORY_PREFIX}(\\d+)-`).exec(name);
-  if (!matched) return undefined;
+  if (!matched) return false;
   const processId = Number(matched[1]);
-  return Number.isSafeInteger(processId) && processId > 0 ? processId : undefined;
+  return Number.isSafeInteger(processId) && processId > 0;
 }
 
 function pruneAbandonedClipboardDirectories(root: string, options: ClipboardImageStorageOptions): void {
@@ -48,14 +64,12 @@ function pruneAbandonedClipboardDirectories(root: string, options: ClipboardImag
   }
   const oldestRetained = options.now() - CLIPBOARD_RETENTION_MS;
   for (const entry of entries) {
-    const processId = isOwnedClipboardDirectory(entry);
-    if (processId === undefined) continue;
+    if (!isOwnedClipboardDirectory(entry)) continue;
     const candidate = path.join(root, entry);
     try {
       // lstat makes a prefix-matching symlink inert instead of traversing it during retention.
       const status = lstatSync(candidate);
       if (!status.isDirectory() || status.isSymbolicLink() || status.mtimeMs >= oldestRetained) continue;
-      if (options.isProcessAlive(processId)) continue;
       rmSync(candidate, { recursive: true, force: true });
     } catch {
       // Retention is best effort. A concurrent process or inaccessible temporary entry is retained.

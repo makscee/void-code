@@ -83,12 +83,19 @@ function pasteTrustedClipboard(target: TerminalClipboardTarget, result: Clipboar
   else if (result.kind === 'image-path') target.paste(result.path);
 }
 
+export type ClipboardTransactionClock = () => number;
+
+// Date.now is sufficiently monotonic for a five-second renderer transaction and remains controllable
+// in tests; callers that need a stricter clock can provide one.
+const defaultClipboardTransactionClock: ClipboardTransactionClock = () => Date.now();
+
 export function installWindowsClipboardShortcuts(
   target: TerminalClipboardTarget,
   platform: string,
   readTrustedClipboard: () => Promise<ClipboardReadResult>,
   terminalInput: OrderedTerminalInputSink,
   writeTrustedClipboard?: (text: string) => Promise<void>,
+  now: ClipboardTransactionClock = defaultClipboardTransactionClock,
 ): void {
   target.attachCustomKeyEventHandler((event) => {
     if (platform !== 'win32' || event.type !== 'keydown') return true;
@@ -114,23 +121,27 @@ export function installWindowsClipboardShortcuts(
     if (event.repeat) return false;
 
     const reservation = terminalInput.reserve();
+    const deadline = now() + 5_000;
     let settled = false;
     const discard = (): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       reservation.discard();
     };
     const timeout = setTimeout(discard, 5_000);
     void (async () => {
       try {
         const result = await readTrustedClipboard();
-        if (settled) return;
+        if (settled || now() >= deadline) {
+          discard();
+          return;
+        }
         settled = true;
         clearTimeout(timeout);
         if (result.kind === 'empty') reservation.discard();
         else reservation.emit(() => { pasteTrustedClipboard(target, result); });
       } catch {
-        clearTimeout(timeout);
         discard();
       }
     })();
