@@ -42,6 +42,28 @@ describe('durable chat titles', () => {
     expect(relaunched.resume(CHAT).workspace?.tabs).toEqual([{ id: CHAT, title: 'Quarterly close', location: 'active' }]);
   });
 
+  it('does not leak a rename whose metadata save failed into a later successful save', () => {
+    const { metadata, session, store } = fixture();
+    const originalMetadata = readFileSync(metadata, 'utf8');
+    const originalSession = readFileSync(session);
+    mkdirSync(`${metadata}.tmp`);
+
+    expect(() => rename(store, CHAT, 'Leaked title')).toThrow();
+    const titleAfterFailure = store.view().workspace?.tabs[0].title;
+    expect(readFileSync(metadata, 'utf8')).toBe(originalMetadata);
+    expect(readFileSync(session)).toEqual(originalSession);
+
+    rmSync(`${metadata}.tmp`, { recursive: true });
+    store.close(CHAT);
+    const titleAfterReload = new WorkspaceStore(metadata).view().workspace?.tabs[0].title;
+
+    expect({ titleAfterFailure, titleAfterReload }).toEqual({
+      titleAfterFailure: 'Chat 1',
+      titleAfterReload: 'Chat 1',
+    });
+    expect(readFileSync(session)).toEqual(originalSession);
+  });
+
   it('rejects invalid changes atomically and never writes the Pi JSONL session', () => {
     const { metadata, session, store } = fixture();
     const originalMetadata = readFileSync(metadata, 'utf8');
