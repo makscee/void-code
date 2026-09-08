@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-const managedPiUIExtensionMarker = "// void-code-managed-pi-ui-extension:v1\n"
+const managedPiUIExtensionMarker = "// void-code-managed-pi-ui-extension:v1"
 
 // piVoidCodeUIExtensionSource is kept as a real TypeScript file so the desktop
 // presentation layer can be type-checked and exercised with Pi's extension

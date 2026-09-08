@@ -74,7 +74,7 @@ func checkManagedExtension() doctorCheck {
 	if err != nil {
 		return doctorCheck{"managed extension", "not installed; VC will install it on launch", false}
 	}
-	return doctorCheck{"managed extension", path, strings.HasPrefix(string(data), managedPiExtensionMarker)}
+	return doctorCheck{"managed extension", path, hasManagedPiExtensionMarker(data, managedPiExtensionMarker)}
 }
 func checkManagedSearch() doctorCheck {
 	current, foreign, err := inspectManagedWebSearchPackage(managedWebSearchPackagePath())

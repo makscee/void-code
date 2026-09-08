@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const managedPiExtensionMarker = "// void-code-managed-pi-extension:v1\n"
+const managedPiExtensionMarker = "// void-code-managed-pi-extension:v1"
 
 type managedPiExtensionSpec struct {
 	filename                  string
@@ -46,7 +46,7 @@ func reconcileManagedPiExtensionFile(spec managedPiExtensionSpec) (string, error
 	if err != nil && !missing {
 		return "", fmt.Errorf("read %s: %w", spec.subject, err)
 	}
-	owned := err == nil && strings.HasPrefix(string(existing), spec.marker)
+	owned := err == nil && hasManagedPiExtensionMarker(existing, spec.marker)
 	if spec.disabled {
 		if err == nil && !owned {
 			if spec.ignoreForeignWhenDisabled {
@@ -103,6 +103,11 @@ func reconcileManagedPiExtensionFile(spec managedPiExtensionSpec) (string, error
 		return "", fmt.Errorf("update %s: %w", spec.subject, err)
 	}
 	return path, nil
+}
+
+func hasManagedPiExtensionMarker(source []byte, marker string) bool {
+	text := string(source)
+	return strings.HasPrefix(text, marker+"\n") || strings.HasPrefix(text, marker+"\r\n")
 }
 
 func piAgentDir() string {
