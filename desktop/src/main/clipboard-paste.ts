@@ -30,6 +30,10 @@ export function clipboardStorageRoot(
   userData: string,
   canonicalizer: NativeUserDataCanonicalizer = canonicalizeNativeUserData,
 ): string {
+  // The winning Windows instance reaches this only through createSafeClipboardImageStorage.
+  // Native realpath cannot name a fresh Electron profile, so materialize it before deriving the
+  // canonical (including junction) identity that scopes the temporary namespace.
+  mkdirSync(userData, { recursive: true, mode: 0o700 });
   const normalizedTemporaryDirectory = path.resolve(temporaryDirectory);
   const canonicalUserData = canonicalUserDataIdentity(userData, canonicalizer);
   const namespace = createHash('sha256').update(canonicalUserData).digest('hex');
