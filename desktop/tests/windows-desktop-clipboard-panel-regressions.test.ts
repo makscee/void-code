@@ -1,0 +1,352 @@
+import { spawn } from 'node:child_process';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { build } from 'esbuild';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+type ClipboardReadResult = { kind: 'empty' } | { kind: 'text'; text: string } | { kind: 'image-path'; path: string };
+type FakeImage = { isEmpty(): boolean; toPNG(): Buffer };
+type InvokeHandler<Event> = (event: Event, raw?: unknown) => unknown;
+type ClipboardIpcOptions<Event> = {
+  ipcMain: { handle(channel: string, handler: InvokeHandler<Event>): void };
+  channels: { clipboardRead: string; clipboardWrite: string };
+  platform: string;
+  authorize(event: Event): void;
+  dependencies: {
+    clipboard: { readImage(): FakeImage; readText(): string; writeText(text: string): void };
+    filesystem: { temporaryDirectory(): string; writeFile(file: string, png: Buffer): void };
+    uniqueId(): string;
+  };
+};
+type ClipboardImageStorageOptions = {
+  temporaryDirectory(): string;
+  uniqueId(): string;
+  processId: number;
+  now(): number;
+  isProcessAlive(processId: number): boolean;
+};
+type ClipboardImageStorage = {
+  directory: string;
+  writeImage(png: Buffer): string;
+  cleanup(): void;
+};
+type ClipboardPanelModule = {
+  registerDesktopClipboardHandlers?<Event>(options: ClipboardIpcOptions<Event>): void;
+  createClipboardImageStorage?(options: ClipboardImageStorageOptions): ClipboardImageStorage;
+};
+
+async function clipboardPanelModule(): Promise<ClipboardPanelModule> {
+  return import(new URL('../src/main/clipboard-paste.ts', import.meta.url).href) as Promise<ClipboardPanelModule>;
+}
+
+class CapturedIpc<Event> {
+  readonly handlers = new Map<string, InvokeHandler<Event>>();
+
+  handle(channel: string, handler: InvokeHandler<Event>): void {
+    if (this.handlers.has(channel)) throw new Error(`duplicate handler: ${channel}`);
+    this.handlers.set(channel, handler);
+  }
+}
+
+function image(empty: boolean, png = Buffer.from([0x89, 0x50, 0x4e, 0x47])): FakeImage {
+  return { isEmpty: () => empty, toPNG: () => png };
+}
+
+function ipcFixture(platform: string) {
+  const owned = { sender: 'owned' };
+  const foreign = { sender: 'foreign' };
+  const ipcMain = new CapturedIpc<typeof owned>();
+  const reads = { image: 0, text: 0 };
+  const writes: string[] = [];
+  const fileWrites: string[] = [];
+  const dependencies: ClipboardIpcOptions<typeof owned>['dependencies'] = {
+    clipboard: {
+      readImage: () => { reads.image++; return image(true); },
+      readText: () => { reads.text++; return 'trusted text'; },
+      writeText: (text) => { writes.push(text); },
+    },
+    filesystem: {
+      temporaryDirectory: () => 'C:\\owned-images',
+      writeFile: (file) => { fileWrites.push(file); },
+    },
+    uniqueId: () => 'ipc',
+  };
+  const authorize = vi.fn((event: typeof owned) => {
+    if (event !== owned) throw new Error('renderer authority rejected');
+  });
+  return { owned, foreign, ipcMain, reads, writes, fileWrites, dependencies, authorize, platform };
+}
+
+// F1: this calls the injectable registrar that production main must call. Capturing handlers and
+// invoking them catches an inline no-op, a helper that is never registered, and reordered auth /
+// validation; source text containing the right words is not an oracle for any of those behaviors.
+describe('F1 — production clipboard IPC registration is executable, not source-text theater', () => {
+  it('registers the actual read/write channels and enforces owned-renderer authority before access', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.registerDesktopClipboardHandlers, 'injectable production clipboard IPC registrar is absent').toBeTypeOf('function');
+    const fixture = ipcFixture('win32');
+
+    module.registerDesktopClipboardHandlers!({
+      ipcMain: fixture.ipcMain,
+      channels: { clipboardRead: 'clipboard:read', clipboardWrite: 'clipboard:write' },
+      platform: fixture.platform,
+      authorize: fixture.authorize,
+      dependencies: fixture.dependencies,
+    });
+
+    expect([...fixture.ipcMain.handlers.keys()]).toEqual(['clipboard:read', 'clipboard:write']);
+    const read = fixture.ipcMain.handlers.get('clipboard:read')!;
+    const write = fixture.ipcMain.handlers.get('clipboard:write')!;
+    await expect(Promise.resolve().then(() => read(fixture.owned))).resolves.toEqual({ kind: 'text', text: 'trusted text' } satisfies ClipboardReadResult);
+    await expect(Promise.resolve().then(() => read(fixture.foreign))).rejects.toThrow('renderer authority rejected');
+    await expect(Promise.resolve().then(() => write(fixture.foreign, { text: 'must not escape' }))).rejects.toThrow('renderer authority rejected');
+    expect(fixture.reads).toEqual({ image: 1, text: 1 });
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.authorize).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps non-Windows reads empty without touching Electron clipboard', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.registerDesktopClipboardHandlers, 'injectable production clipboard IPC registrar is absent').toBeTypeOf('function');
+    const fixture = ipcFixture('darwin');
+    module.registerDesktopClipboardHandlers!({
+      ipcMain: fixture.ipcMain,
+      channels: { clipboardRead: 'clipboard:read', clipboardWrite: 'clipboard:write' },
+      platform: fixture.platform,
+      authorize: fixture.authorize,
+      dependencies: fixture.dependencies,
+    });
+
+    await expect(Promise.resolve().then(() => fixture.ipcMain.handlers.get('clipboard:read')!(fixture.owned))).resolves.toEqual({ kind: 'empty' });
+    expect(fixture.reads).toEqual({ image: 0, text: 0 });
+    expect(fixture.fileWrites).toEqual([]);
+  });
+
+  it('strictly validates writes before invoking Electron clipboard.writeText with the exact text', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.registerDesktopClipboardHandlers, 'injectable production clipboard IPC registrar is absent').toBeTypeOf('function');
+    const fixture = ipcFixture('win32');
+    module.registerDesktopClipboardHandlers!({
+      ipcMain: fixture.ipcMain,
+      channels: { clipboardRead: 'clipboard:read', clipboardWrite: 'clipboard:write' },
+      platform: fixture.platform,
+      authorize: fixture.authorize,
+      dependencies: fixture.dependencies,
+    });
+    const write = fixture.ipcMain.handlers.get('clipboard:write')!;
+    const exact = '  selected\r\nΔ text\t ';
+
+    await expect(Promise.resolve().then(() => write(fixture.owned, { text: exact }))).resolves.toBeUndefined();
+    expect(fixture.writes).toEqual([exact]);
+    for (const raw of [null, [], {}, { text: '' }, { text: 7 }, { text: 'selected', path: 'C:\\escape.png' }]) {
+      await expect(Promise.resolve().then(() => write(fixture.owned, raw))).rejects.toThrow();
+    }
+    expect(fixture.writes).toEqual([exact]);
+  });
+
+  it('the real main registration delegates both channels to that tested registrar', () => {
+    const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/import\s*\{[^}]*\bregisterDesktopClipboardHandlers\b[^}]*\}\s*from\s*['"]\.\/clipboard-paste['"]/s);
+    expect(source).toMatch(/registerDesktopClipboardHandlers\s*\(\s*\{[\s\S]*?ipcMain[\s\S]*?channels\s*:\s*IPC[\s\S]*?platform\s*:\s*process\.platform[\s\S]*?authorize\s*:\s*assertRenderer[\s\S]*?dependencies\s*:\s*desktopClipboardDependencies[\s\S]*?\}\s*\)/);
+    expect(source).not.toMatch(/ipcMain\.handle\(IPC\.clipboard(?:Read|Write)/);
+  });
+});
+
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'void-code-clipboard-test-'));
+  roots.push(root);
+  return root;
+}
+
+function storageOptions(root: string, processId: number, id: string, now: number, live: ReadonlySet<number>): ClipboardImageStorageOptions {
+  return {
+    temporaryDirectory: () => root,
+    uniqueId: () => id,
+    processId,
+    now: () => now,
+    isProcessAlive: (candidate) => live.has(candidate),
+  };
+}
+
+// F3 uses the real filesystem for permission and deletion assertions. Time and process liveness
+// are injected, so seven-day pruning needs neither a sleep nor a real competing process.
+describe('F3 — process-owned clipboard image storage and bounded crash retention', () => {
+  it('creates one absolute 0700 owned directory, writes 0600 PNGs inside it, and removes it on cleanup', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
+    const root = temporaryRoot();
+    const store = module.createClipboardImageStorage!(storageOptions(root, 4101, 'current', Date.UTC(2026, 8, 8), new Set([4101])));
+
+    expect(path.isAbsolute(store.directory)).toBe(true);
+    expect(path.dirname(store.directory)).toBe(path.resolve(root));
+    expect(path.basename(store.directory)).toMatch(/^void-code-clipboard-/);
+    expect(statSync(store.directory).isDirectory()).toBe(true);
+    expect(statSync(store.directory).mode & 0o777).toBe(0o700);
+
+    const first = store.writeImage(Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]));
+    const second = store.writeImage(Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]));
+    expect(path.dirname(first)).toBe(store.directory);
+    expect(path.dirname(second)).toBe(store.directory);
+    expect(path.extname(first)).toBe('.png');
+    expect(path.extname(second)).toBe('.png');
+    expect(first).not.toBe(second);
+    expect(statSync(first).mode & 0o777).toBe(0o600);
+    expect(statSync(second).mode & 0o777).toBe(0o600);
+
+    store.cleanup();
+    expect(existsSync(store.directory)).toBe(false);
+  });
+
+  it('prunes only dead app-owned directories older than seven days', async () => {
+    const module = await clipboardPanelModule();
+    expect(module.createClipboardImageStorage, 'process-owned clipboard image storage is absent').toBeTypeOf('function');
+    const root = temporaryRoot();
+    const now = Date.UTC(2026, 8, 8, 12);
+    const old = now - 8 * 24 * 60 * 60 * 1000;
+    const fresh = now - 6 * 24 * 60 * 60 * 1000;
+    const exactlySevenDays = now - 7 * 24 * 60 * 60 * 1000;
+    const noLiveProcesses = new Set<number>();
+
+    const staleDead = module.createClipboardImageStorage!(storageOptions(root, 4201, 'stale-dead', old, noLiveProcesses));
+    const staleLive = module.createClipboardImageStorage!(storageOptions(root, 4202, 'stale-live', old, noLiveProcesses));
+    const freshDead = module.createClipboardImageStorage!(storageOptions(root, 4203, 'fresh-dead', old, noLiveProcesses));
+    const boundaryDead = module.createClipboardImageStorage!(storageOptions(root, 4204, 'seven-days', old, noLiveProcesses));
+    utimesSync(staleDead.directory, old / 1000, old / 1000);
+    utimesSync(staleLive.directory, old / 1000, old / 1000);
+    utimesSync(freshDead.directory, fresh / 1000, fresh / 1000);
+    utimesSync(boundaryDead.directory, exactlySevenDays / 1000, exactlySevenDays / 1000);
+
+    const unrelatedDirectory = path.join(root, 'another-app-cache');
+    const unrelatedFile = path.join(root, 'void-code-clipboard-not-a-directory');
+    mkdirSync(unrelatedDirectory, { mode: 0o700 });
+    writeFileSync(unrelatedFile, 'not owned directory data', { mode: 0o600 });
+    utimesSync(unrelatedDirectory, old / 1000, old / 1000);
+    utimesSync(unrelatedFile, old / 1000, old / 1000);
+    chmodSync(unrelatedDirectory, 0o700);
+    const retainedMtimes = new Map([
+      [staleLive.directory, statSync(staleLive.directory).mtimeMs],
+      [freshDead.directory, statSync(freshDead.directory).mtimeMs],
+      [boundaryDead.directory, statSync(boundaryDead.directory).mtimeMs],
+      [unrelatedDirectory, statSync(unrelatedDirectory).mtimeMs],
+      [unrelatedFile, statSync(unrelatedFile).mtimeMs],
+    ]);
+
+    const current = module.createClipboardImageStorage!(storageOptions(root, 4299, 'current', now, new Set([4202, 4299])));
+
+    expect(existsSync(staleDead.directory), 'stale directory belonging to a dead process').toBe(false);
+    expect(existsSync(staleLive.directory), 'old directory belonging to a live process').toBe(true);
+    expect(existsSync(freshDead.directory), 'fresh directory belonging to a dead process').toBe(true);
+    expect(existsSync(boundaryDead.directory), 'directory exactly seven days old').toBe(true);
+    expect(existsSync(unrelatedDirectory), 'unrelated old directory').toBe(true);
+    expect(existsSync(unrelatedFile), 'prefix-matching non-directory').toBe(true);
+    for (const [entry, mtime] of retainedMtimes) expect(statSync(entry).mtimeMs, `pruning touched retained entry ${entry}`).toBe(mtime);
+    expect(lstatSync(unrelatedFile).isFile()).toBe(true);
+    expect(existsSync(current.directory), 'current process directory').toBe(true);
+  });
+
+  it('the app owns one storage lifecycle and cleans that exact directory on normal quit', () => {
+    const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/\bcreateClipboardImageStorage\s*\(/);
+    expect(source).toMatch(/app\.on\(\s*['"]before-quit['"][\s\S]*?clipboardImageStorage\.cleanup\s*\(\s*\)/);
+  });
+});
+
+function runProcess(executable: string, arguments_: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const environment = { ...process.env };
+    delete environment.ELECTRON_RUN_AS_NODE;
+    const child = spawn(executable, arguments_, { cwd, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    const watchdog = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`hidden Electron fixture did not finish\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, 8_000);
+    child.once('error', (error) => { clearTimeout(watchdog); reject(error); });
+    child.once('close', (code) => { clearTimeout(watchdog); resolve({ code, stdout, stderr }); });
+  });
+}
+
+// F4 is intentionally a Chromium integration, not another call to FakeTerminal.handler. The
+// hidden window receives Electron input events; xterm owns the textarea, selection, key dispatch,
+// default action, Terminal.paste(), and onData path. Clipboard read/write remain injected spies.
+describe('F4 — shipped xterm keyboard/default-action/onData integration', () => {
+  it('consumes selected Ctrl+C and delivers one Ctrl+V paste through real xterm onData', async () => {
+    const root = temporaryRoot();
+    const rendererBundle = path.join(root, 'renderer.js');
+    const mainBundle = path.join(root, 'main.cjs');
+    const page = path.join(root, 'index.html');
+    const resultFile = path.join(root, 'result.json');
+
+    await build({
+      entryPoints: [path.resolve('tests/fixtures/windows-desktop-clipboard-xterm-renderer.ts')],
+      bundle: true,
+      format: 'iife',
+      platform: 'browser',
+      target: 'chrome130',
+      outfile: rendererBundle,
+      logLevel: 'silent',
+    });
+    await build({
+      entryPoints: [path.resolve('tests/fixtures/windows-desktop-clipboard-xterm-main.ts')],
+      bundle: true,
+      format: 'cjs',
+      platform: 'node',
+      target: 'node22',
+      external: ['electron'],
+      outfile: mainBundle,
+      logLevel: 'silent',
+    });
+    writeFileSync(page, '<!doctype html><html><body><div id="terminal"></div><script src="renderer.js"></script></body></html>', 'utf8');
+
+    const require = createRequire(import.meta.url);
+    const electron = require('electron') as string;
+    const platformArguments = process.platform === 'linux' ? ['--ozone-platform=headless', '--disable-gpu'] : [];
+    const completed = await runProcess(electron, [...platformArguments, mainBundle, `--fixture-page=${page}`, `--fixture-result=${resultFile}`], path.resolve('.'));
+
+    expect(completed.code, `hidden Electron fixture failed\nstdout:\n${completed.stdout}\nstderr:\n${completed.stderr}`).toBe(0);
+    const result = JSON.parse(readFileSync(resultFile, 'utf8')) as {
+      implementation: string;
+      instance: boolean;
+      copied: string[];
+      terminalData: string[];
+      keydowns: Array<{ code: string; defaultPrevented: boolean }>;
+      keyups: Array<{ code: string; defaultPrevented: boolean }>;
+      domCopyEvents: number;
+      domPasteEvents: number;
+    };
+    expect(result).toEqual({
+      implementation: '@xterm/xterm',
+      instance: true,
+      copied: ['selected text'],
+      terminalData: ['pasted once'],
+      keydowns: [
+        { code: 'KeyC', defaultPrevented: true },
+        { code: 'KeyV', defaultPrevented: true },
+      ],
+      keyups: [
+        { code: 'KeyC', defaultPrevented: false },
+        { code: 'KeyV', defaultPrevented: false },
+      ],
+      domCopyEvents: 0,
+      domPasteEvents: 0,
+    });
+  });
+
+  it('the renderer launch path uses the same real-xterm wiring seam exercised by the fixture', () => {
+    const source = readFileSync(new URL('../src/renderer/index.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/import\s*\{[^}]*\bwireProductTerminalClipboard\b[^}]*\}\s*from\s*['"]\.\/clipboard-shortcuts['"]/s);
+    expect(source).toMatch(/wireProductTerminalClipboard\s*\(\s*terminal\s*,\s*rendererPlatform\s*,[\s\S]*?window\.voidTerminal\.clipboard\.read\(\)[\s\S]*?window\.voidTerminal\.clipboard\.write\([\s\S]*?window\.voidTerminal\.input\(/);
+  });
+});
