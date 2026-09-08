@@ -11,8 +11,8 @@ function argument(name: string): string {
 const page = argument('fixture-page');
 const resultFile = argument('fixture-result');
 
-function key(window: BrowserWindow, type: 'keyDown' | 'keyUp', keyCode: 'C' | 'V'): void {
-  window.webContents.sendInputEvent({ type, keyCode, modifiers: ['control'] });
+function key(window: BrowserWindow, type: 'keyDown' | 'keyUp', keyCode: 'C' | 'V' | 'X', control = true): void {
+  window.webContents.sendInputEvent({ type, keyCode, modifiers: control ? ['control'] : [] });
 }
 
 void app.whenReady().then(async () => {
@@ -22,7 +22,7 @@ void app.whenReady().then(async () => {
     height: 400,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  let stage: 'loading' | 'copy' | 'paste' | 'done' = 'loading';
+  let stage: 'loading' | 'copy' | 'paste' | 'type' | 'done' = 'loading';
   window.webContents.on('page-title-updated', (event, title) => {
     event.preventDefault();
     if (stage === 'loading' && title === 'XTERM:READY') {
@@ -37,8 +37,14 @@ void app.whenReady().then(async () => {
       return;
     }
     if (stage === 'paste' && title === 'XTERM:PASTE-DATA') {
-      stage = 'done';
+      stage = 'type';
       key(window, 'keyUp', 'V');
+      key(window, 'keyDown', 'X', false);
+      return;
+    }
+    if (stage === 'type' && title === 'XTERM:TYPE-DATA') {
+      stage = 'done';
+      key(window, 'keyUp', 'X', false);
       return;
     }
     if (stage === 'done' && title.startsWith('XTERM:RESULT:')) {
