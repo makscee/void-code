@@ -14,10 +14,38 @@ import { asList, asMap, asText, parseWorkflow } from './workflow-yaml';
 
 const DACL_TEST = 'tests/windows-clipboard-dacl.test.ts';
 const DACL_TEST_COMMAND = `npm test -- --run ${DACL_TEST}`;
+const DACL_TARGETS_ENV = 'VOID_CODE_DACL_TARGETS_JSON';
 const BROAD_SIDS = new Set(['S-1-1-0', 'S-1-5-11', 'S-1-5-32-545']);
 const SYSTEM_SID = 'S-1-5-18';
 const ADMINISTRATORS_SID = 'S-1-5-32-544';
 const TEST_UUID = '00000000-0000-4000-8000-00000000daac';
+
+const DACL_INSPECTION_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$targets = ConvertFrom-Json -InputObject $env:VOID_CODE_DACL_TARGETS_JSON
+$entries = foreach ($target in $targets) {
+  $acl = Get-Acl -LiteralPath $target
+  $aces = @($acl.Access | ForEach-Object {
+    [pscustomobject]@{
+      sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+      type = $_.AccessControlType.ToString()
+    }
+  })
+  [pscustomobject]@{ path = $target; protected = $acl.AreAccessRulesProtected; aces = $aces }
+}
+[pscustomobject]@{
+  currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  entries = @($entries)
+} | ConvertTo-Json -Compress -Depth 5
+`;
+
+function daclInspectionTransport(targets: string[]): { args: string[]; env: Record<string, string> } {
+  return {
+    args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', DACL_INSPECTION_SCRIPT],
+    env: { [DACL_TARGETS_ENV]: JSON.stringify(targets) },
+  };
+}
 
 type Ace = {
   sid: string;
@@ -46,37 +74,38 @@ function inspectDacls(targets: string[]): AclReport {
   expect(path.isAbsolute(powershell), 'the DACL query must not resolve PowerShell through PATH').toBe(true);
   expect(existsSync(powershell), `absolute Windows PowerShell is absent: ${powershell}`).toBe(true);
 
-  const script = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$entries = foreach ($target in $args) {
-  $acl = Get-Acl -LiteralPath $target
-  $aces = @($acl.Access | ForEach-Object {
-    [pscustomobject]@{
-      sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-      type = $_.AccessControlType.ToString()
-    }
-  })
-  [pscustomobject]@{ path = $target; protected = $acl.AreAccessRulesProtected; aces = $aces }
-}
-[pscustomobject]@{
-  currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  entries = @($entries)
-} | ConvertTo-Json -Compress -Depth 5
-`;
-
-  const json = execFileSync(powershell, [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    script,
-    ...targets,
-  ], { encoding: 'utf8', windowsHide: true });
+  const transport = daclInspectionTransport(targets);
+  const json = execFileSync(powershell, transport.args, {
+    encoding: 'utf8',
+    windowsHide: true,
+    env: { ...process.env, ...transport.env },
+  });
   return JSON.parse(json) as AclReport;
 }
 
 const windowsIt = process.platform === 'win32' ? it : it.skip;
+
+describe('Windows DACL target transport', () => {
+  it('round-trips arbitrary path text as JSON data without appending it to PowerShell source', () => {
+    const targets = [
+      String.raw`C:\path with spaces\quoted "name"\$cash;still-data`,
+      "C:\\line one\nline 'two'\n$final;",
+    ];
+
+    const transport = daclInspectionTransport(targets);
+
+    expect(Object.keys(transport.env)).toEqual([DACL_TARGETS_ENV]);
+    expect(JSON.parse(transport.env[DACL_TARGETS_ENV])).toEqual(targets);
+    expect(transport.args).toEqual([
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      DACL_INSPECTION_SCRIPT,
+    ]);
+    for (const target of targets) expect(DACL_INSPECTION_SCRIPT).not.toContain(target);
+  });
+});
 
 describe('Windows clipboard image storage uses the per-user temp DACL', () => {
   windowsIt('keeps the scoped root, directory, and PNG inside the inherited per-user temp DACL, then removes them', () => {
