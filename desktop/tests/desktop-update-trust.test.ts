@@ -173,7 +173,7 @@ describe('desktop update manifest selection', () => {
   });
 
   it.each([
-    ['missing manifest key', () => { const { tag: _tag, ...value } = manifest(); return value; }],
+    ['missing manifest key', () => { const value = { ...manifest() } as Record<string, unknown>; delete value.tag; return value; }],
     ['extra manifest key', () => ({ ...manifest(), surprise: true })],
     ['wrong manifest primitive', () => ({ ...manifest(), schema: '1' })],
     ['missing artifact key', () => ({ ...manifest(), artifacts: [{ platform: 'win32', arch: 'x64', file: 'Void-Code-windows-x64.exe', size: 4 }] })],
