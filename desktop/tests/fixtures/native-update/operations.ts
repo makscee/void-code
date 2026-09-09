@@ -44,10 +44,12 @@ export async function archiveSeed(
   fs: SeedArchiveFs,
   options?: SeedArchiveOptions,
 ): Promise<void> {
-  if (await fs.sourceKind(source) === 'missing') return;
   if (!options) throw new Error('seed archive options required');
-
   const started = options.now();
+  if (await fs.sourceKind(source) === 'missing') {
+    await options.verify();
+    return;
+  }
   const elapsed = () => Math.max(0, options.now() - started);
   let attempt = 0;
   let lastError: unknown;
