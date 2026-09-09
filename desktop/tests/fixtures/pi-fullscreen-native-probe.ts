@@ -107,13 +107,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   tui.flash = (...args: Parameters<typeof originalFlash>) => { if (args[0] === 'Copied!') succeeded++; return originalFlash(...args); };
   // Observe the built-in used by the default factory, never replace the native child.
   const originalSpawn = childProcess.spawn;
+  // Bounded metadata only; no serialization or IO on the observed lifecycle path.
+  const records: { executable: string; operation: number; elapsedMs: number; event: string; code: string | number | null; signal: NodeJS.Signals | null }[] = [];
+  const maxRecords = 128;
   let operation = 0;
   childProcess.spawn = function (...args: Parameters<typeof originalSpawn>) {
     const id = ++operation;
     const started = performance.now();
     const executable = path.basename(args[0]);
     const log = (event: string, code: string | number | null = null, signal: NodeJS.Signals | null = null) => {
-      process.stderr.write(`${JSON.stringify({ executable, operation: id, elapsedMs: Math.round(performance.now() - started), event, code, signal })}\n`);
+      if (records.length < maxRecords) records.push({ executable, operation: id, elapsedMs: Math.round(performance.now() - started), event, code, signal });
     };
     // Only bounded symbolic codes, never Error.message (which can include argv).
     const errorCode = (error: NodeJS.ErrnoException): string | null =>
@@ -168,6 +171,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     } finally {
       childProcess.spawn = originalSpawn;
       syncBuiltinESMExports();
+      // Native operations and lifecycle cleanup have finished; builtins are restored.
+      for (const record of records) process.stderr.write(`${JSON.stringify(record)}\n`);
     }
   }
 }
