@@ -364,8 +364,14 @@ export function createDesktopUpdateController(
     }
     const operation = newOperation();
     checkOperation = operation;
-    const flight = runCheck(operation);
+    let resolveFlight!: () => void;
+    let rejectFlight!: (reason: unknown) => void;
+    const flight = new Promise<void>((resolve, reject) => {
+      resolveFlight = resolve;
+      rejectFlight = reject;
+    });
     checkFlight = flight;
+    void runCheck(operation).then(resolveFlight, rejectFlight);
     return flight;
   }
 

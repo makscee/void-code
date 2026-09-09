@@ -234,7 +234,7 @@ function parseArtifact(value: unknown): DesktopUpdateArtifact | undefined {
   const { platform, arch, file, size, sha256 } = value;
   if (typeof platform !== 'string' || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(platform)) return undefined;
   if (typeof arch !== 'string' || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(arch)) return undefined;
-  if (typeof file !== 'string' || file.length === 0 || file.length > 255) return undefined;
+  if (typeof file !== 'string' || file.length === 0 || file.length > 128) return undefined;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(file) || file === '.' || file === '..') return undefined;
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > MAX_ARTIFACT_SIZE) return undefined;
   if (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) return undefined;
@@ -257,7 +257,7 @@ export function verifyDesktopUpdateEnvelope(
       return { ok: false, code: 'invalid-envelope-shape' };
     }
     if (envelope.schema !== 1 || typeof envelope.keyId !== 'string' ||
-        !/^[A-Za-z0-9._-]{1,128}$/.test(envelope.keyId) ||
+        !/^[A-Za-z0-9._-]{1,64}$/.test(envelope.keyId) ||
         typeof envelope.payload !== 'string' || typeof envelope.signature !== 'string') {
       return { ok: false, code: 'invalid-envelope-fields' };
     }
