@@ -7,6 +7,11 @@ import { expect, vi } from 'vitest';
 
 export const agentDir = path.resolve('runtime/pi/node_modules/@earendil-works/pi-coding-agent');
 const require = createRequire(path.join(agentDir, 'package.json'));
+// dist/index.js re-exports VERSION from config.js, which reads pkg.version.
+export const agentMetadata = {
+  VERSION: JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version as string,
+  getPackageDir: () => agentDir,
+};
 export async function realPi(): Promise<any> {
   expect(JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version).toBe('0.84.1');
   return import(/* @vite-ignore */ pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
@@ -39,7 +44,7 @@ export async function extension(env = localEnv, spawn?: (...args: any[]) => any)
       spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
     };
     if (id === '@earendil-works/pi-tui') return tui;
-    if (id === '@earendil-works/pi-coding-agent') return { getPackageDir: () => agentDir };
+    if (id === '@earendil-works/pi-coding-agent') return agentMetadata;
     if (id === '@earendil-works/pi-ai') return { clampThinkingLevel: (_m: unknown, level: string) => level };
     if (['node:fs', 'fs', 'node:fs/promises', 'fs/promises'].includes(id)) return new Proxy({
       existsSync: () => false,
@@ -104,6 +109,28 @@ export async function rig(lines = ['Привет 世界 😀', 'строка д�
     },
     close() { disposers.reverse().forEach((dispose) => dispose()); tui.stop({ preserveScreen: true }); },
   };
+}
+// Pi 0.84.1 InteractiveMode.setExtensionWidget: dispose in BOTH placements before
+// invoking a replacement factory; store its result so clearing a probe tears it down.
+export async function widgetUI(r: Rig) {
+  const pi = await realPi();
+  const above = new Map<string, any>(); const below = new Map<string, any>();
+  const theme = { fg: (_: string, text: string) => text };
+  const setWidget = vi.fn((key: string, content: any, options?: { placement?: string }) => {
+    for (const map of [above, below]) { map.get(key)?.dispose?.(); map.delete(key); }
+    if (content === undefined) return;
+    let component;
+    if (Array.isArray(content)) {
+      component = new pi.Container();
+      for (const line of content.slice(0, 10)) component.addChild(new pi.Text(line, 1, 0));
+      if (content.length > 10) component.addChild(new pi.Text(theme.fg('muted', '... (widget truncated)'), 1, 0));
+    } else component = content(r.tui, theme);
+    (options?.placement === 'belowEditor' ? below : above).set(key, component);
+  });
+  r.disposers.push(() => {
+    for (const map of [above, below]) { for (const component of map.values()) component.dispose?.(); map.clear(); }
+  });
+  return { setWidget, notify: r.notify, setEditorComponent: vi.fn() };
 }
 export function oscCopies(terminal: MemoryTerminal): string[] {
   return terminal.output.flatMap((chunk) => [...chunk.matchAll(/\x1b\]52;c;([^\x07]*)\x07/g)].map((match) => Buffer.from(match[1], 'base64').toString('utf8')));

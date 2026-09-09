@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { extension, flush, localEnv } from './fixtures/pi-fullscreen-clipboard';
@@ -106,6 +107,62 @@ it.each(['ENOENT', 'EACCES'])('R4/R5: asynchronous child %s error then close is 
   await vi.advanceTimersByTimeAsync(5000);
   expect(r.children[1].kill).not.toHaveBeenCalled();
 });
+
+it('R4: cancellation while B waits behind A never spawns B after close; C survives', async () => {
+  const r = await writer(); const controller = new AbortController();
+  const a = r.write('A'); await flush();
+  const b = r.write('SECRET-waiting-B', controller.signal).then(() => 'unexpected success', (error) => error);
+  // Abort before any queued microtask can attach a native child listener.
+  controller.abort(new Error('SECRET-abort-reason'));
+  const c = r.write('C'); await flush();
+  expect(r.spawn).toHaveBeenCalledTimes(1);
+  expect(r.children[0].kill).not.toHaveBeenCalled();
+  r.children[0].close(); await a; await flush();
+  expect(r.spawn).toHaveBeenCalledTimes(2);
+  expect(r.children.map((child) => child.text())).toEqual(['A', 'C']);
+  r.children[1].close(); await c;
+  const error = await b;
+  expect(error).toBeInstanceOf(Error); expect(error.message).toBeTruthy();
+  expect(String(error)).not.toContain('SECRET');
+  await flush(); expect(r.spawn).toHaveBeenCalledTimes(2);
+});
+
+it('R4: real isolated Node child drains oversized stderr before successful exit', async () => {
+  vi.useRealTimers();
+  const module = await extension();
+  expect(module.createNativeClipboardWriter, 'R4/R5: managed transport lacks bounded stdin-only native writer').toBeTypeOf('function');
+  let child: ChildProcess | undefined;
+  let closed: Promise<void> | undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const spawn = vi.fn((_file: string, _args: string[], options: any) => {
+    expect(options.stdio).toEqual(['pipe', 'ignore', 'pipe']);
+    // Never launch the requested clipboard executable. No parent stderr reader:
+    // only the production writer may drain it (or arrange a nonblocking sink).
+    child = nodeSpawn(process.execPath, ['-e', `
+      const chunks = [];
+      process.stdin.on('data', chunk => chunks.push(chunk));
+      process.stdin.on('end', () => {
+        if (Buffer.concat(chunks).toString('utf8') !== 'isolated Unicode 世界') process.exit(7);
+        process.stderr.write(Buffer.alloc(4 * 1024 * 1024, 120), () => process.exit(0));
+      });
+    `], { stdio: options.stdio, shell: false, env: {} });
+    closed = new Promise((resolve) => child!.once('close', () => resolve()));
+    return child;
+  });
+  const write = module.createNativeClipboardWriter!({ platform: 'darwin', env: localEnv, spawn });
+  try {
+    await Promise.race([
+      write('isolated Unicode 世界'),
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('stderr drain deadline exceeded')), 3500); }),
+    ]);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(child!.exitCode).toBe(0);
+  } finally {
+    clearTimeout(deadline);
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+}, 5000);
 
 it('R4: cancellation kills active child, waits for close and rejects even late zero exit; pre-aborted request never spawns', async () => {
   const r = await writer(); const controller = new AbortController();

@@ -1,12 +1,47 @@
 import { EventEmitter } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, type Rig } from './fixtures/pi-fullscreen-clipboard';
+import { agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
 async function make(lines?: string[]): Promise<Rig> { const value = await rig(lines); rigs.push(value); return value; }
 afterEach(() => { rigs.splice(0).reverse().forEach((value) => value.close()); vi.useRealTimers(); });
+
+// Reject even transient live assignments, while allowing disposable inherited receivers.
+function guardLiveMethod(owner: any, key: string) {
+  const descriptor = Object.getOwnPropertyDescriptor(owner, key)!;
+  const method = owner[key]; const attempts = vi.fn();
+  Object.defineProperty(owner, key, { configurable: true, enumerable: descriptor.enumerable,
+    get: () => method,
+    set(value) {
+      if (this === owner) { attempts(); throw new Error(`live ${key} assignment forbidden`); }
+      Object.defineProperty(this, key, { value, writable: true, configurable: true });
+    },
+  });
+  return { attempts, restore: () => Object.defineProperty(owner, key, descriptor) };
+}
+
+it('fixture control: VERSION exposed to managed code matches actual pinned config export', async () => {
+  const config = await import(/* @vite-ignore */ pathToFileURL(`${agentMetadata.getPackageDir()}/dist/config.js`).href);
+  expect(agentMetadata.VERSION).toBe('0.84.1');
+  expect(agentMetadata.VERSION).toBe(config.VERSION);
+});
+
+it('fixture control: guarded live methods still allow genuine Pi mouse extraction and flash', async () => {
+  const r = await make();
+  const guards = [guardLiveMethod(r.terminal, 'write'), guardLiveMethod(r.tui, 'flash')];
+  try {
+    expect(() => { r.terminal.write = r.terminal.write; }).toThrow('live write');
+    expect(() => { r.tui.flash = r.tui.flash; }).toThrow('live flash');
+    guards.forEach((guard) => guard.attempts.mockClear());
+    r.drag();
+    expect(oscCopies(r.terminal)).toEqual(['Привет 世界 😀\nстрока два']);
+    expect(r.flash).toHaveBeenCalledWith('Copied!');
+    guards.forEach((guard) => expect(guard.attempts).not.toHaveBeenCalled());
+  } finally { guards.forEach((guard) => guard.restore()); }
+});
 
 describe('real Pi fullscreen selection -> managed native clipboard', () => {
   it('fixture control: exported pinned Pi renders and extracts Unicode via mouse SGR, without xterm selection', async () => {
@@ -145,6 +180,23 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     pending.resolve(); await flush(); expect(r.flash).toHaveBeenCalledWith('Copied!');
   });
 
+  it('R5: semantic mouse copy never assigns live write or flash, even transiently', async () => {
+    const r = await make(); const pending = deferred(); r.write.mockReturnValue(pending.promise);
+    const guards = [guardLiveMethod(r.terminal, 'write'), guardLiveMethod(r.tui, 'flash')];
+    try {
+      const dispose = install(await extension(), r);
+      const untrusted = '\x1b]52;c;' + Buffer.from('ATTACK').toString('base64') + '\x07Copied!';
+      r.terminal.write(untrusted); await flush(); expect(r.write).not.toHaveBeenCalled();
+      r.drag(); await flush();
+      expect(r.write.mock.calls.map(([text]) => text)).toEqual(['Привет 世界 😀\nстрока два']);
+      expect(r.flash).not.toHaveBeenCalledWith('Copied!');
+      r.terminal.write(untrusted); await flush(); expect(r.write).toHaveBeenCalledTimes(1);
+      pending.resolve(); await flush(); expect(r.flash).toHaveBeenCalledWith('Copied!');
+      dispose();
+      guards.forEach((guard) => expect(guard.attempts).not.toHaveBeenCalled());
+    } finally { guards.forEach((guard) => guard.restore()); }
+  });
+
   it('R6: active-selection Ctrl+C copies and is consumed; bare Ctrl+C/Esc/arrows/input retain focus routing', async () => {
     const r = await make(); install(await extension(), r);
     const keys = ['\x03', '\x1b', '\x1b[A', '\x1b[B', 'draft', '\x1b[200~paste\x1b[201~'];
@@ -248,6 +300,30 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
   });
 });
 
+it('fixture control: widget replacement/removal disposes hooks, including an immediately cleared probe', async () => {
+  const r = await make(); const ui = await widgetUI(r);
+  const original = r.tui.copySelectionToClipboard;
+  const hook = vi.fn(); const dispose = vi.fn(() => { r.tui.copySelectionToClipboard = original; });
+  const factory = vi.fn((tui) => {
+    expect(tui).toBe(r.tui); tui.copySelectionToClipboard = hook;
+    return { render: () => [], invalidate() {}, dispose };
+  });
+  ui.setWidget('probe', factory);
+  r.drag(); expect(hook).toHaveBeenCalledTimes(1);
+  ui.setWidget('probe', () => {
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(r.tui.copySelectionToClipboard).toBe(original);
+    return factory(r.tui);
+  }, { placement: 'belowEditor' });
+  ui.setWidget('probe', undefined);
+  expect(dispose).toHaveBeenCalledTimes(2);
+  ui.setWidget('probe', factory); ui.setWidget('probe', undefined);
+  expect(dispose).toHaveBeenCalledTimes(3);
+  ui.setWidget('probe', undefined); expect(dispose).toHaveBeenCalledTimes(3);
+  r.drag(); expect(hook).toHaveBeenCalledTimes(1);
+  expect(oscCopies(r.terminal)).toEqual(['Привет 世界 😀\nстрока два']);
+});
+
 it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach native spawn in %s lifecycle', async (mode) => {
   const r = await make();
   const env = mode === 'desktop' ? { ...localEnv, VC_DESKTOP_CHAT_ID: '12345678-1234-4234-8234-123456789abc', SSH_CONNECTION: 'inherited' } : localEnv;
@@ -258,8 +334,8 @@ it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach n
   const module = await extension(env, spawn);
   const handlers = new Map<string, any[]>();
   const pi = { on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
-  const setWidget = vi.fn((_key: string, value: any) => { if (typeof value === 'function') value(r.tui, { fg: (_: string, text: string) => text }); });
-  const ctx = { mode: 'tui', hasUI: true, ui: { setWidget, notify: r.notify, setEditorComponent: vi.fn() } };
+  const ui = await widgetUI(r); const { setWidget } = ui;
+  const ctx = { mode: 'tui', hasUI: true, ui };
   await module.default(pi); // Deliberately no second argument: only node subprocess IO is substituted.
   expect(pi.registerProvider).toHaveBeenCalled();
   expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
@@ -284,7 +360,7 @@ it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecy
   const module = await extension(env);
   const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   const pi = { on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
-  const ui = { notify: r.notify, setWidget: vi.fn((_key: string, value: any) => { if (typeof value === 'function') value(r.tui, { fg: (_: string, text: string) => text }); }), setEditorComponent: vi.fn() };
+  const ui = await widgetUI(r);
   const ctx = { mode: 'tui', hasUI: true, ui };
   await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: r.write } });
   expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.6-terra' })]) }));

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { InteractiveMode, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
 import managed from './managed.ts';
@@ -33,10 +33,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (key === 'registerProvider') return (...args: any[]) => { providers++; return (target.registerProvider as any)(...args); };
     return Reflect.get(target, key);
   } });
+  // Real exported consumer method, without constructing a session/auth/inference stack.
+  const receiver = { extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map(), ui: tui, renderWidgets() {} };
+  const setWidget = (key: string, value: any, options?: any) =>
+    (InteractiveMode.prototype as any).setExtensionWidget.call(receiver, key, value, options);
+  // Positive consumer control: replacement disposes before the new factory, and
+  // removal disposes the stored result even when it moved below the editor.
+  let disposed = 0;
+  const component = () => ({ render: () => [], invalidate() {}, dispose() { disposed++; } });
+  setWidget('astra-consumer-control', (actualTui: any) => { assert.equal(actualTui, tui); return component(); });
+  assert.equal(receiver.extensionWidgetsAbove.size, 1);
+  setWidget('astra-consumer-control', () => { assert.equal(disposed, 1); return component(); }, { placement: 'belowEditor' });
+  assert.equal(receiver.extensionWidgetsAbove.size, 0);
+  assert.equal(receiver.extensionWidgetsBelow.size, 1);
+  setWidget('astra-consumer-control', undefined);
+  assert.equal(disposed, 2); assert.equal(receiver.extensionWidgetsBelow.size, 0);
+  setWidget('astra-consumer-control', undefined); assert.equal(disposed, 2);
   const ctx = { mode: 'tui', hasUI: true, ui: {
     notify: (message: string) => failures.push(message),
-    setWidget: (_key: string, value: any) => {
-      if (typeof value === 'function') { widgets++; value(tui, { fg: (_: string, text: string) => text }); }
+    setWidget: (key: string, value: any, options?: any) => {
+      if (typeof value === 'function') widgets++;
+      setWidget(key, value, options);
     },
     setEditorComponent: () => assert.fail('must not replace editor'),
   } };
@@ -79,6 +96,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     console.log('ASTRA_NATIVE_SELECTION_READBACK_OK_2');
   } finally {
     for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+    (InteractiveMode.prototype as any).clearExtensionWidgets.call(receiver);
     tui.stop({ preserveScreen: true });
   }
 }
