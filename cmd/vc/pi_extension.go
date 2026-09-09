@@ -267,8 +267,8 @@ export function createNativeClipboardWriter(options: NativeClipboardWriterOption
 	let file: string;
 	let args: string[];
 	if (options.platform === "darwin") {
-		file = "/usr/bin/pbcopy";
-		args = [];
+		file = "/usr/bin/osascript";
+		args = ["-l", "JavaScript", "-e", "ObjC.import('Foundation'); ObjC.import('AppKit'); const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile; const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding); if (!text) throw new Error('Native clipboard write failed.'); const pasteboard = $.NSPasteboard.generalPasteboard; pasteboard.clearContents; if (!pasteboard.setStringForType(text, $.NSPasteboardTypeString)) throw new Error('Native clipboard write failed.');"];
 	} else if (options.platform === "win32") {
 		const root = options.env.SystemRoot || options.env.WINDIR || "C:\\Windows";
 		file = path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
