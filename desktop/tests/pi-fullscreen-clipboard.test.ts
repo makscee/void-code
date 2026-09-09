@@ -363,7 +363,7 @@ it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach n
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
     expect(setWidget).toHaveBeenCalled();
     r.drag(); await flush();
-    expect(spawn).toHaveBeenCalledWith('/usr/bin/pbcopy', expect.any(Array), expect.objectContaining({ stdio: ['pipe', 'ignore', 'pipe'] }));
+    expect(spawn).toHaveBeenCalledWith('/usr/bin/osascript', expect.any(Array), expect.objectContaining({ stdio: ['pipe', 'ignore', 'pipe'] }));
     expect(Buffer.concat(bytes).toString('utf8')).toBe('Привет 世界 😀\nстрока два');
     expect(r.flash).not.toHaveBeenCalledWith('Copied!');
     child.emit('close', 0, null); await flush(); expect(r.flash).toHaveBeenCalledWith('Copied!');

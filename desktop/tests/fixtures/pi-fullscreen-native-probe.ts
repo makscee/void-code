@@ -23,7 +23,23 @@ interface WidgetConsumerView {
 export default async function (pi: ExtensionAPI): Promise<void> {
   assert.equal(process.env.VC_ISOLATED_CLIPBOARD_ACCEPTANCE, 'I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION');
   assert.ok(process.platform === 'darwin' || process.platform === 'win32');
-  const markers = ['ASTRA-A Привет 世界 😀', 'ASTRA-B Другая 日本 🦊'];
+  const markers = [
+    '{\\rtf1\\ansi literal Привет 世界 😀}',
+    '%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage',
+    'ASTRA-A Привет 世界 😀',
+    'ASTRA-B Другая 日本 🦊',
+  ];
+  // Independent reader: require the declared plain-string type, never RTF fallback.
+  // Return ASCII base64 of explicitly encoded UTF-8, independent of terminal locale.
+  const macReadScript = `
+    ObjC.import('Foundation');
+    ObjC.import('AppKit');
+    const board = $.NSPasteboard.generalPasteboard;
+    if (!board.types.containsObject($.NSPasteboardTypeString)) throw new Error('plain type unavailable');
+    const text = board.stringForType($.NSPasteboardTypeString);
+    if (text.isNil()) throw new Error('plain string unavailable');
+    ObjC.unwrap(text.dataUsingEncoding($.NSUTF8StringEncoding).base64EncodedStringWithOptions(0));
+  `;
   let input: (data: string) => void = () => {};
   const terminal = {
     columns: 80, rows: 8, kittyProtocolActive: false,
@@ -92,21 +108,30 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
     for (const [index, marker] of markers.entries()) {
-      lines = [marker]; tui.renderNow();
-      input('\x1b[<0;1;1M'); input('\x1b[<32;60;1M'); input('\x1b[<0;60;1m');
+      lines = marker.split('\n'); tui.renderNow();
+      input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
       assert.ok((tui as unknown as TuiView).getSelectionBounds()?.start.scrollView === scroll, 'real scroll-view selection missing');
       const deadline = Date.now() + 6500;
       while (succeeded <= index && failures.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(failures, []); assert.equal(succeeded, index + 1, 'native completion missing');
-      const readback = process.platform === 'darwin'
-        ? execFileSync('/usr/bin/pbpaste', [], { encoding: 'utf8', timeout: 5000 })
-        : Buffer.from(execFileSync(path.win32.join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe'), [
-          '-NoProfile', '-NonInteractive', '-Sta', '-Command',
-          'Add-Type -AssemblyName System.Windows.Forms; [Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Windows.Forms.Clipboard]::GetText())))',
-        ], { encoding: 'utf8', timeout: 5000 }), 'base64').toString('utf8');
-      assert.equal(readback, marker, 'OS clipboard did not contain selected Unicode marker');
+      let readback: string;
+      try {
+        const encoded = process.platform === 'darwin'
+          ? execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', macReadScript], {
+            encoding: 'utf8', timeout: 5000, env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'pipe'],
+          })
+          : execFileSync(path.win32.join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe'), [
+            '-NoProfile', '-NonInteractive', '-Sta', '-Command',
+            'Add-Type -AssemblyName System.Windows.Forms; [Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Windows.Forms.Clipboard]::GetText())))',
+          ], { encoding: 'utf8', timeout: 5000 });
+        readback = Buffer.from(encoded.trim(), 'base64').toString('utf8');
+      } catch {
+        // Child errors may contain private stdout/stderr; never propagate them.
+        assert.fail('Independent plain-text clipboard read failed');
+      }
+      assert.ok(readback === marker, 'OS plain-text clipboard did not exactly match complete selection');
     }
-    console.log('ASTRA_NATIVE_SELECTION_READBACK_OK_2');
+    console.log('ASTRA_NATIVE_SELECTION_READBACK_OK_4');
   } finally {
     for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
     consumer.clearExtensionWidgets.call(receiver);

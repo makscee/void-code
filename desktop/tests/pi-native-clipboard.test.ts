@@ -12,12 +12,12 @@ class Child extends EventEmitter {
   close(code = 0): void { this.emit('exit', code, null); this.emit('close', code, null); }
   text(): string { return Buffer.concat(this.bytes).toString('utf8'); }
 }
-async function writer(platform = 'darwin') {
+async function writer(platform = 'darwin', env = localEnv) {
   const module = await extension();
   expect(module.createNativeClipboardWriter, 'R4/R5: managed transport lacks bounded stdin-only native writer').toBeTypeOf('function');
   const children: Child[] = [];
   const spawn = vi.fn<Spawn>(() => { const child = new Child(); children.push(child); return child; });
-  const write = module.createNativeClipboardWriter!({ platform, env: localEnv, spawn });
+  const write = module.createNativeClipboardWriter!({ platform, env, spawn });
   return { write, spawn, children };
 }
 beforeEach(() => vi.useFakeTimers());
@@ -29,7 +29,7 @@ it.each(['darwin', 'win32'])('R5: %s plan uses absolute system executable, stati
   const first = r.write(payload); await flush();
   expect(r.spawn).toHaveBeenCalledTimes(1);
   const [file, args, options] = r.spawn.mock.calls[0];
-  expect(file).toBe(platform === 'darwin' ? '/usr/bin/pbcopy' : 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  expect(file).toBe(platform === 'darwin' ? '/usr/bin/osascript' : 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
   expect(options.shell ?? false).toBe(false);
   expect(options.stdio).toEqual(['pipe', 'ignore', 'pipe']);
   expect(JSON.stringify([file, args, options])).not.toContain('Привет');
@@ -45,6 +45,37 @@ it.each(['darwin', 'win32'])('R5: %s plan uses absolute system executable, stati
   const next = r.write('distinct-marker'); await flush();
   expect(r.spawn.mock.calls[1]).toEqual(r.spawn.mock.calls[0]);
   r.children[1].close(); await next;
+});
+
+it.each([
+  { LC_ALL: 'C', LANG: 'C' },
+  {},
+])('R1/R5: Mac static JXA explicitly decodes UTF-8 and writes plain string type, locale %j', async (locale) => {
+  const r = await writer('darwin', { ...localEnv, ...locale });
+  const payloads = ['{\\rtf1\\ansi literal Привет 世界 😀}', '%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage', 'ASTRA Unicode 日本 🦊'];
+  for (const [index, payload] of payloads.entries()) {
+    const pending = r.write(payload); await flush();
+    const [file, args, options] = r.spawn.mock.calls[index];
+    // Inspect the actual process plan, not the embedded production source.
+    expect(file, 'Mac requires explicit Unicode/plain-type API, not locale-dependent pbcopy').toBe('/usr/bin/osascript');
+    expect(args).toEqual(expect.arrayContaining(['-l', 'JavaScript', '-e']));
+    const scripts = args.flatMap((arg, i) => arg === '-e' ? [args[i + 1]] : []);
+    const script = scripts.join('\n');
+    expect(script).toMatch(/ObjC\.import\(['"]Foundation['"]\)/);
+    expect(script).toMatch(/ObjC\.import\(['"]AppKit['"]\)/);
+    expect(script).toMatch(/NSFileHandle\.fileHandleWithStandardInput/);
+    expect(script).toMatch(/readDataToEndOfFile/);
+    expect(script).toMatch(/initWithDataEncoding\([^;]*NSUTF8StringEncoding/s);
+    expect(script).toMatch(/NSPasteboard\.generalPasteboard/);
+    expect(script).toMatch(/clearContents/);
+    expect(script).toMatch(/setStringForType\([^;]*NSPasteboardTypeString/s);
+    expect(options.shell ?? false).toBe(false);
+    expect(options.stdio).toEqual(['pipe', 'ignore', 'pipe']);
+    expect(JSON.stringify([file, args, options])).not.toContain(JSON.stringify(payload).slice(1, -1));
+    expect(Buffer.concat(r.children[index].bytes)).toEqual(Buffer.from(payload, 'utf8'));
+    if (index > 0) expect(r.spawn.mock.calls[index]).toEqual(r.spawn.mock.calls[0]);
+    r.children[index].close(); await pending;
+  }
 });
 
 it.each(['darwin', 'win32'])('R3: %s exact 8MiB UTF-8 accepted intact; one byte over and NUL rejected before spawning with healthy recovery', async (platform) => {
