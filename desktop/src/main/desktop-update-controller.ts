@@ -79,8 +79,8 @@ type PinnedPlan = {
   readonly payloadBytes: Uint8Array;
 };
 
-const DEFAULT_METADATA_TIMEOUT_MS = 30_000;
-const MAX_METADATA_TIMEOUT_MS = 300_000;
+const DEFAULT_METADATA_TIMEOUT_MS = 10_000;
+const MAX_METADATA_TIMEOUT_MS = 10_000;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 
 function copyInstalled(installed: DesktopInstalledBuild): DesktopInstalledBuild {
