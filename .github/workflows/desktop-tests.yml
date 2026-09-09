@@ -46,6 +46,12 @@ jobs:
           other="darwin-$(node -p 'process.arch === "arm64" ? "x64" : "arm64"')"
           npm run check:bundled-pi-smoke -- --target "$other" | tee "$RUNNER_TEMP/cross-arch-smoke.log"
           grep -q "$other bundle" "$RUNNER_TEMP/cross-arch-smoke.log"
-      - name: Run the complete desktop Vitest suite
+      - name: Run the complete desktop Vitest suite, including isolated native clipboard acceptance
         working-directory: desktop
+        # GitHub-hosted jobs are ephemeral login sessions, so this is the one safe place to opt in
+        # to replacing the real clipboard. macOS ships this unbundled staged Pi tree.
+        env:
+          VC_ISOLATED_CLIPBOARD_ACCEPTANCE: I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION
+          VC_NATIVE_PI_ENTRY: ${{ github.workspace }}/desktop/resources/staged/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+          VC_NATIVE_PI_PACKAGE_DIR: ${{ github.workspace }}/desktop/resources/staged/pi/node_modules/@earendil-works/pi-coding-agent
         run: npm test
