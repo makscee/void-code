@@ -846,7 +846,8 @@ public static class DeleteDenyReader {
   public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
 }
 '@
-$handle = [DeleteDenyReader]::CreateFileW(${quote(x.source)}, 0x80000000, 3, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+# Decimal UInt32 keeps GENERIC_READ unsigned in Windows PowerShell 5.1.
+$handle = [DeleteDenyReader]::CreateFileW(${quote(x.source)}, [uint32]2147483648, 3, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
 if ($handle.IsInvalid) { throw "CreateFileW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
 try {
   [IO.File]::WriteAllText(${quote(ready)}, 'handle-acquired-no-FILE_SHARE_DELETE')
