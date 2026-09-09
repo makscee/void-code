@@ -467,6 +467,9 @@ export default function (pi: ExtensionAPI) {
 		const update = event.assistantMessageEvent;
 		if (update.type === "thinking_start") {
 			ctx.ui.setWorkingVisible(false);
+		} else if (update.type === "thinking_end") {
+			const hasPendingTools = currentCalls.some((call) => !call.done);
+			if (!turnHadText && !hasPendingTools) ctx.ui.setWorkingVisible(true);
 		} else if (update.type === "text_start") {
 			turnHadText = true;
 			flushHistory();
