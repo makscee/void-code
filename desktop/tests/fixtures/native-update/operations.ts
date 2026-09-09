@@ -7,12 +7,16 @@ export interface FinishOperationSeams {
   reap: () => Promise<void>;
 }
 
-/** Preserves the current helper completion bound; do not use for new retry policy. */
-export async function finishOperation<T>(done: Promise<T>, { time, reap }: FinishOperationSeams): Promise<T> {
+/** The owner already supplies the operation deadline; this only joins its settlement. */
+export async function finishOperation<T>(done: Promise<T>, { reap }: FinishOperationSeams): Promise<T> {
   try {
-    return await time.bounded(done, 'helper operation completion', 45_000);
+    return await done;
   } catch (error) {
-    await reap();
+    try {
+      await reap();
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], 'operation and exact reap failed');
+    }
     throw error;
   }
 }
@@ -34,14 +38,42 @@ export interface SeedArchiveOptions {
   observe?: (event: { attempt: number; elapsedMs: number; code?: string }) => void | Promise<void>;
 }
 
-/**
- * A deliberately one-shot setup archive: no ownership guard, retry, or fallback yet.
- * The baseline ignores options while the test-first refactor establishes the validation seam.
- */
+/** Archives only caller-verified fixture seeds; Windows sharing refusals get one small budget. */
 export async function archiveSeed(
   { source, destination }: SeedArchivePaths,
   fs: SeedArchiveFs,
-  _options?: SeedArchiveOptions,
+  options?: SeedArchiveOptions,
 ): Promise<void> {
-  if (await fs.sourceKind(source) === 'present') await fs.rename(source, destination);
+  if (await fs.sourceKind(source) === 'missing') return;
+  if (!options) throw new Error('seed archive options required');
+
+  const started = options.now();
+  const elapsed = () => Math.max(0, options.now() - started);
+  let attempt = 0;
+  let lastError: unknown;
+  while (elapsed() < 5_000) {
+    attempt++;
+    await options.verify();
+    if (await options.destinationExists()) throw new Error('seed archive destination exists');
+    const link = await options.sourceIsLink();
+    try {
+      await fs.rename(source, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      try {
+        await options.observe?.({ attempt, elapsedMs: elapsed(), code });
+      } catch (observeError) {
+        throw new AggregateError([error, observeError], 'seed rename and observation failed');
+      }
+      if (link || options.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || elapsed() >= 5_000) {
+        throw error;
+      }
+      const remaining = 5_000 - elapsed();
+      if (remaining <= 0) throw error;
+      await options.sleep(Math.min(100, remaining));
+    }
+  }
+  throw lastError ?? new Error('seed archive budget expired');
 }
