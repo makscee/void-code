@@ -468,6 +468,40 @@ describe('desktop update single-flight and generation ownership', () => {
     expect(controller.snapshot().state).toMatch(/unavailable|failed/);
   });
 
+  it.each([
+    ['omitted metadataTimeoutMs', undefined],
+    ['metadataTimeoutMs=60000', 60_000],
+  ])('enforces the 10-second metadata deadline when %s', async (_label, metadataTimeoutMs) => {
+    const pending = deferred<Uint8Array>();
+    let aborted = false;
+    const r = rig({
+      metadataTimeoutMs,
+      fetchMetadata: vi.fn((signal) => {
+        signal.addEventListener('abort', () => { aborted = true; });
+        return pending.promise;
+      }),
+    });
+    const controller = await r.create();
+    let complete = false;
+    const work = controller.check().then(() => { complete = true; }, () => { complete = true; });
+    await ticks();
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    await ticks();
+    expect(complete).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await ticks();
+    expect(complete).toBe(true);
+    expect(aborted).toBe(true);
+    expect(controller.snapshot()).toMatchObject({ state: 'unavailable', error: 'metadata-timeout' });
+
+    pending.resolve(envelope());
+    await ticks();
+    expect(controller.snapshot()).toMatchObject({ state: 'unavailable', error: 'metadata-timeout' });
+    await work;
+  });
+
   it('keeps generated concurrent operations to one authorized live download and never hands off before accepted native consent', async () => {
     await fc.assert(fc.asyncProperty(
       fc.array(fc.constantFrom('download', 'install', 'accept', 'reject', 'settle', 'cancel', 'dispose', 'check'), { minLength: 4, maxLength: 20 }),
