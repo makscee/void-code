@@ -1,16 +1,17 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:process';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { archiveSeed, finishOperation } from './fixtures/native-update/operations.ts';
+import type { SeedArchiveOptions } from './fixtures/native-update/operations.ts';
 import {
   assertSameInventory, copyInitialMac, createCapsule, installInitialNsis, inventory,
-  launchFixture, packageVariant, readAndValidateBootAttempt, readAndValidateReceipt, registryWitness,
+  launchFixture, packageVariant, readAndValidateBootAttempt, readAndValidateReceipt, registryWitness, verifyCapsule,
 } from './fixtures/native-update/tooling.ts';
 import type {
   BootAttempt, FileInventory, FixtureMode, LaunchedFixture, NativeFixtureCapsule, PackagedVariant, Receipt,
@@ -56,6 +57,37 @@ let poisoned = false;
 const children: Running[] = [];
 const manualChildren: LaunchedFixture[] = [];
 const contexts: Context[] = [];
+const readerEvidence: NativeFixtureCapsule[] = [];
+
+// Direct regular files only: at most 64 files / 4 MiB per directory, opaque bytes.
+async function retainEvidence(directory: string, output: string, allowed: RegExp) {
+  const directoryStat = await lstat(directory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw new Error('evidence directory redirected');
+  await mkdir(output, { recursive: true });
+  let count = 0;
+  for (const name of (await readdir(directory)).sort()) {
+    if (!allowed.test(name)) continue;
+    const file = join(directory, name);
+    const before = await lstat(file);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > 64 * 1024) continue;
+    if (count >= 64) break;
+    const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const current = await handle.stat();
+      if (!current.isFile() || current.dev !== before.dev || current.ino !== before.ino || current.size > 64 * 1024) continue;
+      const bytes = Buffer.alloc(64 * 1024 + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const result = await handle.read(bytes, length, bytes.length - length, length);
+        if (!result.bytesRead) break;
+        length += result.bytesRead;
+      }
+      if (length > 64 * 1024) continue;
+      await writeFile(join(output, name), bytes.subarray(0, length), { flag: 'wx' });
+      count++;
+    } finally { await handle.close(); }
+  }
+}
 
 async function present(file: string): Promise<boolean> {
   try { await lstat(file); return true; }
@@ -239,9 +271,17 @@ async function seed(s: Suite, live: boolean): Promise<Context> {
   // Only setup may reinstall. Recovery oracles below NEVER call seed/copy/NSIS.
   const id = `update-${randomUUID()}`;
   for (const source of [s.c.target, join(s.c.root, 'backup.app')]) {
-    await archiveSeed({ source, destination: `${source}.archive-${id}` }, {
-      sourceKind: async (path) => await present(path) ? 'present' : 'missing', rename,
-    });
+    const destination = `${source}.archive-${id}`;
+    const options = await seedOptions(s.c, source, destination);
+    const trace: { attempt: number; elapsedMs: number; code?: string }[] = [];
+    options.observe = (event) => { trace.push(event); };
+    try {
+      await archiveSeed({ source, destination }, {
+        sourceKind: async (path) => await present(path) ? 'present' : 'missing', rename,
+      }, options);
+    } finally {
+      await writeFile(join(s.c.witnessDir, `archive-${randomUUID()}.json`), JSON.stringify({ source, destination, trace }));
+    }
   }
   if (host === 'mac') await copyInitialMac(s.c, s.n.artifact, s.c.target);
   else await installInitialNsis(s.c, s.n.artifact, s.c.target);
@@ -406,6 +446,481 @@ try {
   expect(envelope, 'registry probe must emit only JSON, with empty stderr').not.toBeNull();
   checkRegistryObservation(envelope![1]!, x.s.c.target, version);
 }
+
+// External ownership seam only: no retry or rename policy lives in this adapter.
+async function seedOptions(c: NativeFixtureCapsule, source: string, destination: string): Promise<SeedArchiveOptions> {
+  const initial = await present(source) ? await lstat(source) : undefined;
+  return {
+    platform, now: () => performance.now(), sleep: pause,
+    verify: async () => {
+      await verifyCapsule(c);
+      if (![c.target, join(c.root, 'backup.app')].includes(source)) throw new Error('unowned seed source');
+      if (!initial) {
+        if (await present(source)) throw new Error('seed source appeared after initial absence');
+        return;
+      }
+      const current = await lstat(source);
+      if (current.dev !== initial.dev || current.ino !== initial.ino || current.isSymbolicLink() !== initial.isSymbolicLink()) {
+        throw new Error('seed source identity changed');
+      }
+      // Case03 intentionally leaves an owned junction. Never read through that link.
+      if (!initial.isSymbolicLink()) {
+        if (!current.isDirectory() || await realpath(source) !== source) throw new Error('seed source redirected');
+        const resources = platform === 'darwin' ? join(source, 'Contents/Resources') : join(source, 'resources');
+        const identity = JSON.parse(await readFile(join(resources, 'identity.json'), 'utf8'));
+        if (JSON.stringify(identity) !== JSON.stringify(c.marker)) throw new Error('seed app identity changed');
+      }
+    },
+    destinationExists: () => present(destination),
+    sourceIsLink: async () => initial !== undefined && (await lstat(source)).isSymbolicLink(),
+  };
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function settlement<T>(promise: Promise<T>) {
+  const state: { status: 'pending' | 'fulfilled' | 'rejected'; value?: T; error?: unknown } = { status: 'pending' };
+  const observed = promise.then(
+    (value) => { state.status = 'fulfilled'; state.value = value; },
+    (error: unknown) => { state.status = 'rejected'; state.error = error; },
+  );
+  return { state, observed };
+}
+function retainedErrors(error: unknown): unknown[] {
+  if (error instanceof AggregateError) return [error, ...error.errors.flatMap(retainedErrors)];
+  if (error instanceof Error && error.cause !== undefined) return [error, ...retainedErrors(error.cause)];
+  return [error];
+}
+
+describe.sequential('portable finish failure controls', () => {
+  it.each([0, 7])('preserves natural code %i and exact result without reap', async (code) => {
+    const value = { code, events: [] };
+    const reap = vi.fn(async () => {});
+    expect(await finishOperation(Promise.resolve(value), { time: { bounded }, reap })).toBe(value);
+    expect(reap).not.toHaveBeenCalled();
+  });
+  it('joins a 60s settlement without adding a 45s watchdog', async () => {
+    vi.useFakeTimers();
+    const done = deferred<{ code: number; events: Event[] }>();
+    const reap = vi.fn(async () => {});
+    const result = settlement(finishOperation(done.promise, { time: { bounded }, reap }));
+    try {
+      await vi.advanceTimersByTimeAsync(45_001);
+      expect(result.state.status).toBe('pending');
+      expect(reap).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(14_999);
+      const value = { code: 7, events: [] };
+      done.resolve(value);
+      await result.observed;
+      expect(result.state).toEqual({ status: 'fulfilled', value });
+      expect(result.state.value).toBe(value);
+      expect(reap).not.toHaveBeenCalled();
+    } finally { done.resolve({ code: 7, events: [] }); await result.observed; vi.useRealTimers(); }
+  });
+  it('two joins at 150s/160s preserve the original 180s owner deadline', async () => {
+    vi.useFakeTimers();
+    const done = deferred<never>();
+    const original = new Error('original owner deadline');
+    const owner = setTimeout(() => done.reject(original), 180_000);
+    const ownerState = settlement(done.promise);
+    const reap = vi.fn(async () => {});
+    try {
+      await vi.advanceTimersByTimeAsync(150_000);
+      const first = settlement(finishOperation(done.promise, { time: { bounded }, reap }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      const second = settlement(finishOperation(done.promise, { time: { bounded }, reap }));
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(first.state.status).toBe('pending');
+      expect(second.state.status).toBe('pending');
+      expect(reap).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all([first.observed, second.observed]);
+      expect(first.state.error).toBe(original);
+      expect(second.state.error).toBe(original);
+      expect(reap).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { clearTimeout(owner); done.reject(original); await ownerState.observed; vi.useRealTimers(); }
+  });
+  it('retains original rejection identity and reaps exactly once, after rejection', async () => {
+    const original = new Error('operation failed');
+    const order: string[] = [];
+    const done = Promise.resolve().then(() => { order.push('reject'); throw original; });
+    const reap = vi.fn(async () => { order.push('reap'); });
+    await expect(finishOperation(done, { time: { bounded }, reap })).rejects.toBe(original);
+    expect(reap).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['reject', 'reap']);
+  });
+  it('retains BOTH operation and 5s reap errors by identity', async () => {
+    vi.useFakeTimers();
+    const original = new Error('operation failed');
+    const cleanup = new Error('exact child reap failed');
+    const reap = vi.fn(async () => { await pause(5_000); throw cleanup; });
+    const result = settlement(finishOperation(Promise.reject(original), { time: { bounded }, reap }));
+    try {
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(result.state.status).toBe('pending');
+      expect(reap).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await result.observed;
+      expect(result.state.status).toBe('rejected');
+      expect(retainedErrors(result.state.error)).toContain(original);
+      expect(retainedErrors(result.state.error)).toContain(cleanup);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { await vi.runAllTimersAsync(); await result.observed; vi.useRealTimers(); }
+  });
+  it('short real owner watchdog kills/reaps only its exact Node child', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-owner-control-'));
+    const sentinel = run(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], directory, join(directory, 'sentinel.log'), undefined, 10_000);
+    const owned = run(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], directory, join(directory, 'owner.log'), undefined, 400);
+    const start = performance.now();
+    try {
+      const owner = settlement(owned.done);
+      const first = settlement(finish(owned));
+      await pause(100);
+      const second = settlement(finish(owned));
+      await Promise.all([owner.observed, first.observed, second.observed]);
+      expect(owner.state.status).toBe('rejected');
+      expect(owner.state.error).toBeInstanceOf(Error);
+      expect(String(owner.state.error)).toContain('child watchdog/output bound:');
+      expect(first.state.error).toBe(owner.state.error);
+      expect(second.state.error).toBe(owner.state.error);
+      const closed = await owned.closed;
+      expect(closed.code === null || closed.code !== 0).toBe(true);
+      expect(owned.child.exitCode !== null || owned.child.signalCode !== null).toBe(true);
+      expect(performance.now() - start).toBeGreaterThanOrEqual(300);
+      expect(performance.now() - start).toBeLessThan(5_400);
+      expect(alive(sentinel.child.pid!)).toBe(true);
+    } finally { await killAndReap(owned); await killAndReap(sentinel); }
+  });
+});
+
+async function archiveControl() {
+  const c = await createCapsule(await mkdtemp(join(tmpdir(), 'native-archive-control-')));
+  const source = c.target;
+  const destination = `${source}.archive-${randomUUID()}`;
+  const resources = platform === 'darwin' ? join(source, 'Contents/Resources') : join(source, 'resources');
+  await mkdir(resources, { recursive: true });
+  await writeFile(join(resources, 'identity.json'), JSON.stringify(c.marker));
+  await writeFile(join(source, 'payload'), 'immutable seed bytes', { flag: 'wx' });
+  const before = await inventory(source);
+  const options = await seedOptions(c, source, destination);
+  let elapsed = 0;
+  const order: string[] = [];
+  const sleeps: number[] = [];
+  const trace: { attempt: number; elapsedMs: number; code?: string }[] = [];
+  const verify = options.verify;
+  const destinationExists = options.destinationExists;
+  const sourceIsLink = options.sourceIsLink;
+  Object.assign(options, {
+    platform: 'win32', now: () => elapsed,
+    sleep: async (ms: number) => {
+      expect(ms).toBeGreaterThan(0); expect(ms).toBeLessThanOrEqual(100);
+      sleeps.push(ms); elapsed += ms; order.push('sleep');
+      if (elapsed > 5_000 || sleeps.length > 501) throw new Error('test safety fuse: unbounded retry');
+    },
+    verify: async () => { order.push('verify'); await verify(); },
+    destinationExists: async () => { order.push('destination'); return destinationExists(); },
+    sourceIsLink: async () => { order.push('link'); return sourceIsLink(); },
+    observe: (event: { attempt: number; elapsedMs: number; code?: string }) => { trace.push(event); },
+  } satisfies Partial<SeedArchiveOptions>);
+  const fs = {
+    sourceKind: async (path: string): Promise<'present' | 'missing'> => await present(path) ? 'present' : 'missing',
+    rename: vi.fn(async (from: string, to: string) => { order.push('rename'); await rename(from, to); }),
+  };
+  return { c, source, destination, resources, before, options, fs, sleeps, trace, order, elapsed: () => elapsed,
+    archive: () => archiveSeed({ source, destination }, fs, options),
+    retained: async () => { assertSameInventory(before, await inventory(source)); expect(await present(destination)).toBe(false); },
+  };
+}
+const sharingError = (code: string) => Object.assign(new Error(`rename ${code}`), { code });
+
+describe.sequential('portable seed archive failure controls', () => {
+  it.each(['EPERM', 'EACCES', 'EBUSY'])('Windows transient %s retries then moves real bytes exactly once', async (code) => {
+    const x = await archiveControl();
+    const failure = sharingError(code);
+    x.fs.rename.mockImplementationOnce(async () => { x.order.push('rename'); throw failure; });
+    await expect(x.archive()).resolves.toBeUndefined();
+    expect(x.fs.rename).toHaveBeenCalledTimes(2);
+    expect(x.fs.rename.mock.calls).toEqual([[x.source, x.destination], [x.source, x.destination]]);
+    expect(x.sleeps).toHaveLength(1);
+    expect(x.elapsed()).toBeLessThanOrEqual(100);
+    expect(await present(x.source)).toBe(false);
+    assertSameInventory(x.before, await inventory(x.destination));
+    const attempts = x.order.reduce<number[]>((all, value, index) => value === 'rename' ? [...all, index] : all, []);
+    for (const [index, at] of attempts.entries()) {
+      const checks = x.order.slice(index === 0 ? 0 : attempts[index - 1]! + 1, at);
+      expect(checks).toContain('verify'); expect(checks).toContain('destination');
+    }
+    expect(x.trace.filter((event) => event.code === code)).toHaveLength(1);
+    expect(x.trace[0]).toMatchObject({ attempt: 1, elapsedMs: 0, code });
+    expect(x.trace.every((event, index) => index === 0 || event.elapsedMs >= x.trace[index - 1]!.elapsedMs)).toBe(true);
+  });
+  it.each(['EPERM', 'EACCES', 'EBUSY'])('persistent %s exhausts at most 5s, retains final error and source', async (code) => {
+    const x = await archiveControl();
+    const errors: Error[] = [];
+    x.fs.rename.mockImplementation(async () => { const error = sharingError(code); errors.push(error); throw error; });
+    const result = settlement(x.archive());
+    await result.observed;
+    await x.retained();
+    expect(result.state.status).toBe('rejected');
+    expect(retainedErrors(result.state.error)).toContain(errors.at(-1));
+    expect(x.fs.rename.mock.calls.length).toBeGreaterThan(1);
+    expect(x.fs.rename.mock.calls.length).toBeLessThanOrEqual(501);
+    expect(x.elapsed()).toBeGreaterThanOrEqual(4_900);
+    expect(x.elapsed()).toBeLessThanOrEqual(5_000);
+    expect(x.trace.at(-1)?.code).toBe(code);
+  });
+  it.each(['EIO', 'ENOENT', 'ENOSPC', 'EXDEV', 'EINVAL'])('does not retry other error %s', async (code) => {
+    const x = await archiveControl();
+    const error = sharingError(code);
+    x.fs.rename.mockRejectedValue(error);
+    await expect(x.archive()).rejects.toBe(error);
+    expect(x.fs.rename).toHaveBeenCalledTimes(1); expect(x.sleeps).toEqual([]);
+    await x.retained();
+  });
+  it.each(['darwin', 'linux'].flatMap((os) => ['EPERM', 'EACCES', 'EBUSY'].map((code) => [os, code] as const)))('does not retry sharing errors on %s: %s', async (os, code) => {
+    const x = await archiveControl(); x.options.platform = os;
+    const error = sharingError(code); x.fs.rename.mockRejectedValue(error);
+    await expect(x.archive()).rejects.toBe(error);
+    expect(x.fs.rename).toHaveBeenCalledTimes(1); expect(x.sleeps).toEqual([]);
+    await x.retained();
+  });
+  it('refuses an existing empty destination instead of replacing it', async () => {
+    const x = await archiveControl(); await mkdir(x.destination);
+    const identity = await lstat(x.destination);
+    const result = settlement(x.archive()); await result.observed;
+    expect(result.state.status).toBe('rejected');
+    expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
+    expect((await lstat(x.destination)).ino).toBe(identity.ino);
+    expect(await readdir(x.destination)).toEqual([]);
+    assertSameInventory(x.before, await inventory(x.source));
+  });
+  it('destination appearing after sharing refusal prevents a second rename', async () => {
+    const x = await archiveControl(); const error = sharingError('EBUSY');
+    x.fs.rename.mockImplementationOnce(async () => { await mkdir(x.destination); throw error; });
+    const result = settlement(x.archive()); await result.observed;
+    expect(result.state.status).toBe('rejected');
+    expect(x.order.filter((item) => item === 'destination').length).toBeGreaterThanOrEqual(2);
+    expect(result.state.error).not.toBe(error);
+    expect(x.fs.rename).toHaveBeenCalledTimes(1);
+    expect(await readdir(x.destination)).toEqual([]);
+    assertSameInventory(x.before, await inventory(x.source));
+  });
+  it.each(['capsule marker', 'app identity', 'directory identity', 'redirect'])('refuses changed %s during retry before another rename', async (change) => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`;
+    const external = join(x.c.root, 'external-owned');
+    await mkdir(external); await writeFile(join(external, 'sentinel'), 'do not follow');
+    const externalBefore = await inventory(external);
+    x.fs.rename.mockImplementationOnce(async () => {
+      if (change === 'capsule marker') await writeFile(x.c.markerPath, JSON.stringify({ ...x.c.marker, appId: 'wrong' }));
+      else if (change === 'app identity') await writeFile(join(x.resources, 'identity.json'), '{}');
+      else {
+        await rename(x.source, saved);
+        if (change === 'redirect') await symlink(external, x.source, platform === 'win32' ? 'junction' : 'dir');
+        else await mkdir(x.source);
+      }
+      throw sharingError('EPERM');
+    });
+    const result = settlement(x.archive()); await result.observed;
+    expect(result.state.status).toBe('rejected');
+    expect(x.fs.rename).toHaveBeenCalledTimes(1);
+    expect(await present(x.destination)).toBe(false);
+    assertSameInventory(externalBefore, await inventory(external));
+    if (change === 'directory identity' || change === 'redirect') assertSameInventory(x.before, await inventory(saved));
+    expect(x.order.filter((item) => item === 'verify').length).toBeGreaterThanOrEqual(2);
+    expect(retainedErrors(result.state.error).some((error) => error instanceof Error &&
+      /invalid fixture capsule marker|seed app identity changed|seed source identity changed/.test(error.message))).toBe(true);
+  });
+  it.each(['verify', 'destinationExists', 'sourceIsLink'] as const)('preserves %s inspection error identity without rename/retry', async (guard) => {
+    const x = await archiveControl();
+    const error = sharingError('EACCES');
+    const inspect = vi.fn(async (): Promise<never> => { throw error; });
+    x.options[guard] = inspect;
+    await expect(x.archive()).rejects.toBe(error);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
+    await x.retained();
+  });
+  it('time spent in rename consumes the original 5s budget, never starts an attempt after expiry', async () => {
+    const x = await archiveControl();
+    let elapsed = 0;
+    const attempts: number[] = [];
+    const failures: Error[] = [];
+    x.options.now = () => elapsed;
+    const sleep = vi.fn(async (ms: number) => {
+      expect(ms).toBeGreaterThan(0);
+      expect(ms).toBeLessThanOrEqual(Math.min(100, 5_000 - elapsed));
+      elapsed += ms;
+    });
+    x.options.sleep = sleep;
+    x.fs.rename.mockImplementation(async () => {
+      attempts.push(elapsed);
+      expect(elapsed).toBeLessThan(5_000);
+      elapsed += 5_000;
+      const error = sharingError('EBUSY'); failures.push(error); throw error;
+    });
+    const result = settlement(x.archive()); await result.observed;
+    expect(result.state.status).toBe('rejected');
+    expect(retainedErrors(result.state.error)).toContain(failures.at(-1));
+    expect(attempts).toEqual([0]);
+    expect(elapsed).toBe(5_000);
+    expect(sleep).not.toHaveBeenCalled();
+    await x.retained();
+  });
+  it('an arbitrary sibling is not an owned target/backup source', async () => {
+    const x = await archiveControl();
+    const sibling = join(x.c.root, 'not-a-seed'); await rename(x.source, sibling);
+    const options = await seedOptions(x.c, sibling, x.destination);
+    await expect(archiveSeed({ source: sibling, destination: x.destination }, x.fs, options)).rejects.toThrow('unowned seed source');
+    expect(x.fs.rename).not.toHaveBeenCalled();
+    expect(await present(x.destination)).toBe(false);
+    assertSameInventory(x.before, await inventory(sibling));
+  });
+  it('initial invalid capsule refuses even an otherwise successful rename', async () => {
+    const x = await archiveControl();
+    await writeFile(x.c.markerPath, '{}');
+    const result = settlement(x.archive()); await result.observed;
+    expect(result.state.status).toBe('rejected'); expect(x.fs.rename).not.toHaveBeenCalled();
+    await x.retained();
+  });
+  it.each([false, true])('pre-existing owned link moves only the LINK, no retries (sharing refusal=%s)', async (refuse) => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`; await rename(x.source, saved);
+    await symlink(saved, x.source, platform === 'win32' ? 'junction' : 'dir');
+    const options = await seedOptions(x.c, x.source, x.destination);
+    options.platform = 'win32'; options.sleep = x.options.sleep;
+    const failure = sharingError('EPERM');
+    if (refuse) x.fs.rename.mockRejectedValue(failure);
+    const work = archiveSeed(x, x.fs, options);
+    if (refuse) {
+      await expect(work).rejects.toBe(failure);
+      expect((await lstat(x.source)).isSymbolicLink()).toBe(true);
+      expect(await present(x.destination)).toBe(false);
+    } else {
+      await expect(work).resolves.toBeUndefined();
+      expect((await lstat(x.destination)).isSymbolicLink()).toBe(true);
+      expect(await present(x.source)).toBe(false);
+    }
+    expect(x.fs.rename).toHaveBeenCalledTimes(1); expect(x.sleeps).toEqual([]);
+    assertSameInventory(x.before, await inventory(saved));
+  });
+  it('initially absent seed stays a no-op but rejects a source appearing before verification', async () => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`; await rename(x.source, saved);
+    const options = await seedOptions(x.c, x.source, x.destination);
+    await expect(options.verify()).resolves.toBeUndefined();
+    await expect(archiveSeed(x, x.fs, options)).resolves.toBeUndefined();
+    expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
+    await rename(saved, x.source);
+    await expect(options.verify()).rejects.toThrow('seed source appeared after initial absence');
+    await x.retained();
+  });
+  it('missing seed is a no-op without rename or sleep', async () => {
+    const x = await archiveControl(); await rename(x.source, `${x.source}.saved`);
+    await expect(x.archive()).resolves.toBeUndefined();
+    expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
+    expect(await present(x.destination)).toBe(false);
+    assertSameInventory(x.before, await inventory(`${x.source}.saved`));
+  });
+});
+
+describe.sequential('Windows exclusive-reader archive control', () => {
+  it.skipIf(platform !== 'win32')('real CreateFileW deny-delete handle: witnessed refusal, ACK release, real archive', async () => {
+    const x = await archiveControl();
+    readerEvidence.push(x.c);
+    const ready = join(x.c.witnessDir, 'reader.ready');
+    const ack = join(x.c.witnessDir, 'reader.release');
+    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class DeleteDenyReader {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+}
+'@
+$handle = [DeleteDenyReader]::CreateFileW(${quote(x.source)}, 0x80000000, 3, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+if ($handle.IsInvalid) { throw "CreateFileW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+try {
+  [IO.File]::WriteAllText(${quote(ready)}, 'handle-acquired-no-FILE_SHARE_DELETE')
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while (-not [IO.File]::Exists(${quote(ack)})) {
+    if ($clock.ElapsedMilliseconds -ge 15000) { throw 'reader ACK watchdog' }
+    Start-Sleep -Milliseconds 10
+  }
+} finally { $handle.Dispose() }
+`;
+    const reader = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64')], x.c.root, join(x.c.witnessDir, 'reader.log'), undefined, 25_000);
+    const readerResult = settlement(reader.done);
+    const release = async () => { if (!await present(ack)) await writeFile(ack, 'release', { flag: 'wx' }); };
+    const errors: unknown[] = [];
+    try {
+      await until(async () => {
+        if (await present(ready)) return true;
+        if (readerResult.state.status !== 'pending') throw new Error(`reader exited before readiness: ${String(readerResult.state.error)}`);
+        return false;
+      }, 'owned exclusive reader readiness', 10_000);
+      expect(await readFile(ready, 'utf8')).toBe('handle-acquired-no-FILE_SHARE_DELETE');
+      const oneShot = settlement(rename(x.source, x.destination));
+      await oneShot.observed;
+      await writeFile(join(x.c.witnessDir, 'reader-observation.json'), JSON.stringify({
+        capsule: x.c.root, source: x.source, ready: await readFile(ready, 'utf8'),
+        status: oneShot.state.status, code: (oneShot.state.error as NodeJS.ErrnoException | undefined)?.code,
+        beforeACK: true,
+      }));
+      expect(oneShot.state.status).toBe('rejected');
+      expect(['EPERM', 'EACCES', 'EBUSY']).toContain((oneShot.state.error as NodeJS.ErrnoException).code);
+      await x.retained();
+      const options = await seedOptions(x.c, x.source, x.destination);
+      const trace: { attempt: number; elapsedMs: number; code?: string }[] = [];
+      let released = false;
+      options.observe = async (event) => {
+        trace.push(event);
+        if (!released && event.code !== undefined) {
+          expect(event.attempt).toBe(1);
+          expect(['EPERM', 'EACCES', 'EBUSY']).toContain(event.code);
+          expect(readerResult.state.status).toBe('pending');
+          released = true;
+          await release();
+          expect((await bounded(reader.done, 'reader ACK close', 5_000)).code).toBe(0);
+          expect((await reader.closed).code).toBe(0);
+        }
+      };
+      const start = performance.now();
+      try {
+        await expect(archiveSeed(x, x.fs, options)).resolves.toBeUndefined();
+      } finally {
+        await writeFile(join(x.c.witnessDir, 'archive-trace.json'), JSON.stringify(trace));
+      }
+      expect(released).toBe(true);
+      expect(x.fs.rename.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(performance.now() - start).toBeLessThanOrEqual(5_000);
+      expect(trace.some((event) => event.code !== undefined)).toBe(true);
+      expect(trace.every((event, index) => index === 0 || event.elapsedMs >= trace[index - 1]!.elapsedMs)).toBe(true);
+      expect(await present(x.source)).toBe(false);
+      assertSameInventory(x.before, await inventory(x.destination));
+    } catch (error) { errors.push(error); }
+    // ACK and actual close on both RED and GREEN. Only exact tracked child may be killed on cleanup failure.
+    try {
+      await release();
+      expect((await bounded(reader.done, 'reader final ACK close', 5_000)).code).toBe(0);
+      expect((await reader.closed).code).toBe(0);
+    } catch (error) {
+      errors.push(error);
+      try { await killAndReap(reader); } catch (cleanup) { errors.push(cleanup); }
+    }
+    await readerResult.observed;
+    if (errors.length) throw new AggregateError(errors, `exclusive reader control; retained ${x.c.root}`);
+  }, 35_000);
+});
 
 describe('portable registry observation controls', () => {
   const target = 'C:\\native update テスト-mXSZpZ\\fixture';
@@ -718,6 +1233,12 @@ afterAll(async () => {
   for (const child of children) {
     try { await killAndReap(child); } catch (error) { errors.push(error); }
   }
+  for (const control of readerEvidence) {
+    try {
+      const output = join(root, 'artifacts/native-update', `exclusive-reader-${platform}-${randomUUID()}`);
+      await retainEvidence(control.witnessDir, output, /^(?:reader\.log|reader\.ready|reader\.release|reader-observation\.json|archive-trace\.json)$/);
+    } catch (error) { errors.push(error); }
+  }
   if (capsule) {
     const output = join(root, 'artifacts/native-update', `${platform}-${arch}-${randomUUID()}`);
     await mkdir(output, { recursive: true });
@@ -729,6 +1250,8 @@ afterAll(async () => {
         }
       }
     }
+    // Journal records are opaque; never traverse staged .new.app bundles.
+    await retainEvidence(capsule.journalDir, join(output, 'journals'), /\.json$/);
     await writeFile(join(output, 'cleanup.json'), JSON.stringify({
       retained: true, capsule: capsule.root, errors: errors.map(String),
       observationScope: 'Immutable bootstrap ledger; all validated witnessed PIDs must disappear via transaction exit files. Native qualification requires actual runs.',
