@@ -948,10 +948,39 @@ describe.sequential('portable seed archive failure controls', () => {
   });
   it('missing seed is a no-op without rename or sleep', async () => {
     const x = await archiveControl(); await rename(x.source, `${x.source}.saved`);
-    await expect(x.archive()).resolves.toBeUndefined();
+    const options = await seedOptions(x.c, x.source, x.destination);
+    options.sleep = x.options.sleep;
+    await expect(archiveSeed(x, x.fs, options)).resolves.toBeUndefined();
     expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
     expect(await present(x.destination)).toBe(false);
     assertSameInventory(x.before, await inventory(`${x.source}.saved`));
+  });
+  it('loss of initially captured source refuses before rename or install', async () => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`; await rename(x.source, saved);
+    const install = vi.fn();
+    const result = settlement(x.archive().then(install)); await result.observed;
+    expect.soft(result.state.status).toBe('rejected');
+    expect.soft(install).not.toHaveBeenCalled();
+    expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
+    expect(await present(x.source)).toBe(false);
+    expect(await present(x.destination)).toBe(false);
+    assertSameInventory(x.before, await inventory(saved));
+  });
+  it('invalid capsule with initially absent source refuses before rename or install', async () => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`; await rename(x.source, saved);
+    const options = await seedOptions(x.c, x.source, x.destination);
+    options.sleep = x.options.sleep;
+    await writeFile(x.c.markerPath, '{}');
+    const install = vi.fn();
+    const result = settlement(archiveSeed(x, x.fs, options).then(install)); await result.observed;
+    expect.soft(result.state.status).toBe('rejected');
+    expect.soft(install).not.toHaveBeenCalled();
+    expect(x.fs.rename).not.toHaveBeenCalled(); expect(x.sleeps).toEqual([]);
+    expect(await present(x.source)).toBe(false);
+    expect(await present(x.destination)).toBe(false);
+    assertSameInventory(x.before, await inventory(saved));
   });
 });
 
