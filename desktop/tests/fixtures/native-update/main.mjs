@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, readFileSync, renameSync, watch } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -47,7 +48,9 @@ async function bootstrap() {
   const execPath = await realpath(process.execPath);
   const fixtureMode = JSON.parse(readFileSync(join(resourcesPath, 'fixture-mode.json'), 'utf8')).mode;
   if (!['normal', 'missing', 'wrong-token', 'fault'].includes(fixtureMode)) throw new Error('invalid baked fixture mode');
-  await atomicJson(config.bootAttemptFile, { v: 1, transactionId: config.transactionId, pid: process.pid, execPath, resourcesPath, packaged: true, mode: fixtureMode });
+  const bootAttempt = { v: 1, transactionId: config.transactionId, pid: process.pid, execPath, resourcesPath, packaged: true, mode: fixtureMode };
+  await atomicJson(`${config.bootAttemptFile}.attempt-${process.pid}-${randomUUID()}.json`, bootAttempt);
+  await atomicJson(config.bootAttemptFile, bootAttempt);
   if (fixtureMode === 'missing') return;
   const marker = readFileSync(join(resourcesPath, 'full-resource-marker.txt'), 'utf8');
   const identity = JSON.parse(readFileSync(join(resourcesPath, 'identity.json'), 'utf8'));
