@@ -31,6 +31,10 @@ export type DesktopUpdatePlan = {
   payloadBytes: Uint8Array;
 };
 
+export type AuthorizedDesktopUpdatePlan = DesktopUpdatePlan & {
+  envelopeBytes: Uint8Array;
+};
+
 export type VerifiedDesktopUpdatePayload = {
   payloadBytes: Uint8Array;
   payloadDigest: string;
@@ -324,7 +328,7 @@ export function parseAndSelectDesktopRelease(
       const artifact = parseArtifact(value);
       if (artifact === undefined) return { ok: false, code: 'invalid-artifact' };
       const binding = `${artifact.platform}\u0000${artifact.arch}`;
-      const filename = artifact.file.toLowerCase();
+      const filename = artifact.file;
       if (bindings.has(binding) || filenames.has(filename)) {
         return { ok: false, code: 'ambiguous-artifact' };
       }
