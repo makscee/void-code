@@ -1,5 +1,7 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deferred, extension, flush, install, localEnv, oscCopies, rig, type Rig } from './fixtures/pi-fullscreen-clipboard';
+import { deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, type Rig } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -23,6 +25,24 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     expect(forward.tui.getSelectionBounds()).toMatchObject({ start: { row: 11, scrollView: forward.scroll }, end: { row: 13, scrollView: forward.scroll } });
     expect(oscCopies(forward.terminal)[0]).toContain('row12 世界 😀 é');
     expect(oscCopies(reverse.terminal)).toEqual(oscCopies(forward.terminal));
+  });
+
+  it('fixture control: pinned Pi retains released selection across keyboard input and routes menu/Kitty events normally', async () => {
+    const r = await make(); r.drag();
+    const bounds = r.tui.getSelectionBounds();
+    const keys = ['draft', '\x1b[200~paste\x1b[201~', '\x1b', '\x03'];
+    keys.forEach((key) => r.terminal.input(key));
+    expect(r.tui.getSelectionBounds()).toEqual(bounds);
+    expect(r.focused.handleInput.mock.calls.map(([text]) => text)).toEqual(keys);
+    expect(r.tui.focusedComponent).toBe(r.focused);
+    r.focused.handleInput.mockClear(); r.terminal.input('\x1b[99;5:3u');
+    expect(r.focused.handleInput).not.toHaveBeenCalled();
+    const menu = { render: () => ['menu'], invalidate() {}, handleInput: vi.fn() };
+    const overlay = r.tui.showOverlay(menu); r.terminal.input('\x03');
+    expect(menu.handleInput).toHaveBeenCalledWith('\x03');
+    overlay.hide(); r.terminal.input('\x03');
+    expect(r.focused.handleInput).toHaveBeenCalledWith('\x03');
+    expect(oscCopies(r.terminal)).toEqual(['Привет 世界 😀\nстрока два']);
   });
 
   it.each([false, true])('R1: %s reverse drag copies exact real Pi Unicode and styled/OSC8 plain text, replacing sentinel', async (reverse) => {
@@ -137,6 +157,64 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     expect(r.focused.handleInput).not.toHaveBeenCalled();
   });
 
+  it.each(['idle', 'pending'])('R6: complete press/drag/release then Ctrl+C (%s IO) preserves draft and interrupt focus', async (state) => {
+    const r = await make(); const pending = deferred();
+    const input = new (await realPi()).Input(); input.setValue('untouched draft Черновик');
+    const interrupt = vi.fn();
+    const originalInput = input.handleInput.bind(input);
+    const handleInput = vi.spyOn(input, 'handleInput').mockImplementation((key: string) => {
+      if (key === '\x03') interrupt();
+      originalInput(key);
+    });
+    r.tui.setFocus(input);
+    if (state === 'pending') r.write.mockReturnValueOnce(pending.promise);
+    install(await extension(), r);
+    r.drag(); await flush();
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(['Привет 世界 😀\nстрока два']);
+    r.terminal.input('\x03'); await flush();
+    expect(handleInput).not.toHaveBeenCalled(); expect(interrupt).not.toHaveBeenCalled();
+    expect(input.getValue()).toBe('untouched draft Черновик');
+    expect(r.tui.focusedComponent).toBe(input);
+    if (state === 'pending') expect(r.write).toHaveBeenCalledTimes(1);
+    pending.resolve(); await flush();
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(Array(2).fill('Привет 世界 😀\nстрока два'));
+  });
+
+  it.each(['draft', '\x1b[200~paste\x1b[201~', '\x1b'])('R6: copy then %j retires stale authority without changing input semantics', async (key) => {
+    const r = await make(); install(await extension(), r);
+    r.drag(); await flush(); expect(r.write).toHaveBeenCalledTimes(1);
+    r.terminal.input(key); r.terminal.input('\x03'); await flush();
+    expect(r.focused.handleInput.mock.calls.map(([text]) => text)).toEqual([key, '\x03']);
+    expect(r.write).toHaveBeenCalledTimes(1);
+    // Retirement is not permanent disablement: a fresh gesture reacquires authority.
+    r.drag(); r.terminal.input('\x03'); await flush();
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(Array(3).fill('Привет 世界 😀\nстрока два'));
+  });
+
+  it.each(['terminal', 'menu', 'overlay'])('R6: %s focus transfer preserves original Ctrl+C and cannot revive old copy authority', async (kind) => {
+    const r = await make(); install(await extension(), r); r.drag(); await flush();
+    const menu = { render: () => ['menu'], invalidate() {}, handleInput: vi.fn() };
+    let overlay: any;
+    if (kind === 'terminal') { r.terminal.input('\x1b[O'); r.terminal.input('\x1b[I'); }
+    else if (kind === 'overlay') overlay = r.tui.showOverlay(menu);
+    else r.tui.setFocus(menu);
+    r.terminal.input('\x03'); await flush();
+    expect((kind === 'terminal' ? r.focused : menu).handleInput).toHaveBeenCalledWith('\x03');
+    expect(r.write).toHaveBeenCalledTimes(1);
+    overlay?.hide(); r.tui.setFocus(r.focused); r.focused.handleInput.mockClear();
+    r.terminal.input('\x03'); await flush();
+    expect(r.focused.handleInput).toHaveBeenCalledWith('\x03'); expect(r.write).toHaveBeenCalledTimes(1);
+  });
+
+  it('R6: Kitty Ctrl+C release never copies; a true press with fresh selection does', async () => {
+    const r = await make(); install(await extension(), r); r.drag(); await flush();
+    r.terminal.input('\x1b[99;5:3u'); await flush();
+    expect(r.write).toHaveBeenCalledTimes(1); expect(r.focused.handleInput).not.toHaveBeenCalled();
+    r.terminal.input('\x1b[99;5:1u'); await flush();
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(Array(2).fill('Привет 世界 😀\nстрока два'));
+    expect(r.focused.handleInput).not.toHaveBeenCalled();
+  });
+
   it('R7: duplicate installation cannot stack writes; disposal does not overwrite a later owner hook', async () => {
     const r = await make(); const module = await extension();
     const original = r.tui.copySelectionToClipboard;
@@ -168,6 +246,36 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     install(module, r, { platform: platform as string, env: env as Record<string, string> }); r.drag(); await flush();
     expect(r.write).not.toHaveBeenCalled(); expect(oscCopies(r.terminal)).toEqual(['Привет 世界 😀\nстрока два']);
   });
+});
+
+it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach native spawn in %s lifecycle', async (mode) => {
+  const r = await make();
+  const env = mode === 'desktop' ? { ...localEnv, VC_DESKTOP_CHAT_ID: '12345678-1234-4234-8234-123456789abc', SSH_CONNECTION: 'inherited' } : localEnv;
+  const bytes: Buffer[] = [];
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+  child.stdin.on('data', (data) => bytes.push(Buffer.from(data)));
+  const spawn = vi.fn(() => child);
+  const module = await extension(env, spawn);
+  const handlers = new Map<string, any[]>();
+  const pi = { on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
+  const setWidget = vi.fn((_key: string, value: any) => { if (typeof value === 'function') value(r.tui, { fg: (_: string, text: string) => text }); });
+  const ctx = { mode: 'tui', hasUI: true, ui: { setWidget, notify: r.notify, setEditorComponent: vi.fn() } };
+  await module.default(pi); // Deliberately no second argument: only node subprocess IO is substituted.
+  expect(pi.registerProvider).toHaveBeenCalled();
+  expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
+  try {
+    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    expect(setWidget).toHaveBeenCalled();
+    r.drag(); await flush();
+    expect(spawn).toHaveBeenCalledWith('/usr/bin/pbcopy', expect.any(Array), expect.objectContaining({ stdio: ['pipe', 'ignore', 'pipe'] }));
+    expect(Buffer.concat(bytes).toString('utf8')).toBe('Привет 世界 😀\nстрока два');
+    expect(r.flash).not.toHaveBeenCalledWith('Copied!');
+    child.emit('close', 0, null); await flush(); expect(r.flash).toHaveBeenCalledWith('Copied!');
+    expect(ctx.ui.setEditorComponent).not.toHaveBeenCalled();
+  } finally {
+    for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+  }
+  r.drag(); await flush(); expect(spawn).toHaveBeenCalledTimes(1);
 });
 
 it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecycle without provider/account coupling', async (mode) => {

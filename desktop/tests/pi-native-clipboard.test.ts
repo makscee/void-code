@@ -84,6 +84,29 @@ it.each(['spawn', 'spawn-event', 'stdin', 'exit'])('R4/R5: %s failure cannot lea
   expect(child.text()).toBe('healthy'); child.close(); await healthy;
 });
 
+it.each(['ENOENT', 'EACCES'])('R4/R5: asynchronous child %s error then close is handled, generic, and releases a queued successor', async (code) => {
+  const r = await writer();
+  let outcome: unknown = 'pending';
+  const failed = r.write('SECRET-selection').then(() => { outcome = 'success'; }, (error) => { outcome = error; });
+  await flush();
+  const healthy = r.write('healthy'); await flush();
+  // Native spawn returns a ChildProcess first; error arrives later, with no exit event on ENOENT.
+  const error = Object.assign(new Error('SECRET-selection'), { code, syscall: 'spawn' });
+  await Promise.resolve();
+  expect(() => r.children[0].emit('error', error)).not.toThrow();
+  await flush(); expect(r.spawn).toHaveBeenCalledTimes(1);
+  expect(outcome).not.toBe('success');
+  r.children[0].emit('close', -2, null);
+  await failed; await flush();
+  expect(outcome).toBeInstanceOf(Error);
+  expect((outcome as Error).message).toBeTruthy();
+  expect(String(outcome)).not.toContain('SECRET-selection');
+  expect(r.spawn).toHaveBeenCalledTimes(2); expect(r.children[1].text()).toBe('healthy');
+  r.children[1].close(); await healthy;
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(r.children[1].kill).not.toHaveBeenCalled();
+});
+
 it('R4: cancellation kills active child, waits for close and rejects even late zero exit; pre-aborted request never spawns', async () => {
   const r = await writer(); const controller = new AbortController();
   const result = r.write('cancel-me', controller.signal).then(() => 'success', () => 'cancelled');

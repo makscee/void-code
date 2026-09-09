@@ -29,20 +29,26 @@ export type ExtensionModule = {
   createNativeClipboardWriter?: (options: any) => (text: string, signal?: AbortSignal) => Promise<void>;
 };
 export const localEnv = { VC_BOOTSTRAP_EXECUTABLE: '/isolated/vc', SystemRoot: 'C:\\Windows' };
-export async function extension(env = localEnv): Promise<ExtensionModule> {
+export async function extension(env = localEnv, spawn?: (...args: any[]) => any): Promise<ExtensionModule> {
   const tui = await realPi();
   const code = transformSync(embeddedSource(), { loader: 'ts', format: 'cjs', target: 'node22', logLevel: 'silent' }).code;
   const module = { exports: {} };
   const safeRequire = (id: string): any => {
     if (id === 'node:child_process' || id === 'child_process') return {
       execFileSync: vi.fn(() => JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] })),
-      spawn: () => { throw new Error('unit fixture forbids native clipboard IO'); },
+      spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
     };
     if (id === '@earendil-works/pi-tui') return tui;
     if (id === '@earendil-works/pi-coding-agent') return { getPackageDir: () => agentDir };
     if (id === '@earendil-works/pi-ai') return { clampThinkingLevel: (_m: unknown, level: string) => level };
-    if (['node:fs', 'fs', 'node:fs/promises', 'fs/promises'].includes(id)) return new Proxy({ existsSync: () => false }, {
-      get(target, name) { return name === 'existsSync' ? target.existsSync : () => { throw new Error('unit fixture forbids filesystem IO'); }; },
+    if (['node:fs', 'fs', 'node:fs/promises', 'fs/promises'].includes(id)) return new Proxy({
+      existsSync: () => false,
+      readFileSync: (file: string, options: any) => {
+        if (path.resolve(String(file)) !== path.join(agentDir, 'package.json')) throw new Error('unit fixture permits only pinned package metadata reads');
+        return readFileSync(file, options);
+      },
+    }, {
+      get(target, name) { return name in target ? target[name as keyof typeof target] : () => { throw new Error('unit fixture forbids filesystem IO'); }; },
     });
     return require(id);
   };

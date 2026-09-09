@@ -1,12 +1,14 @@
 // Loaded by the ACTUAL unbundled CLI or pi~BUN.mjs extension loader.
 // No account, PTY, GUI, terminal emulator selection or global stdout interception.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
-import { installFullscreenClipboard, createNativeClipboardWriter } from './managed.ts';
+import managed from './managed.ts';
 
-export default async function (): Promise<void> {
+export default async function (pi: ExtensionAPI): Promise<void> {
   assert.equal(process.env.VC_ISOLATED_CLIPBOARD_ACCEPTANCE, 'I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION');
   assert.ok(process.platform === 'darwin' || process.platform === 'win32');
   const markers = ['ASTRA-A Привет 世界 😀', 'ASTRA-B Другая 日本 🦊'];
@@ -22,18 +24,43 @@ export default async function (): Promise<void> {
   const scroll = new ScrollView({ render: () => lines, invalidate() {} }, { primary: true, follow: 'none', scrollbar: 'hidden' });
   tui.setLayoutRoot(scroll);
   tui.start();
-  const writer = createNativeClipboardWriter({ platform: process.platform, env: process.env });
   const failures: string[] = [];
-  const dispose = installFullscreenClipboard(tui, {
-    piVersion: '0.84.1', platform: process.platform,
-    env: { ...process.env, VC_BOOTSTRAP_EXECUTABLE: process.execPath },
-    writeText: writer, notify: (message: string) => failures.push(message),
-  });
+  const handlers = new Map<string, any[]>();
+  let providers = 0;
+  let widgets = 0;
+  const api = new Proxy(pi, { get(target, key) {
+    if (key === 'on') return (name: string, handler: any) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); };
+    if (key === 'registerProvider') return (...args: any[]) => { providers++; return (target.registerProvider as any)(...args); };
+    return Reflect.get(target, key);
+  } });
+  const ctx = { mode: 'tui', hasUI: true, ui: {
+    notify: (message: string) => failures.push(message),
+    setWidget: (_key: string, value: any) => {
+      if (typeof value === 'function') { widgets++; value(tui, { fg: (_: string, text: string) => text }); }
+    },
+    setEditorComponent: () => assert.fail('must not replace editor'),
+  } };
+  // Substitute only bootstrap, never spawn/native clipboard IO or the managed factory.
+  // The actual consumer loader imports the unchanged Go-managed source above.
+  const originalExec = childProcess.execFileSync;
+  process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
+  childProcess.execFileSync = ((file: string, args: string[], options: any) => {
+    assert.equal(file, process.execPath); assert.deepEqual(args, ['pi-bootstrap']);
+    return JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] });
+  }) as typeof execFileSync;
+  try {
+    syncBuiltinESMExports();
+    await managed(api); // NO clipboardIO: exercise the real production default registration.
+  } finally { childProcess.execFileSync = originalExec; syncBuiltinESMExports(); }
+  assert.ok(providers > 0, 'synthetic bootstrap did not register provider');
+  assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;
   tui.flash = (text: string, ...args: any[]) => { if (text === 'Copied!') succeeded++; return originalFlash(text, ...args); };
   try {
+    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
     for (const [index, marker] of markers.entries()) {
       lines = [marker]; tui.renderNow();
       input('\x1b[<0;1;1M'); input('\x1b[<32;60;1M'); input('\x1b[<0;60;1m');
@@ -50,5 +77,8 @@ export default async function (): Promise<void> {
       assert.equal(readback, marker, 'OS clipboard did not contain selected Unicode marker');
     }
     console.log('ASTRA_NATIVE_SELECTION_READBACK_OK_2');
-  } finally { dispose(); tui.stop({ preserveScreen: true }); }
+  } finally {
+    for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+    tui.stop({ preserveScreen: true });
+  }
 }
