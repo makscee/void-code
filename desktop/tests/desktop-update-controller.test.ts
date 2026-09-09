@@ -234,6 +234,15 @@ describe('desktop update consent and opaque staged artifact FSM', () => {
     expectNoInstallSeams(r);
   });
 
+  it('does not install a ready stage on normal app quit', async () => {
+    const r = rig();
+    const controller = await ready(r);
+    // A ready normal quit must not install.
+    controller.dispose();
+    await controller.requestInstall();
+    expectNoInstallSeams(r);
+  });
+
   it('uses a bounded opaque stage handle and verifies its actual staged bytes before ready', async () => {
     const r = rig();
     await ready(r);
