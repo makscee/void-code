@@ -349,19 +349,87 @@ async function stopAttempt(x: Context, id: string) {
   }
   if (errors.length) throw new AggregateError(errors, `fixture ledger cleanup ${id}`);
 }
+function checkRegistryObservation(text: string, target: string, version: string) {
+  expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+  // Deliberately fixed, flat wire schema: reject duplicate keys BEFORE JSON.parse
+  // can discard them. JSON.parse additionally validates string escape syntax.
+  const string = '"(?:[^"\\\\\\x00-\\x1f]|\\\\.)*"';
+  expect(text).toMatch(new RegExp(`^\\s*\\{\\s*"InstallLocation"\\s*:\\s*${string}\\s*,\\s*"DisplayVersion"\\s*:\\s*${string}\\s*\\}\\s*$`));
+  const value = JSON.parse(text);
+  expect(Object.keys(value)).toEqual(['InstallLocation', 'DisplayVersion']);
+  for (const field of Object.values(value)) {
+    expect(typeof field).toBe('string');
+    expect(field).not.toBe('');
+  }
+  expect(value.InstallLocation).toBe(target);
+  expect(value.DisplayVersion).toBe(version);
+}
 async function registry(x: Context, version: string) {
   const witness = registryWitness(x.s.c.marker.registryGuid);
-  const query = async (key: string, value: string) => {
-    const output = await tool(x.s, 'reg.exe', ['query', key, '/v', value]);
-    const values = output.split(/\r?\n/).map((line) => /^\s*(\S+)\s+REG_SZ\s+(.*?)\s*$/.exec(line))
-      .filter((match) => match !== null && match[1] === value);
-    expect(values, `exact own HKCU ${key}/${value}`).toHaveLength(1);
-    return values[0]![2];
+  const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const subkey = (key: string) => {
+    expect(key.startsWith('HKCU\\')).toBe(true);
+    return quote(key.slice('HKCU\\'.length));
   };
-  // Pinned installer.nsh writes location to the install key, version to uninstall.
-  expect(await query(witness.installKey, witness.installLocationValue)).toBe(x.s.c.target);
-  expect(await query(witness.uninstallKey, witness.displayVersionValue)).toBe(version);
+  // Test-only OS read; no renderer input or installer launch. Pinned installer.nsh
+  // writes location to the install key and version to the uninstall key.
+  const script = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+function Read-StringValue([string]$path, [string]$name) {
+  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($path, $false)
+  if ($null -eq $key) { throw 'Missing registry key' }
+  try {
+    if ($key.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::String) { throw 'Expected REG_SZ' }
+    $value = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if ($value -isnot [string] -or $value.Length -eq 0) { throw 'Missing/empty registry string' }
+    return $value
+  } finally { $key.Dispose() }
 }
+try {
+  $observation = [ordered]@{
+    InstallLocation = Read-StringValue ${subkey(witness.installKey)} ${quote(witness.installLocationValue)}
+    DisplayVersion = Read-StringValue ${subkey(witness.uninstallKey)} ${quote(witness.displayVersionValue)}
+  }
+  $json = ConvertTo-Json -InputObject $observation -Compress
+  if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt 65536) { throw 'Registry output bound' }
+  [Console]::Out.WriteLine($json)
+} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+`;
+  const output = await tool(x.s, 'powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64')]);
+  const envelope = /^stdout:\n([\s\S]*)\nstderr:\n$/.exec(output);
+  expect(envelope, 'registry probe must emit only JSON, with empty stderr').not.toBeNull();
+  checkRegistryObservation(envelope![1]!, x.s.c.target, version);
+}
+
+describe('portable registry observation controls', () => {
+  const target = 'C:\\native update テスト-mXSZpZ\\fixture';
+  const valid = { InstallLocation: target, DisplayVersion: '1.0.0' };
+  it('accepts the exact Unicode location and version', () => {
+    checkRegistryObservation(JSON.stringify(valid), target, '1.0.0');
+  });
+  it.each([
+    { ...valid, InstallLocation: target.replace('テスト', '???') },
+    { ...valid, InstallLocation: `${target}-other` },
+    { ...valid, DisplayVersion: '1.0.1' },
+    { ...valid, InstallLocation: '' },
+    { ...valid, DisplayVersion: null },
+    { InstallLocation: target },
+    { ...valid, extra: true },
+    [],
+  ])('rejects mismatched or invalid fields: %j', (value) => {
+    expect(() => checkRegistryObservation(JSON.stringify(value), target, '1.0.0')).toThrow();
+  });
+  it.each([
+    'not JSON',
+    `${JSON.stringify(valid)}\n${JSON.stringify(valid)}`,
+    JSON.stringify(valid).replace('{', '{"InstallLocation":"wrong",'),
+    JSON.stringify(valid).replace('}', ',"DisplayVersion":"1.0.0"}'),
+  ])('rejects malformed/duplicate observations: %s', (text) => {
+    expect(() => checkRegistryObservation(text, target, '1.0.0')).toThrow();
+  });
+});
 async function conservation(x: Context) {
   for (const [file, digest] of x.s.sentinels) expect(await hash(file), file).toBe(digest);
   expect(alive(x.s.sentinel.child.pid!)).toBe(true);
