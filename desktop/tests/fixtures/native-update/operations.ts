@@ -56,6 +56,7 @@ export async function archiveSeed(
     await options.verify();
     if (await options.destinationExists()) throw new Error('seed archive destination exists');
     const link = await options.sourceIsLink();
+    if (elapsed() >= 5_000) throw lastError ?? new Error('seed archive budget expired');
     try {
       await fs.rename(source, destination);
       return;
