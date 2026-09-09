@@ -139,6 +139,18 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     r.drag([0, 1], [3, 1]); await flush(); expect(r.write.mock.calls[0][0]).toBe('good');
   });
 
+  it('C1: two space-only rows copy the nonempty newline produced by actual Pi', async () => {
+    const lines = ['    ', '    '];
+    const oracle = await make(lines); const r = await make(lines);
+    oracle.drag([0, 0], [3, 1]);
+    // Pi trims each selected line, not the joined text: two empty rows retain their separator.
+    expect(oscCopies(oracle.terminal)).toEqual(['\n']);
+    install(await extension(), r);
+    r.drag([0, 0], [3, 1]); await flush();
+    expect(r.tui.getSelectionBounds()).toMatchObject({ start: { row: 0 }, end: { row: 1 } });
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(oscCopies(oracle.terminal));
+  });
+
   it('R3: admitted copies are serialized and snapshot B before transcript changes', async () => {
     const r = await make(['AAAA', 'BBBB']); const a = deferred(); const b = deferred();
     r.write.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
