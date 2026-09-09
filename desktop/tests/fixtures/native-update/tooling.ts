@@ -253,16 +253,24 @@ export async function cleanupWindowsFixture(capsule: NativeFixtureCapsule): Prom
   const marker = await verifyCapsule(capsule);
   if (platform !== 'win32') return;
   const target = capsule.target;
-  const uninstaller = join(target, `Uninstall ${marker.productName}.exe`);
+  const uninstaller = join(target, `Uninstall ${marker.executableName}.exe`);
   const cleanupHome = join(capsule.root, 'sandbox', 'cleanup-nsis');
   await mkdir(join(cleanupHome, 'Temp'), { recursive: true, mode: 0o700 });
   if (await isRegularFile(uninstaller)) {
     // `_?=` is deliberately final and unquoted, just like the installation /D= argument.
-    try { await runBounded(uninstaller, ['/S', `/_?=${target}`], capsule.root, join(capsule.witnessDir, 'cleanup-nsis.log'), { env: scrubbedEnvironment(cleanupHome), windowsVerbatimArguments: true }); } catch { /* exact own-key removal below is the constrained fallback */ }
+    try { await runBounded(uninstaller, ['/S', '/currentuser', `_?=${target}`], capsule.root, join(capsule.witnessDir, 'cleanup-nsis.log'), { env: scrubbedEnvironment(cleanupHome), windowsVerbatimArguments: true }); } catch { /* exact own-key removal below is the constrained fallback */ }
   }
   const witness = registryWitness(marker.registryGuid);
   for (const key of [witness.installKey, witness.uninstallKey]) {
-    try { await runBounded('reg.exe', ['delete', key, '/f'], capsule.root, join(capsule.witnessDir, `cleanup-${createHash('sha256').update(key).digest('hex')}.log`)); } catch { /* absent own key is an acceptable cleanup result */ }
+    const hash = createHash('sha256').update(key).digest('hex');
+    try {
+      await runBounded('reg.exe', ['query', key], capsule.root, join(capsule.witnessDir, `cleanup-query-${hash}.log`));
+    } catch (error) {
+      const failure = error as { stdout?: string; stderr?: string };
+      if (!/unable to find the specified registry key or value/i.test(`${failure.stdout ?? ''}\n${failure.stderr ?? ''}`)) throw error;
+      continue;
+    }
+    await runBounded('reg.exe', ['delete', key, '/f'], capsule.root, join(capsule.witnessDir, `cleanup-delete-${hash}.log`));
   }
   await rm(target, { recursive: true, force: true });
 }
