@@ -123,7 +123,7 @@ async function bounded<T>(promise: Promise<T>, label: string, ms = deadlineMs): 
 
 // All test-owned helper/tool children are tracked immediately. Parsing happens in
 // a promise continuation AFTER close, never inside an EventEmitter callback.
-function run(command: string, args: string[], cwd: string, log: string, input?: Request, ms = deadlineMs): Running {
+function run(command: string, args: string[], cwd: string, log: string, input?: Request, ms = deadlineMs, logWrite: typeof writeFile = writeFile): Running {
   const child = spawn(command, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -149,7 +149,7 @@ function run(command: string, args: string[], cwd: string, log: string, input?: 
     try {
       const result = await bounded(closed, `reap ${command}`, ms + 5_000);
       const text = Buffer.concat(stdout).toString('utf8');
-      await writeFile(log, `stdout:\n${text}\nstderr:\n${Buffer.concat(stderr).toString('utf8')}`);
+      await logWrite(log, `stdout:\n${text}\nstderr:\n${Buffer.concat(stderr).toString('utf8')}`);
       if (expired || overflow) throw new Error(`child watchdog/output bound: ${command}; ${log}`);
       if (stdinError) throw stdinError;
       const events = input && text.trim() ? text.trim().split(/\r?\n/).map((line) => JSON.parse(line) as Event) : [];
@@ -571,6 +571,36 @@ describe.sequential('portable finish failure controls', () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally { await vi.runAllTimersAsync(); await result.observed; vi.useRealTimers(); }
   });
+  it('post-close log write stays inside the original owner budget without a reset deadline', async () => {
+    vi.useFakeTimers();
+    const ms = 180_000;
+    const started = deferred<void>();
+    const write = deferred<void>();
+    const writer = settlement(write.promise);
+    const owned = run(process.execPath, ['-e', 'process.stdout.write("short child")'], root,
+      join(tmpdir(), `native-log-bound-${randomUUID()}.log`), undefined, ms,
+      () => { started.resolve(); return write.promise; });
+    const owner = settlement(owned.done);
+    const result = settlement(finish(owned));
+    try {
+      // Consume spawn-owned time before delivering real close; a post-close reset is too late.
+      vi.advanceTimersByTime(1_000);
+      expect(await owned.closed).toEqual({ code: 0, signal: null });
+      await started.promise;
+      expect(owner.state.status).toBe('pending');
+      await vi.advanceTimersByTimeAsync(ms + 5_000 - 1_000 - 1);
+      expect(result.state.status).toBe('pending');
+      await vi.advanceTimersByTimeAsync(2);
+      expect(writer.state.status).toBe('pending');
+      expect.soft(owner.state.status, 'done must bound post-close diagnostics too').toBe('rejected');
+      expect.soft(result.state.status, 'no extra/reset deadline after child exit').toBe('rejected');
+    } finally {
+      write.resolve();
+      await Promise.all([writer.observed, owner.observed, result.observed]);
+      vi.useRealTimers();
+      await killAndReap(owned);
+    }
+  });
   it('short real owner watchdog kills/reaps only its exact Node child', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'native-owner-control-'));
     const sentinel = run(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], directory, join(directory, 'sentinel.log'), undefined, 10_000);
@@ -770,6 +800,99 @@ describe.sequential('portable seed archive failure controls', () => {
     expect(elapsed).toBe(5_000);
     expect(sleep).not.toHaveBeenCalled();
     await x.retained();
+  });
+  it('first-attempt guard expiry awaits inspection but never starts rename', async () => {
+    const x = await archiveControl();
+    let elapsed = 0;
+    x.options.now = () => elapsed;
+    const verify = x.options.verify;
+    x.options.verify = async () => { await verify(); elapsed = 4_900; };
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const sourceIsLink = x.options.sourceIsLink;
+    x.options.sourceIsLink = async () => {
+      const link = await sourceIsLink();
+      entered.resolve();
+      await release.promise;
+      return link;
+    };
+    const result = settlement(x.archive());
+    try {
+      await entered.promise;
+      expect(elapsed).toBe(4_900);
+      elapsed = 5_100;
+      expect(result.state.status).toBe('pending');
+      expect(x.fs.rename).not.toHaveBeenCalled();
+    } finally { release.resolve(); await result.observed; }
+    expect.soft(result.state.status).toBe('rejected');
+    expect.soft(x.fs.rename).not.toHaveBeenCalled();
+    expect(x.sleeps).toEqual([]);
+    await x.retained();
+  });
+  it('retry guard expiry retains prior sharing error without a second rename', async () => {
+    const x = await archiveControl();
+    let elapsed = 0;
+    let checks = 0;
+    x.options.now = () => elapsed + x.elapsed();
+    const verify = x.options.verify;
+    x.options.verify = async () => { await verify(); if (++checks === 1) elapsed = 4_800; };
+    const destinationExists = x.options.destinationExists;
+    x.options.destinationExists = async () => {
+      const exists = await destinationExists();
+      if (checks === 2) {
+        expect(x.options.now()).toBe(4_900);
+        elapsed += 200;
+      }
+      return exists;
+    };
+    const failure = sharingError('EBUSY');
+    x.fs.rename.mockRejectedValueOnce(failure);
+    const result = settlement(x.archive()); await result.observed;
+    expect.soft(result.state.status).toBe('rejected');
+    expect.soft(result.state.error).toBe(failure);
+    expect.soft(x.fs.rename).toHaveBeenCalledTimes(1);
+    expect(x.sleeps).toEqual([100]);
+    expect(checks).toBe(2);
+    await x.retained();
+  });
+  it('real seedOptions sourceIsLink refuses a redirect observed after successful verify', async () => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`;
+    const external = join(x.c.root, 'late-external-owned');
+    await mkdir(external); await writeFile(join(external, 'sentinel'), 'do not follow');
+    const externalBefore = await inventory(external);
+    await expect(x.options.verify()).resolves.toBeUndefined();
+    await rename(x.source, saved);
+    await symlink(external, x.source, platform === 'win32' ? 'junction' : 'dir');
+    await expect.soft(x.options.sourceIsLink()).rejects.toThrow();
+    expect(x.fs.rename).not.toHaveBeenCalled();
+    expect((await lstat(x.source)).isSymbolicLink()).toBe(true);
+    expect(await present(x.destination)).toBe(false);
+    assertSameInventory(x.before, await inventory(saved));
+    assertSameInventory(externalBefore, await inventory(external));
+  });
+  it('archive refuses a late redirect observed by real seedOptions before mutation', async () => {
+    const x = await archiveControl();
+    const saved = `${x.source}.saved`;
+    const external = join(x.c.root, 'late-external-owned');
+    await mkdir(external); await writeFile(join(external, 'sentinel'), 'do not follow');
+    const externalBefore = await inventory(external);
+    const destinationExists = x.options.destinationExists;
+    x.options.destinationExists = async () => {
+      expect(x.order).toEqual(['verify']);
+      await rename(x.source, saved);
+      await symlink(external, x.source, platform === 'win32' ? 'junction' : 'dir');
+      return destinationExists();
+    };
+    const result = settlement(x.archive()); await result.observed;
+    expect.soft(result.state.status).toBe('rejected');
+    expect.soft(x.fs.rename).not.toHaveBeenCalled();
+    expect.soft(await present(x.destination)).toBe(false);
+    expect.soft(await present(x.source)).toBe(true);
+    expect(x.order).toContain('link');
+    expect(x.sleeps).toEqual([]);
+    assertSameInventory(x.before, await inventory(saved));
+    assertSameInventory(externalBefore, await inventory(external));
   });
   it('an arbitrary sibling is not an owned target/backup source', async () => {
     const x = await archiveControl();
