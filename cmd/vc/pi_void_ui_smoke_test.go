@@ -37,6 +37,11 @@ type piUISmokeSnapshot struct {
 	ReasoningMirrored                bool     `json:"reasoningMirrored"`
 	SecretLeaked                     bool     `json:"secretLeaked"`
 	WorkingHiddenDuringReasoning     bool     `json:"workingHiddenDuringReasoning"`
+	WorkingShownAfterReasoning       bool     `json:"workingShownAfterReasoning"`
+	WorkingHiddenWithActiveTool      bool     `json:"workingHiddenWithActiveTool"`
+	WorkingHiddenAtTextStart         bool     `json:"workingHiddenAtTextStart"`
+	WorkingHiddenAfterTextStarted    bool     `json:"workingHiddenAfterTextStarted"`
+	WorkingClearedAtAgentEnd         bool     `json:"workingClearedAtAgentEnd"`
 }
 
 // The pinned Pi must load the real desktop UI, keep it inert outside desktop, and preserve the two ordering regressions found manually.
@@ -155,6 +160,21 @@ func TestPiVoidCodeUIExtensionSmoke(t *testing.T) {
 	if !got.WorkingHiddenDuringReasoning {
 		t.Error("Working line stayed visible on top of native reasoning")
 	}
+	if !got.WorkingShownAfterReasoning {
+		t.Error("Working line did not return after reasoning ended while the agent remained active")
+	}
+	if !got.WorkingHiddenWithActiveTool {
+		t.Error("a late reasoning_end event duplicated Working over an active tool")
+	}
+	if !got.WorkingHiddenAtTextStart {
+		t.Error("Working line stayed visible on top of the final text stream")
+	}
+	if !got.WorkingHiddenAfterTextStarted {
+		t.Error("a late reasoning_end event restored Working after final text had started")
+	}
+	if !got.WorkingClearedAtAgentEnd {
+		t.Error("Working line remained stuck after the agent finished")
+	}
 }
 
 func containsString(values []string, want string) bool {
@@ -203,13 +223,18 @@ await fire("before_agent_start", { prompt: "Проверь API" });
 await fire("turn_start");
 await fire("message_update", { assistantMessageEvent: { type: "thinking_start" } });
 await fire("message_update", { assistantMessageEvent: { type: "thinking_delta", delta: "PREVIOUS_REASONING" } });
+const visibilityDuringThinking = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingHiddenDuringReasoning = visibilityDuringThinking.at(-1) === false;
 await fire("message_update", { assistantMessageEvent: { type: "thinking_end", content: "PREVIOUS_REASONING" } });
-const visibilityAtThinking = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
-const workingHiddenDuringReasoning = visibilityAtThinking.at(-1) === false;
+const visibilityAfterReasoning = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingShownAfterReasoning = visibilityAfterReasoning.at(-1) === true;
 await fire("tool_execution_start", { toolCallId: "1", toolName: "read", args: { path: "secret.txt" } });
 await fire("tool_execution_start", { toolCallId: "2", toolName: "bash", args: { command: "API_TOKEN=top-secret node ./task.js" } });
 const visibilityAfterParallelStart = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
 const workingHiddenWhileTools = visibilityAfterParallelStart.at(-1) === false;
+await fire("message_update", { assistantMessageEvent: { type: "thinking_end", content: "LATE_REASONING" } });
+const visibilityAfterLateReasoning = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingHiddenWithActiveTool = visibilityAfterLateReasoning.at(-1) === false;
 await fire("tool_execution_end", { toolCallId: "1", toolName: "read", result: { content: [{ type: "text", text: "secret" }] }, isError: false });
 const visibilityWithParallelPending = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
 const workingHiddenWithParallelPending = visibilityWithParallelPending.at(-1) === false;
@@ -220,10 +245,19 @@ await fire("turn_end", { toolResults: [{}, {}] });
 await fire("turn_start");
 await fire("message_update", { assistantMessageEvent: { type: "thinking_start" } });
 const entriesBeforeText = active.timeline.filter((item) => item.kind === "entry").length;
+await fire("message_update", { assistantMessageEvent: { type: "thinking_end", content: "FINAL_REASONING" } });
 await fire("message_update", { assistantMessageEvent: { type: "text_start" } });
 const entriesAtText = active.timeline.filter((item) => item.kind === "entry").length;
+const visibilityAtTextStart = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingHiddenAtTextStart = visibilityAtTextStart.at(-1) === false;
+await fire("message_update", { assistantMessageEvent: { type: "thinking_end", content: "LATE_FINAL_REASONING" } });
+const visibilityAfterTextStarted = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingHiddenAfterTextStarted = visibilityAfterTextStarted.at(-1) === false;
 await fire("turn_end", { toolResults: [] });
 await fire("agent_end");
+const statusesAtAgentEnd = active.timeline.filter((item) => item.kind === "status").map((item) => String(item.value ?? ""));
+const visibilityAtAgentEnd = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
+const workingClearedAtAgentEnd = statusesAtAgentEnd.at(-1) === "" && visibilityAtAgentEnd.at(-1) === true;
 
 const colorCalls = [];
 const theme = { fg: (color, value) => { colorCalls.push({ color, value }); return value; }, bold: (value) => value };
@@ -266,5 +300,10 @@ console.log(JSON.stringify({
   reasoningMirrored: statuses.some((status) => status.includes("PREVIOUS_REASONING")),
   secretLeaked: JSON.stringify(active.timeline).includes("top-secret"),
   workingHiddenDuringReasoning,
+  workingShownAfterReasoning,
+  workingHiddenWithActiveTool,
+  workingHiddenAtTextStart,
+  workingHiddenAfterTextStarted,
+  workingClearedAtAgentEnd,
 }));
 `
