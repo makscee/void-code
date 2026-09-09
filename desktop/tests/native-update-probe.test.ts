@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { arch, platform } from 'node:process';
 import { afterAll, describe, expect, it } from 'vitest';
+import { archiveSeed, finishOperation } from './fixtures/native-update/operations.ts';
 import {
   assertSameInventory, copyInitialMac, createCapsule, installInitialNsis, inventory,
   launchFixture, packageVariant, readAndValidateBootAttempt, readAndValidateReceipt, registryWitness,
@@ -135,8 +136,7 @@ function run(command: string, args: string[], cwd: string, log: string, input?: 
   return running;
 }
 async function finish(running: Running) {
-  try { return await bounded(running.done, 'helper operation completion'); }
-  catch (error) { await killAndReap(running); throw error; }
+  return finishOperation(running.done, { time: { bounded }, reap: () => killAndReap(running) });
 }
 async function killAndReap(running: Running) {
   if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
@@ -238,8 +238,10 @@ async function manualN(x: Context, label: string, leaveAlive = false) {
 async function seed(s: Suite, live: boolean): Promise<Context> {
   // Only setup may reinstall. Recovery oracles below NEVER call seed/copy/NSIS.
   const id = `update-${randomUUID()}`;
-  for (const path of [s.c.target, join(s.c.root, 'backup.app')]) {
-    if (await present(path)) await rename(path, `${path}.archive-${id}`);
+  for (const source of [s.c.target, join(s.c.root, 'backup.app')]) {
+    await archiveSeed({ source, destination: `${source}.archive-${id}` }, {
+      sourceKind: async (path) => await present(path) ? 'present' : 'missing', rename,
+    });
   }
   if (host === 'mac') await copyInitialMac(s.c, s.n.artifact, s.c.target);
   else await installInitialNsis(s.c, s.n.artifact, s.c.target);
