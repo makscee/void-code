@@ -145,21 +145,18 @@ function run(command: string, args: string[], cwd: string, log: string, input?: 
   child.stdin.end(input ? `${JSON.stringify(input)}\n` : undefined);
   let expired = false;
   const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, ms);
-  const done = (async () => {
-    try {
-      const result = await bounded(closed, `reap ${command}`, ms + 5_000);
-      const text = Buffer.concat(stdout).toString('utf8');
-      await logWrite(log, `stdout:\n${text}\nstderr:\n${Buffer.concat(stderr).toString('utf8')}`);
-      if (expired || overflow) throw new Error(`child watchdog/output bound: ${command}; ${log}`);
-      if (stdinError) throw stdinError;
-      const events = input && text.trim() ? text.trim().split(/\r?\n/).map((line) => JSON.parse(line) as Event) : [];
-      if (input) for (const event of events) {
-        expect(event.v).toBe(1);
-        expect(['barrier', 'started', 'refused', 'failed', 'exited']).toContain(event.event);
-      }
-      return { code: result.code, events };
-    } finally { clearTimeout(timer); }
-  })();
+  const done = bounded(closed.then(async (result) => {
+    const text = Buffer.concat(stdout).toString('utf8');
+    await logWrite(log, `stdout:\n${text}\nstderr:\n${Buffer.concat(stderr).toString('utf8')}`);
+    if (expired || overflow) throw new Error(`child watchdog/output bound: ${command}; ${log}`);
+    if (stdinError) throw stdinError;
+    const events = input && text.trim() ? text.trim().split(/\r?\n/).map((line) => JSON.parse(line) as Event) : [];
+    if (input) for (const event of events) {
+      expect(event.v).toBe(1);
+      expect(['barrier', 'started', 'refused', 'failed', 'exited']).toContain(event.event);
+    }
+    return { code: result.code, events };
+  }), `reap ${command}`, ms + 5_000).finally(() => { clearTimeout(timer); });
   // Early spawn/watchdog errors remain rejected for the caller without becoming unhandled.
   void done.then(() => undefined, () => undefined);
   void closed.then(() => undefined, () => undefined);
@@ -472,7 +469,14 @@ async function seedOptions(c: NativeFixtureCapsule, source: string, destination:
       }
     },
     destinationExists: () => present(destination),
-    sourceIsLink: async () => initial !== undefined && (await lstat(source)).isSymbolicLink(),
+    sourceIsLink: async () => {
+      if (!initial) return false;
+      const current = await lstat(source);
+      if (current.dev !== initial.dev || current.ino !== initial.ino || current.isSymbolicLink() !== initial.isSymbolicLink()) {
+        throw new Error('seed source identity changed');
+      }
+      return current.isSymbolicLink();
+    },
   };
 }
 function deferred<T>() {
