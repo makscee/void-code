@@ -153,6 +153,7 @@ public static class PrivateClipboard {
  }
  static void RunChild(string s,string d,WorkerState state,string[] args) {
   Verify(s,d,"LAUNCH");
+  Environment.SetEnvironmentVariable("VC_R8_PRIVATE_LAUNCHER","VERIFIED");
   string root=Environment.CurrentDirectory;
   string stdout=Path.Combine(root,"private.stdout"),stderr=Path.Combine(root,"private.stderr");
   PI pi=new PI(); bool created=false,reaped=false;

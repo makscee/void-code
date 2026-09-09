@@ -8,6 +8,7 @@ import { InteractiveMode, type ExtensionAPI } from '@earendil-works/pi-coding-ag
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
 import managed from './managed.ts';
+import { nativeWitness, preserveNativeFailure } from './pi-fullscreen-native-witness.ts';
 import type { ComponentView, LifecycleHandler, TuiView, WidgetContent, WidgetOptions } from './pi-fullscreen-clipboard';
 
 interface WidgetReceiver {
@@ -111,8 +112,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const records: { executable: string; operation: number; elapsedMs: number; event: string; code: string | number | null; signal: NodeJS.Signals | null }[] = [];
   const maxRecords = 128;
   let operation = 0;
+  let firstNativeArgs: Parameters<typeof originalSpawn> | undefined;
+  let acceptanceFailed = false;
+  let acceptanceError: unknown;
+  let failureStage = 'setup';
+  let failureIndex = -1;
   childProcess.spawn = function (...args: Parameters<typeof originalSpawn>) {
     const id = ++operation;
+    if (id === 1) firstNativeArgs = args;
     const started = performance.now();
     const executable = path.basename(args[0]);
     const log = (event: string, code: string | number | null = null, signal: NodeJS.Signals | null = null) => {
@@ -139,12 +146,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
     for (const [index, marker] of markers.entries()) {
+      failureIndex = index;
+      failureStage = 'native-completion';
       lines = marker.split('\n'); tui.renderNow();
       input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
       assert.ok((tui as unknown as TuiView).getSelectionBounds()?.start.scrollView === scroll, 'real scroll-view selection missing');
       const deadline = Date.now() + 6500;
       while (succeeded <= index && failures.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(failures, []); assert.equal(succeeded, index + 1, 'native completion missing');
+      failureStage = 'independent-readback';
       let readback: string;
       try {
         const encoded = process.platform === 'darwin'
@@ -163,11 +173,24 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       assert.ok(readback === marker, 'OS plain-text clipboard did not exactly match complete selection');
     }
     console.log('ASTRA_NATIVE_SELECTION_READBACK_OK_4');
+  } catch (error) {
+    acceptanceFailed = true;
+    acceptanceError = error;
+    process.stderr.write(`${JSON.stringify({ event: 'acceptance-failure', stage: failureStage, index: failureIndex })}\n`);
+    await preserveNativeFailure(error, async () => {
+      if (process.platform === 'win32' && process.env.VC_R8_PRIVATE_LAUNCHER === 'VERIFIED' && firstNativeArgs) {
+        await nativeWitness(originalSpawn, firstNativeArgs, markers[0], (record) => process.stderr.write(`${JSON.stringify(record)}\n`));
+      }
+    });
   } finally {
     try {
       for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
       consumer.clearExtensionWidgets.call(receiver);
       tui.stop({ preserveScreen: true });
+    } catch (error) {
+      // Cleanup must not mask the original acceptance failure.
+      // eslint-disable-next-line no-unsafe-finally
+      throw acceptanceFailed ? acceptanceError : error;
     } finally {
       childProcess.spawn = originalSpawn;
       syncBuiltinESMExports();

@@ -20,6 +20,7 @@ it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard f
     const home = path.join(work, 'home'); mkdirSync(home);
     writeFileSync(path.join(work, 'managed.ts'), embeddedSource());
     writeFileSync(path.join(work, 'probe.ts'), readFileSync(path.resolve('tests/fixtures/pi-fullscreen-native-probe.ts')));
+    writeFileSync(path.join(work, 'pi-fullscreen-native-witness.ts'), readFileSync(path.resolve('tests/fixtures/pi-fullscreen-native-witness.ts')));
     const env = {
       PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
       LC_ALL: 'C', // Deliberately hostile locale; LANG is absent.
