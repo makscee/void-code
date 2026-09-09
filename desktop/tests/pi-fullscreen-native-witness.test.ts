@@ -15,7 +15,10 @@ function fake() {
   const launch = vi.fn((...args: unknown[]) => { expect(args).toHaveLength(3); return child; });
   return { child, launch, spawn: launch as unknown as typeof spawn };
 }
-it('uses original options and only synthetic first marker; accepts only whole fixed phase lines', async () => {
+const directLoad = "[void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')";
+const legacyLoad = 'Add-Type -AssemblyName System.Windows.Forms';
+const directScript = script.replace(legacyLoad, directLoad);
+it.each([script, directScript])('uses original options and only synthetic first marker; accepts only whole fixed phase lines (%#)', async (script) => {
   const f = fake(); const output: object[] = [];
   const options = { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] };
   const args = ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Sta', '-Command', script], options] as Parameters<typeof spawn>;
@@ -27,6 +30,8 @@ it('uses original options and only synthetic first marker; accepts only whole fi
   expect(args[1]![4]).toBe(script);
   const instrumented = (f.launch.mock.calls[0][1] as string[])[4];
   expect(instrumented.match(/ASTRA_PHASE_/g)).toHaveLength(6);
+  const loader = script.includes(legacyLoad) ? legacyLoad : directLoad;
+  expect(instrumented).toContain(`[Console]::Error.WriteLine('ASTRA_PHASE_FORMS_BEFORE'); ${loader}; [Console]::Error.WriteLine('ASTRA_PHASE_FORMS_AFTER')`);
   expect(instrumented.replace(/\[Console\]::Error.WriteLine\('ASTRA_PHASE_[A-Z_]+'\); /g, '').replace(/; \[Console\]::Error.WriteLine\('ASTRA_PHASE_[A-Z_]+'\)/g, '')).toBe(script);
   expect(f.child.stdin.end).toHaveBeenCalledWith(marker, 'utf8');
   for (const chunk of ['PRIVATE\nASTRA_PHASE_STDIN_', 'BEFORE\r\n', 'xASTRA_PHASE_FORMS_AFTER\n', 'x'.repeat(1000), 'ASTRA_PHASE_SETTEXT_AFTER\n', 'ASTRA_PHASE_STDIN_AFTER\n', 'ASTRA_PHASE_STDIN_AFTER\n']) f.child.stderr.emit('data', Buffer.from(chunk));
@@ -37,6 +42,16 @@ it('uses original options and only synthetic first marker; accepts only whole fi
   expect(JSON.stringify(output)).not.toMatch(/PRIVATE|literal|powershell|windowsHide/);
   for (const stream of [f.child.stdin, f.child.stdout, f.child.stderr]) expect(stream.destroy).toHaveBeenCalledOnce();
   expect(f.child.kill).not.toHaveBeenCalled();
+});
+it.each([
+  directScript.replace(directLoad, ''),
+  directScript.replace(directLoad, `${directLoad}; ${directLoad}`),
+  directScript.replace(directLoad, `${directLoad}; ${legacyLoad}`),
+  directScript.replace('b77a5c561934e089', '0000000000000000'),
+])('refuses missing, duplicate, ambiguous or wrong-identity Forms boundaries (%#)', async (script) => {
+  const f = fake();
+  await expect(nativeWitness(f.spawn, ['powershell.exe', ['-Command', script], {}], 'synthetic', () => {})).rejects.toThrow('WITNESS_SCRIPT_REFUSED');
+  expect(f.launch).not.toHaveBeenCalled();
 });
 it.each([true, false])('bounded owned child cleanup (close delivered=%s)', async (close) => {
   vi.useFakeTimers();

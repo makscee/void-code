@@ -7,12 +7,35 @@ import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
 import { expect, it } from 'vitest';
 import { EventEmitter, errorMonitor } from 'node:events';
+import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import type { NativeRequest } from './fixtures/pi-fullscreen-private-clipboard';
 
 // Execute only the actual fixture observer and finally block with harmless fakes.
 // No Pi/module loading, native loop, clipboard reader, or native process spawning.
 const probe = readFileSync(path.resolve('tests/fixtures/pi-fullscreen-native-probe.ts'), 'utf8');
+it.each(['ok', 'mismatch', 'throw'])('independent Windows reader uses direct CLR load and private UTF-8 comparison: %s', (mode) => {
+  const start = probe.indexOf('      let readback: string;');
+  const end = probe.indexOf('\n    }\n    console.log', start);
+  const code = transformSync(probe.slice(start, end), { loader: 'ts' }).code;
+  const marker = 'synthetic Привет 世界 😀';
+  let calls = 0;
+  const run = () => runInNewContext(code, {
+    process: { platform: 'win32', env: { SystemRoot: 'C:\\Windows' } }, path, Buffer, assert, marker,
+    execFileSync: (file: string, args: string[], options: object) => {
+      calls++;
+      expect(file).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+      expect(args.slice(0, 4)).toEqual(['-NoProfile', '-NonInteractive', '-Sta', '-Command']);
+      expect(args[4]).toBe("$ErrorActionPreference='Stop'; [void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'); [Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Windows.Forms.Clipboard]::GetText())))");
+      expect(options).toEqual({ encoding: 'utf8', timeout: 5000 });
+      if (mode === 'throw') throw new Error('PRIVATE stdout/stderr');
+      return Buffer.from(mode === 'ok' ? marker : 'PRIVATE mismatch', 'utf8').toString('base64');
+    },
+  });
+  if (mode === 'ok') run();
+  else expect(run).toThrow(mode === 'throw' ? 'Independent plain-text clipboard read failed' : 'OS plain-text clipboard did not exactly match complete selection');
+  expect(calls).toBe(1);
+});
 const observerStart = probe.indexOf('  const originalSpawn = childProcess.spawn;');
 const observerEnd = probe.indexOf('  try {\n    syncBuiltinESMExports();', observerStart);
 const cleanupStart = probe.lastIndexOf('\n  } finally {') + 1;

@@ -163,7 +163,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           })
           : execFileSync(path.win32.join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe'), [
             '-NoProfile', '-NonInteractive', '-Sta', '-Command',
-            'Add-Type -AssemblyName System.Windows.Forms; [Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Windows.Forms.Clipboard]::GetText())))',
+            "$ErrorActionPreference='Stop'; [void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'); [Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Windows.Forms.Clipboard]::GetText())))",
           ], { encoding: 'utf8', timeout: 5000 });
         readback = Buffer.from(encoded.trim(), 'base64').toString('utf8');
       } catch {

@@ -47,7 +47,7 @@ it.each(['darwin', 'win32'])('R5: %s plan uses absolute system executable, stati
   r.children[1].close(); await next;
 });
 
-it('R5: Windows explicit pipe reader uses strict UTF-8, reads before WinForms, and fails closed on preparation errors', async () => {
+it('R5: Windows strict UTF-8 pipe read precedes direct strong-name CLR Forms load without cmdlet autoload', async () => {
   const r = await writer('win32');
   const payload = 'pipe-only Привет 世界 😀\n[Environment]::Exit(99)';
   const pending = r.write(payload); await flush();
@@ -66,7 +66,11 @@ it('R5: Windows explicit pipe reader uses strict UTF-8, reads before WinForms, a
     const strictUtf8 = script.search(/\[\s*(?:System\.)?Text\.UTF8Encoding\s*\]\s*::\s*new\s*\(\s*\$false\s*,\s*\$true\s*\)/i);
     const reader = script.search(/\[\s*(?:System\.)?IO\.StreamReader\s*\]\s*::\s*new\s*\(/i);
     const read = script.search(/\.\s*ReadToEnd\s*\(\s*\)/i);
-    const forms = script.search(/Add-Type\b[^;\n]*System\.Windows\.Forms/i);
+    // Identity checked read-only with monodis --assembly and sn -T on the
+    // Mono 4.7.2-api System.Windows.Forms.dll reference assembly (not runtime proof).
+    const forms = script.search(/(?:\[void\]\s*|\$null\s*=\s*)\[(?:System\.)?Reflection\.Assembly\]::Load\(\s*(['"])System\.Windows\.Forms, Version=4\.0\.0\.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\1\s*\)/i);
+    expect.soft(forms, 'direct strong-name Reflection.Assembly.Load must discard output without a cmdlet').toBeGreaterThanOrEqual(0);
+    expect.soft(script, 'native plan must not invoke Add-Type or other module-autoloading cmdlets').not.toMatch(/\b[A-Za-z]+-[A-Za-z]+\b/);
     const clipboard = script.search(/\[\s*(?:System\.)?Windows\.Forms\.Clipboard\s*\]\s*::\s*SetText\s*\(/i);
     expect.soft(pipe, 'stdin must come from Console.OpenStandardInput()').toBeGreaterThanOrEqual(0);
     expect.soft(strictUtf8, 'explicit UTF8Encoding(false, true) must throw on invalid bytes').toBeGreaterThanOrEqual(0);
@@ -74,6 +78,7 @@ it('R5: Windows explicit pipe reader uses strict UTF-8, reads before WinForms, a
     expect.soft(read, 'pipe data must be read to EOF').toBeGreaterThanOrEqual(0);
     expect.soft(forms, 'read data BEFORE loading WinForms').toBeGreaterThan(read);
     expect.soft(clipboard, 'read data BEFORE calling the clipboard').toBeGreaterThan(read);
+    expect.soft(clipboard, 'load Forms BEFORE SetText').toBeGreaterThan(forms);
     expect.soft(script.slice(0, Math.min(...[pipe, strictUtf8, reader, forms].filter((index) => index >= 0))), 'Stop must precede preparation so nonterminating errors cannot yield false success').toMatch(/\$ErrorActionPreference\s*=\s*(['"])Stop\1/i);
   } finally {
     r.children[0].close(); await pending;

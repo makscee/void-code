@@ -6,9 +6,16 @@ const phases = ['ASTRA_PHASE_STDIN_BEFORE', 'ASTRA_PHASE_STDIN_AFTER', 'ASTRA_PH
 export async function nativeWitness(originalSpawn: typeof spawn, args: Parameters<typeof spawn>, marker: string, emit: (record: object) => void): Promise<void> {
   const argv = [...args[1] as string[]];
   let script = argv[argv.length - 1];
+  // Keep the old failing plan observable while recognizing the chosen CLR boundary.
+  const loaders = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    "[void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')",
+  ];
+  const matches = loaders.filter((loader) => script.includes(loader));
+  if (matches.length !== 1) throw new Error('WITNESS_SCRIPT_REFUSED');
   const insertions = [
     ['$text=$reader.ReadToEnd()', 0, 1],
-    ['Add-Type -AssemblyName System.Windows.Forms', 2, 3],
+    [matches[0], 2, 3],
     ['[Windows.Forms.Clipboard]::SetText($text)', 4, 5],
   ] as const;
   for (const [text, before, after] of insertions) {
