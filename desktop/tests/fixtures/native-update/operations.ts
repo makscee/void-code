@@ -23,7 +23,25 @@ export interface SeedArchiveFs {
   rename(source: string, destination: string): Promise<void>;
 }
 
-/** A deliberately one-shot setup archive: no ownership guard, retry, or fallback yet. */
-export async function archiveSeed({ source, destination }: SeedArchivePaths, fs: SeedArchiveFs): Promise<void> {
+export interface SeedArchiveOptions {
+  platform: string;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+  /** The caller validates the exact capsule, root, and source identity once per attempt. */
+  verify: () => Promise<void>;
+  destinationExists: () => Promise<boolean>;
+  sourceIsLink: () => Promise<boolean>;
+  observe?: (event: { attempt: number; elapsedMs: number; code?: string }) => void | Promise<void>;
+}
+
+/**
+ * A deliberately one-shot setup archive: no ownership guard, retry, or fallback yet.
+ * The baseline ignores options while the test-first refactor establishes the validation seam.
+ */
+export async function archiveSeed(
+  { source, destination }: SeedArchivePaths,
+  fs: SeedArchiveFs,
+  _options?: SeedArchiveOptions,
+): Promise<void> {
   if (await fs.sourceKind(source) === 'present') await fs.rename(source, destination);
 }
