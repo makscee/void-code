@@ -43,16 +43,16 @@ function rig(overrides: Partial<ControllerDependencies> = {}) {
   const seams = {
     loadFloor: vi.fn(async (): Promise<ReplayFloor | undefined> => floor.value),
     saveFloor: vi.fn(async (next: ReplayFloor): Promise<void> => { floor.value = next; }),
-    fetchMetadata: vi.fn(async (_signal: AbortSignal): Promise<Uint8Array> => envelope(payloadBytes(manifest({ artifacts: [artifact] })))),
-    download: vi.fn(async (_plan: UpdatePlan, _signal: AbortSignal, progress: (fraction: number) => void): Promise<StageHandle> => {
-      progress(0.5);
+    fetchMetadata: vi.fn<ControllerDependencies['fetchMetadata']>(async (): Promise<Uint8Array> => envelope(payloadBytes(manifest({ artifacts: [artifact] })))),
+    download: vi.fn<ControllerDependencies['download']>(async (...args): Promise<StageHandle> => {
+      args[2](0.5);
       return stage;
     }),
     verifyArtifact: vi.fn(async (plan: UpdatePlan, handle: StageHandle): Promise<boolean> => planMatchesStage(plan, handle)),
-    showNativeInstallDialog: vi.fn(async (_plan: UpdatePlan): Promise<boolean> => true),
-    prepare: vi.fn(async (_plan: UpdatePlan, _handle: StageHandle): Promise<void> => undefined),
+    showNativeInstallDialog: vi.fn<ControllerDependencies['showNativeInstallDialog']>(async (): Promise<boolean> => true),
+    prepare: vi.fn<ControllerDependencies['prepare']>(async (): Promise<void> => undefined),
     reverify: vi.fn(async (plan: UpdatePlan, handle: StageHandle): Promise<boolean> => planMatchesStage(plan, handle)),
-    handoff: vi.fn(async (_plan: UpdatePlan, _handle: StageHandle): Promise<void> => undefined),
+    handoff: vi.fn<ControllerDependencies['handoff']>(async (): Promise<void> => undefined),
     onSnapshot: vi.fn((snapshot: UpdateSnapshot): void => { snapshots.push(snapshot); }),
   };
   const { installed: installedOverride, keyring: keyringOverride, metadataTimeoutMs, ...seamOverrides } = overrides;
