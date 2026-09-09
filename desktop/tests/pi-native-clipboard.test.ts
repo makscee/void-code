@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { extension, flush, localEnv } from './fixtures/pi-fullscreen-clipboard';
+import { extension, flush, localEnv, type Spawn } from './fixtures/pi-fullscreen-clipboard';
 
 class Child extends EventEmitter {
   stdin = new PassThrough(); stdout = new PassThrough(); stderr = new PassThrough();
@@ -16,7 +16,7 @@ async function writer(platform = 'darwin') {
   const module = await extension();
   expect(module.createNativeClipboardWriter, 'R4/R5: managed transport lacks bounded stdin-only native writer').toBeTypeOf('function');
   const children: Child[] = [];
-  const spawn = vi.fn((_file: string, _args: string[], _options: any) => { const child = new Child(); children.push(child); return child; });
+  const spawn = vi.fn<Spawn>(() => { const child = new Child(); children.push(child); return child; });
   const write = module.createNativeClipboardWriter!({ platform, env: localEnv, spawn });
   return { write, spawn, children };
 }
@@ -134,7 +134,7 @@ it('R4: real isolated Node child drains oversized stderr before successful exit'
   let child: ChildProcess | undefined;
   let closed: Promise<void> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
-  const spawn = vi.fn((_file: string, _args: string[], options: any) => {
+  const spawn = vi.fn<Spawn>((_file, _args, options) => {
     expect(options.stdio).toEqual(['pipe', 'ignore', 'pipe']);
     // Never launch the requested clipboard executable. No parent stderr reader:
     // only the production writer may drain it (or arrange a nonblocking sink).

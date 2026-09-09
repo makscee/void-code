@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig } from './fixtures/pi-fullscreen-clipboard';
+import { agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -10,7 +10,7 @@ async function make(lines?: string[]): Promise<Rig> { const value = await rig(li
 afterEach(() => { rigs.splice(0).reverse().forEach((value) => value.close()); vi.useRealTimers(); });
 
 // Reject even transient live assignments, while allowing disposable inherited receivers.
-function guardLiveMethod(owner: any, key: string) {
+function guardLiveMethod<T extends object, K extends keyof T & string>(owner: T, key: K) {
   const descriptor = Object.getOwnPropertyDescriptor(owner, key)!;
   const method = owner[key]; const attempts = vi.fn();
   Object.defineProperty(owner, key, { configurable: true, enumerable: descriptor.enumerable,
@@ -33,8 +33,9 @@ it('fixture control: guarded live methods still allow genuine Pi mouse extractio
   const r = await make();
   const guards = [guardLiveMethod(r.terminal, 'write'), guardLiveMethod(r.tui, 'flash')];
   try {
-    expect(() => { r.terminal.write = r.terminal.write; }).toThrow('live write');
-    expect(() => { r.tui.flash = r.tui.flash; }).toThrow('live flash');
+    const write = r.terminal.write; const flash = r.tui.flash;
+    expect(() => { r.terminal.write = write; }).toThrow('live write');
+    expect(() => { r.tui.flash = flash; }).toThrow('live flash');
     guards.forEach((guard) => guard.attempts.mockClear());
     r.drag();
     expect(oscCopies(r.terminal)).toEqual(['Привет 世界 😀\nстрока два']);
@@ -232,6 +233,25 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     expect(r.write.mock.calls.map(([text]) => text)).toEqual(Array(2).fill('Привет 世界 😀\nстрока два'));
   });
 
+  it.each(['\x03', '\x1b[99;5:1u'])('R6: repeated %j presses keep the SAME fresh selection authoritative until ordinary input', async (copyKey) => {
+    const r = await make(); install(await extension(), r);
+    r.drag(); await flush();
+    const bounds = r.tui.getSelectionBounds();
+    expect(bounds).toBeDefined();
+    expect(r.write).toHaveBeenCalledTimes(1);
+    // No new drag, focus change, elapsed-time workaround, or synthetic copy call.
+    for (let press = 0; press < 3; press++) {
+      r.terminal.input(copyKey); await flush();
+      expect(r.write.mock.calls.map(([text]) => text)).toEqual(Array(press + 2).fill('Привет 世界 😀\nстрока два'));
+      expect(r.tui.getSelectionBounds()).toEqual(bounds);
+      expect(r.focused.handleInput).not.toHaveBeenCalled();
+      expect(r.tui.focusedComponent).toBe(r.focused);
+    }
+    r.terminal.input('draft'); r.terminal.input(copyKey); await flush();
+    expect(r.focused.handleInput.mock.calls.map(([text]) => text)).toEqual(['draft', copyKey]);
+    expect(r.write).toHaveBeenCalledTimes(4);
+  });
+
   it.each(['draft', '\x1b[200~paste\x1b[201~', '\x1b'])('R6: copy then %j retires stale authority without changing input semantics', async (key) => {
     const r = await make(); install(await extension(), r);
     r.drag(); await flush(); expect(r.write).toHaveBeenCalledTimes(1);
@@ -246,7 +266,7 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
   it.each(['terminal', 'menu', 'overlay'])('R6: %s focus transfer preserves original Ctrl+C and cannot revive old copy authority', async (kind) => {
     const r = await make(); install(await extension(), r); r.drag(); await flush();
     const menu = { render: () => ['menu'], invalidate() {}, handleInput: vi.fn() };
-    let overlay: any;
+    let overlay: ReturnType<Rig['tui']['showOverlay']> | undefined;
     if (kind === 'terminal') { r.terminal.input('\x1b[O'); r.terminal.input('\x1b[I'); }
     else if (kind === 'overlay') overlay = r.tui.showOverlay(menu);
     else r.tui.setFocus(menu);
@@ -332,8 +352,8 @@ it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach n
   child.stdin.on('data', (data) => bytes.push(Buffer.from(data)));
   const spawn = vi.fn(() => child);
   const module = await extension(env, spawn);
-  const handlers = new Map<string, any[]>();
-  const pi = { on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
+  const handlers = new Map<string, LifecycleHandler[]>();
+  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
   const ui = await widgetUI(r); const { setWidget } = ui;
   const ctx = { mode: 'tui', hasUI: true, ui };
   await module.default(pi); // Deliberately no second argument: only node subprocess IO is substituted.
@@ -358,8 +378,8 @@ it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecy
   const r = await make();
   const env = mode === 'desktop' ? { ...localEnv, VC_DESKTOP_CHAT_ID: '12345678-1234-4234-8234-123456789abc', SSH_CONNECTION: 'inherited' } : localEnv;
   const module = await extension(env);
-  const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
-  const pi = { on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
+  const handlers = new Map<string, LifecycleHandler[]>();
+  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
   const ui = await widgetUI(r);
   const ctx = { mode: 'tui', hasUI: true, ui };
   await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: r.write } });

@@ -1,3 +1,5 @@
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import type { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -12,7 +14,45 @@ export const agentMetadata = {
   VERSION: JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version as string,
   getPackageDir: () => agentDir,
 };
-export async function realPi(): Promise<any> {
+// Narrow views of the real pinned Pi objects, including private selection seams.
+// These describe fixture access only; no selection or keyboard behavior is emulated.
+export interface ComponentView {
+  render(width: number): string[];
+  invalidate(): void;
+  handleInput?(data: string): void;
+  dispose?(): void;
+}
+export interface ScrollView extends ComponentView { scrollTo(row: number): void }
+export interface TuiView {
+  setLayoutRoot(component: ComponentView): void;
+  setFocus(component: ComponentView): void;
+  focusedComponent: ComponentView | null;
+  start(): void;
+  stop(options: { preserveScreen: boolean }): void;
+  renderNow(): void;
+  flash(text: string, duration?: number): void;
+  getSelectionBounds(): { start: { row: number; col: number; scrollView: ScrollView }; end: { row: number; col: number; scrollView: ScrollView } } | undefined;
+  copySelectionToClipboard: (() => void) | undefined;
+  showOverlay(component: ComponentView): { hide(): void };
+}
+interface PiView {
+  TuiAltScreen: new (terminal: MemoryTerminal, hardwareCursor: boolean) => TuiView;
+  ScrollView: new (content: ComponentView, options: { primary: boolean; follow: string; scrollbar: string }) => ScrollView;
+  Container: new () => ComponentView & { addChild(component: ComponentView): void };
+  Text: new (text: string, paddingX: number, paddingY: number) => ComponentView;
+  Input: new () => ComponentView & { handleInput(data: string): void; setValue(text: string): void; getValue(): string };
+}
+export type WidgetOptions = { placement?: string };
+export type WidgetContent = string[] | ((tui: TuiView, theme: { fg(color: string, text: string): string }) => ComponentView) | undefined;
+export type LifecycleHandler = (event: { reason: string }, ctx: {
+  mode: string; hasUI: boolean; ui: {
+    setWidget(key: string, content: WidgetContent, options?: WidgetOptions): void;
+    notify(message: string, level?: string): void;
+    setEditorComponent(): void;
+  };
+}) => unknown;
+export type Spawn = (file: string, args: string[], options: SpawnOptions) => EventEmitter & Pick<ChildProcess, 'stdin' | 'stderr'> & { kill(signal?: NodeJS.Signals | number): unknown };
+export async function realPi(): Promise<PiView> {
   expect(JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version).toBe('0.84.1');
   return import(/* @vite-ignore */ pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
 }
@@ -29,16 +69,16 @@ export function embeddedSource(): string {
 export type WriteText = (text: string, signal: AbortSignal) => Promise<void>;
 export type ClipboardOptions = { platform: string; env: Record<string, string>; piVersion: string; writeText: WriteText; notify: (message: string, level: string) => void };
 export type ExtensionModule = {
-  default: (pi: any, options?: any) => unknown;
-  installFullscreenClipboard?: (tui: any, options: ClipboardOptions) => () => void;
-  createNativeClipboardWriter?: (options: any) => (text: string, signal?: AbortSignal) => Promise<void>;
+  default: (pi: { on(name: string, handler: LifecycleHandler): unknown; registerProvider: (...args: unknown[]) => unknown }, options?: { clipboardIO: Omit<ClipboardOptions, 'notify'> }) => unknown;
+  installFullscreenClipboard?: (tui: TuiView, options: ClipboardOptions) => () => void;
+  createNativeClipboardWriter?: (options: { platform: string; env: Record<string, string>; spawn: Spawn }) => (text: string, signal?: AbortSignal) => Promise<void>;
 };
 export const localEnv = { VC_BOOTSTRAP_EXECUTABLE: '/isolated/vc', SystemRoot: 'C:\\Windows' };
-export async function extension(env = localEnv, spawn?: (...args: any[]) => any): Promise<ExtensionModule> {
+export async function extension(env = localEnv, spawn?: Spawn): Promise<ExtensionModule> {
   const tui = await realPi();
   const code = transformSync(embeddedSource(), { loader: 'ts', format: 'cjs', target: 'node22', logLevel: 'silent' }).code;
   const module = { exports: {} };
-  const safeRequire = (id: string): any => {
+  const safeRequire = (id: string): unknown => {
     if (id === 'node:child_process' || id === 'child_process') return {
       execFileSync: vi.fn(() => JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] })),
       spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
@@ -48,7 +88,7 @@ export async function extension(env = localEnv, spawn?: (...args: any[]) => any)
     if (id === '@earendil-works/pi-ai') return { clampThinkingLevel: (_m: unknown, level: string) => level };
     if (['node:fs', 'fs', 'node:fs/promises', 'fs/promises'].includes(id)) return new Proxy({
       existsSync: () => false,
-      readFileSync: (file: string, options: any) => {
+      readFileSync: (file: string, options: Parameters<typeof readFileSync>[1]) => {
         if (path.resolve(String(file)) !== path.join(agentDir, 'package.json')) throw new Error('unit fixture permits only pinned package metadata reads');
         return readFileSync(file, options);
       },
@@ -85,7 +125,7 @@ export class MemoryTerminal {
   clearFromCursor(): void {} clearScreen(): void {} setTitle(): void {} setProgress(): void {}
 }
 export type Rig = Awaited<ReturnType<typeof rig>>;
-export async function rig(lines = ['Привет 世界 😀', 'строка два'], pi?: any) {
+export async function rig(lines = ['Привет 世界 😀', 'строка два'], pi?: PiView) {
   pi ??= await realPi();
   const terminal = new MemoryTerminal();
   const tui = new pi.TuiAltScreen(terminal, false);
@@ -114,16 +154,17 @@ export async function rig(lines = ['Привет 世界 😀', 'строка д�
 // invoking a replacement factory; store its result so clearing a probe tears it down.
 export async function widgetUI(r: Rig) {
   const pi = await realPi();
-  const above = new Map<string, any>(); const below = new Map<string, any>();
+  const above = new Map<string, ComponentView>(); const below = new Map<string, ComponentView>();
   const theme = { fg: (_: string, text: string) => text };
-  const setWidget = vi.fn((key: string, content: any, options?: { placement?: string }) => {
+  const setWidget = vi.fn((key: string, content: WidgetContent, options?: WidgetOptions) => {
     for (const map of [above, below]) { map.get(key)?.dispose?.(); map.delete(key); }
     if (content === undefined) return;
-    let component;
+    let component: ComponentView;
     if (Array.isArray(content)) {
-      component = new pi.Container();
-      for (const line of content.slice(0, 10)) component.addChild(new pi.Text(line, 1, 0));
-      if (content.length > 10) component.addChild(new pi.Text(theme.fg('muted', '... (widget truncated)'), 1, 0));
+      const container = new pi.Container();
+      for (const line of content.slice(0, 10)) container.addChild(new pi.Text(line, 1, 0));
+      if (content.length > 10) container.addChild(new pi.Text(theme.fg('muted', '... (widget truncated)'), 1, 0));
+      component = container;
     } else component = content(r.tui, theme);
     (options?.placement === 'belowEditor' ? below : above).set(key, component);
   });
@@ -133,5 +174,7 @@ export async function widgetUI(r: Rig) {
   return { setWidget, notify: r.notify, setEditorComponent: vi.fn() };
 }
 export function oscCopies(terminal: MemoryTerminal): string[] {
-  return terminal.output.flatMap((chunk) => [...chunk.matchAll(/\x1b\]52;c;([^\x07]*)\x07/g)].map((match) => Buffer.from(match[1], 'base64').toString('utf8')));
+  const esc = String.fromCharCode(27); const bel = String.fromCharCode(7);
+  const osc52 = new RegExp(`${esc}\\]52;c;([^${bel}]*)${bel}`, 'g');
+  return terminal.output.flatMap((chunk) => [...chunk.matchAll(osc52)].map((match) => Buffer.from(match[1], 'base64').toString('utf8')));
 }
