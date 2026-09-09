@@ -19,3 +19,5 @@ NODE
 ```
 
 On macOS the builder target is explicit for the host architecture: `release/mac-arm64` on arm64 and `release/mac` on x64. The packaged app writes its boot-attempt witness before a baked `missing` mode exits.
+
+Each packaged bootstrap also writes an immutable attempt record at `${bootAttemptFile}.attempt-<pid>-<uuid>.json` before updating the canonical `bootAttemptFile` backlink. Tests enumerate that wildcard: one owned exit file closes every legitimate fixture instance for the transaction, so counting and ownership do not rely on an overwritten canonical file or guessed PID signals.
