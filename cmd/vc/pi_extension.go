@@ -272,7 +272,7 @@ export function createNativeClipboardWriter(options: NativeClipboardWriterOption
 	} else if (options.platform === "win32") {
 		const root = options.env.SystemRoot || options.env.WINDIR || "C:\\Windows";
 		file = path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-		args = ["-NoProfile", "-NonInteractive", "-Sta", "-Command", "$ErrorActionPreference='Stop'; $stream=[Console]::OpenStandardInput(); $utf8=[Text.UTF8Encoding]::new($false,$true); $reader=[IO.StreamReader]::new($stream,$utf8,$false); try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }; Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetText($text)"];
+		args = ["-NoProfile", "-NonInteractive", "-Sta", "-Command", "$ErrorActionPreference='Stop'; $stream=[Console]::OpenStandardInput(); $utf8=[Text.UTF8Encoding]::new($false,$true); $reader=[IO.StreamReader]::new($stream,$utf8,$false); try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }; [void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'); [Windows.Forms.Clipboard]::SetText($text)"];
 	} else {
 		return async () => { throw genericError(); };
 	}
