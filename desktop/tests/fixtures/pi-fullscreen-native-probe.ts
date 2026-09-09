@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
+import { errorMonitor } from 'node:events';
 import { InteractiveMode, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
@@ -86,7 +87,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     },
     setEditorComponent: () => assert.fail('must not replace editor'),
   } };
-  // Substitute only bootstrap, never spawn/native clipboard IO or the managed factory.
+  // Substitute only bootstrap, never native clipboard IO or the managed factory.
   // The actual consumer loader imports the unchanged Go-managed source above.
   const originalExec = childProcess.execFileSync;
   process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
@@ -104,7 +105,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;
   tui.flash = (...args: Parameters<typeof originalFlash>) => { if (args[0] === 'Copied!') succeeded++; return originalFlash(...args); };
+  // Observe the built-in used by the default factory, never replace the native child.
+  const originalSpawn = childProcess.spawn;
+  let operation = 0;
+  childProcess.spawn = function (...args: Parameters<typeof originalSpawn>) {
+    const id = ++operation;
+    const started = performance.now();
+    const executable = path.basename(args[0]);
+    const log = (event: string, code: string | number | null = null, signal: NodeJS.Signals | null = null) => {
+      process.stderr.write(`${JSON.stringify({ executable, operation: id, elapsedMs: Math.round(performance.now() - started), event, code, signal })}\n`);
+    };
+    // Only bounded symbolic codes, never Error.message (which can include argv).
+    const errorCode = (error: NodeJS.ErrnoException): string | null =>
+      typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : null;
+    log('call');
+    let child: ReturnType<typeof originalSpawn>;
+    try { child = Reflect.apply(originalSpawn, childProcess, args); }
+    catch (error) { log('throw', errorCode(error as NodeJS.ErrnoException)); throw error; }
+    child.on('spawn', () => log('spawn'));
+    child.on('exit', (code, signal) => log('exit', code, signal));
+    child.on('close', (code, signal) => log('close', code, signal));
+    child.on(errorMonitor, (error: NodeJS.ErrnoException) => log('error', errorCode(error)));
+    child.stdin?.on('finish', () => log('stdin-finish'));
+    child.stdin?.on(errorMonitor, (error: NodeJS.ErrnoException) => log('stdin-error', errorCode(error)));
+    // No stderr/stdout data listeners, stdin writes, timers, or error handlers.
+    return child;
+  } as typeof originalSpawn;
   try {
+    syncBuiltinESMExports();
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
     for (const [index, marker] of markers.entries()) {
@@ -133,8 +161,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }
     console.log('ASTRA_NATIVE_SELECTION_READBACK_OK_4');
   } finally {
-    for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
-    consumer.clearExtensionWidgets.call(receiver);
-    tui.stop({ preserveScreen: true });
+    try {
+      for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+      consumer.clearExtensionWidgets.call(receiver);
+      tui.stop({ preserveScreen: true });
+    } finally {
+      childProcess.spawn = originalSpawn;
+      syncBuiltinESMExports();
+    }
   }
 }
