@@ -13,7 +13,7 @@ This is an S0 experiment, not an updater design approval. It qualifies a candida
   package/import/build failure.
 * **B owns** only `desktop/experiments/update-native/`, including the Go
   helper and its update/recovery behaviour. Tests build that directory with
-  `go build -o <private-root>/bin/native-update-probe
+  `go build -o <private-root>/native-update-probe
   ./desktop/experiments/update-native`; they then invoke that exact binary.
   The bootstrap/fixtures are not the SUT and must not replace B's update or
   recovery logic.
@@ -40,7 +40,7 @@ A packages **real minimal Electron applications**, pinned to the repository's
 * per run, a generated, unique fixture `appId`/bundle ID, product name,
   executable name and Windows GUID/registry namespace; these values are baked
   into the package inputs, never borrowed from Void Code;
-* macOS arm64: unsigned `dir`/zip fixture, `identity: null`, `LSUIElement: true`,
+* macOS host arm64 or x64: unsigned `dir` fixture, `identity: null`, `LSUIElement: true`,
   no BrowserWindow/Dock UI;
 * Windows x64: per-user NSIS (`oneClick: false`, no elevation, no elevate
   helper, changeable install directory) and a unique `/D=` target. The test
@@ -110,7 +110,7 @@ Exactly one request is supplied per invocation:
   "transactionId": "run-…",
   "capsule": "/absolute/private/capsule",
   "identity": "org.voidcode.fixture.<run>",
-  "from": {"version": "1.0.0", "target": "/…/installed/N.app-or-dir", "package": "/…/N-artifact", "predecessorReceipt": "/…/receipts/preinstall-N.json", "predecessorPid": 123},
+  "from": {"version": "1.0.0", "target": "/absolute/private/capsule/installed.app", "package": "/…/N-artifact", "predecessorReceipt": "/…/receipts/preinstall-N.json", "predecessorPid": 123},
   "to": {"version": "1.0.1", "package": "/…/N+1-artifact", "marker": "marker-N+1"},
   "receiptDir": "/…/receipts",
   "barrierDir": "/…/barriers",
@@ -164,7 +164,8 @@ The fixture writes `<receiptDir>/<transactionId>.json` by temp-file plus rename:
   "resourcesPath": "/canonical/installed/resources",
   "marker": "marker-N+1",
   "bootstrap": "ok",
-  "pid": 123
+  "pid": 123,
+  "packaged": true
 }
 ```
 
@@ -173,6 +174,101 @@ matches every listed expected value, verifies that the PID is the newly
 launched owned packaged app, and confirms the old PID is dead. A stale,
 malformed, missing, wrong transaction, wrong identity/version/arch/path/marker
 receipt is not success.
+
+## A2 executable protocol refinements (controlling test API)
+
+These refinements are test observation/API decisions, not a production layout.
+B must not change the tests or fixtures to satisfy its implementation.
+
+* Each manual preinstall and each post-recovery manual witness uses a fresh ID,
+  distinct from the update ID. Receipt/config/boot/exit evidence is never erased
+  or reused. Recovery alone reuses its install transaction ID. Setup may reinstall
+  N between cases, but neither recovery oracle copies a bundle nor runs an installer.
+* The fixed helper bootstrap config is
+  `receipts/<id>.bootstrap.json`, containing exactly `transactionId`, `receiptDir`,
+  `userData` (`<capsule>/userdata`), `exitFile` (`receipts/<id>.exit`) and
+  `bootAttemptFile` (`receipts/<id>.boot.json`). Paths are absolute. Launch the
+  exact installed executable with `--fixture-bootstrap=<config>`, in a private
+  capsule HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP environment. Never inherit
+  product credentials or use shared userData. No shell or installer auto-launch.
+* Every install stops at every listed durable barrier, in order. The ACK is
+  `<id>.<name>.continue`, NOT `<id>.<name>.json.continue`, created by the test via
+  temp-file/rename. The helper must actually wait; tests hold each barrier,
+  inspect real files and only then ACK. Faults ACK earlier stages and SIGKILL
+  only the actual spawned helper ChildProcess at the selected stage.
+* On Mac the observation location for the complete retained old bundle is
+  `<capsule>/backup.app`. Its symlinks, modes and SHA inventory must equal the
+  immutable N bundle at both post-rename barriers. The new target must equal
+  the immutable selected N1 variant at the last barrier. This is not a proposed
+  production backup path. B's journal remains private and transaction-keyed.
+* Recovery is noninteractive: it creates/emits NO install barriers, ignores old
+  install ACK state, and launches NO app. It restores N, exits zero, and is then
+  independently checked by a fresh manual N launch/receipt/full marker/exit.
+  Repeating recovery must again succeed without automatic retry/bootstrap.
+* Failed receipt validation / failed NSIS leaves evidence and the retained N
+  source for explicit `recover`; do not automatically repair the target before
+  A can inspect the failed state. In particular retain the damaged Windows
+  marker and 1.0.1 registry registration after the partial installer failure.
+  The helper must wait for and reject the real nonzero installer result. A's
+  external customInstall witness plus the damaged target/registry is the fault
+  oracle, not a helper's self-reported installer status.
+* A owns the fixture exit-file protocol, including for B-launched wrong-token
+  and normal apps. Do not kill them on a receipt timeout or replace their live
+  target. Missing-receipt mode exits naturally. A closes witnessed bad boots
+  before recovery. Helpers must release the target lock on exit; a refused
+  contender must not disturb the held first transaction, which must then finish
+  a real N1 install. Recovery never claims a live recorded successor as dead.
+* Windows registry checks query individual values from the fixture GUID-derived
+  **HKCU install key** (`registryWitness.installKey`) for `InstallLocation`, equal
+  to the exact target, and **HKCU uninstall key** (`uninstallKey`) for
+  `DisplayVersion`, equal to the actual expected version (pinned installer.nsh
+  lines 103–128). No substring/combined
+  output oracle. Retained N installer SHA is invariant. Reinstalled N's app
+  inventory must match the preinstall inventory (only generated `Uninstall `
+  entries are excluded); bootstrap and registration are independently required.
+* Native helper operation/barrier/PID waits are 45 seconds; tracked helper
+  subprocesses have a 180-second outer watchdog to include barrier observation,
+  and are killed/reaped on failure. Build has 120 seconds, fixture packaging
+  uses two safe waves of isolated variant projects, each with its existing
+  five-minute watchdog. The first native case allows setup plus operations
+  (16 minutes), not the rejected 75-second bound. Subsequent cases reuse the
+  built packages. This setup ceiling is approximately 12 minutes including Go,
+  not a claim of a measured ten-minute Windows package time.
+* All captured helper/tool children are bounded and reaped. B-owned fixture
+  processes are stopped only through witnessed exit files and actual PID
+  disappearance, never PID signals or name-based termination. After uncertainty,
+  further setup is refused and evidence is retained. Capsules and external
+  sentinels are conservatively retained even on a passing observed run;
+  teardown does not call destructive fixture cleanup. CI copies
+  only diagnostic `.log/.json/.txt` files into `artifacts/native-update/<host>`.
+  The fixture GUID registry keys remain disposable runner residue. Retention
+  never excuses lingering witnessed children: cleanup failures fail the suite.
+  No installers are uploaded.
+
+### Immutable bootstrap ledger and exact observation scope
+
+Fixture-author commit `a430021` closes the overwritten-witness gap. `main.mjs`
+first writes `${bootAttemptFile}.attempt-${process.pid}-${randomUUID()}.json`,
+then the canonical `bootAttemptFile`. Both have the same BootAttempt schema:
+`{v:1,transactionId,pid,execPath,resourcesPath,packaged:true,mode}`. The fixture
+README and tests use this actual naming contract; B must not manufacture records.
+
+Tests enumerate the complete immutable ledger, require exactly one update attempt
+on success, correlate its actual PID with the 1.0.1 receipt and full resource
+marker, and compare the ledger across forbidden boots, contention, missing receipt
+and repeated recovery. Version/marker come from the real receipt/resources, not
+invented BootAttempt fields or fallbacks. Cleanup validates each transaction's
+records and paths/packaged/PIDs, creates one transaction-owned exit file, and waits
+for every validated witnessed PID to disappear without signalling receipt PIDs.
+The canonical file remains a compatibility witness, not the counting oracle.
+
+This observes packaged bootstraps reaching the fixture ledger, within bounded
+native test windows; it does not prove processes which fail before that write,
+indefinite future behaviour, or full product updater correctness. No commands or
+native runs were performed for this final test-only refinement. Native S0 remains
+unqualified until actual macOS and Windows runs pass. The independent entrypoint
+existence assertion records pure missing-helper RED; any build, packaging or
+lifecycle failure after existence is a separate failure, never bootstrap RED.
 
 ## Executable RED matrix
 
@@ -196,19 +292,24 @@ It must not turn skipped native qualification into a pass.
 | 11 | Windows | **Real NSIS partial failure.** Run the failure installer. Its external durable witness exists, its required resource is damaged and process exit is nonzero; no success is accepted. Rerun retained `N` installer through fresh recovery and prove normal `N` files, marker, bootstrap and its own registry values are restored. |
 | 12 | both | **Recovery idempotency/conservation.** Repeat fresh `recover` after any fault result. State remains one validated `N` (or previously receipt-verified `N+1`), userdata hashes and unrelated sentinel process/files remain unchanged. |
 
-Count matrix: cases 1 and 10 are positive controls; cases 2–9 and 11–12 are
-negative, fault, recovery, or concurrency checks: **10/12 (83%)**, above the
-70% floor. Wrong and missing receipt are immutable separate fixtures/cases,
+The table above is the acceptance scope, not the numbering of the A2 file.
+A2 has **12 named native behaviors**: one shared success/path/registry control;
+separate shared identity, real redirect, live-N, lock-contention, wrong-receipt
+and missing-receipt cases; three Mac crash points; Windows partial NSIS failure;
+and shared interrupted recovery/idempotency. That is **11/12 (92%)** negative,
+fault, recovery or concurrency behaviors, **11 applicable on Mac / 9 on Windows**.
+Path/registry positive coverage is merged into the normal control. Conservation
+and independent repeated manual recovery witnesses are also checked in every
+fault case, not postponed to an inventory-only final test. Wrong and missing receipt are immutable separate fixtures/cases,
 not branches merged by an oracle. Every behavioural assertion above executes
 when the helper exists; the initial missing-entrypoint assertion is only the
 intentional RED bootstrap and cannot be the final coverage mechanism.
 
-All waits have per-stage bounded watchdogs (packaging has its own five-minute
-watchdog; app exit/install, preinstall receipt, barrier, helper, installer,
-postinstall receipt and recovery are separately bounded) and retain stdout/stderr,
-event/receipt files and a capsule inventory on timeout. Teardown only stops
-recorded fixture PIDs/process trees and removes its capsule; it never kills by
-name, touches shared user data, or alters OS settings.
+Waits have native bounded watchdogs; packaging retains its own five-minute
+per-variant bound. Helpers, installer tooling, receipt/barrier/PID waits retain
+stdout/stderr and real event/receipt files on failure. Teardown never kills by
+name, touches shared user data, or alters OS settings. A2 retention/ownership
+rules and the bounded immutable-ledger observation scope are specified above.
 
 ## Planned test layout and qualification
 
@@ -226,7 +327,7 @@ start/stop only its created `N` with this self-check (run from `desktop`; it
 creates and removes its own temporary capsule):
 
 ```sh
-node --input-type=module <<'NODE'
+node --experimental-strip-types --input-type=module <<'NODE'
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -264,9 +365,17 @@ pushes to `work/desktop-update-native` and PRs with relevant path filters, plus
 optional `workflow_dispatch`; it has `contents: read`, a bounded job timeout,
 and a `macos-14`/`windows-latest` matrix. It checks out, uses Node 22 and the
 Go version/toolchain required by `go.mod` (currently Go `1.26.0` /
-`go1.26.5`), runs `npm ci --ignore-scripts`, explicitly obtains the pinned
-Electron binary if that install mode did not, then runs the opt-in command
-above. It always uploads diagnostics/report/logs only—never installers—and
+`go1.26.5`), runs `npm ci --ignore-scripts`, then explicitly executes
+`node node_modules/electron/install.js` from `desktop` (Electron `41.10.3`
+is pinned in package.json/lockfile). It runs the opt-in test command with
+`VOID_NATIVE_UPDATE_PROBE: '1'` in the step/job environment, so both shells
+actually execute it, not a POSIX-only assignment on Windows. Checkout sets
+`persist-credentials: false`. The dedicated single matrix job has a 10–60
+minute timeout; actions use the repository's pinned checkout/setup-node/setup-go/
+upload-artifact SHAs. PR filters cover this workflow, Go manifests, desktop
+manifests, helper, both tests, fixtures and the plan. Upload paths must explicitly
+select diagnostic file extensions under `artifacts/native-update/`, not an entire
+capsule/directory that might include installers. It always uploads diagnostics/report/logs only—never installers—and
 contains no publish, tag, deploy, credentials, or changes to production
 packaging/workflows.
 
