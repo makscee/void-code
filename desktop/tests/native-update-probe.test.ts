@@ -374,6 +374,8 @@ async function registry(x: Context, version: string) {
   // Test-only OS read; no renderer input or installer launch. Pinned installer.nsh
   // writes location to the install key and version to the uninstall key.
   const script = `
+$ProgressPreference = 'SilentlyContinue'
+# Process-local probe setup: prevent first module load progress from polluting stderr.
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 function Read-StringValue([string]$path, [string]$name) {
