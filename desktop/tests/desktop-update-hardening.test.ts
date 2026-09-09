@@ -12,7 +12,6 @@ import {
   ticks,
   type ControllerDependencies,
   type ControllerModule,
-  type DesktopUpdateController,
   type StageHandle,
   type TrustModule,
   type UpdateSnapshot,
@@ -84,7 +83,6 @@ describe('desktop update check reentrancy', () => {
     const metadata = deferred<Uint8Array>();
     const snapshots: UpdateSnapshot[] = [];
     const stage: StageHandle = { id: 'unused-stage' };
-    let controller!: DesktopUpdateController;
     let inner!: Promise<void>;
     let reentered = false;
     const dependencies: ControllerDependencies = {
@@ -107,7 +105,7 @@ describe('desktop update check reentrancy', () => {
         }
       }),
     };
-    controller = (await controllerModule()).createDesktopUpdateController(dependencies);
+    const controller = (await controllerModule()).createDesktopUpdateController(dependencies);
 
     let outerSettled = false;
     let innerSettled = false;
