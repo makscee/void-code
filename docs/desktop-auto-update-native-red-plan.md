@@ -226,14 +226,26 @@ B must not change the tests or fixtures to satisfy its implementation.
   output oracle. Retained N installer SHA is invariant. Reinstalled N's app
   inventory must match the preinstall inventory (only generated `Uninstall `
   entries are excluded); bootstrap and registration are independently required.
-* Native helper operation/barrier/PID waits are 45 seconds; tracked helper
-  subprocesses have a 180-second outer watchdog to include barrier observation,
-  and are killed/reaped on failure. Build has 120 seconds, fixture packaging
+* Native helper receipt/barrier/PID waits are 45 seconds; tracked helper
+  subprocesses have one 180-second outer watchdog to include barrier observation,
+  installation and finalization, and are killed/reaped on failure. Joining their
+  result must not add a new 45-second deadline or restart the owner's watchdog.
+  Exact-child reap remains separately bounded at 5 seconds; simultaneous operation
+  and reap errors must both survive. Build has 120 seconds, fixture packaging
   uses two safe waves of isolated variant projects, each with its existing
   five-minute watchdog. The first native case allows setup plus operations
   (16 minutes), not the rejected 75-second bound. Subsequent cases reuse the
   built packages. This setup ceiling is approximately 12 minutes including Go,
   not a claim of a measured ten-minute Windows package time.
+* Setup archives only the exact owned target/backup to a fresh absent destination.
+  Windows EPERM/EACCES/EBUSY may retry within one 5-second retry budget (sleeps at
+  most 100ms), rechecking capsule/source identity and destination each time. Other
+  errors, persistent failures and inspection errors fail closed. An initially owned
+  junction is renamed as a link once, never followed or retried; a later redirect
+  is refusal. There is no overwrite/delete fallback. The retry budget is not
+  permission to abandon an outstanding filesystem operation and start another.
+  A real Windows deny-delete reader control proves one-shot failure and archive
+  after explicit owned-handle release; injected filesystem errors are not that proof.
 * All captured helper/tool children are bounded and reaped. B-owned fixture
   processes are stopped only through witnessed exit files and actual PID
   disappearance, never PID signals or name-based termination. After uncertainty,
