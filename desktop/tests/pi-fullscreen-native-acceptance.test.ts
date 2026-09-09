@@ -3,8 +3,10 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { embeddedSource } from './fixtures/pi-fullscreen-clipboard';
+import { runPrivateWindowsClipboard } from './fixtures/pi-fullscreen-private-clipboard';
 
-// Never set this gate on a developer login session. This test deliberately replaces the clipboard.
+// macOS requires an owned isolated login session; Windows creates its own private station.
+// Explicit opt-in is still mandatory. This test deliberately replaces that isolated clipboard.
 const gated = process.env.VC_ISOLATED_CLIPBOARD_ACCEPTANCE === 'I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION';
 it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard four times, independently read back', () => {
   expect(['darwin', 'win32']).toContain(process.platform);
@@ -27,7 +29,10 @@ it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard f
       VC_ISOLATED_CLIPBOARD_ACCEPTANCE: process.env.VC_ISOLATED_CLIPBOARD_ACCEPTANCE,
     };
     // --list-models awaits async extension factories, but needs no model, account or prompt.
-    const result = spawnSync(process.execPath, [entry!, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '-e', path.join(work, 'probe.ts'), '--list-models'], {
+    const args = [entry!, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '-e', path.join(work, 'probe.ts'), '--list-models'];
+    const result = process.platform === 'win32'
+      ? runPrivateWindowsClipboard({ work, node: process.execPath, args, env })
+      : spawnSync(process.execPath, args, {
       cwd: work, env, encoding: 'utf8', timeout: 55000, maxBuffer: 2 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -42,4 +47,4 @@ it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard f
     expect(result.status, diagnostic).toBe(0);
     expect(result.stdout?.includes('ASTRA_NATIVE_SELECTION_READBACK_OK_4'), `Required ASTRA_NATIVE_SELECTION_READBACK_OK_4\n${diagnostic}`).toBe(true);
   } finally { rmSync(work, { recursive: true, force: true }); }
-}, 60000);
+}, process.platform === 'win32' ? 100000 : 60000);

@@ -1,5 +1,5 @@
 // Fake-only control for the frozen acceptance stderr repair. No Pi imports or clipboard IO.
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -7,6 +7,8 @@ import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
 import { expect, it } from 'vitest';
 import { EventEmitter, errorMonitor } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import type { NativeRequest } from './fixtures/pi-fullscreen-private-clipboard';
 
 // Execute only the actual fixture observer and finally block with harmless fakes.
 // No Pi/module loading, native loop, clipboard reader, or native process spawning.
@@ -91,13 +93,20 @@ const acceptance = transformSync(readFileSync(path.resolve('tests/pi-fullscreen-
   loader: 'ts', format: 'cjs', target: 'node22',
 }).code;
 
-it.each([0, 7])('fake Node exit %i retains stderr when native marker is missing', (status) => {
+it.each([
+  { status: 0, marker: false, setupFailure: false },
+  { status: 7, marker: false, setupFailure: false },
+  { status: 0, marker: true, setupFailure: false },
+  { status: 91, marker: true, setupFailure: false }, // cleanup failure must defeat a success marker
+  { status: 0, marker: true, setupFailure: true },
+])('fake acceptance fails closed or passes only with exit zero + marker: %j', ({ status, marker, setupFailure }) => {
   const work = mkdtempSync(path.join(tmpdir(), 'astra-native-diagnostic-'));
   try {
     // Explicit Node entry ignores all Pi arguments; the copied probe is NEVER loaded.
     const entry = path.join(work, 'fake-node-entry.cjs');
-    writeFileSync(entry, `process.stderr.write('FAKE_NATIVE_FAILURE_ONLY\\n'); process.stdout.write('fake model table\\n'); process.exitCode = ${status};`);
+    writeFileSync(entry, `process.stderr.write('FAKE_NATIVE_FAILURE_ONLY\\n'); process.stdout.write('fake model table\\n${marker ? 'ASTRA_NATIVE_SELECTION_READBACK_OK_4' : ''}'); process.exitCode = ${status};`);
     let acceptanceBody: (() => void) | undefined;
+    let ownedWork: string | undefined;
     runInNewContext(acceptance, {
       // Capture one test body, not a nested Vitest process/test suite.
       require: (id: string) => {
@@ -106,6 +115,23 @@ it.each([0, 7])('fake Node exit %i retains stderr when native marker is missing'
           return (_name: string, body: () => void) => { acceptanceBody = body; };
         } } };
         if (id === './fixtures/pi-fullscreen-clipboard') return { embeddedSource: () => '// fake-only; never imported' };
+        if (id === './fixtures/pi-fullscreen-private-clipboard') return {
+          runPrivateWindowsClipboard: (request: NativeRequest) => {
+            // Never import/run the Windows launcher, even on Windows. Only this fake entry runs.
+            ownedWork = request.work;
+            if (setupFailure) throw new Error('PRIVATE_CLIPBOARD_COMPILE_FAILED');
+            expect(request.node).toBe(process.execPath);
+            expect(request.args).toEqual([entry, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '-e', path.join(request.work, 'probe.ts'), '--list-models']);
+            expect(request.env.PI_PACKAGE_DIR).toBe(work);
+            expect(request.env).not.toHaveProperty('LANG');
+            expect(request.env).not.toHaveProperty('PRIVATE_PARENT_SECRET');
+            expect(request.env).toMatchObject({ LC_ALL: 'C', PI_OFFLINE: '1', TEMP: request.work });
+            return spawnSync(request.node, request.args, {
+              cwd: request.work, env: request.env, encoding: 'utf8', timeout: 5000,
+              maxBuffer: 2 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+            });
+          },
+        };
         if (id.startsWith('node:')) return require(id);
         throw new Error('Unexpected acceptance dependency');
       },
@@ -114,6 +140,7 @@ it.each([0, 7])('fake Node exit %i retains stderr when native marker is missing'
         env: {
           PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
           VC_NATIVE_PI_ENTRY: entry, VC_NATIVE_PI_PACKAGE_DIR: work,
+          PRIVATE_PARENT_SECRET: 'must-not-be-inherited',
           VC_ISOLATED_CLIPBOARD_ACCEPTANCE: 'I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION',
         },
       },
@@ -121,6 +148,13 @@ it.each([0, 7])('fake Node exit %i retains stderr when native marker is missing'
     expect(acceptanceBody).toBeTypeOf('function');
     let failure: unknown;
     try { acceptanceBody!(); } catch (error) { failure = error; }
+    expect(ownedWork).toBeDefined();
+    expect(existsSync(ownedWork!)).toBe(false);
+    if (setupFailure) {
+      expect(String(failure)).toContain('PRIVATE_CLIPBOARD_COMPILE_FAILED');
+      return;
+    }
+    if (status === 0 && marker) { expect(failure).toBeUndefined(); return; }
     expect(failure).toBeDefined();
     const message = String(failure);
     expect(message).toContain(`Pi status=${status}`);
