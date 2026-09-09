@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const css = readFileSync(new URL('../src/renderer/index.css', import.meta.url), 'utf8');
+const renderer = readFileSync(new URL('../src/renderer/index.ts', import.meta.url), 'utf8');
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -14,7 +15,22 @@ function property(block: string, name: string): string | undefined {
   return block.split(';').map((entry) => entry.trim()).find((entry) => entry.startsWith(`${name}:`))?.slice(name.length + 1).trim();
 }
 
+function embeddedInternalScroll(overflowY: string, clientHeight: number, scrollHeight: number, rowCount: number): boolean {
+  const matches = [...renderer.matchAll(/const internalScroll = ([^;]+);/g)];
+  expect(matches, 'expected exactly one internalScroll check in the renderer probe').toHaveLength(1);
+  const evaluate = Function('getComputedStyle', 'recentListElement', 'listGeometry', 'rowCount', `return (${matches[0][1]});`);
+  return evaluate(() => ({ overflowY }), {}, { clientHeight, scrollHeight }, rowCount) as boolean;
+}
+
 describe('desktop scroll surface contracts (fast source guard)', () => {
+  it('validates the embedded recentGeometryProbe internalScroll check (not the whole packaged Pi probe)', () => {
+    expect(embeddedInternalScroll('auto', 160, 160, 8), 'eight fitting rows are acceptable').toBe(true);
+    expect(embeddedInternalScroll('auto', 160, 40, 1), 'one fitting row is acceptable').toBe(true);
+    expect(embeddedInternalScroll('auto', 80, 160, 8), 'an artificially capped eight-row list is rejected').toBe(false);
+    expect(embeddedInternalScroll('hidden', 160, 160, 8), 'hidden overflow is rejected').toBe(false);
+    expect(embeddedInternalScroll('clip', 160, 160, 8), 'clipped overflow is rejected').toBe(false);
+  });
+
   it('suppresses only xterm’s redundant native viewport scroller, not its real custom scroll surface', () => {
     expect(property(declarations('.xterm .xterm-viewport'), 'overflow-y')).toBe('hidden');
     expect(css).not.toMatch(/\.xterm(?:\s+[^,{]+)*\s+\.xterm-scrollable-element\s*\{[^}]*overflow(?:-[xy])?\s*:\s*hidden/);
