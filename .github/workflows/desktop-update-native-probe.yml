@@ -1,0 +1,69 @@
+name: Desktop native update probe
+
+on:
+  push:
+    branches:
+      - work/desktop-update-native
+  pull_request:
+    paths:
+      - .github/workflows/desktop-update-native-probe.yml
+      - go.mod
+      - go.sum
+      - desktop/package.json
+      - desktop/package-lock.json
+      - desktop/experiments/update-native/**
+      - desktop/tests/native-update-probe.test.ts
+      - desktop/tests/native-update-workflow.test.ts
+      - desktop/tests/fixtures/native-update/**
+      - docs/desktop-auto-update-native-red-plan.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-probe:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: desktop
+        run: npm ci --ignore-scripts
+      - name: Provision the lockfile-pinned Electron runtime
+        working-directory: desktop
+        run: node node_modules/electron/install.js
+      - name: Execute native probe and workflow contract
+        working-directory: desktop
+        env:
+          VOID_NATIVE_UPDATE_PROBE: '1'
+        run: |
+          node -e "require('node:fs').mkdirSync('../artifacts/native-update',{recursive:true})"
+          npm test -- --reporter=json --outputFile=../artifacts/native-update/vitest-report.json tests/native-update-probe.test.ts tests/native-update-workflow.test.ts
+      - name: Upload bounded diagnostics only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-native-update-${{ matrix.os }}
+          if-no-files-found: warn
+          path: |
+            artifacts/native-update/**/*.json
+            artifacts/native-update/**/*.log
+            artifacts/native-update/**/*.txt
+            artifacts/native-update/**/*.xml
