@@ -6,6 +6,7 @@ import {
   verifyDesktopUpdateEnvelope,
 } from './desktop-update-trust';
 import type {
+  AuthorizedDesktopUpdatePlan,
   DesktopInstalledBuild,
   DesktopUpdateArtifact,
   DesktopUpdatePlan,
@@ -40,12 +41,12 @@ export type DesktopUpdateControllerDependencies = {
   loadFloor(): Promise<ReplayFloor | undefined>;
   saveFloor(floor: ReplayFloor): Promise<void>;
   fetchMetadata(signal: AbortSignal): Promise<Uint8Array>;
-  download(plan: DesktopUpdatePlan, signal: AbortSignal, progress: (fraction: number) => void): Promise<StageHandle>;
-  verifyArtifact(plan: DesktopUpdatePlan, stage: StageHandle): Promise<boolean>;
-  showNativeInstallDialog(plan: DesktopUpdatePlan): Promise<boolean>;
-  prepare(plan: DesktopUpdatePlan, stage: StageHandle): Promise<void>;
-  reverify(plan: DesktopUpdatePlan, stage: StageHandle): Promise<boolean>;
-  handoff(plan: DesktopUpdatePlan, stage: StageHandle): Promise<void>;
+  download(plan: AuthorizedDesktopUpdatePlan, signal: AbortSignal, progress: (fraction: number) => void): Promise<StageHandle>;
+  verifyArtifact(plan: AuthorizedDesktopUpdatePlan, stage: StageHandle): Promise<boolean>;
+  showNativeInstallDialog(plan: AuthorizedDesktopUpdatePlan): Promise<boolean>;
+  prepare(plan: AuthorizedDesktopUpdatePlan, stage: StageHandle): Promise<void>;
+  reverify(plan: AuthorizedDesktopUpdatePlan, stage: StageHandle): Promise<boolean>;
+  handoff(plan: AuthorizedDesktopUpdatePlan, stage: StageHandle): Promise<void>;
   onSnapshot(snapshot: UpdateSnapshot): void;
   metadataTimeoutMs?: number;
 };
@@ -77,7 +78,10 @@ type PinnedPlan = {
   readonly payloadDigest: string;
   readonly artifact: Readonly<DesktopUpdateArtifact>;
   readonly payloadBytes: Uint8Array;
+  readonly envelopeBytes: Uint8Array;
 };
+
+type RetryableDownloadPhase = 'download' | 'initial-verification';
 
 const DEFAULT_METADATA_TIMEOUT_MS = 10_000;
 const MAX_METADATA_TIMEOUT_MS = 10_000;
@@ -106,21 +110,27 @@ function copyKeyring(
   return Object.freeze(copy);
 }
 
-function pinPlan(plan: DesktopUpdatePlan, authenticatedDigest: string): PinnedPlan {
+function pinPlan(
+  plan: DesktopUpdatePlan,
+  authenticatedDigest: string,
+  envelopeBytes: Uint8Array,
+): PinnedPlan {
   return {
     version: plan.version,
     payloadDigest: authenticatedDigest,
     artifact: Object.freeze({ ...plan.artifact }),
     payloadBytes: new Uint8Array(plan.payloadBytes),
+    envelopeBytes: new Uint8Array(envelopeBytes),
   };
 }
 
-function exposePlan(plan: PinnedPlan): DesktopUpdatePlan {
+function exposePlan(plan: PinnedPlan): AuthorizedDesktopUpdatePlan {
   return {
     version: plan.version,
     payloadDigest: plan.payloadDigest,
     artifact: { ...plan.artifact },
     payloadBytes: new Uint8Array(plan.payloadBytes),
+    envelopeBytes: new Uint8Array(plan.envelopeBytes),
   };
 }
 
@@ -183,6 +193,7 @@ export function createDesktopUpdateController(
   let currentSnapshot: UpdateSnapshot = { state: 'idle' };
   let candidate: PinnedPlan | undefined;
   let staged: StageHandle | undefined;
+  let retryableDownloadPhase: RetryableDownloadPhase | undefined;
   let disposed = false;
   let generation = 0;
   let checkOperation: Operation | undefined;
@@ -227,9 +238,10 @@ export function createDesktopUpdateController(
     }
   }
 
-  function fail(operation: Operation, code: string): void {
+  function fail(operation: Operation, code: string, phase?: RetryableDownloadPhase): void {
     if (!owns(operation)) return;
     staged = undefined;
+    retryableDownloadPhase = phase;
     publish({ state: 'failed', error: code });
   }
 
@@ -280,6 +292,7 @@ export function createDesktopUpdateController(
         publish({ state: 'unavailable', error: verified.code });
         return;
       }
+      const envelopeBytes = new Uint8Array(metadata.value);
       const selection = parseAndSelectDesktopRelease(verified.verified.payloadBytes, dependencies.installed);
       if (!owns(operation)) return;
       if (!selection.ok) {
@@ -294,7 +307,7 @@ export function createDesktopUpdateController(
         publish({ state: 'unavailable', error: 'plan-identity-mismatch' });
         return;
       }
-      const nextCandidate = pinPlan(selection.plan, verified.verified.payloadDigest);
+      const nextCandidate = pinPlan(selection.plan, verified.verified.payloadDigest, envelopeBytes);
 
       const loaded = await waitForOperation(operation, externalOutcome(() => dependencies.loadFloor()));
       if (!owns(operation)) return;
@@ -335,6 +348,7 @@ export function createDesktopUpdateController(
 
       candidate = nextCandidate;
       staged = undefined;
+      retryableDownloadPhase = undefined;
       publish({ state: 'available', version: nextCandidate.version });
     } catch {
       if (owns(operation)) {
@@ -391,12 +405,12 @@ export function createDesktopUpdateController(
       const downloadResult = await waitForOperation(operation, downloaded);
       if (!owns(operation) || downloadResult.status === 'cancelled') return;
       if (downloadResult.status !== 'fulfilled') {
-        fail(operation, 'download-failed');
+        fail(operation, 'download-failed', 'download');
         return;
       }
       const stage = pinStage(downloadResult.value);
       if (stage === undefined) {
-        fail(operation, 'invalid-stage-handle');
+        fail(operation, 'invalid-stage-handle', 'download');
         return;
       }
 
@@ -407,14 +421,15 @@ export function createDesktopUpdateController(
       );
       if (!owns(operation) || verification.status === 'cancelled') return;
       if (verification.status !== 'fulfilled' || verification.value !== true) {
-        fail(operation, 'artifact-verification-failed');
+        fail(operation, 'artifact-verification-failed', 'initial-verification');
         return;
       }
 
       staged = stage;
+      retryableDownloadPhase = undefined;
       publish({ state: 'ready', version: plan.version });
     } catch {
-      fail(operation, 'download-failed');
+      fail(operation, 'download-failed', 'download');
     } finally {
       if (downloadOperation === operation) {
         downloadOperation = undefined;
@@ -426,7 +441,10 @@ export function createDesktopUpdateController(
   function download(): Promise<void> {
     if (disposed) return Promise.resolve();
     if (downloadFlight !== undefined) return downloadFlight;
-    if (currentSnapshot.state !== 'available' || candidate === undefined) return Promise.resolve();
+    const canStart = currentSnapshot.state === 'available' ||
+      (currentSnapshot.state === 'failed' && retryableDownloadPhase !== undefined);
+    if (!canStart || candidate === undefined) return Promise.resolve();
+    retryableDownloadPhase = undefined;
     const operation = newOperation();
     downloadOperation = operation;
     const flight = runDownload(operation, candidate);
@@ -442,6 +460,7 @@ export function createDesktopUpdateController(
     operation.cancel();
     generation += 1;
     staged = undefined;
+    retryableDownloadPhase = undefined;
     if (candidate !== undefined) publish({ state: 'available', version: candidate.version });
     else publish({ state: 'idle' });
   }
