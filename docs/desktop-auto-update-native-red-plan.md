@@ -111,7 +111,7 @@ Exactly one request is supplied per invocation:
   "capsule": "/absolute/private/capsule",
   "identity": "org.voidcode.fixture.<run>",
   "from": {"version": "1.0.0", "target": "/…/installed/N.app-or-dir", "package": "/…/N-artifact", "predecessorReceipt": "/…/receipts/preinstall-N.json", "predecessorPid": 123},
-  "to": {"version": "0.0.2", "package": "/…/N+1-artifact", "marker": "marker-N+1"},
+  "to": {"version": "1.0.1", "package": "/…/N+1-artifact", "marker": "marker-N+1"},
   "receiptDir": "/…/receipts",
   "barrierDir": "/…/barriers",
   "deadlineMs": 45000
@@ -158,7 +158,7 @@ The fixture writes `<receiptDir>/<transactionId>.json` by temp-file plus rename:
   "v": 1,
   "transactionId": "run-…",
   "identity": "org.voidcode.fixture.<run>",
-  "version": "0.0.2",
+  "version": "1.0.1",
   "arch": "arm64-or-x64",
   "execPath": "/canonical/installed/executable",
   "resourcesPath": "/canonical/installed/resources",
