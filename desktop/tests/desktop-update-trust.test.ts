@@ -210,6 +210,14 @@ describe('desktop update manifest selection', () => {
     ] }))).ok).toBe(true);
   });
 
+  it('treats distinct future artifact filenames as case-sensitive', async () => {
+    expect((await selected(manifest({ artifacts: [
+      defaultArtifact(),
+      unknownArtifact('futureone', 'x64', 'Future.exe'),
+      unknownArtifact('futuretwo', 'arm64', 'future.exe'),
+    ] }))).ok).toBe(true);
+  });
+
   it('accepts 32 unique well-formed artifacts but rejects 33', async () => {
     const artifacts = [defaultArtifact(), ...Array.from({ length: 32 }, (_, index) =>
       unknownArtifact(`future${index}`, 'x64', `Void-Code-future${index}-x64.exe`),

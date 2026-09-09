@@ -261,6 +261,81 @@ describe('desktop update consent and opaque staged artifact FSM', () => {
     expectNoInstallSeams(r);
   });
 
+  it('retries a rejected explicit download directly without refetching metadata', async () => {
+    const r = rig();
+    r.seams.download.mockRejectedValueOnce(new Error('transient download failure'));
+    const controller = await available(r);
+
+    await controller.download();
+    expect(controller.snapshot().state).toBe('failed');
+    await controller.download();
+
+    expect(controller.snapshot().state).toBe('ready');
+    expect(r.seams.download).toHaveBeenCalledTimes(2);
+    expect(r.seams.fetchMetadata).toHaveBeenCalledOnce();
+    expectNoInstallSeams(r);
+  });
+
+  it('retries an initially failed artifact verification directly with the pinned candidate', async () => {
+    const r = rig();
+    r.seams.verifyArtifact.mockResolvedValueOnce(false);
+    const controller = await available(r);
+
+    await controller.download();
+    expect(controller.snapshot().state).toBe('failed');
+    await controller.download();
+
+    expect(controller.snapshot().state).toBe('ready');
+    expect(r.seams.download).toHaveBeenCalledTimes(2);
+    expect(r.seams.verifyArtifact).toHaveBeenCalledTimes(2);
+    expect(r.seams.fetchMetadata).toHaveBeenCalledOnce();
+    expectNoInstallSeams(r);
+  });
+
+  it('preserves the signed envelope for every downstream main-process callback', async () => {
+    type AuthorizedUpdatePlan = UpdatePlan & { envelopeBytes?: Uint8Array };
+    const originalEnvelope = envelope(payloadBytes(manifest()));
+    const transportEnvelope = originalEnvelope.slice();
+    const received: Uint8Array[] = [];
+    const capture = (plan: UpdatePlan): Uint8Array => {
+      const { envelopeBytes } = plan as AuthorizedUpdatePlan;
+      expect(envelopeBytes).toBeInstanceOf(Uint8Array);
+      expect([...envelopeBytes!]).toEqual([...originalEnvelope]);
+      received.push(envelopeBytes!.slice());
+      return envelopeBytes!;
+    };
+    const r = rig({
+      fetchMetadata: vi.fn(async () => transportEnvelope),
+      download: vi.fn(async (plan, _signal, progress) => {
+        const envelopeBytes = capture(plan);
+        envelopeBytes.fill(0);
+        progress(0.5);
+        return { id: 'stage-1' };
+      }),
+      verifyArtifact: vi.fn(async (plan) => { capture(plan); return true; }),
+      showNativeInstallDialog: vi.fn(async (plan) => { capture(plan); return true; }),
+      prepare: vi.fn(async (plan) => { capture(plan); }),
+      reverify: vi.fn(async (plan) => { capture(plan); return true; }),
+      handoff: vi.fn(async (plan) => { capture(plan); }),
+    });
+    const controller = await r.create();
+
+    await controller.check();
+    transportEnvelope.fill(0);
+    await controller.download();
+    await controller.requestInstall();
+
+    expect(controller.snapshot().state).toBe('installing');
+    expect(r.seams.download).toHaveBeenCalledOnce();
+    expect(r.seams.verifyArtifact).toHaveBeenCalledOnce();
+    expect(r.seams.showNativeInstallDialog).toHaveBeenCalledOnce();
+    expect(r.seams.prepare).toHaveBeenCalledOnce();
+    expect(r.seams.reverify).toHaveBeenCalledOnce();
+    expect(r.seams.handoff).toHaveBeenCalledOnce();
+    expect(received).toHaveLength(6);
+    for (const envelopeBytes of received) expect([...envelopeBytes]).toEqual([...originalEnvelope]);
+  });
+
   it('cancels an abort-ignoring download and settles its public promise before transport resolves', async () => {
     const pending = deferred<StageHandle>();
     let aborted = false;
