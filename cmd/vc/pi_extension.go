@@ -160,7 +160,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 			});
 	};
 	const admit = (text: string): void => {
-		if (!text.trim()) return;
+		if (text.length === 0) return;
 		if (waiting.length >= MAX_CLIPBOARD_WAITING) {
 			options.notify("Clipboard copy queue is full.", "warning");
 			return;
