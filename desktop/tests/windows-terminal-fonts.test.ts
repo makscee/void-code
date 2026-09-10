@@ -70,7 +70,7 @@ it.each(['API', 'faces', 'bold'])('F3: absent %s explicitly degrades without han
   const s = await setup('Win32', owned, missing !== 'API');
   expect(await s.prepare()).toMatchObject({ status: 'degraded' });
   const terminal = s.product.createProductTerminal().terminal;
-  expect(terminal.options.fontFamily).not.toMatch(/JetBrains/i); terminal.dispose();
+  expect(terminal.options.fontFamily).toBe('monospace'); terminal.dispose();
   expect(s.warning).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -79,7 +79,7 @@ it('F3: owned load error chooses stable fallback, warns and clears timeout', asy
   s.owned[1].reject(new Error('synthetic font failure')); s.owned.filter((_, i) => i !== 1).forEach(f => f.resolve());
   expect(await pending).toMatchObject({ status: 'degraded' });
   const t = s.product.createProductTerminal().terminal;
-  expect(t.options.fontFamily).not.toMatch(/JetBrains/i); t.dispose();
+  expect(t.options.fontFamily).toBe('monospace'); t.dispose();
   expect(s.warning).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -89,7 +89,7 @@ it.each(['resolve', 'reject'] as const)('F3: exact 5000ms bound; late %s cannot 
   await vi.advanceTimersByTimeAsync(4999); expect(settled).toBe(false);
   await vi.advanceTimersByTimeAsync(1); expect(await pending).toMatchObject({ status: 'degraded' });
   const first = s.product.createProductTerminal().terminal;
-  expect(first.options.fontFamily).not.toMatch(/JetBrains/i);
+  expect(first.options.fontFamily).toBe('monospace');
   const counts = s.owned.map(f => f.load.mock.calls.length);
   s.owned.forEach(f => late === 'resolve' ? f.resolve() : f.reject(new Error('late synthetic failure')));
   await tick(); expect(await s.prepare()).toMatchObject({ status: 'degraded' });
@@ -119,8 +119,14 @@ it('F5: production evidence does not label Latin-only readiness as JBM-loaded', 
   }
   const source = readFileSync(new URL('../src/renderer/index.ts', import.meta.url), 'utf8');
   const ast = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true);
-  const declaration = ast.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'integrationFacts');
-  expect(declaration, 'extract the actual production evidence function by AST, never a copied body').toBeDefined();
+  const declarations: ts.FunctionDeclaration[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'integrationFacts') declarations.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  expect(declarations, 'extract exactly one actual production evidence function, including inside initialization wrappers').toHaveLength(1);
+  const [declaration] = declarations;
   const js = ts.transpileModule(declaration!.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const check = vi.fn((_font: string, sample = ' ') => !/[\u0400-\u052f]/u.test(sample));
   const element = { style: {}, remove() {}, getContext: () => ({ measureText: () => ({ width: 10 }) }) };
@@ -140,7 +146,7 @@ it('F5: production evidence does not label Latin-only readiness as JBM-loaded', 
 // mocked stack or fake Terminal. Only DOM/bridge and native rendering boundaries
 // are replaced. This catches an unused helper and calls made after open/fit/start.
 class ElementStub {
-  hidden = false; dataset = {}; style = {}; children: ElementStub[] = [];
+  hidden = false; disabled = false; textContent = ''; dataset = {}; style = {}; children: ElementStub[] = [];
   classList = { add() {}, remove() {}, toggle() {} };
   listeners = new Map<string, (() => unknown)[]>();
   addEventListener(name: string, fn: () => unknown) { this.listeners.set(name, [...this.listeners.get(name) ?? [], fn]); }
@@ -150,7 +156,7 @@ class ElementStub {
   setAttribute() {} contains() { return false; } focus() {} remove() {} closest() { return null; }
   querySelectorAll() { return []; }
 }
-async function startup(probe: boolean) {
+async function startup(probe: boolean, earlyGesture?: { holdLoad: boolean }) {
   const s = await setup();
   const nodes = new Map<string, ElementStub>();
   const node = (id: string) => { if (!nodes.has(id)) nodes.set(id, new ElementStub()); return nodes.get(id)!; };
@@ -161,9 +167,18 @@ async function startup(probe: boolean) {
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} }));
   const tab = { id: 'owned-chat', title: 'Synthetic', location: 'active', state: 'sleeping' };
   const view = { workspace: { path: '/synthetic', selectedId: tab.id, tabs: [tab] }, recoveryPath: null };
+  // Keep IPC snapshots distinct: choosing must never mutate a pending load result.
+  const loadGate = deferred();
+  if (!earlyGesture?.holdLoad) loadGate.resolve();
+  const oldLoaded = { workspace: earlyGesture?.holdLoad ? { path: '/old-loaded', selectedId: null, tabs: [] } : null, recoveryPath: null };
+  const chosen = { workspace: { path: '/fresh-chosen', selectedId: null, tabs: [] }, recoveryPath: null };
+  const created = { workspace: { path: '/fresh-chosen', selectedId: 'fresh-chat', tabs: [{ id: 'fresh-chat', title: 'Fresh', location: 'active', state: 'sleeping' }] }, recoveryPath: null };
+  const choose = vi.fn(async () => structuredClone(chosen));
+  const newChat = vi.fn(async () => ({ view: earlyGesture ? structuredClone(created) : view }));
+  if (earlyGesture) node('#new-chat').hidden = true; // actual initial index.html
   const start = vi.fn(async () => ({ showSharedFilesWarning: false }));
   const bridge = { appVersion: async () => 'test', auth: { status: async () => ({ state: 'ready' }), onLoginEvent: () => () => undefined },
-    workspace: { load: async () => view, newChat: async () => ({ view }), select: async () => view, close: async () => { view.workspace.tabs = []; return view; } },
+    workspace: { load: async () => { await loadGate.promise; return earlyGesture ? structuredClone(oldLoaded) : view; }, choose, newChat, select: async () => view, close: async () => { view.workspace.tabs = []; return view; } },
     start, resize: async () => undefined, input: async () => undefined, stop: async () => undefined,
     lifecycleStatus: async () => ({ status: { state: 'running' } }), onOutput: () => () => undefined, onExit: () => () => undefined, onStatus: () => () => undefined };
   vi.stubGlobal('window', { voidTerminal: bridge, addEventListener() {} });
@@ -176,7 +191,7 @@ async function startup(probe: boolean) {
   const fit = vi.spyOn(FitAddon.prototype, 'fit').mockImplementation(() => undefined);
   const activate = vi.spyOn(s.product, 'activateProductRenderer').mockImplementation(() => undefined);
   await import('../src/renderer/index'); await tick();
-  return { ...s, node, view, open, write, fit, activate, start };
+  return { ...s, node, view, open, write, fit, activate, start, choose, newChat, loadGate };
 }
 it.each([false, true])('F5: actual index startup gates all terminal consumers (probe=%s)', async probe => {
   const s = await startup(probe);
@@ -196,4 +211,50 @@ it('F4: actual UI cannot resurrect a removed pending chat or duplicate a repeate
   s.view.workspace.tabs = [{ id: 'owned-chat', title: 'Synthetic', location: 'active', state: 'sleeping' }];
   await Promise.all([s.node('#new-chat').click(), s.node('#new-chat').click()]); await tick();
   expect(s.open).toHaveBeenCalledTimes(1); expect(s.start).toHaveBeenCalledTimes(1);
+});
+
+// A real initial gesture, not a programmatic click on the hidden New Chat button.
+it.each([false, true])('F5: early Choose Folder then visible New Chat respects fonts and fresh state (pending load=%s)', async holdLoad => {
+  const s = await startup(false, { holdLoad });
+  expect(s.node('#choose').hidden).toBe(false);
+  expect(s.node('#choose').disabled).toBe(false);
+  const choosing = s.node('#choose').click();
+  await tick();
+  let creating: Promise<void> | undefined;
+  if (!s.node('#new-chat').hidden && !s.node('#new-chat').disabled) {
+    expect(s.choose).toHaveBeenCalledTimes(1);
+    expect(s.node('#folder').textContent).toBe('/fresh-chosen');
+    creating = s.node('#new-chat').click(); // do not await a correctly gated handler
+    await tick();
+  }
+  expect.soft(s.open, 'early visible New Chat opened before owned Cyrillic/bold/ext fonts').not.toHaveBeenCalled();
+  expect.soft(s.fit).not.toHaveBeenCalled();
+  expect.soft(s.activate).not.toHaveBeenCalled();
+  expect.soft(s.start).not.toHaveBeenCalled();
+
+  // Deliver the independent stale snapshot only after the legitimate gestures.
+  s.loadGate.resolve();
+  await tick();
+  s.owned.forEach(f => f.resolve());
+  await tick(); await choosing; await creating; await tick();
+  if (s.choose.mock.calls.length === 0) {
+    // Initialization-before-handlers may safely ignore the early gesture.
+    expect(s.newChat).not.toHaveBeenCalled();
+    expect(s.open).not.toHaveBeenCalled(); expect(s.start).not.toHaveBeenCalled();
+    expect(s.node('#folder').textContent).toBe(holdLoad ? '/old-loaded' : 'No folder selected');
+    return;
+  }
+  expect(s.choose).toHaveBeenCalledTimes(1);
+  expect(s.node('#folder').textContent, 'pending startup snapshot clobbered the freshly chosen workspace').toBe('/fresh-chosen');
+  expect(s.node('#new-chat').hidden).toBe(false);
+  if (!creating) {
+    expect(s.node('#new-chat').disabled).toBe(false);
+    await s.node('#new-chat').click(); await tick();
+  }
+  expect(s.newChat).toHaveBeenCalledTimes(1);
+  expect(s.open).toHaveBeenCalledTimes(1); expect(s.start).toHaveBeenCalledTimes(1);
+  expect(s.start.mock.calls[0]).toEqual([{ sessionId: 'fresh-chat', cwd: '/fresh-chosen', mode: 'create' }]);
+  expect(s.node('#folder').textContent).toBe('/fresh-chosen');
+  expect(s.node('#tabs').children).toHaveLength(1);
+  expect(s.node('#terminals').children.filter(child => !child.hidden)).toHaveLength(1);
 });
