@@ -106,7 +106,12 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 // version-bound to 0.84.1 and delegates extraction to TuiAltScreen.copySelectionToClipboard on a
 // synchronous disposable receiver and terminal sink. The live ProcessTerminal and flash function
 // are never replaced. Shape guards make a future Pi change fail passive instead of taking authority.
-const fullscreenClipboardOwners = new WeakMap<object, { dispose: () => void }>();
+interface FullscreenClipboardOwner {
+	target: object;
+	dispose: () => void;
+}
+const fullscreenClipboardOwners = new WeakMap<object, FullscreenClipboardOwner>();
+const fullscreenClipboardReferences = new WeakMap<object, FullscreenClipboardOwner>();
 const CLIPBOARD_WIDGET_KEY = "void-code-fullscreen-clipboard";
 const MAX_CLIPBOARD_BYTES = 8 * 1024 * 1024;
 const MAX_CLIPBOARD_WAITING = 8;
@@ -119,20 +124,61 @@ function clipboardAuthority(platform: string, env: Record<string, string | undef
 	return true;
 }
 
+function resolveFullscreenClipboardTarget(reference: any): object | undefined {
+	if (!reference || (typeof reference !== "object" && typeof reference !== "function")) return undefined;
+	const key = Symbol();
+	const reveal = function (this: object): object { return this; };
+	let target: object | undefined;
+	try {
+		if (!Reflect.set(reference, key, reveal, reference)) return undefined;
+		const method = Reflect.get(reference, key, reference);
+		if (typeof method !== "function") return undefined;
+		const candidate = Reflect.apply(method, reference, []);
+		if (!candidate || (typeof candidate !== "object" && typeof candidate !== "function")) return undefined;
+		target = candidate;
+		const descriptor = Object.getOwnPropertyDescriptor(target, key);
+		if (!descriptor?.configurable || descriptor.value !== reveal) return undefined;
+	} catch {
+		return undefined;
+	} finally {
+		if (target && Object.getOwnPropertyDescriptor(target, key)?.value === reveal) Reflect.deleteProperty(target, key);
+		if (Object.getOwnPropertyDescriptor(reference, key)?.value === reveal) Reflect.deleteProperty(reference, key);
+	}
+	return target && !Object.prototype.hasOwnProperty.call(target, key) ? target : undefined;
+}
+
 export function installFullscreenClipboard(tui: any, options: FullscreenClipboardOptions): () => void {
 	if (!tui || (typeof tui !== "object" && typeof tui !== "function")) return () => {};
-	const existing = fullscreenClipboardOwners.get(tui);
-	if (existing) return () => {};
+	const reference = tui as object;
+	const target = resolveFullscreenClipboardTarget(tui);
+	const authority = clipboardAuthority(options.platform, options.env);
+	const previous = fullscreenClipboardReferences.get(reference);
+	if (previous && (previous.target !== target || !authority || fullscreenClipboardOwners.get(previous.target) !== previous)) {
+		previous.dispose();
+		if (fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
+	}
 	const failPassive = (): (() => void) => {
 		options.notify("Fullscreen native clipboard is unavailable for this Pi runtime.", "warning");
 		return () => {};
 	};
-	if (!clipboardAuthority(options.platform, options.env)) return () => {};
-	if (options.piVersion !== "0.84.1") return failPassive();
+	if (!authority) return () => {};
+	if (options.piVersion !== "0.84.1" || !target) {
+		previous?.dispose();
+		return failPassive();
+	}
+	tui = target;
 	if (typeof tui.copySelectionToClipboard !== "function" || typeof tui.getSelectionBounds !== "function" ||
 		typeof tui.handleSelectionMouseEvent !== "function" || typeof tui.handleViewportInput !== "function" ||
 		typeof tui.setFocus !== "function" || typeof tui.showOverlay !== "function" || typeof tui.addInputListener !== "function" ||
-		typeof tui.flash !== "function" || !tui.terminal || typeof tui.terminal.write !== "function") return failPassive();
+		typeof tui.flash !== "function" || !tui.terminal || typeof tui.terminal.write !== "function") {
+		previous?.dispose();
+		return failPassive();
+	}
+	const existing = fullscreenClipboardOwners.get(target);
+	if (existing) {
+		fullscreenClipboardReferences.set(reference, existing);
+		return () => {};
+	}
 
 	const originalCopy = tui.copySelectionToClipboard;
 	const originalSelectionMouse = tui.handleSelectionMouseEvent;
@@ -144,16 +190,23 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	let selectionFresh = false;
 	let selectionFocus: unknown;
 	const waiting: Array<{ text: string }> = [];
+	let dispose = (): void => {};
+	const retainOwnership = (): boolean => {
+		if (disposed) return false;
+		if (resolveFullscreenClipboardTarget(reference) === target) return true;
+		dispose();
+		return false;
+	};
 
 	const runNext = (): void => {
-		if (disposed || active || waiting.length === 0) return;
+		if (!retainOwnership() || active || waiting.length === 0) return;
 		const item = waiting.shift()!;
 		const controller = new AbortController();
 		active = controller;
 		Promise.resolve()
 			.then(() => options.writeText(item.text, controller.signal))
-			.then(() => { if (!disposed && !controller.signal.aborted) tui.flash("Copied!"); })
-			.catch(() => { if (!disposed && !controller.signal.aborted) options.notify("Clipboard copy failed.", "error"); })
+			.then(() => { if (retainOwnership() && !controller.signal.aborted) tui.flash("Copied!"); })
+			.catch(() => { if (retainOwnership() && !controller.signal.aborted) options.notify("Clipboard copy failed.", "error"); })
 			.finally(() => {
 				if (active === controller) active = undefined;
 				if (!disposed) runNext();
@@ -170,7 +223,11 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	};
 
 	const managedCopy = function (this: any): void {
-		if (disposed || !tui.getSelectionBounds()) return;
+		if (!retainOwnership()) {
+			originalCopy.call(this);
+			return;
+		}
+		if (!tui.getSelectionBounds()) return;
 		const terminal = tui.terminal;
 		const originalWrite = terminal.write;
 		const originalFlash = tui.flash;
@@ -195,6 +252,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	};
 	tui.copySelectionToClipboard = managedCopy;
 	const managedSelectionMouse = function (this: any, event: any): any {
+		if (!retainOwnership()) return originalSelectionMouse.call(this, event);
 		if (!event?.release && (event?.button & 35) === 0) {
 			selectionFresh = true;
 			selectionFocus = tui.focusedComponent;
@@ -204,15 +262,18 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		return result;
 	};
 	const managedViewportInput = function (this: any, data: string): any {
+		if (!retainOwnership()) return originalViewportInput.call(this, data);
 		// Pi's own viewport listener is older than extension listeners and consumes focus events.
 		if (data === "\x1b[O") selectionFresh = false;
 		return originalViewportInput.call(this, data);
 	};
 	const managedSetFocus = function (this: any, component: any): any {
+		if (!retainOwnership()) return originalSetFocus.call(this, component);
 		if (selectionFresh && component !== selectionFocus) selectionFresh = false;
 		return originalSetFocus.call(this, component);
 	};
 	const managedShowOverlay = function (this: any, ...args: any[]): any {
+		if (!retainOwnership()) return originalShowOverlay.apply(this, args);
 		selectionFresh = false;
 		return originalShowOverlay.apply(this, args);
 	};
@@ -222,7 +283,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	tui.showOverlay = managedShowOverlay;
 
 	const removeInputListener = tui.addInputListener((data: string) => {
-		if (disposed || isKeyRelease(data)) return;
+		if (!retainOwnership() || isKeyRelease(data)) return;
 		if (!matchesKey(data, "ctrl+c")) {
 			selectionFresh = false;
 			return;
@@ -240,7 +301,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		return { consume: true };
 	});
 
-	const dispose = (): void => {
+	dispose = (): void => {
 		if (disposed) return;
 		disposed = true;
 		waiting.length = 0;
@@ -251,10 +312,13 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		if (tui.handleViewportInput === managedViewportInput) tui.handleViewportInput = originalViewportInput;
 		if (tui.setFocus === managedSetFocus) tui.setFocus = originalSetFocus;
 		if (tui.showOverlay === managedShowOverlay) tui.showOverlay = originalShowOverlay;
-		const owner = fullscreenClipboardOwners.get(tui);
-		if (owner?.dispose === dispose) fullscreenClipboardOwners.delete(tui);
+		const owner = fullscreenClipboardOwners.get(target);
+		if (owner?.dispose === dispose) fullscreenClipboardOwners.delete(target);
+		if (owner && fullscreenClipboardReferences.get(reference) === owner) fullscreenClipboardReferences.delete(reference);
 	};
-	fullscreenClipboardOwners.set(tui, { dispose });
+	const owner = { target, dispose };
+	fullscreenClipboardOwners.set(target, owner);
+	fullscreenClipboardReferences.set(reference, owner);
 	return dispose;
 }
 
