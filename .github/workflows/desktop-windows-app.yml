@@ -125,6 +125,15 @@ jobs:
         # the assembly, and the assembly is what stages the private runtime the
         # app cannot start without.
         run: npm run package:win
+      - name: Run isolated native clipboard acceptance against the staged Windows Pi bundle
+        working-directory: desktop
+        # Run only after package:win has assembled the exact pi~BUN.mjs and package directory
+        # carried by the installer. GitHub's ephemeral runner is the explicit clipboard owner.
+        env:
+          VC_ISOLATED_CLIPBOARD_ACCEPTANCE: I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION
+          VC_NATIVE_PI_ENTRY: ${{ github.workspace }}\desktop\resources\staged\pi\agent\pi~BUN.mjs
+          VC_NATIVE_PI_PACKAGE_DIR: ${{ github.workspace }}\desktop\resources\staged\pi\agent
+        run: node node_modules/vitest/vitest.mjs run tests/pi-fullscreen-native-acceptance.test.ts
       - name: Upload the Windows installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         # The name is the packager's, assembled from desktop/package.json:
@@ -143,3 +152,13 @@ jobs:
           name: void-code-windows-x64-installer
           path: desktop/release/Void-Code-windows-x64.exe
           if-no-files-found: error
+      - name: Upload failed-native-runtime diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-native-runtime-diagnostics
+          path: |
+            desktop/resources/staged/pi
+            desktop/resources/staged/manifest.json
+          if-no-files-found: warn
+          retention-days: 3

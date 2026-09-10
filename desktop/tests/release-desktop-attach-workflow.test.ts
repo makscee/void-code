@@ -139,8 +139,15 @@ function uploadsIn(read: Read, workflow: string, context: Context): Artifact[] {
   for (const [jobName, job] of jobsOf(read, workflow)) {
     const desktop = PACKAGES_DESKTOP.test(transcriptOf(job));
     for (const row of matrixRows(job, `${workflow}:${jobName}`)) {
+      const rowContext: Context = {
+        ...context,
+        ...Object.fromEntries(Object.entries(row).map(([key, value]) => [`matrix.${key}`, asText(value)])),
+      };
       for (const step of stepsOf(job)) {
         if (!/actions\/upload-artifact/.test(asText(step.uses))) continue;
+        // Only uploads that run contribute artifacts; unsupported conditions
+        // must throw through to report(), not silently hide a deliverable.
+        if (!conditionHolds(asText(step.if), rowContext)) continue;
         const settings = asMap(step.with);
         const resolve = (value: YamlValue | undefined) => interpolate(substitute(asText(value), row), context);
         artifacts.push({
@@ -539,6 +546,52 @@ describe('the derivation, on workflows written to exercise it', () => {
     expect(derived.unsigned).toEqual([]);
     expect(derived.phantom).toEqual([]);
     expect(derived.strayCli).toEqual([]);
+  });
+
+  const withExtraUpload = (condition: string): Read => (name) => name === 'mac.yml'
+    ? MAC + `      - uses: actions/upload-artifact@abc123
+${condition ? `        if: ${condition}\n` : ''}        with:
+          name: runtime-diagnostics-\${{ matrix.arch }}
+          path: public/runtime/manifest.json
+`
+    : world(DERIVED)(name);
+
+  it.each(['failure()', '${{ failure() }}'])('excludes failure-only diagnostics on success: %s', (condition) => {
+    const found = report(withExtraUpload(condition), FIXTURE_ON);
+    expect(found).toEqual(report(world(DERIVED), FIXTURE_ON));
+    expect(found.produced.map((artifact) => artifact.name)).toEqual(['cli-linux', 'app-mac-arm64', 'app-mac-x64']);
+  });
+
+  it('still rejects the same extra artifact when its upload is unconditional', () => {
+    const found = report(withExtraUpload(''), FIXTURE_ON);
+    expect(found.trouble).toBe('');
+    expect(found.produced.filter((artifact) => artifact.name.startsWith('runtime-diagnostics-')).map((artifact) => artifact.name))
+      .toEqual(['runtime-diagnostics-arm64', 'runtime-diagnostics-x64']);
+    expect(found.unattached).toEqual(['runtime-diagnostics-arm64/manifest.json', 'runtime-diagnostics-x64/manifest.json']);
+    expect(found.unsigned).toEqual([]);
+    expect(found.phantom).toEqual([]);
+  });
+
+  it('evaluates upload conditions against the run context, not just success defaults', () => {
+    const found = report(withExtraUpload('failure()'), { ...FIXTURE_ON, 'failure()': 'true' });
+    expect(found.trouble).toBe('');
+    expect(found.unattached).toEqual(['runtime-diagnostics-arm64/manifest.json', 'runtime-diagnostics-x64/manifest.json']);
+  });
+
+  it.each(["matrix.arch == 'x64'", "${{ success() && matrix.arch == 'x64' }}"])(
+    'evaluates upload conditions per matrix row: %s', (condition) => {
+      const found = report(withExtraUpload(condition), FIXTURE_ON);
+      expect(found.trouble).toBe('');
+      expect(found.produced.map((artifact) => artifact.name))
+        .toEqual(['cli-linux', 'app-mac-arm64', 'app-mac-x64', 'runtime-diagnostics-x64']);
+      expect(found.unattached).toEqual(['runtime-diagnostics-x64/manifest.json']);
+    },
+  );
+
+  it('reports an unknown upload condition as unread, rather than ignoring its artifact', () => {
+    const found = report(withExtraUpload('${{ unknownStatus() }}'), FIXTURE_ON);
+    expect(found.trouble).toContain('the release run could not be read:');
+    expect(found.trouble).toContain('unsupported function «unknownStatus()»');
   });
 
   it('catches the flattening flag a pattern download needs, rather than reporting it attached', () => {

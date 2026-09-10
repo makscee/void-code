@@ -1,9 +1,9 @@
 package main
 
 const piVoidCodexExtensionSource = `// void-code-managed-pi-extension:v1
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn as nativeSpawn } from "node:child_process";
 import { existsSync, renameSync, writeFileSync } from "node:fs";
-import { getPackageDir } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, VERSION } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -15,6 +15,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
 const CODEX_PROVIDER_ID = "void-codex";
 const CODEX_MODEL_ID = "gpt-5.6-terra";
@@ -35,8 +36,30 @@ interface Bootstrap {
 let activeBootstrap: Bootstrap | undefined;
 const MANAGED_WEB_SEARCH_INSTRUCTION = "For current or externally verifiable facts, use web_search. Use multiple queries for research, inspect primary sources with fetch_content, and cite links. Use get_search_content to revisit stored results.";
 
-export default function (pi: ExtensionAPI) {
+interface ClipboardIOOptions {
+	platform: string;
+	env: Record<string, string | undefined>;
+	piVersion: string;
+	writeText: (text: string, signal?: AbortSignal) => Promise<void>;
+}
+
+interface FullscreenClipboardOptions extends ClipboardIOOptions {
+	notify: (message: string, level: "info" | "warning" | "error") => void;
+}
+
+interface NativeClipboardWriterOptions {
+	platform: string;
+	env: Record<string, string | undefined>;
+	spawn?: typeof nativeSpawn;
+}
+
+interface ClipboardExtensionOptions {
+	clipboardIO?: ClipboardIOOptions;
+}
+
+export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
+	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
 	activeBootstrap = bootstrap;
@@ -77,6 +100,358 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
 		}));
 	}
+}
+
+// Pi does not expose fullscreen selection text to extensions. This adapter is deliberately
+// version-bound to 0.84.1 and delegates extraction to TuiAltScreen.copySelectionToClipboard on a
+// synchronous disposable receiver and terminal sink. The live ProcessTerminal and flash function
+// are never replaced. Shape guards make a future Pi change fail passive instead of taking authority.
+interface FullscreenClipboardOwner {
+	target: object;
+	dispose: () => void;
+}
+const fullscreenClipboardOwners = new WeakMap<object, FullscreenClipboardOwner>();
+const fullscreenClipboardReferences = new WeakMap<object, FullscreenClipboardOwner>();
+const CLIPBOARD_WIDGET_KEY = "void-code-fullscreen-clipboard";
+const MAX_CLIPBOARD_BYTES = 8 * 1024 * 1024;
+const MAX_CLIPBOARD_WAITING = 8;
+
+function clipboardAuthority(platform: string, env: Record<string, string | undefined>): boolean {
+	if (platform !== "darwin" && platform !== "win32") return false;
+	const executable = env.VC_BOOTSTRAP_EXECUTABLE;
+	if (!executable || !path.isAbsolute(executable)) return false;
+	if ((env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) && env.VC_DESKTOP_SESSION !== "1" && !env.VC_DESKTOP_CHAT_ID) return false;
+	return true;
+}
+
+function resolveFullscreenClipboardTarget(reference: any): object | undefined {
+	if (!reference || (typeof reference !== "object" && typeof reference !== "function")) return undefined;
+	const key = Symbol();
+	const reveal = function (this: object): object { return this; };
+	let target: object | undefined;
+	try {
+		if (!Reflect.set(reference, key, reveal, reference)) return undefined;
+		const method = Reflect.get(reference, key, reference);
+		if (typeof method !== "function") return undefined;
+		const candidate = Reflect.apply(method, reference, []);
+		if (!candidate || (typeof candidate !== "object" && typeof candidate !== "function")) return undefined;
+		target = candidate;
+		const descriptor = Object.getOwnPropertyDescriptor(target, key);
+		if (!descriptor?.configurable || descriptor.value !== reveal) return undefined;
+	} catch {
+		return undefined;
+	} finally {
+		try {
+			if (target && Object.getOwnPropertyDescriptor(target, key)?.value === reveal && !Reflect.deleteProperty(target, key)) target = undefined;
+		} catch {
+			target = undefined;
+		}
+		if (reference !== target) {
+			try {
+				if (Object.getOwnPropertyDescriptor(reference, key)?.value === reveal && !Reflect.deleteProperty(reference, key)) target = undefined;
+			} catch {
+				target = undefined;
+			}
+		}
+	}
+	try {
+		return target && !Object.prototype.hasOwnProperty.call(target, key) ? target : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function installFullscreenClipboard(tui: any, options: FullscreenClipboardOptions): () => void {
+	if (!tui || (typeof tui !== "object" && typeof tui !== "function")) return () => {};
+	const reference = tui as object;
+	const previous = fullscreenClipboardReferences.get(reference);
+	const authority = clipboardAuthority(options.platform, options.env);
+	if (!authority || options.piVersion !== "0.84.1") {
+		const owner = previous ?? fullscreenClipboardOwners.get(reference);
+		owner?.dispose();
+		if (previous && fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
+		if (authority) {
+			options.notify("Fullscreen native clipboard is unavailable for this Pi runtime.", "warning");
+		}
+		return () => {};
+	}
+	const failPassive = (): (() => void) => {
+		options.notify("Fullscreen native clipboard is unavailable for this Pi runtime.", "warning");
+		return () => {};
+	};
+	const target = resolveFullscreenClipboardTarget(tui);
+	if (previous && (previous.target !== target || fullscreenClipboardOwners.get(previous.target) !== previous)) {
+		previous.dispose();
+		if (fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
+	}
+	if (!target) return failPassive();
+	tui = target;
+	if (typeof tui.copySelectionToClipboard !== "function" || typeof tui.getSelectionBounds !== "function" ||
+		typeof tui.handleSelectionMouseEvent !== "function" || typeof tui.handleViewportInput !== "function" ||
+		typeof tui.setFocus !== "function" || typeof tui.showOverlay !== "function" || typeof tui.addInputListener !== "function" ||
+		typeof tui.flash !== "function" || !tui.terminal || typeof tui.terminal.write !== "function") {
+		previous?.dispose();
+		return failPassive();
+	}
+	const existing = fullscreenClipboardOwners.get(target);
+	if (existing) {
+		fullscreenClipboardReferences.set(reference, existing);
+		return () => {};
+	}
+
+	const originalCopy = tui.copySelectionToClipboard;
+	const originalSelectionMouse = tui.handleSelectionMouseEvent;
+	const originalViewportInput = tui.handleViewportInput;
+	const originalSetFocus = tui.setFocus;
+	const originalShowOverlay = tui.showOverlay;
+	const inheritedHooks: Array<[string, any]> = [
+		["copySelectionToClipboard", originalCopy], ["handleSelectionMouseEvent", originalSelectionMouse],
+		["handleViewportInput", originalViewportInput], ["setFocus", originalSetFocus], ["showOverlay", originalShowOverlay],
+	].filter(([key]) => !Object.prototype.hasOwnProperty.call(tui, key));
+	let disposed = false;
+	let active: AbortController | undefined;
+	let selectionFresh = false;
+	let selectionFocus: unknown;
+	const waiting: Array<{ text: string }> = [];
+	let dispose = (): void => {};
+	const retainOwnership = (): boolean => {
+		if (disposed) return false;
+		if (resolveFullscreenClipboardTarget(reference) === target) return true;
+		dispose();
+		return false;
+	};
+
+	const runNext = (): void => {
+		if (!retainOwnership() || active || waiting.length === 0) return;
+		const item = waiting.shift()!;
+		const controller = new AbortController();
+		active = controller;
+		Promise.resolve()
+			.then(() => options.writeText(item.text, controller.signal))
+			.then(() => { if (retainOwnership() && !controller.signal.aborted) tui.flash("Copied!"); })
+			.catch(() => { if (retainOwnership() && !controller.signal.aborted) options.notify("Clipboard copy failed.", "error"); })
+			.finally(() => {
+				if (active === controller) active = undefined;
+				if (!disposed) runNext();
+			});
+	};
+	const admit = (text: string): void => {
+		if (text.length === 0) return;
+		if (waiting.length >= MAX_CLIPBOARD_WAITING) {
+			options.notify("Clipboard copy queue is full.", "warning");
+			return;
+		}
+		waiting.push({ text });
+		runNext();
+	};
+
+	const managedCopy = function (this: any): void {
+		if (!retainOwnership()) {
+			originalCopy.call(this);
+			return;
+		}
+		if (!tui.getSelectionBounds()) return;
+		const terminal = tui.terminal;
+		const originalWrite = terminal.write;
+		const originalFlash = tui.flash;
+		let extracted: string | undefined;
+		const terminalSink = Object.create(terminal);
+		Object.defineProperty(terminalSink, "write", { configurable: true, value: (output: string): void => {
+			const match = typeof output === "string" ? /^\x1b\]52;c;([^\x07]*)\x07$/.exec(output) : null;
+			if (match) {
+				try { extracted = Buffer.from(match[1], "base64").toString("utf8"); } catch {}
+				return;
+			}
+			originalWrite.call(terminal, output);
+		} });
+		const receiver = Object.create(tui);
+		Object.defineProperties(receiver, {
+			terminal: { configurable: true, value: terminalSink },
+			flash: { configurable: true, value: (message: string, ...args: any[]): any =>
+				message === "Copied!" ? undefined : originalFlash.call(tui, message, ...args) },
+		});
+		originalCopy.call(receiver);
+		if (extracted !== undefined) admit(extracted);
+	};
+	tui.copySelectionToClipboard = managedCopy;
+	const managedSelectionMouse = function (this: any, event: any): any {
+		if (!retainOwnership()) return originalSelectionMouse.call(this, event);
+		if (!event?.release && (event?.button & 35) === 0) {
+			selectionFresh = true;
+			selectionFocus = tui.focusedComponent;
+		}
+		const result = originalSelectionMouse.call(this, event);
+		if (event?.release && !tui.getSelectionBounds()) selectionFresh = false;
+		return result;
+	};
+	const managedViewportInput = function (this: any, data: string): any {
+		if (!retainOwnership()) return originalViewportInput.call(this, data);
+		// Pi's own viewport listener is older than extension listeners and consumes focus events.
+		if (data === "\x1b[O") selectionFresh = false;
+		return originalViewportInput.call(this, data);
+	};
+	const managedSetFocus = function (this: any, component: any): any {
+		if (!retainOwnership()) return originalSetFocus.call(this, component);
+		if (selectionFresh && component !== selectionFocus) selectionFresh = false;
+		return originalSetFocus.call(this, component);
+	};
+	const managedShowOverlay = function (this: any, ...args: any[]): any {
+		if (!retainOwnership()) return originalShowOverlay.apply(this, args);
+		selectionFresh = false;
+		return originalShowOverlay.apply(this, args);
+	};
+	tui.handleSelectionMouseEvent = managedSelectionMouse;
+	tui.handleViewportInput = managedViewportInput;
+	tui.setFocus = managedSetFocus;
+	tui.showOverlay = managedShowOverlay;
+
+	const removeInputListener = tui.addInputListener((data: string) => {
+		if (!retainOwnership() || isKeyRelease(data)) return;
+		if (!matchesKey(data, "ctrl+c")) {
+			selectionFresh = false;
+			return;
+		}
+		if ((typeof tui.hasOverlay === "function" && tui.hasOverlay()) || tui.focusedComponent !== selectionFocus) {
+			selectionFresh = false;
+			return;
+		}
+		const selection = tui.getSelectionBounds();
+		if (!selectionFresh || !selection) {
+			selectionFresh = false;
+			return;
+		}
+		managedCopy.call(tui);
+		return { consume: true };
+	});
+
+	dispose = (): void => {
+		if (disposed) return;
+		disposed = true;
+		waiting.length = 0;
+		active?.abort();
+		removeInputListener();
+		if (tui.copySelectionToClipboard === managedCopy) tui.copySelectionToClipboard = originalCopy;
+		if (tui.handleSelectionMouseEvent === managedSelectionMouse) tui.handleSelectionMouseEvent = originalSelectionMouse;
+		if (tui.handleViewportInput === managedViewportInput) tui.handleViewportInput = originalViewportInput;
+		if (tui.setFocus === managedSetFocus) tui.setFocus = originalSetFocus;
+		if (tui.showOverlay === managedShowOverlay) tui.showOverlay = originalShowOverlay;
+		for (const [key, original] of inheritedHooks) {
+			if (tui[key] === original) Reflect.deleteProperty(tui, key);
+		}
+		const owner = fullscreenClipboardOwners.get(target);
+		if (owner?.dispose === dispose) fullscreenClipboardOwners.delete(target);
+		if (owner && fullscreenClipboardReferences.get(reference) === owner) fullscreenClipboardReferences.delete(reference);
+	};
+	const owner = { target, dispose };
+	fullscreenClipboardOwners.set(target, owner);
+	fullscreenClipboardReferences.set(reference, owner);
+	return dispose;
+}
+
+export function createNativeClipboardWriter(options: NativeClipboardWriterOptions): (text: string, signal?: AbortSignal) => Promise<void> {
+	const spawn = options.spawn ?? nativeSpawn;
+	let active = false;
+	const waiting: Array<{ text: string; signal?: AbortSignal; resolve: () => void; reject: (error: Error) => void }> = [];
+	const genericError = () => new Error("Native clipboard write failed.");
+
+	let file: string;
+	let args: string[];
+	if (options.platform === "darwin") {
+		file = "/usr/bin/osascript";
+		args = ["-l", "JavaScript", "-e", "ObjC.import('Foundation'); ObjC.import('AppKit'); const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile; const text = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding); if (!text) throw new Error('Native clipboard write failed.'); const pasteboard = $.NSPasteboard.generalPasteboard; pasteboard.clearContents; if (!pasteboard.setStringForType(text, $.NSPasteboardTypeString)) throw new Error('Native clipboard write failed.');"];
+	} else if (options.platform === "win32") {
+		const root = options.env.SystemRoot || options.env.WINDIR || "C:\\Windows";
+		file = path.win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+		args = ["-NoProfile", "-NonInteractive", "-Sta", "-Command", "$ErrorActionPreference='Stop'; $stream=[Console]::OpenStandardInput(); $utf8=[Text.UTF8Encoding]::new($false,$true); $reader=[IO.StreamReader]::new($stream,$utf8,$false); try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }; [void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'); [Windows.Forms.Clipboard]::SetText($text)"];
+	} else {
+		return async () => { throw genericError(); };
+	}
+	if (!path.isAbsolute(file) && !path.win32.isAbsolute(file)) return async () => { throw genericError(); };
+	const spawnOptions = { shell: false, stdio: ["pipe", "ignore", "pipe"] as ["pipe", "ignore", "pipe"], windowsHide: true };
+
+	const pump = (): void => {
+		if (active) return;
+		while (waiting[0]?.signal?.aborted) waiting.shift()!.reject(genericError());
+		if (waiting.length === 0) return;
+		active = true;
+		const item = waiting.shift()!;
+		let child: any;
+		try {
+			child = spawn(file, args, spawnOptions);
+		} catch {
+			active = false;
+			item.reject(genericError());
+			pump();
+			return;
+		}
+		child.stderr?.resume?.();
+		let failed = false;
+		let closed = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const abort = (): void => {
+			failed = true;
+			// Completion remains pending until close: the child is terminated, then reaped, before pump.
+			try { child.kill("SIGKILL"); } catch {}
+		};
+		const finish = (code: number | null): void => {
+			if (closed) return;
+			closed = true;
+			if (timer) clearTimeout(timer);
+			item.signal?.removeEventListener("abort", abort);
+			active = false;
+			if (!failed && code === 0) item.resolve(); else item.reject(genericError());
+			pump();
+		};
+		child.once("error", () => { failed = true; try { child.kill(); } catch {} });
+		child.stdin.once("error", () => { failed = true; try { child.kill(); } catch {} });
+		child.once("exit", (code: number | null) => { if (code !== 0) failed = true; });
+		child.once("close", (code: number | null) => finish(code));
+		item.signal?.addEventListener("abort", abort, { once: true });
+		timer = setTimeout(abort, 5000);
+		try {
+			child.stdin.setDefaultEncoding?.("utf8");
+			child.stdin.end(item.text, "utf8");
+		} catch {
+			failed = true;
+			try { child.kill(); } catch {}
+		}
+	};
+
+	return (text: string, signal?: AbortSignal): Promise<void> => {
+		if (signal?.aborted || text.includes("\0") || Buffer.byteLength(text, "utf8") > MAX_CLIPBOARD_BYTES) return Promise.reject(genericError());
+		if (waiting.length >= MAX_CLIPBOARD_WAITING) return Promise.reject(genericError());
+		return new Promise<void>((resolve, reject) => {
+			waiting.push({ text, signal, resolve, reject });
+			pump();
+		});
+	};
+}
+
+function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: ClipboardIOOptions): void {
+	let dispose: (() => void) | undefined;
+	pi.on("session_start", async (_event, ctx) => {
+		dispose?.();
+		dispose = undefined;
+		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+		const io = injected ?? {
+			platform: process.platform,
+			env: process.env,
+			piVersion: VERSION,
+			writeText: createNativeClipboardWriter({ platform: process.platform, env: process.env }),
+		};
+		ctx.ui.setWidget(CLIPBOARD_WIDGET_KEY, (tui) => {
+			const installedDispose = installFullscreenClipboard(tui, {
+				...io,
+				notify: (message, level) => ctx.ui.notify(message, level),
+			});
+			dispose = installedDispose;
+			return { render: () => [], invalidate: () => {}, dispose: installedDispose };
+		});
+	});
+	pi.on("session_shutdown", async () => {
+		dispose?.();
+		dispose = undefined;
+	});
 }
 
 function registerDesktopLifecycle(pi: ExtensionAPI): void {
