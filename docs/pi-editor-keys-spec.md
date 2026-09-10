@@ -22,7 +22,21 @@ Keep delivery in `cmd/vc/pi_extension.go` (the transport extension actually pass
 
 Important measured seams: widget factories receive `createInteractiveTuiReference`, whose getters bind methods; the `focusedComponent` itself is an object and is not method-bound. A raw TUI replacement in tests does not prove delivery. `ctx.isIdle()` tracks agent work, not an independently running `!bash`; delegate native Esc before the optional idle clear rather than stealing cancellation. Native completion/menu/paste handling must precede history navigation. Do not intercept a temporary native onEscape callback as if it were the idle handler.
 
-This change does not install anything on the user's machines or change live settings. A new private installation needs a separate update step; keep the current a08dbc3 installation available for its pending manual clipboard test.
+## Explicit copy policy — owner update after trying the Mac desktop
+
+User: «я чекнул по ESC не очищается инпут. Давай уберем авто копирование после выделения. Копирование по контрл ц на винде и команд ц на маке».
+
+The running a08dbc3 desktop still lacks K1; its observed Esc behavior is the known RED, not a claimed regression in unshipped code. This update deliberately supersedes the earlier fullscreen-clipboard contract's mouse-release autocopy requirement:
+
+| ID | Requirement |
+|---|---|
+| C1 | Selecting, dragging, double/triple selecting, releasing or auto-scrolling a Pi transcript selection MUST NOT write the native clipboard, emit live OSC52, or flash Copied. Keep the visible selection and Pi geometry unchanged. |
+| C2 | Windows Ctrl+C copies a fresh Pi selection; no selection retains ordinary Pi interrupt behavior. Mac **desktop** Cmd+C copies a fresh Pi selection. Cmd+C with no selection must never clear input, interrupt, quit or submit. Keep the existing CLI Ctrl+C selection fallback for compatibility; Cmd+C intercepted by an external terminal cannot be promised to reach CLI Pi. |
+| C3 | In the renderer, Mac Cmd+C with xterm-native selection uses the existing trusted Electron clipboard path once. Without xterm selection, route a copy-only key intent to Pi through the existing ordered input sink, never by substituting Ctrl+C. Pi's native key parser owns decoding (e.g. standard Kitty super+c); this must work under non-Latin keyboard layouts via physical KeyC. Do not steal copy from ordinary non-terminal input fields. |
+| C4 | Preserve all previous snapshot/FIFO/bounds/native5s/kill-reap/plain-Unicode/error-redaction guards. Only an explicit copy gesture can start native writing. Mouse-only and ordinary model/tool output cannot acquire that authority. Repeated keydown and keyup must not duplicate frontend copy; separate intentional presses remain ordered. |
+| C5 | Update independent existing clipboard acceptance to include explicit copy AFTER selection and assert no write before the key. Keep the four actual OS readbacks and actual-consumer/proxy provenance checks; do not hide Ctrl+C inside a helper still named drag or weaken native gates. Add a cross-seam test feeding the renderer's actual emitted Mac command into the real Pi consumer. |
+
+No installed application/settings/GUI changes during implementation: the user is now using the Mac desktop. Prepare a new checked candidate before any separately announced update/restart. Keep a08dbc3 usable meanwhile.
 
 ## Verification/process
 
