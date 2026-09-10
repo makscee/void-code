@@ -72,7 +72,10 @@ it.each(['unknown', 'revoked', 'throwing-get', 'throwing-delete'] as const)(
   },
 );
 
-it('retirement boundary: next non-VC install immediately aborts the old pending native write', async () => {
+it.each([
+  { label: 'non-VC', env: {} },
+  { label: 'authorized VC', env: localEnv },
+])('retirement boundary: next $label install immediately aborts the old pending native write', async ({ env }) => {
   const old = await make(); const next = await make(); const module = await extension();
   let current = old.tui;
   const ui = actualReference(() => current);
@@ -84,7 +87,7 @@ it('retirement boundary: next non-VC install immediately aborts the old pending 
   expect(signal).toBeDefined(); expect(signal!.aborted).toBe(false);
   current = next.tui;
   try {
-    install(module, { ...next, tui: ui }, { env: {} });
+    install(module, { ...next, tui: ui }, { env });
     // No event, flush, or writer completion may cause the retirement for us.
     expect(signal!.aborted).toBe(true);
     expect(next.write).not.toHaveBeenCalled();
