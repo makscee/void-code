@@ -1,5 +1,5 @@
 import { Terminal } from '@xterm/xterm';
-import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
+import { activateProductRenderer, createProductTerminal, prepareTerminalFonts, TERMINAL_OPTIONS, TERMINAL_THEME, type ProductTerminal } from './terminal-stack';
 import { RECOVERY_GUIDANCE } from './recovery';
 import { appVersionLabel } from './app-version';
 import { wireProductTerminalClipboard } from './clipboard-shortcuts';
@@ -358,6 +358,14 @@ async function chooseFolder(): Promise<void> {
   announce('Trusted folder: Pi can read and change files in this folder using your operating-system permissions.'); render();
 }
 
+let copiedLabelTimer: ReturnType<typeof setTimeout> | undefined;
+function showCodeCopied(): void {
+  clearTimeout(copiedLabelTimer);
+  signinCodeCopyButton.textContent = 'Copied';
+  copiedLabelTimer = setTimeout(() => { signinCodeCopyButton.textContent = 'Copy'; }, 1500);
+}
+
+function installUiHandlers(): void {
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
 supportToggleButton.addEventListener('click', () => { setSupportOpen(supportPanel.hidden); });
 supportCloseButton.addEventListener('click', () => { setSupportOpen(false); });
@@ -401,12 +409,6 @@ signinLinkOpenButton.addEventListener('click', () => {
 // write has actually come back, then returns to "Copy" so a second copy reads as a second copy.
 // The pending timer is cleared first — otherwise the first copy's timer wipes the second one's
 // confirmation a moment after it appeared.
-let copiedLabelTimer: ReturnType<typeof setTimeout> | undefined;
-function showCodeCopied(): void {
-  clearTimeout(copiedLabelTimer);
-  signinCodeCopyButton.textContent = 'Copied';
-  copiedLabelTimer = setTimeout(() => { signinCodeCopyButton.textContent = 'Copy'; }, 1500);
-}
 signinCodeCopyButton.addEventListener('click', () => {
   if (loginPhase.phase !== 'code') return;
   void window.voidTerminal.auth.copyCode(loginPhase.userCode).then(() => { showCodeCopied(); });
@@ -422,6 +424,7 @@ signinCodeValueElement.addEventListener('keydown', (event) => {
 });
 window.voidTerminal.auth.onLoginEvent((event) => { void handleLoginPush(event); });
 new ResizeObserver(() => { const tab = selectedTab(); const runtime = tab ? runtimes.get(tab.id) : undefined; if (!runtime || runtime.container.hidden || runtime.exited) return; void fitRuntime(tab!.id, runtime); }).observe(mainElement);
+}
 
 type ByteFacts = { bytes: number; chunks: number; escBytes: number };
 type VisibleColorFacts = { source: 'dom' | 'cdp-bitmap'; distinctVisibleRgb: number; contrastingPixels: number; maxContrast: number; chromaticHueBins: number; visibleRgb: string[] };
@@ -484,7 +487,14 @@ function integrationFacts(runtime: Runtime) {
   return {
     xterm: { implementation: '@xterm/xterm', instance: runtime.terminal instanceof Terminal, renderer: runtime.renderer, rows: runtime.terminal.rows, cols: runtime.terminal.cols },
     css: [...document.styleSheets].map((sheet) => sheet.href ? new URL(sheet.href).pathname.split('/').pop() : 'inline'),
-    font: { configured: runtime.terminal.options.fontFamily, computed: computedFamily, loaded: runtime.terminal.options.fontFamily?.includes('JetBrains Mono') === true && document.fonts.check(`400 14px "JetBrains Mono"`), narrow, wide, equalWidth: Math.abs(narrow - wide) < 0.01 },
+    font: {
+      configured: runtime.terminal.options.fontFamily,
+      computed: computedFamily,
+      loaded: runtime.terminal.options.fontFamily?.includes('JetBrains Mono') === true
+        && document.fonts.check(`400 14px "JetBrains Mono"`, 'Жж')
+        && document.fonts.check(`700 14px "JetBrains Mono"`, 'Жж'),
+      narrow, wide, equalWidth: Math.abs(narrow - wide) < 0.01,
+    },
     palette: { foreground: TERMINAL_THEME.foreground, background: TERMINAL_THEME.background, ansiEntries: 16 },
     options: { fontSize: TERMINAL_OPTIONS.fontSize, fontWeight: TERMINAL_OPTIONS.fontWeight, fontWeightBold: TERMINAL_OPTIONS.fontWeightBold, drawBoldTextInBrightColors: TERMINAL_OPTIONS.drawBoldTextInBrightColors, scrollback: TERMINAL_OPTIONS.scrollback },
   };
@@ -641,8 +651,8 @@ void window.voidTerminal.appVersion()
   .then((version) => { appVersionElement.textContent = appVersionLabel(version); })
   .catch(() => { appVersionElement.textContent = appVersionLabel(null); });
 void loadAuthStatus();
-void window.voidTerminal.workspace.load().then(async (loaded) => {
-  view = loaded; render();
+void Promise.all([window.voidTerminal.workspace.load(), prepareTerminalFonts()]).then(async ([loaded]) => {
+  view = loaded; installUiHandlers(); render();
   if (new URLSearchParams(location.search).get('productionTerminalProbe') === '1') await productionProbe();
   else { const tab = selectedTab(); if (tab && !view.recoveryPath) await launch(tab, 'resume'); render(); }
 }).catch(() => { document.title = `VOID_PRODUCTION_TERMINAL:${JSON.stringify({ ok: false, errorCode: 'WORKSPACE_LOAD_FAILED' })}`; });
