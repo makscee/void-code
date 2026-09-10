@@ -44,7 +44,8 @@ export async function extractPDFToMarkdown(
     ? Math.max(1, Math.floor(maxPages))
     : DEFAULT_MAX_PAGES;
 
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  // PDF.js otherwise writes recoverable font warnings directly over fullscreen TUI output.
+  const pdf = await getDocumentProxy(new Uint8Array(buffer), { verbosity: 0 });
   const metadata = await pdf.getMetadata();
   const metadataInfo = metadata.info && typeof metadata.info === "object"
     ? metadata.info as Record<string, unknown>
