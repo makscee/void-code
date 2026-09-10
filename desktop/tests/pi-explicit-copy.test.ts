@@ -75,6 +75,31 @@ for (const [label, file] of [['CLI', interactiveFile], ['a08 bundle', bundle]]) 
   });
 });
 
+// A5: standard Kitty super+c is a Mac copy intent, not a cross-platform shortcut.
+it.each(['darwin', 'win32'])('A5: %s selected super+c respects the platform copy boundary', async platform => {
+  const r = await rig(); rigs.push(r); install(await extension(), r, { platform });
+  r.drag(); await expectSelectionSilent(r);
+  const bounds = r.tui.getSelectionBounds();
+  expect(bounds).toBeDefined();
+  r.focused.handleInput.mockClear();
+  const input = '\x1b[99;9u'; // Kitty: c, super (8) + 1.
+  r.terminal.input(input); await flush();
+  expect.soft(r.write.mock.calls.map(([text]) => text)).toEqual(platform === 'darwin' ? ['Привет 世界 😀\nстрока два'] : []);
+  expect.soft(r.focused.handleInput.mock.calls).toEqual(platform === 'darwin' ? [] : [[input]]);
+  expect.soft(oscCopies(r.terminal)).toEqual([]);
+  expect(r.tui.getSelectionBounds()).toEqual(bounds);
+});
+
+it('A5: win32 no-selection super+c passes unchanged to native Pi focus', async () => {
+  const r = await rig(); rigs.push(r); install(await extension(), r, { platform: 'win32' });
+  expect(r.tui.getSelectionBounds()).toBeUndefined();
+  const input = '\x1b[99;9u';
+  r.terminal.input(input); await flush();
+  expect.soft(r.write).not.toHaveBeenCalled();
+  expect.soft(oscCopies(r.terminal)).toEqual([]);
+  expect(r.focused.handleInput.mock.calls).toEqual([[input]]);
+});
+
 it.each(['darwin', 'win32'])('C2: %s retains CLI Ctrl+C selection fallback and no-selection interrupt routing', async platform => {
   const r = await rig(); rigs.push(r); install(await extension(), r, { platform });
   r.terminal.input('\x03'); expect(r.focused.handleInput).toHaveBeenCalledWith('\x03'); r.focused.handleInput.mockClear();
