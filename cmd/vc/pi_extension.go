@@ -120,7 +120,7 @@ function clipboardAuthority(platform: string, env: Record<string, string | undef
 	if (platform !== "darwin" && platform !== "win32") return false;
 	const executable = env.VC_BOOTSTRAP_EXECUTABLE;
 	if (!executable || !path.isAbsolute(executable)) return false;
-	if ((env.SSH_CONNECTION || env.SSH_TTY) && env.VC_DESKTOP_SESSION !== "1" && !env.VC_DESKTOP_CHAT_ID) return false;
+	if ((env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) && env.VC_DESKTOP_SESSION !== "1" && !env.VC_DESKTOP_CHAT_ID) return false;
 	return true;
 }
 
@@ -141,31 +141,49 @@ function resolveFullscreenClipboardTarget(reference: any): object | undefined {
 	} catch {
 		return undefined;
 	} finally {
-		if (target && Object.getOwnPropertyDescriptor(target, key)?.value === reveal) Reflect.deleteProperty(target, key);
-		if (Object.getOwnPropertyDescriptor(reference, key)?.value === reveal) Reflect.deleteProperty(reference, key);
+		try {
+			if (target && Object.getOwnPropertyDescriptor(target, key)?.value === reveal && !Reflect.deleteProperty(target, key)) target = undefined;
+		} catch {
+			target = undefined;
+		}
+		if (reference !== target) {
+			try {
+				if (Object.getOwnPropertyDescriptor(reference, key)?.value === reveal && !Reflect.deleteProperty(reference, key)) target = undefined;
+			} catch {
+				target = undefined;
+			}
+		}
 	}
-	return target && !Object.prototype.hasOwnProperty.call(target, key) ? target : undefined;
+	try {
+		return target && !Object.prototype.hasOwnProperty.call(target, key) ? target : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export function installFullscreenClipboard(tui: any, options: FullscreenClipboardOptions): () => void {
 	if (!tui || (typeof tui !== "object" && typeof tui !== "function")) return () => {};
 	const reference = tui as object;
-	const target = resolveFullscreenClipboardTarget(tui);
-	const authority = clipboardAuthority(options.platform, options.env);
 	const previous = fullscreenClipboardReferences.get(reference);
-	if (previous && (previous.target !== target || !authority || fullscreenClipboardOwners.get(previous.target) !== previous)) {
-		previous.dispose();
-		if (fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
+	const authority = clipboardAuthority(options.platform, options.env);
+	if (!authority || options.piVersion !== "0.84.1") {
+		previous?.dispose();
+		if (previous && fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
+		if (authority) {
+			options.notify("Fullscreen native clipboard is unavailable for this Pi runtime.", "warning");
+		}
+		return () => {};
 	}
 	const failPassive = (): (() => void) => {
 		options.notify("Fullscreen native clipboard is unavailable for this Pi runtime.", "warning");
 		return () => {};
 	};
-	if (!authority) return () => {};
-	if (options.piVersion !== "0.84.1" || !target) {
-		previous?.dispose();
-		return failPassive();
+	const target = resolveFullscreenClipboardTarget(tui);
+	if (previous && (previous.target !== target || fullscreenClipboardOwners.get(previous.target) !== previous)) {
+		previous.dispose();
+		if (fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
 	}
+	if (!target) return failPassive();
 	tui = target;
 	if (typeof tui.copySelectionToClipboard !== "function" || typeof tui.getSelectionBounds !== "function" ||
 		typeof tui.handleSelectionMouseEvent !== "function" || typeof tui.handleViewportInput !== "function" ||
