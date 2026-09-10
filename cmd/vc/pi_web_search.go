@@ -11,16 +11,19 @@ import (
 type managedWebSearchState string
 
 const (
-	managedWebSearchReady       managedWebSearchState = "installed"
-	managedWebSearchUnavailable managedWebSearchState = "unavailable"
-	managedWebSearchBroken      managedWebSearchState = "broken"
-	managedWebSearchPackageName                       = "@void-code/pi-web-access"
-	managedWebSearchMarker                            = "VC-10 managed void-codex seam v1"
+	managedWebSearchReady          managedWebSearchState = "installed"
+	managedWebSearchUnavailable    managedWebSearchState = "unavailable"
+	managedWebSearchBroken         managedWebSearchState = "broken"
+	managedWebSearchPackageName                          = "@void-code/pi-web-access"
+	managedWebSearchMarker                               = "VC-10 managed void-codex seam v1"
+	managedWebSearchPackageVersion                       = "0.13.0-void.2"
 )
 
 var renameManagedWebSearchPath = os.Rename
 
 func managedWebSearchPackagePath() string {
+	// Keep the original managed slot so upgrades replace it in place instead of
+	// registering two copies of the same Pi extension.
 	return filepath.Join(piAgentDir(), "void-code", "pi-web-access-0.13.0-void.1")
 }
 
@@ -87,7 +90,7 @@ func inspectManagedWebSearchPackage(path string) (current, foreign bool, err err
 		return false, true, nil
 	}
 	_, depErr := os.Stat(filepath.Join(path, "node_modules", "@mozilla", "readability", "package.json"))
-	return pkg.Version == "0.13.0-void.1" && depErr == nil, false, nil
+	return pkg.Version == managedWebSearchPackageVersion && depErr == nil, false, nil
 }
 
 func installManagedWebSearchPackage(path string) error {
