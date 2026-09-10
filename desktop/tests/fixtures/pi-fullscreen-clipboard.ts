@@ -77,7 +77,7 @@ export type ExtensionModule = {
   createNativeClipboardWriter?: (options: { platform: string; env: Record<string, string>; spawn: Spawn }) => (text: string, signal?: AbortSignal) => Promise<void>;
 };
 export const localEnv = { VC_BOOTSTRAP_EXECUTABLE: '/isolated/vc', SystemRoot: 'C:\\Windows' };
-export async function extension(env = localEnv, spawn?: Spawn): Promise<ExtensionModule> {
+export async function extension(env = localEnv, spawn?: Spawn, agentExports: Record<string, unknown> = {}): Promise<ExtensionModule> {
   const tui = await realPi();
   const code = transformSync(embeddedSource(), { loader: 'ts', format: 'cjs', target: 'node22', logLevel: 'silent' }).code;
   const module = { exports: {} };
@@ -87,7 +87,7 @@ export async function extension(env = localEnv, spawn?: Spawn): Promise<Extensio
       spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
     };
     if (id === '@earendil-works/pi-tui') return tui;
-    if (id === '@earendil-works/pi-coding-agent') return agentMetadata;
+    if (id === '@earendil-works/pi-coding-agent') return { ...agentMetadata, ...agentExports };
     if (id === '@earendil-works/pi-ai') return { clampThinkingLevel: (_m: unknown, level: string) => level };
     if (['node:fs', 'fs', 'node:fs/promises', 'fs/promises'].includes(id)) return new Proxy({
       existsSync: () => false,

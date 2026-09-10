@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 import { attach, editorRig, keys as k, keysModule, startDefault, type EditorRig } from './fixtures/pi-editor-keys';
 import { flush, install, oscCopies } from './fixtures/pi-fullscreen-clipboard';
 
 // K1–K7 plan: native controls paired with managed RED; only Pi owns undo/history.
 // Negative/boundary groups dominate; no submit/inference/files/native clipboard.
 // Source-hook integration is NOT interactive CLI/PTY or GUI acceptance.
+// K7 opt-in at the end launches the independent actual-reader PTY fixture.
 const live: EditorRig[] = [];
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(10_000); vi.stubGlobal('fetch', vi.fn(() => { throw new Error('offline only'); })); });
 afterEach(() => { live.reverse().forEach(r => r.close()); live.length = 0; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -200,3 +203,21 @@ it.each([k.esc, k.up, '\x1b[200~paste\x1b[201~'])('K6: old clipboard selection c
   r.input(key); r.input('\x03'); await flush();
   expect(r.write).not.toHaveBeenCalled(); expect(oscCopies(r.terminal)).toEqual([]); expect(r.receiver.handleCtrlC).toHaveBeenCalledTimes(1);
 });
+
+for (const bundled of [false, true]) {
+  it.skipIf(process.env.VC_EDITOR_KEYS_PTY !== '1' || (bundled && !process.env.VC_EDITOR_KEYS_BUNDLE))(
+    `K7 actual offline PTY: native baseline then managed RED (${bundled ? 'bundled consumer' : 'CLI'})`, () => {
+      vi.useRealTimers();
+      const fixture = path.resolve('tests/fixtures/pi-editor-keys-pty.mjs');
+      const args = bundled ? ['--entry', process.env.VC_EDITOR_KEYS_BUNDLE!] : [];
+      for (const baseline of [true, false]) {
+        const run = spawnSync(process.execPath, [fixture, ...args, ...(baseline ? ['--baseline'] : [])], {
+          cwd: path.resolve('.'), encoding: 'utf8', timeout: 35_000, maxBuffer: 1024 * 1024,
+        });
+        expect(run.error).toBeUndefined();
+        expect(run.status, `${baseline ? 'native baseline' : 'managed feature'}: ${run.stderr}`).toBe(0);
+        expect(run.stdout).toContain(baseline ? 'NATIVE_PTY_CONTROL_OK' : 'MANAGED_PTY_KEYS_OK');
+      }
+    }, 80_000,
+  );
+}
