@@ -32,7 +32,7 @@ type piUISmokeSnapshot struct {
 	WorkingHiddenWhileTools          bool     `json:"workingHiddenWhileTools"`
 	WorkingHiddenWithParallelPending bool     `json:"workingHiddenWithParallelPending"`
 	WorkingShownAfterTools           bool     `json:"workingShownAfterTools"`
-	HistoryAtText                    bool     `json:"historyAtText"`
+	HistoryBeforeNextStage           bool     `json:"historyBeforeNextStage"`
 	HistoryEntries                   int      `json:"historyEntries"`
 	ReasoningMirrored                bool     `json:"reasoningMirrored"`
 	SecretLeaked                     bool     `json:"secretLeaked"`
@@ -148,8 +148,8 @@ func TestPiVoidCodeUIExtensionSmoke(t *testing.T) {
 	if !got.WorkingShownAfterTools {
 		t.Error("Working line was not restored after the last parallel tool completed")
 	}
-	if !got.HistoryAtText || got.HistoryEntries != 1 {
-		t.Errorf("tool history was not inserted exactly once before final text: atText=%v entries=%d", got.HistoryAtText, got.HistoryEntries)
+	if !got.HistoryBeforeNextStage || got.HistoryEntries != 1 {
+		t.Errorf("tool history was not inserted exactly once between tool round and next reasoning stage: beforeNextStage=%v entries=%d", got.HistoryBeforeNextStage, got.HistoryEntries)
 	}
 	if got.ReasoningMirrored {
 		t.Error("completed reasoning was copied into the live Working line")
@@ -242,6 +242,7 @@ await fire("tool_execution_end", { toolCallId: "2", toolName: "bash", result: { 
 const visibilityAfterTools = active.timeline.filter((item) => item.kind === "visible").map((item) => item.value);
 const workingShownAfterTools = visibilityAfterTools.at(-1) === true;
 await fire("turn_end", { toolResults: [{}, {}] });
+const entriesAfterToolTurn = active.timeline.filter((item) => item.kind === "entry").length;
 await fire("turn_start");
 await fire("message_update", { assistantMessageEvent: { type: "thinking_start" } });
 const entriesBeforeText = active.timeline.filter((item) => item.kind === "entry").length;
@@ -295,7 +296,7 @@ console.log(JSON.stringify({
   workingHiddenWhileTools,
   workingHiddenWithParallelPending,
   workingShownAfterTools,
-  historyAtText: entriesBeforeText === 0 && entriesAtText === 1,
+  historyBeforeNextStage: entriesAfterToolTurn === 1 && entriesBeforeText === 1 && entriesAtText === 1,
   historyEntries: active.timeline.filter((item) => item.kind === "entry").length,
   reasoningMirrored: statuses.some((status) => status.includes("PREVIOUS_REASONING")),
   secretLeaked: JSON.stringify(active.timeline).includes("top-secret"),
