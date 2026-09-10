@@ -512,8 +512,8 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("turn_end", (event) => {
-		if (event.toolResults.length === 0 && !turnHadText) flushHistory();
+	pi.on("turn_end", () => {
+		flushHistory();
 		currentCalls = [];
 	});
 
