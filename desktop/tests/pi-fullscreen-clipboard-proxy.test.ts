@@ -9,6 +9,90 @@ const text = 'Привет 世界 😀\nстрока два';
 const hooks = ['copySelectionToClipboard', 'handleSelectionMouseEvent', 'handleViewportInput', 'setFocus', 'showOverlay'] as const;
 const methods = (tui: TuiView) => hooks.map((key) => Reflect.get(tui, key));
 
+it.each([
+  { label: 'non-VC', env: {} },
+  { label: 'SSH connection', env: { ...localEnv, SSH_CONNECTION: 'fixture' } },
+  { label: 'SSH client', env: { ...localEnv, SSH_CLIENT: 'fixture' } },
+  { label: 'SSH tty', env: { ...localEnv, SSH_TTY: '/fixture/tty' } },
+  { label: 'Linux', platform: 'linux' },
+  { label: 'wrong version', piVersion: '0.85.0' },
+])('guard boundary: $label never probes or transiently owns a fresh TUI', async ({ label, ...options }) => {
+  const r = await make(); const module = await extension();
+  const mutations: Array<[string, PropertyKey]> = [];
+  const calls: PropertyKey[] = [];
+  const ui = new Proxy(r.tui, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      // Reading method metadata is not a clipboard operation; invoking even a
+      // temporary receiver probe is. Forward calls so this remains a real TUI.
+      return typeof value === 'function' ? function (...args: unknown[]) {
+        calls.push(key); return Reflect.apply(value, target, args);
+      } : value;
+    },
+    set(target, key, value) { mutations.push(['set', key]); return Reflect.set(target, key, value, target); },
+    defineProperty(target, key, descriptor) { mutations.push(['defineProperty', key]); return Reflect.defineProperty(target, key, descriptor); },
+    deleteProperty(target, key) { mutations.push(['deleteProperty', key]); return Reflect.deleteProperty(target, key); },
+  });
+  expect(() => install(module, { ...r, tui: ui }, options)).not.toThrow();
+  expect.soft(mutations, `${label}: includes transient writes even when later deleted`).toEqual([]);
+  expect.soft(calls, `${label}: no receiver-probe function calls`).toEqual([]);
+  if (label === 'wrong version') expect.soft(r.notify).toHaveBeenCalled();
+  expect(r.write).not.toHaveBeenCalled();
+});
+
+it.each(['unknown', 'revoked', 'throwing-get', 'throwing-delete'] as const)(
+  'passive reference boundary: %s is diagnosed without escaping exceptions', async (kind) => {
+    const r = await make(); const module = await extension();
+    let ui: TuiView;
+    if (kind === 'unknown') ui = {} as TuiView;
+    else if (kind === 'revoked') {
+      const reference = Proxy.revocable(r.tui, {}); reference.revoke(); ui = reference.proxy;
+    } else if (kind === 'throwing-get') {
+      ui = new Proxy(r.tui, { get() { throw new Error('reference get denied'); } });
+    } else {
+      // Intentionally hides its raw target/receiver. Cleanup may be impossible:
+      // require passive failure, not restoration through a malicious membrane.
+      ui = new Proxy(r.tui, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? (...args: unknown[]) => {
+            const result = Reflect.apply(value, target, args);
+            return result === target ? ui : result;
+          } : value;
+        },
+        deleteProperty() { throw new Error('reference delete denied'); },
+      });
+    }
+    expect.soft(() => install(module, { ...r, tui: ui })).not.toThrow();
+    expect.soft(r.notify).toHaveBeenCalled();
+    expect.soft(r.notify.mock.calls.some(([message]) => typeof message === 'string' && message.trim().length > 0)).toBe(true);
+    r.drag(); await flush();
+    expect(r.write).not.toHaveBeenCalled();
+    expect(oscCopies(r.terminal)).toEqual([text]);
+  },
+);
+
+it('retirement boundary: next non-VC install immediately aborts the old pending native write', async () => {
+  const old = await make(); const next = await make(); const module = await extension();
+  let current = old.tui;
+  const ui = actualReference(() => current);
+  const pending = deferred(); let signal: AbortSignal | undefined;
+  old.write.mockImplementation((_value, writeSignal) => { signal = writeSignal; return pending.promise; });
+  install(module, { ...old, tui: ui });
+  old.drag(); await flush();
+  expect(old.write).toHaveBeenCalledTimes(1);
+  expect(signal).toBeDefined(); expect(signal!.aborted).toBe(false);
+  current = next.tui;
+  try {
+    install(module, { ...next, tui: ui }, { env: {} });
+    // No event, flush, or writer completion may cause the retirement for us.
+    expect(signal!.aborted).toBe(true);
+    expect(next.write).not.toHaveBeenCalled();
+  } finally {
+    pending.resolve(); await flush();
+  }
+});
+
 it('consumer control: actual factory binds receivers, forwards writes, changes renderer and returns fresh closures', async () => {
   const a = await make(); const b = await make(); let current = a.tui;
   const ui = actualReference(() => current);
