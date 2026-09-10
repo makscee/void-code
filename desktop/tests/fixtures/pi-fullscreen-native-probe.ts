@@ -1,6 +1,8 @@
 // Loaded by the ACTUAL unbundled CLI or pi~BUN.mjs extension loader.
 // No account, PTY, GUI, terminal emulator selection or global stdout interception.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { errorMonitor } from 'node:events';
@@ -43,10 +45,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     ObjC.unwrap(text.dataUsingEncoding($.NSUTF8StringEncoding).base64EncodedStringWithOptions(0));
   `;
   let input: (data: string) => void = () => {};
+  let liveOsc52 = 0;
   const terminal = {
     columns: 80, rows: 8, kittyProtocolActive: false,
     start(callback: (data: string) => void) { input = callback; }, stop() {}, async drainInput() {},
-    write() {}, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
+    write(data: string) { if (data.includes('\x1b]52;')) liveOsc52++; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
     clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
   };
   const tui = new TuiAltScreen(terminal, false);
@@ -63,8 +66,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (key === 'registerProvider') return (...args: Parameters<ExtensionAPI['registerProvider']>) => { providers++; return target.registerProvider(...args); };
     return Reflect.get(target, key);
   } });
-  // Real exported consumer method, without constructing a session/auth/inference stack.
-  const receiver: WidgetReceiver = { extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map(), ui: tui, renderWidgets() {} };
+  // Narrow, provenance-bound hook extracted from the selected consumer's actual
+  // factory (the bundle itself for pi~BUN.mjs). No runtime patch or handwritten proxy.
+  // Constructing InteractiveMode would also initialize keybindings/themes/session state.
+  const provenance = JSON.parse(readFileSync(process.env.VC_R8_CONSUMER_REFERENCE!, 'utf8')) as {
+    file: string; entry: string; sha256: string; factory: string; name: string;
+  };
+  assert.equal(realpathSync(process.argv[1]), realpathSync(provenance.entry));
+  assert.equal(createHash('sha256').update(readFileSync(provenance.file)).digest('hex'), provenance.sha256);
+  assert.ok(InteractiveMode.toString().includes(provenance.name), 'loaded consumer constructor must use extracted factory');
+  const createReference = new Function(`${provenance.factory}; return ${provenance.name};`)() as (getTui: () => TuiAltScreen) => TuiAltScreen;
+  const uiReference = createReference(() => tui);
+  assert.notEqual(uiReference, tui);
+  assert.equal(Object.getPrototypeOf(uiReference), Object.getPrototypeOf(tui));
+  assert.notEqual(uiReference.flash, uiReference.flash, 'actual consumer returns fresh bound getter closures');
+  const receiver: WidgetReceiver = { extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map(), ui: uiReference, renderWidgets() {} };
   const consumer = InteractiveMode.prototype as unknown as WidgetConsumerView;
   const setWidget = (key: string, value: WidgetContent, options?: WidgetOptions) =>
     consumer.setExtensionWidget.call(receiver, key, value, options);
@@ -72,7 +88,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // removal disposes the stored result even when it moved below the editor.
   let disposed = 0;
   const component = () => ({ render: () => [], invalidate() {}, dispose() { disposed++; } });
-  setWidget('astra-consumer-control', (actualTui) => { assert.equal(actualTui, tui); return component(); });
+  setWidget('astra-consumer-control', (actualTui) => { assert.equal(actualTui, uiReference); assert.notEqual(actualTui, tui); return component(); });
   assert.equal(receiver.extensionWidgetsAbove.size, 1);
   setWidget('astra-consumer-control', () => { assert.equal(disposed, 1); return component(); }, { placement: 'belowEditor' });
   assert.equal(receiver.extensionWidgetsAbove.size, 0);
@@ -84,7 +100,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     notify: (message: string) => failures.push(message),
     setWidget: (key: string, value: WidgetContent, options?: WidgetOptions) => {
       if (typeof value === 'function') widgets++;
-      setWidget(key, value, options);
+      setWidget(key, typeof value === 'function' ? (actualTui, theme) => {
+        assert.equal(actualTui, uiReference, 'native adapter must acquire actual consumer proxy');
+        return value(actualTui, theme);
+      } : value, options);
     },
     setEditorComponent: () => assert.fail('must not replace editor'),
   } };
@@ -151,6 +170,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       lines = marker.split('\n'); tui.renderNow();
       input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
       assert.ok((tui as unknown as TuiView).getSelectionBounds()?.start.scrollView === scroll, 'real scroll-view selection missing');
+      assert.equal(liveOsc52, 0, 'managed copy leaked to live OSC52 writer');
+      assert.equal(succeeded, index, 'Copied! preceded asynchronous native completion');
       const deadline = Date.now() + 6500;
       while (succeeded <= index && failures.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(failures, []); assert.equal(succeeded, index + 1, 'native completion missing');

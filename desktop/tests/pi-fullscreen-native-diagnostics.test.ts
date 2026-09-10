@@ -1,5 +1,5 @@
 // Fake-only control for the frozen acceptance stderr repair. No Pi imports or clipboard IO.
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -126,7 +126,8 @@ it.each([
   const work = mkdtempSync(path.join(tmpdir(), 'astra-native-diagnostic-'));
   try {
     // Explicit Node entry ignores all Pi arguments; the copied probe is NEVER loaded.
-    const entry = path.join(work, 'fake-node-entry.cjs');
+    mkdirSync(path.join(work, 'dist'));
+    const entry = path.join(work, 'dist/cli.js');
     writeFileSync(entry, `process.stderr.write('FAKE_NATIVE_FAILURE_ONLY\\n'); process.stdout.write('fake model table\\n${marker ? 'ASTRA_NATIVE_SELECTION_READBACK_OK_4' : ''}'); process.exitCode = ${status};`);
     let acceptanceBody: (() => void) | undefined;
     let ownedWork: string | undefined;
@@ -138,6 +139,12 @@ it.each([
           return (_name: string, body: () => void) => { acceptanceBody = body; };
         } } };
         if (id === './fixtures/pi-fullscreen-clipboard') return { embeddedSource: () => '// fake-only; never imported' };
+        // Diagnostic runner only: the fake entry never loads either probe or hook.
+        // Actual factory/provenance behavior has separate consumer controls.
+        if (id === './fixtures/pi-interactive-consumer') return { consumerHooks: (file: string) => {
+          expect(file).toBe(path.join(work, 'dist/modes/interactive/interactive-mode.js'));
+          return { file, sha256: 'fake-not-executed', factory: '', name: '', methods: new Map() };
+        } };
         if (id === './fixtures/pi-fullscreen-private-clipboard') return {
           runPrivateWindowsClipboard: (request: NativeRequest) => {
             // Never import/run the Windows launcher, even on Windows. Only this fake entry runs.

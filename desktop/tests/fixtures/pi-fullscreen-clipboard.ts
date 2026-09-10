@@ -6,8 +6,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { transformSync } from 'esbuild';
 import { expect, vi } from 'vitest';
+import { consumerHooks, referenceFactory } from './pi-interactive-consumer';
 
 export const agentDir = path.resolve('runtime/pi/node_modules/@earendil-works/pi-coding-agent');
+export const interactiveFile = path.join(agentDir, 'dist/modes/interactive/interactive-mode.js');
+export const actualReference = (getTui: () => TuiView): TuiView => referenceFactory<TuiView>(interactiveFile)(getTui);
 const require = createRequire(path.join(agentDir, 'package.json'));
 // dist/index.js re-exports VERSION from config.js, which reads pkg.version.
 export const agentMetadata = {
@@ -152,11 +155,15 @@ export async function rig(lines = ['Привет 世界 😀', 'строка д�
 }
 // Pi 0.84.1 InteractiveMode.setExtensionWidget: dispose in BOTH placements before
 // invoking a replacement factory; store its result so clearing a probe tears it down.
-export async function widgetUI(r: Rig) {
+export async function widgetUI(r: Rig, reference = r.tui, actualConsumer = false) {
   const pi = await realPi();
   const above = new Map<string, ComponentView>(); const below = new Map<string, ComponentView>();
   const theme = { fg: (_: string, text: string) => text };
+  const hooks = actualConsumer ? consumerHooks(interactiveFile) : undefined;
+  const receiver = { ui: reference, extensionWidgetsAbove: above, extensionWidgetsBelow: below, renderWidgets() {} };
+  const consumer = hooks ? new Function('theme', 'Container', 'Text', `return class InteractiveMode { static MAX_WIDGET_LINES = 10; ${[...hooks.methods.values()].join('\n')} }`)(theme, pi.Container, pi.Text).prototype : undefined;
   const setWidget = vi.fn((key: string, content: WidgetContent, options?: WidgetOptions) => {
+    if (consumer) return consumer.setExtensionWidget.call(receiver, key, content, options);
     for (const map of [above, below]) { map.get(key)?.dispose?.(); map.delete(key); }
     if (content === undefined) return;
     let component: ComponentView;
@@ -165,10 +172,11 @@ export async function widgetUI(r: Rig) {
       for (const line of content.slice(0, 10)) container.addChild(new pi.Text(line, 1, 0));
       if (content.length > 10) container.addChild(new pi.Text(theme.fg('muted', '... (widget truncated)'), 1, 0));
       component = container;
-    } else component = content(r.tui, theme);
+    } else component = content(reference, theme);
     (options?.placement === 'belowEditor' ? below : above).set(key, component);
   });
   r.disposers.push(() => {
+    if (consumer) { consumer.clearExtensionWidgets.call(receiver); return; }
     for (const map of [above, below]) { for (const component of map.values()) component.dispose?.(); map.clear(); }
   });
   return { setWidget, notify: r.notify, setEditorComponent: vi.fn() };

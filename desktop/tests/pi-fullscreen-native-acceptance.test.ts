@@ -4,6 +4,7 @@ import path from 'node:path';
 import { expect, it } from 'vitest';
 import { embeddedSource } from './fixtures/pi-fullscreen-clipboard';
 import { runPrivateWindowsClipboard } from './fixtures/pi-fullscreen-private-clipboard';
+import { consumerHooks } from './fixtures/pi-interactive-consumer';
 
 // macOS requires an owned isolated login session; Windows creates its own private station.
 // Explicit opt-in is still mandatory. This test deliberately replaces that isolated clipboard.
@@ -18,6 +19,13 @@ it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard f
   const work = mkdtempSync(path.resolve('tests/.native-clipboard-'));
   try {
     const home = path.join(work, 'home'); mkdirSync(home);
+    // The bundle is the source of truth in bundled mode; NEVER fall back to dist.
+    const bundled = path.basename(entry!) === 'pi~BUN.mjs';
+    if (!bundled) expect(path.resolve(entry!)).toBe(path.join(packageDir!, 'dist/cli.js'));
+    const consumerFile = bundled ? entry! : path.join(packageDir!, 'dist/modes/interactive/interactive-mode.js');
+    const hooks = consumerHooks(consumerFile);
+    const referencePath = path.join(work, 'actual-consumer-reference.json');
+    writeFileSync(referencePath, JSON.stringify({ ...hooks, methods: undefined, entry }));
     writeFileSync(path.join(work, 'managed.ts'), embeddedSource());
     writeFileSync(path.join(work, 'probe.ts'), readFileSync(path.resolve('tests/fixtures/pi-fullscreen-native-probe.ts')));
     writeFileSync(path.join(work, 'pi-fullscreen-native-witness.ts'), readFileSync(path.resolve('tests/fixtures/pi-fullscreen-native-witness.ts')));
@@ -28,6 +36,7 @@ it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard f
       PI_CODING_AGENT_DIR: path.join(home, 'agent'), PI_PACKAGE_DIR: packageDir,
       PI_OFFLINE: '1', PI_TELEMETRY: '0', PI_SKIP_VERSION_CHECK: '1',
       VC_ISOLATED_CLIPBOARD_ACCEPTANCE: process.env.VC_ISOLATED_CLIPBOARD_ACCEPTANCE,
+      VC_R8_CONSUMER_REFERENCE: referencePath,
     };
     // --list-models awaits async extension factories, but needs no model, account or prompt.
     const args = [entry!, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '-e', path.join(work, 'probe.ts'), '--list-models'];

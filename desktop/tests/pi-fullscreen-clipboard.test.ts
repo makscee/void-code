@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler } from './fixtures/pi-fullscreen-clipboard';
+import { actualReference, agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -356,7 +356,7 @@ it('fixture control: widget replacement/removal disposes hooks, including an imm
   expect(oscCopies(r.terminal)).toEqual(['Привет 世界 😀\nстрока два']);
 });
 
-it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach native spawn in %s lifecycle', async (mode) => {
+it.each([['cli', 'raw'], ['desktop', 'raw'], ['cli', 'actual-proxy'], ['desktop', 'actual-proxy']])('R7: production defaults without clipboardIO reach native spawn in %s lifecycle via %s', async (mode, referenceKind) => {
   const r = await make();
   const env = mode === 'desktop' ? { ...localEnv, VC_DESKTOP_CHAT_ID: '12345678-1234-4234-8234-123456789abc', SSH_CONNECTION: 'inherited' } : localEnv;
   const bytes: Buffer[] = [];
@@ -366,7 +366,8 @@ it.each(['cli', 'desktop'])('R7: production defaults without clipboardIO reach n
   const module = await extension(env, spawn);
   const handlers = new Map<string, LifecycleHandler[]>();
   const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
-  const ui = await widgetUI(r); const { setWidget } = ui;
+  const reference = referenceKind === 'raw' ? r.tui : actualReference(() => r.tui);
+  const ui = await widgetUI(r, reference, true); const { setWidget } = ui;
   const ctx = { mode: 'tui', hasUI: true, ui };
   await module.default(pi); // Deliberately no second argument: only node subprocess IO is substituted.
   expect(pi.registerProvider).toHaveBeenCalled();
