@@ -14,7 +14,7 @@ import type {
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
 const CODEX_PROVIDER_ID = "void-codex";
@@ -55,6 +55,23 @@ interface NativeClipboardWriterOptions {
 
 interface ClipboardExtensionOptions {
 	clipboardIO?: ClipboardIOOptions;
+}
+
+interface PiEditorKeysContext {
+	mode: string;
+	hasUI: boolean;
+	isIdle: () => boolean;
+	hasPendingMessages: () => boolean;
+	ui: {
+		getEditorComponent: () => unknown;
+	};
+}
+
+interface PiEditorKeysOptions {
+	platform: string;
+	env: Record<string, string | undefined>;
+	piVersion: string;
+	ctx: PiEditorKeysContext;
 }
 
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
@@ -115,6 +132,95 @@ const fullscreenClipboardReferences = new WeakMap<object, FullscreenClipboardOwn
 const CLIPBOARD_WIDGET_KEY = "void-code-fullscreen-clipboard";
 const MAX_CLIPBOARD_BYTES = 8 * 1024 * 1024;
 const MAX_CLIPBOARD_WAITING = 8;
+
+interface PiEditorKeysOwner {
+	dispose: () => void;
+}
+const piEditorKeysOwners = new WeakMap<object, PiEditorKeysOwner>();
+
+function isStandardPiEscape(handler: unknown): handler is () => void {
+	if (typeof handler !== "function") return false;
+	try {
+		const source = Function.prototype.toString.call(handler);
+		return source.includes("isStreaming") && source.includes("isBashRunning") && source.includes("getDoubleEscapeAction");
+	} catch {
+		return false;
+	}
+}
+
+/** Pi 0.84.1 has no public action dispatcher for unconditional prompt history. */
+export function installPiEditorKeys(tui: any, options: PiEditorKeysOptions): () => void {
+	if (options.piVersion !== "0.84.1" || options.ctx.mode !== "tui" || !options.ctx.hasUI) return () => {};
+	const executable = options.env.VC_BOOTSTRAP_EXECUTABLE;
+	if (!executable || !path.isAbsolute(executable)) return () => {};
+	try {
+		if (options.ctx.ui.getEditorComponent() !== undefined) return () => {};
+	} catch {
+		return () => {};
+	}
+	let editor: any;
+	try { editor = tui?.focusedComponent; } catch { return () => {}; }
+	if (!(editor instanceof CustomEditor) || typeof editor.handleInput !== "function" ||
+		typeof editor.navigateHistory !== "function" || typeof editor.setText !== "function" ||
+		typeof editor.getText !== "function" || typeof editor.isShowingAutocomplete !== "function") return () => {};
+	if (piEditorKeysOwners.has(editor)) return () => {};
+
+	const originalHandleInput = editor.handleInput;
+	const ownDescriptor = Object.getOwnPropertyDescriptor(editor, "handleInput");
+	const ordinaryEscape = isStandardPiEscape(editor.onEscape) ? editor.onEscape : undefined;
+	let disposed = false;
+	let dispose = (): void => {};
+	const callNativeWithoutExtensionShortcut = (data: string): void => {
+		const shortcut = editor.onExtensionShortcut;
+		if (typeof shortcut !== "function") {
+			originalHandleInput.call(editor, data);
+			return;
+		}
+		editor.onExtensionShortcut = undefined;
+		try { originalHandleInput.call(editor, data); }
+		finally { if (editor.onExtensionShortcut === undefined) editor.onExtensionShortcut = shortcut; }
+	};
+	const managedHandleInput = function (this: any, data: string): void {
+		if (disposed || this !== editor || tui.focusedComponent !== editor) {
+			originalHandleInput.call(this, data);
+			return;
+		}
+		const escape = matchesKey(data, "escape");
+		const up = matchesKey(data, "up");
+		const down = matchesKey(data, "down");
+		if (!escape && !up && !down) {
+			originalHandleInput.call(editor, data);
+			return;
+		}
+		const shortcut = editor.onExtensionShortcut;
+		if (typeof shortcut === "function" && shortcut.call(editor, data)) return;
+		if (isKeyRelease(data)) return;
+		if (editor.isInPaste || editor.jumpMode !== null || editor.isShowingAutocomplete()) {
+			callNativeWithoutExtensionShortcut(data);
+			return;
+		}
+		if (up || down) {
+			editor.navigateHistory(up ? -1 : 1);
+			return;
+		}
+		const before = editor.getText();
+		callNativeWithoutExtensionShortcut(data);
+		if (ordinaryEscape && editor.onEscape === ordinaryEscape && before.length > 0 && editor.getText() === before &&
+			options.ctx.isIdle() && !options.ctx.hasPendingMessages() && tui.focusedComponent === editor) editor.setText("");
+	};
+	editor.handleInput = managedHandleInput;
+	dispose = (): void => {
+		if (disposed) return;
+		disposed = true;
+		if (editor.handleInput === managedHandleInput) {
+			if (ownDescriptor) Object.defineProperty(editor, "handleInput", ownDescriptor);
+			else Reflect.deleteProperty(editor, "handleInput");
+		}
+		if (piEditorKeysOwners.get(editor)?.dispose === dispose) piEditorKeysOwners.delete(editor);
+	};
+	piEditorKeysOwners.set(editor, { dispose });
+	return dispose;
+}
 
 function clipboardAuthority(platform: string, env: Record<string, string | undefined>): boolean {
 	if (platform !== "darwin" && platform !== "win32") return false;
@@ -440,10 +546,17 @@ function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: Clipb
 			writeText: createNativeClipboardWriter({ platform: process.platform, env: process.env }),
 		};
 		ctx.ui.setWidget(CLIPBOARD_WIDGET_KEY, (tui) => {
-			const installedDispose = installFullscreenClipboard(tui, {
+			const clipboardDispose = installFullscreenClipboard(tui, {
 				...io,
 				notify: (message, level) => ctx.ui.notify(message, level),
 			});
+			const editorDispose = installPiEditorKeys(tui, {
+				platform: io.platform,
+				env: io.env,
+				piVersion: io.piVersion,
+				ctx,
+			});
+			const installedDispose = (): void => { editorDispose(); clipboardDispose(); };
 			dispose = installedDispose;
 			return { render: () => [], invalidate: () => {}, dispose: installedDispose };
 		});
