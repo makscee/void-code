@@ -466,9 +466,22 @@ describe('F4 — shipped xterm keyboard/default-action/onData integration', () =
       expect.soft(result.domPasteEvents).toBe(0);
       expect.soft(result.terminalData).toHaveLength(1); expect.soft(result.terminalData).not.toContain('\x03');
       const { editorRig } = await import('./fixtures/pi-editor-keys');
-      const { extension, install, expectSelectionSilent, flush, localEnv } = await import('./fixtures/pi-fullscreen-clipboard');
-      const consumer = process.env.VC_EDITOR_KEYS_BUNDLE ?? '/tmp/vc-diana-install-proxy/payload/resources/private-runtime/pi/agent/pi~BUN.mjs';
-      expect(existsSync(consumer), 'actual consumer required for hidden cross-seam').toBe(true);
+      const { extension, install, expectSelectionSilent, flush, localEnv, interactiveFile } = await import('./fixtures/pi-fullscreen-clipboard');
+      const consumer = process.env.VC_EDITOR_KEYS_BUNDLE ?? interactiveFile;
+      // CI 34451025724 / job 102786563462 failed here with a personal /tmp bundle.
+      // Check provenance before existence: restoring that default must fail even on
+      // a developer machine where the artifact exists. An explicit override is binding.
+      if (process.env.VC_EDITOR_KEYS_BUNDLE === undefined) {
+        expect(consumer, 'default must be the current pinned unbundled InteractiveMode').toBe(interactiveFile);
+      } else {
+        expect(consumer, 'explicit consumer override must not fall back').toBe(process.env.VC_EDITOR_KEYS_BUNDLE);
+      }
+      expect(existsSync(consumer), `actual consumer required for hidden cross-seam: ${consumer}`).toBe(true);
+      console.info('hidden Mac consumer receipt', JSON.stringify({
+        file: consumer,
+        qualification: process.env.VC_EDITOR_KEYS_BUNDLE === undefined ? 'current pinned unbundled dependency; not bundled qualification' : 'explicit consumer override',
+        bytes: statSync(consumer).size,
+      }));
       vi.useFakeTimers();
       const r = await editorRig(consumer);
       try {
