@@ -96,6 +96,40 @@ it.each([
   }
 });
 
+it.each([
+  { label: 'non-VC', env: {}, piVersion: '0.84.1' },
+  { label: 'wrong version', env: localEnv, piVersion: '0.85.1' },
+])('retirement alias boundary: $label raw reinstall retires the same actual-proxy owner', async ({ env, piVersion }) => {
+  const r = await make(); const module = await extension();
+  const originals = methods(r.tui);
+  const descriptors = hooks.map((key) => Object.getOwnPropertyDescriptor(r.tui, key));
+  const symbols = Object.getOwnPropertySymbols(r.tui);
+  const pending = deferred(); let signal: AbortSignal | undefined;
+  r.write.mockImplementation((_value, writeSignal) => { signal = writeSignal; return pending.promise; });
+  install(module, { ...r, tui: actualReference(() => r.tui) });
+  r.drag(); await flush();
+  expect(r.write).toHaveBeenCalledTimes(1);
+  expect(signal).toBeDefined(); expect(signal!.aborted).toBe(false);
+  try {
+    // Witness even a transient receiver probe without wrapping the raw alias.
+    const set = vi.spyOn(Reflect, 'set');
+    try {
+      install(module, r, { env, piVersion });
+      expect.soft(set.mock.calls.filter(([target, key]) => target === r.tui && typeof key === 'symbol')).toEqual([]);
+    } finally { set.mockRestore(); }
+    // Retirement must be synchronous, before any event or pending completion.
+    expect.soft(signal!.aborted).toBe(true);
+    hooks.forEach((_key, index) => expect.soft(methods(r.tui)[index]).toBe(originals[index]));
+    expect.soft(hooks.map((key) => Object.getOwnPropertyDescriptor(r.tui, key))).toEqual(descriptors);
+    expect.soft(Object.getOwnPropertySymbols(r.tui)).toEqual(symbols);
+    pending.resolve(); await flush();
+    r.terminal.output.length = 0;
+    r.drag(); await flush();
+    expect.soft(r.write).toHaveBeenCalledTimes(1);
+    expect.soft(oscCopies(r.terminal)).toEqual([text]);
+  } finally { pending.resolve(); await flush(); }
+});
+
 it('consumer control: actual factory binds receivers, forwards writes, changes renderer and returns fresh closures', async () => {
   const a = await make(); const b = await make(); let current = a.tui;
   const ui = actualReference(() => current);
