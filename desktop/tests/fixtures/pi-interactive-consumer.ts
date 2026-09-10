@@ -12,9 +12,10 @@ export function consumerHooks(file: string, source = readFileSync(file, 'utf8'))
   let boundByConsumer = false;
   function visit(node: ts.Node) {
     if (ts.isFunctionDeclaration(node) && /^createInteractiveTuiReference\d*$/.test(node.name?.text ?? '')) factories.push(node);
-    const className = (ts.isClassDeclaration(node) || ts.isClassExpression(node))
-      ? node.name?.text ?? (ts.isVariableDeclaration(node.parent) ? node.parent.name.getText(tree)
-        : ts.isBinaryExpression(node.parent) ? node.parent.left.getText(tree) : '') : '';
+    const className = ts.isClassDeclaration(node) ? node.name?.text ?? ''
+      : ts.isClassExpression(node) && ts.isVariableDeclaration(node.parent) ? node.parent.name.getText(tree)
+        : ts.isClassExpression(node) && ts.isBinaryExpression(node.parent)
+          && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken ? node.parent.left.getText(tree) : '';
     if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && /^InteractiveMode\d*$/.test(className)) {
       for (const member of node.members) {
         if (ts.isConstructorDeclaration(member)) {
