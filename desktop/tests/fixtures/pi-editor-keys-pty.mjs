@@ -1,6 +1,9 @@
 // Standalone bounded offline integration runner. Not part of unit fake-clock suite.
 // node /absolute/path/pi-editor-keys-pty.mjs [--baseline] [--entry /absolute/pi~BUN.mjs --executable /absolute/node]
 import assert from 'node:assert/strict';
+import process from 'node:process';
+import console from 'node:console';
+import { setTimeout } from 'node:timers';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, cpSync, chmodSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -45,7 +48,7 @@ try {
     VC_EDITOR_KEYS_OWNED_PTY: '1', VC_EDITOR_KEYS_OBSERVER: observer, VC_BOOTSTRAP_EXECUTABLE: executable,
     ...(baseline ? { VC_EDITOR_KEYS_BASELINE: '1' } : {}),
   };
-  child = pty.spawn(executable, [entry, '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-builtin-tools', '--provider', 'editor-keys-offline', '--model', 'fixture', '--tui-mode', 'fullscreen', '-e', path.join(work, 'probe.ts')], { cwd: path.join(work, 'cwd'), env, cols: 100, rows: 30, name: 'xterm-256color' });
+  child = pty.spawn(executable, [entry, '--no-context-files', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-builtin-tools', '--provider', 'editor-keys-offline', '--model', 'fixture', '--tui-mode', 'fullscreen', '-e', path.join(work, 'probe.ts')], { cwd: path.join(work, 'cwd'), env, cols: 100, rows: 30, name: 'xterm-256color' });
   child.onData(data => { output = (output + data).slice(-12000); });
   child.onExit(() => { exited = true; });
   const records = () => existsSync(observer) ? readFileSync(observer, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
