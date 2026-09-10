@@ -1,0 +1,19 @@
+# Windows terminal font correction (private QA)
+
+Owner approved10Sep: «давай да применяем», referring to JetBrains Mono14px + complete preload + letterSpacing1 tested on Diana at DPR1.5. Install scope: Diana Windows only; no public release/tag/merge/server work, no Mac installation/settings change.
+
+## Contract
+
+F1. Before the first product terminal is opened, measured/fitted, WebGL-activated or written (ordinary create/resume AND production probe), load all declared normal JetBrains Mono faces for weights400/700, including Cyrillic and Cyrillic-ext unicode-range subsets, not merely the default space/Latin. Do not load or wait for unrelated font families. Reuse readiness for this renderer document; no repeated per-tab waiting/loading after it settles.
+F2. Keep JetBrains Mono,14px, weights400/700, lineHeight1.15. Actual Windows product terminals use letterSpacing1, non-Windows remain0. No CSS-only setting that the xterm consumer ignores. No changes to renderer fallback, ANSI palette, scrollback, clipboard/keyboard/Pi or PTY contracts.
+F3. Loading must not hang startup. Bound the complete font wait to5000ms. If font APIs/faces/required weights are absent, load rejects or times out, settle explicitly as degraded and use stable system monospace (not a mixed late-loading JBM/fallback family) for the lifetime of this document. Report a concise warning, no secrets; never call this JBM-loaded. Timer cleaned after early success/failure; late resolution/rejection cannot alter the chosen family or start anything again. Success loads normal/bold owned faces, unrelated failed/hung fonts do not cause degradation.
+F4. Introducing readiness must not duplicate/resurrect closed chats or start a removed/replaced workspace while pending. Existing create/resume/input/fit lifecycle remains valid, repeated launches of one chat do not create extra terminals/PTYs. Initialization can wait before UI events/bridge subscription startup rather than inserting a new yield into each launch; choose the smallest correct integration. No user state/credentials/history/clipboard changes.
+F5. Assert real startup wiring, not merely an unused helper. Existing production font evidence must include Cyrillic normal/bold (fonts.check with only the default sample is insufficient), and the ordinary path must share the same readiness contract as probe.
+
+## Verification / limits
+
+Independent RED first, separate implementation, selected semantic mutations of spacing/platform/load subset/order/failure/timer/wiring. Run existing desktop/lint/typecheck/Go checks, exact-head CI packaging and existing native gates unchanged. Native Windows isolated renderer MUST exercise actual candidate product options/readiness, with no fixture-set spacing or preloading to conceal a missing call, and quantify the known glyph edge at DPR1.5. Record true render activation, loaded faces before open, regular/bold Ж/ж pixels and cells. Other DPI not claimed fixed; can sample them diagnostically without changing Diana's actual display settings. No dependency upgrades needed.
+
+Before installation verify exact artifact and fresh user-state backup; only graceful close when idle and editor empty. If a live draft/run is present, stop and ask rather than inject keys or lose it. Verify version, payload, histories-as-prefixes, workspace/token/settings and capture only owned VC window. Do not turn installation evidence into proof of unrelated physical copying/menu acceptance.
+
+Evidence source: parent docs/measurements/2026-09-10-font-variants.md, /tmp/vc-font-matrix/results{,2}. User-approved candidate cured measured raster overflow at DPR1.5 (13px ink including antialiasing in12px cell; spacing1 gives13px cell); larger font and rescaleOverlappingGlyphs did not. This is a narrow rendering change, not permission to redesign the UI.
