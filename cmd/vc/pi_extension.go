@@ -167,7 +167,6 @@ export function installPiEditorKeys(tui: any, options: PiEditorKeysOptions): () 
 
 	const originalHandleInput = editor.handleInput;
 	const ownDescriptor = Object.getOwnPropertyDescriptor(editor, "handleInput");
-	const ordinaryEscape = isStandardPiEscape(editor.onEscape) ? editor.onEscape : undefined;
 	let disposed = false;
 	let dispose = (): void => {};
 	const callNativeWithoutExtensionShortcut = (data: string): void => {
@@ -204,9 +203,13 @@ export function installPiEditorKeys(tui: any, options: PiEditorKeysOptions): () 
 			return;
 		}
 		const before = editor.getText();
+		const escapeHandlerAtInput = editor.onEscape;
+		const ordinaryEscapeAtInput = isStandardPiEscape(escapeHandlerAtInput);
+		const idleAtInput = options.ctx.isIdle();
+		const pendingAtInput = options.ctx.hasPendingMessages();
 		callNativeWithoutExtensionShortcut(data);
-		if (ordinaryEscape && editor.onEscape === ordinaryEscape && before.length > 0 && editor.getText() === before &&
-			options.ctx.isIdle() && !options.ctx.hasPendingMessages() && tui.focusedComponent === editor) editor.setText("");
+		if (ordinaryEscapeAtInput && editor.onEscape === escapeHandlerAtInput && before.length > 0 && editor.getText() === before &&
+			idleAtInput && !pendingAtInput && tui.focusedComponent === editor) editor.setText("");
 	};
 	editor.handleInput = managedHandleInput;
 	dispose = (): void => {
@@ -386,7 +389,14 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 			selectionFresh = true;
 			selectionFocus = tui.focusedComponent;
 		}
-		const result = originalSelectionMouse.call(this, event);
+		// Pi normally copies from the mouse handler on release/double/triple click. Keep all
+		// native selection geometry while withholding clipboard authority until a copy key.
+		const copyAtInput = tui.copySelectionToClipboard;
+		const silentCopy = (): void => {};
+		tui.copySelectionToClipboard = silentCopy;
+		let result: any;
+		try { result = originalSelectionMouse.call(this, event); }
+		finally { if (tui.copySelectionToClipboard === silentCopy) tui.copySelectionToClipboard = copyAtInput; }
 		if (event?.release && !tui.getSelectionBounds()) selectionFresh = false;
 		return result;
 	};
@@ -413,18 +423,20 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 
 	const removeInputListener = tui.addInputListener((data: string) => {
 		if (!retainOwnership() || isKeyRelease(data)) return;
-		if (!matchesKey(data, "ctrl+c")) {
+		const interruptCopy = matchesKey(data, "ctrl+c");
+		const copyOnly = matchesKey(data, "super+c");
+		if (!interruptCopy && !copyOnly) {
 			selectionFresh = false;
 			return;
 		}
 		if ((typeof tui.hasOverlay === "function" && tui.hasOverlay()) || tui.focusedComponent !== selectionFocus) {
 			selectionFresh = false;
-			return;
+			return copyOnly ? { consume: true } : undefined;
 		}
 		const selection = tui.getSelectionBounds();
 		if (!selectionFresh || !selection) {
 			selectionFresh = false;
-			return;
+			return copyOnly ? { consume: true } : undefined;
 		}
 		managedCopy.call(tui);
 		return { consume: true };

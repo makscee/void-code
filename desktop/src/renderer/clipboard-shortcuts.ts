@@ -78,6 +78,14 @@ function isWindowsCopyShortcut(event: KeyboardEvent): boolean {
   return event.code === 'KeyC' && event.ctrlKey && !event.altKey && !event.metaKey;
 }
 
+function isMacCopyShortcut(event: KeyboardEvent): boolean {
+  return event.code === 'KeyC' && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
+}
+
+// Standard Kitty keyboard protocol encoding for super+c. Pi's native parser decodes this as a
+// copy-only intent; unlike Ctrl+C it has no interrupt meaning when there is no transcript selection.
+const PI_COPY_ONLY_INTENT = '\x1b[99;9u';
+
 function pasteTrustedClipboard(target: TerminalClipboardTarget, result: ClipboardReadResult): void {
   if (result.kind === 'text') target.paste(result.text);
   else if (result.kind === 'image-path') target.paste(result.path);
@@ -97,6 +105,23 @@ export function installWindowsClipboardShortcuts(
   now: ClipboardTransactionClock = defaultClipboardTransactionClock,
 ): void {
   target.attachCustomKeyEventHandler((event) => {
+    if (platform === 'darwin' && event.type === 'keydown' && isMacCopyShortcut(event)) {
+      event.preventDefault();
+      if (!event.repeat) {
+        const selection = target.getSelection();
+        if (selection !== '' && writeTrustedClipboard) {
+          try {
+            void writeTrustedClipboard(selection).catch(() => undefined);
+          } catch {
+            // A broken trusted bridge must not inject or revive the browser default.
+          }
+        } else if (selection === '') {
+          terminalInput.send(PI_COPY_ONLY_INTENT);
+        }
+      }
+      return false;
+    }
+
     if (platform !== 'win32' || event.type !== 'keydown') return true;
 
     if (isWindowsCopyShortcut(event)) {
