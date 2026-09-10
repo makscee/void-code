@@ -424,7 +424,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	const removeInputListener = tui.addInputListener((data: string) => {
 		if (!retainOwnership() || isKeyRelease(data)) return;
 		const interruptCopy = matchesKey(data, "ctrl+c");
-		const copyOnly = matchesKey(data, "super+c");
+		const copyOnly = options.platform === "darwin" && matchesKey(data, "super+c");
 		if (!interruptCopy && !copyOnly) {
 			selectionFresh = false;
 			return;
