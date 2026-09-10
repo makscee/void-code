@@ -167,7 +167,8 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	const previous = fullscreenClipboardReferences.get(reference);
 	const authority = clipboardAuthority(options.platform, options.env);
 	if (!authority || options.piVersion !== "0.84.1") {
-		previous?.dispose();
+		const owner = previous ?? fullscreenClipboardOwners.get(reference);
+		owner?.dispose();
 		if (previous && fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
 		if (authority) {
 			options.notify("Fullscreen native clipboard is unavailable for this Pi runtime.", "warning");
@@ -203,6 +204,10 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	const originalViewportInput = tui.handleViewportInput;
 	const originalSetFocus = tui.setFocus;
 	const originalShowOverlay = tui.showOverlay;
+	const inheritedHooks: Array<[string, any]> = [
+		["copySelectionToClipboard", originalCopy], ["handleSelectionMouseEvent", originalSelectionMouse],
+		["handleViewportInput", originalViewportInput], ["setFocus", originalSetFocus], ["showOverlay", originalShowOverlay],
+	].filter(([key]) => !Object.prototype.hasOwnProperty.call(tui, key));
 	let disposed = false;
 	let active: AbortController | undefined;
 	let selectionFresh = false;
@@ -330,6 +335,9 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		if (tui.handleViewportInput === managedViewportInput) tui.handleViewportInput = originalViewportInput;
 		if (tui.setFocus === managedSetFocus) tui.setFocus = originalSetFocus;
 		if (tui.showOverlay === managedShowOverlay) tui.showOverlay = originalShowOverlay;
+		for (const [key, original] of inheritedHooks) {
+			if (tui[key] === original) Reflect.deleteProperty(tui, key);
+		}
 		const owner = fullscreenClipboardOwners.get(target);
 		if (owner?.dispose === dispose) fullscreenClipboardOwners.delete(target);
 		if (owner && fullscreenClipboardReferences.get(reference) === owner) fullscreenClipboardReferences.delete(reference);
