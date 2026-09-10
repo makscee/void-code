@@ -394,7 +394,7 @@ function runProcess(executable: string, arguments_: string[], cwd: string): Prom
 // hidden window receives Electron input events; xterm owns the textarea, selection, key dispatch,
 // default action, Terminal.paste(), and onData path. Clipboard read/write remain injected spies.
 describe('F4 — shipped xterm keyboard/default-action/onData integration', () => {
-  it('consumes selected Ctrl+C and delivers Ctrl+V plus ordinary typing through real xterm onData', async () => {
+  it.each(['win32', 'darwin'])('%s trusted copy through hidden real xterm (Mac also crosses actual Pi consumer)', async platform => {
     const root = temporaryRoot();
     const rendererBundle = path.join(root, 'renderer.js');
     const mainBundle = path.join(root, 'main.cjs');
@@ -425,7 +425,7 @@ describe('F4 — shipped xterm keyboard/default-action/onData integration', () =
     const require = createRequire(import.meta.url);
     const electron = require('electron') as string;
     const platformArguments = process.platform === 'linux' ? ['--ozone-platform=headless', '--disable-gpu'] : [];
-    const completed = await runProcess(electron, [...platformArguments, mainBundle, `--fixture-page=${page}`, `--fixture-result=${resultFile}`], path.resolve('.'));
+    const completed = await runProcess(electron, [...platformArguments, mainBundle, `--fixture-page=${page}`, `--fixture-result=${resultFile}`, ...(platform === 'darwin' ? ['--fixture-mac'] : [])], path.resolve('.'));
 
     expect(completed.code, `hidden Electron fixture failed\nstdout:\n${completed.stdout}\nstderr:\n${completed.stderr}`).toBe(0);
     const result = JSON.parse(readFileSync(resultFile, 'utf8')) as {
@@ -437,7 +437,41 @@ describe('F4 — shipped xterm keyboard/default-action/onData integration', () =
       keyups: Array<{ code: string; defaultPrevented: boolean }>;
       domCopyEvents: number;
       domPasteEvents: number;
+      trustedEvents?: boolean[];
+      activeField?: string;
     };
+    if (platform === 'darwin') {
+      expect.soft(result.implementation).toBe('@xterm/xterm'); expect.soft(result.instance).toBe(true);
+      expect.soft(result.copied).toEqual(['selected text']);
+      expect.soft(result.trustedEvents).toEqual([true, true, true]);
+      expect.soft(result.keydowns).toEqual([
+        { code: 'KeyC', defaultPrevented: true }, { code: 'KeyC', defaultPrevented: true },
+        { code: 'KeyC', defaultPrevented: false }, // ordinary input is not terminal-owned
+      ]);
+      expect.soft(result.keyups).toEqual(Array(3).fill({ code: 'KeyC', defaultPrevented: false }));
+      expect.soft(result.activeField).toBe('ordinary-input');
+      expect.soft(result.domCopyEvents).toBe(1); expect.soft(result.domPasteEvents).toBe(0);
+      expect.soft(result.terminalData).toHaveLength(1); expect.soft(result.terminalData).not.toContain('\x03');
+      const { editorRig } = await import('./fixtures/pi-editor-keys');
+      const { extension, install, expectSelectionSilent, flush, localEnv } = await import('./fixtures/pi-fullscreen-clipboard');
+      const consumer = process.env.VC_EDITOR_KEYS_BUNDLE ?? '/tmp/vc-diana-install-proxy/payload/resources/private-runtime/pi/agent/pi~BUN.mjs';
+      expect(existsSync(consumer), 'actual consumer required for hidden cross-seam').toBe(true);
+      vi.useFakeTimers();
+      const r = await editorRig(consumer);
+      try {
+        const env = { ...localEnv, VC_DESKTOP_CHAT_ID: '12345678-1234-4234-8234-123456789abc' };
+        install(await extension(env), { ...r, tui: r.reference }, { env });
+        r.draft('retained Черновик');
+        for (const data of result.terminalData) r.input(data);
+        expect.soft(r.editor.getText()).toBe('retained Черновик'); expect.soft(r.receiver.handleCtrlC).not.toHaveBeenCalled();
+        r.drag(); await expectSelectionSilent(r);
+        for (const data of result.terminalData) r.input(data);
+        await flush();
+        expect.soft(r.write.mock.calls.map(([text]) => text)).toEqual(['Привет 世界 😀\nстрока два']);
+        expect.soft(r.editor.getText()).toBe('retained Черновик'); expect.soft(r.receiver.handleCtrlC).not.toHaveBeenCalled(); expect(r.submit).not.toHaveBeenCalled();
+      } finally { r.close(); vi.useRealTimers(); }
+      return;
+    }
     expect(result).toEqual({
       implementation: '@xterm/xterm',
       instance: true,

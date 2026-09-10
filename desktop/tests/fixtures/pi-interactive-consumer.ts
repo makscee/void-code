@@ -16,7 +16,7 @@ export function consumerHooks(file: string, source = readFileSync(file, 'utf8'),
       : ts.isClassExpression(node) && ts.isVariableDeclaration(node.parent) ? node.parent.name.getText(tree)
         : ts.isClassExpression(node) && ts.isBinaryExpression(node.parent)
           && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken ? node.parent.left.getText(tree) : '';
-    if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && /^(?:outerbinding_)?InteractiveMode\d*$/.test(className)) {
+    if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && /^InteractiveMode\d*$/.test(className)) {
       for (const member of node.members) {
         if (ts.isConstructorDeclaration(member)) {
           boundByConsumer = /this\.ui\s*=\s*createInteractiveTuiReference\d*\(\(\)\s*=>\s*this\.renderer\)/.test(member.getText(tree));

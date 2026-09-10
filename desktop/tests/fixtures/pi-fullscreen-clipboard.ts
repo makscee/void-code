@@ -181,6 +181,13 @@ export async function widgetUI(r: Rig, reference = r.tui, actualConsumer = false
   });
   return { setWidget, notify: r.notify, setEditorComponent: vi.fn() };
 }
+// Assertion only: mouse helpers never synthesize copy intent.
+export async function expectSelectionSilent(r: Rig): Promise<void> {
+  await flush();
+  expect.soft(r.write, 'C1: mouse-only selection must not start native writing').not.toHaveBeenCalled();
+  expect.soft(oscCopies(r.terminal), 'C1: no live OSC52 before explicit copy').toEqual([]);
+  expect.soft(r.flash, 'C1: no Copied before explicit copy').not.toHaveBeenCalledWith('Copied!');
+}
 export function oscCopies(terminal: MemoryTerminal): string[] {
   const esc = String.fromCharCode(27); const bel = String.fromCharCode(7);
   const osc52 = new RegExp(`${esc}\\]52;c;([^${bel}]*)${bel}`, 'g');

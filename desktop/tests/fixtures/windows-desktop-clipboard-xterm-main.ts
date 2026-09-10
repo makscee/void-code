@@ -10,9 +10,10 @@ function argument(name: string): string {
 
 const page = argument('fixture-page');
 const resultFile = argument('fixture-result');
+const mac = process.argv.includes('--fixture-mac');
 
 function key(window: BrowserWindow, type: 'keyDown' | 'keyUp', keyCode: 'C' | 'V' | 'X', control = true): void {
-  window.webContents.sendInputEvent({ type, keyCode, modifiers: control ? ['control'] : [] });
+  window.webContents.sendInputEvent({ type, keyCode, modifiers: control ? [mac ? 'meta' : 'control'] : [] });
 }
 
 void app.whenReady().then(async () => {
@@ -31,6 +32,10 @@ void app.whenReady().then(async () => {
       key(window, 'keyUp', 'C');
       return;
     }
+    if (mac && (title === 'XTERM:MAC-COPY:1' || title === 'XTERM:MAC-COPY:2')) {
+      key(window, 'keyDown', 'C'); key(window, 'keyUp', 'C');
+      return;
+    }
     if (stage === 'copy' && title === 'XTERM:COPY-DONE') {
       stage = 'paste';
       key(window, 'keyDown', 'V');
@@ -47,7 +52,7 @@ void app.whenReady().then(async () => {
       key(window, 'keyUp', 'X', false);
       return;
     }
-    if (stage === 'done' && title.startsWith('XTERM:RESULT:')) {
+    if ((stage === 'done' || mac) && title.startsWith('XTERM:RESULT:')) {
       writeFileSync(resultFile, title.slice('XTERM:RESULT:'.length), { encoding: 'utf8', mode: 0o600 });
       window.destroy();
       app.exit(0);
@@ -56,5 +61,5 @@ void app.whenReady().then(async () => {
   window.webContents.on('render-process-gone', (_event, details) => {
     throw new Error(`renderer exited before fixture result: ${details.reason}`);
   });
-  await window.loadFile(page);
+  await window.loadFile(page, mac ? { query: { platform: 'darwin' } } : {});
 });

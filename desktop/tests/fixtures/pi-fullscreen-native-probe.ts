@@ -166,15 +166,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
     for (const [index, marker] of markers.entries()) {
       failureIndex = index;
-      failureStage = 'native-completion';
+      failureStage = 'selection-without-copy';
+      const beforeSelection = operation;
       lines = marker.split('\n'); tui.renderNow();
       input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
       assert.ok((tui as unknown as TuiView).getSelectionBounds()?.start.scrollView === scroll, 'real scroll-view selection missing');
-      assert.equal(liveOsc52, 0, 'managed copy leaked to live OSC52 writer');
+      // Give queued microtasks/timers a turn: mouse release alone has no authority.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(operation, beforeSelection, 'selection started a native writer without a copy key');
+      assert.equal(liveOsc52, 0, 'selection leaked to live OSC52 writer');
+      assert.equal(succeeded, index, 'selection flashed Copied without a copy key');
+      failureStage = 'native-completion';
+      input(process.platform === 'darwin' ? '\x1b[99;9u' : '\x03');
       assert.equal(succeeded, index, 'Copied! preceded asynchronous native completion');
       const deadline = Date.now() + 6500;
       while (succeeded <= index && failures.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(failures, []); assert.equal(succeeded, index + 1, 'native completion missing');
+      assert.equal(liveOsc52, 0, 'explicit copy leaked to live OSC52 writer');
       failureStage = 'independent-readback';
       let readback: string;
       try {

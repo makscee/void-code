@@ -199,7 +199,7 @@ it.each(['version', 'non-VC', 'rpc', 'print', 'json', 'no UI', 'custom factory',
 });
 it.each([k.esc, k.up, '\x1b[200~paste\x1b[201~'])('K6: old clipboard selection cannot steal Ctrl+C after %j', async key => {
   const r = await make(); seed(r); const module = await keysModule(); install(module, { ...r, tui: r.reference }); attach(module, r);
-  r.drag(); await flush(); expect(r.write).toHaveBeenCalledTimes(1); r.write.mockClear();
+  r.drag(); r.terminal.input('\x03'); await flush(); expect(r.write).toHaveBeenCalledTimes(1); r.write.mockClear();
   r.input(key); r.input('\x03'); await flush();
   expect(r.write).not.toHaveBeenCalled(); expect(oscCopies(r.terminal)).toEqual([]); expect(r.receiver.handleCtrlC).toHaveBeenCalledTimes(1);
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { actualReference, deferred, extension, flush, install, localEnv, oscCopies, rig, widgetUI, type LifecycleHandler, type Rig, type TuiView } from './fixtures/pi-fullscreen-clipboard';
+import { actualReference, deferred, extension, flush, install, localEnv, oscCopies, rig, widgetUI, type LifecycleHandler, type Rig, type TuiView, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -82,7 +82,7 @@ it.each([
   const pending = deferred(); let signal: AbortSignal | undefined;
   old.write.mockImplementation((_value, writeSignal) => { signal = writeSignal; return pending.promise; });
   install(module, { ...old, tui: ui });
-  old.drag(); await flush();
+  old.drag(); await expectSelectionSilent(old); old.terminal.input('\x03'); await flush();
   expect(old.write).toHaveBeenCalledTimes(1);
   expect(signal).toBeDefined(); expect(signal!.aborted).toBe(false);
   current = next.tui;
@@ -107,7 +107,7 @@ it.each([
   const pending = deferred(); let signal: AbortSignal | undefined;
   r.write.mockImplementation((_value, writeSignal) => { signal = writeSignal; return pending.promise; });
   install(module, { ...r, tui: actualReference(() => r.tui) });
-  r.drag(); await flush();
+  r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();
   expect(r.write).toHaveBeenCalledTimes(1);
   expect(signal).toBeDefined(); expect(signal!.aborted).toBe(false);
   try {
@@ -147,11 +147,11 @@ it('consumer control: actual factory binds receivers, forwards writes, changes r
 
 describe.each(['raw', 'actual-proxy'] as const)('%s paired semantic boundary', (kind) => {
   const reference = (r: Rig) => kind === 'raw' ? r.tui : actualReference(() => r.tui);
-  it('R1/R2/R5/R6: release and repeated Ctrl+C write exact native bytes, no live OSC52 or early Copied', async () => {
+  it('R1/R2/R5/R6: release is silent; explicit repeated Ctrl+C write exact native bytes, no live OSC52 or early Copied', async () => {
     const r = await make(); const ui = reference(r); const pending = deferred();
     r.write.mockReturnValueOnce(pending.promise);
     install(await extension(), { ...r, tui: ui });
-    r.drag(); await flush();
+    r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();
     expect.soft(r.write.mock.calls.map(([value]) => value)).toEqual([text]);
     expect.soft(oscCopies(r.terminal)).toEqual([]);
     expect.soft(r.flash).not.toHaveBeenCalledWith('Copied!');
@@ -197,7 +197,8 @@ describe.each(['raw', 'actual-proxy'] as const)('%s paired semantic boundary', (
     const ctx = { mode: 'tui', hasUI: true, ui };
     for (let cycle = 0; cycle < 2; cycle++) {
       await handlers.get('session_start')!({ reason: cycle ? 'reload' : 'startup' }, ctx);
-      r.drag(); await flush();
+      r.flash.mockClear();
+      r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();
       expect.soft(r.write.mock.calls.map(([value]) => value)).toEqual([text]);
       expect.soft(oscCopies(r.terminal)).toEqual([]);
       await handlers.get('session_shutdown')!({ reason: 'reload' }, ctx);
@@ -216,7 +217,7 @@ it.each(['proxy-first', 'raw-first'] as const)('R7: %s repeated installs through
   const targets = order === 'proxy-first' ? [a, b, r.tui, a] : [r.tui, a, b, r.tui];
   const symbols = targets.map((target) => Object.getOwnPropertySymbols(target));
   const disposes = targets.map((tui) => install(module, { ...r, tui }));
-  r.drag(); await flush();
+  r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();
   expect.soft(r.write.mock.calls.map(([value]) => value)).toEqual([text]);
   expect.soft(oscCopies(r.terminal)).toEqual([]);
   disposes.reverse().forEach((dispose) => dispose());
@@ -231,7 +232,7 @@ it('R4/R7: old proxy ownership cannot cross into a next non-VC renderer, includi
   const ui = actualReference(() => current); const originals = methods(next.tui);
   const pending = deferred(); old.write.mockReturnValue(pending.promise);
   const dispose = install(await extension(), { ...old, tui: ui });
-  old.drag(); await flush();
+  old.drag(); await expectSelectionSilent(old); old.terminal.input('\x03'); await flush();
   current = next.tui;
   install(await extension(), { ...next, tui: ui }, { env: {} });
   next.drag(); await flush();
