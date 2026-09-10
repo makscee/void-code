@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 
-export function consumerHooks(file: string, source = readFileSync(file, 'utf8')) {
+export function consumerHooks(file: string, source = readFileSync(file, 'utf8'), extraMethods: readonly string[] = []) {
   const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const factories: ts.FunctionDeclaration[] = [];
   const methods = new Map<string, string>();
@@ -21,7 +21,7 @@ export function consumerHooks(file: string, source = readFileSync(file, 'utf8'))
         if (ts.isConstructorDeclaration(member)) {
           boundByConsumer = /this\.ui\s*=\s*createInteractiveTuiReference\d*\(\(\)\s*=>\s*this\.renderer\)/.test(member.getText(tree));
         }
-        if (ts.isMethodDeclaration(member) && ['setExtensionWidget', 'clearExtensionWidgets'].includes(member.name.getText(tree))) {
+        if (ts.isMethodDeclaration(member) && ['setExtensionWidget', 'clearExtensionWidgets', ...extraMethods].includes(member.name.getText(tree))) {
           methods.set(member.name.getText(tree), member.getText(tree));
         }
       }

@@ -77,7 +77,7 @@ export type ExtensionModule = {
   createNativeClipboardWriter?: (options: { platform: string; env: Record<string, string>; spawn: Spawn }) => (text: string, signal?: AbortSignal) => Promise<void>;
 };
 export const localEnv = { VC_BOOTSTRAP_EXECUTABLE: '/isolated/vc', SystemRoot: 'C:\\Windows' };
-export async function extension(env = localEnv, spawn?: Spawn): Promise<ExtensionModule> {
+export async function extension(env = localEnv, spawn?: Spawn, agentExports: Record<string, unknown> = {}): Promise<ExtensionModule> {
   const tui = await realPi();
   const code = transformSync(embeddedSource(), { loader: 'ts', format: 'cjs', target: 'node22', logLevel: 'silent' }).code;
   const module = { exports: {} };
@@ -87,7 +87,7 @@ export async function extension(env = localEnv, spawn?: Spawn): Promise<Extensio
       spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
     };
     if (id === '@earendil-works/pi-tui') return tui;
-    if (id === '@earendil-works/pi-coding-agent') return agentMetadata;
+    if (id === '@earendil-works/pi-coding-agent') return { ...agentMetadata, ...agentExports };
     if (id === '@earendil-works/pi-ai') return { clampThinkingLevel: (_m: unknown, level: string) => level };
     if (['node:fs', 'fs', 'node:fs/promises', 'fs/promises'].includes(id)) return new Proxy({
       existsSync: () => false,
@@ -180,6 +180,13 @@ export async function widgetUI(r: Rig, reference = r.tui, actualConsumer = false
     for (const map of [above, below]) { for (const component of map.values()) component.dispose?.(); map.clear(); }
   });
   return { setWidget, notify: r.notify, setEditorComponent: vi.fn() };
+}
+// Assertion only: mouse helpers never synthesize copy intent.
+export async function expectSelectionSilent(r: Rig): Promise<void> {
+  await flush();
+  expect.soft(r.write, 'C1: mouse-only selection must not start native writing').not.toHaveBeenCalled();
+  expect.soft(oscCopies(r.terminal), 'C1: no live OSC52 before explicit copy').toEqual([]);
+  expect.soft(r.flash, 'C1: no Copied before explicit copy').not.toHaveBeenCalledWith('Copied!');
 }
 export function oscCopies(terminal: MemoryTerminal): string[] {
   const esc = String.fromCharCode(27); const bel = String.fromCharCode(7);
