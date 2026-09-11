@@ -351,6 +351,58 @@ function render(): void {
   fitAfterLayout();
 }
 async function selectChat(id: string): Promise<void> { chatTabRename = { editing: null }; view = await window.voidTerminal.workspace.select(id); const status = chatStatuses.get(id); if (status) chatStatuses.set(id, { ...status, unread: false }); render(); const tab = selectedTab(); if (tab && !runtimes.has(id)) await launch(tab, 'resume'); else if (tab) { const runtime = runtimes.get(id); if (runtime) await fitRuntime(id, runtime); chatStatuses.set(id, (await window.voidTerminal.lifecycleStatus({ sessionId: id })).status); } render(); }
+
+type TabDirection = 1 | -1;
+const pendingTabDirections: TabDirection[] = [];
+let tabNavigationRunning = false;
+let reservedTabKeyup = false;
+function navigateActiveTab(direction: TabDirection): Promise<void> {
+  if (chatTabRename.editing) return Promise.resolve();
+  const workspace = view.workspace;
+  if (!workspace || view.recoveryPath) return Promise.resolve();
+  const active = workspace.tabs.filter((tab) => tab.location === 'active');
+  if (active.length < 2) return Promise.resolve();
+  const selectedIndex = active.findIndex((tab) => tab.id === workspace.selectedId);
+  const targetIndex = selectedIndex < 0
+    ? (direction === 1 ? 0 : active.length - 1)
+    : (selectedIndex + direction + active.length) % active.length;
+  return selectChat(active[targetIndex].id);
+}
+async function drainTabNavigation(): Promise<void> {
+  if (tabNavigationRunning) return;
+  tabNavigationRunning = true;
+  try {
+    while (pendingTabDirections.length > 0) {
+      const direction = pendingTabDirections.shift()!;
+      try { await navigateActiveTab(direction); }
+      catch { announce('Chat could not be selected.'); }
+    }
+  } finally {
+    tabNavigationRunning = false;
+  }
+}
+function ownsTabNavigation(event: KeyboardEvent): boolean {
+  return event.key === 'Tab' && event.code === 'Tab' && event.ctrlKey && !event.altKey && !event.metaKey
+    && !event.isComposing && !event.getModifierState('AltGraph');
+}
+function tabNavigationKeydown(event: KeyboardEvent): void {
+  if (!ownsTabNavigation(event)) return;
+  if (event.target instanceof HTMLInputElement && event.target.className.split(' ').includes('tab-title-input')) return;
+  event.preventDefault(); event.stopImmediatePropagation(); reservedTabKeyup = true;
+  // One direction is removed from this array while in flight, leaving exactly eight pending slots.
+  if (!tabNavigationRunning || pendingTabDirections.length < 8) {
+    pendingTabDirections.push(event.shiftKey ? -1 : 1);
+    void drainTabNavigation();
+  }
+}
+function tabNavigationKeyup(event: KeyboardEvent): void {
+  if (event.key !== 'Tab' || event.code !== 'Tab' || !reservedTabKeyup) return;
+  reservedTabKeyup = false; event.preventDefault(); event.stopImmediatePropagation();
+}
+document.addEventListener('keydown', tabNavigationKeydown, { capture: true });
+document.addEventListener('keyup', tabNavigationKeyup, { capture: true });
+window.addEventListener('blur', () => { reservedTabKeyup = false; });
+
 async function closeChat(id: string): Promise<void> { chatTabRename = { editing: null }; await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
 async function resumeChat(id: string): Promise<void> { chatTabRename = { editing: null }; view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
 async function chooseFolder(): Promise<void> {

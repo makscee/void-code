@@ -196,6 +196,9 @@ async function createWindow(): Promise<StartupWindow> {
     title: 'Void Code', show: false, width: 1100, height: 760, backgroundColor: '#101216',
     webPreferences: { preload: path.join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   }));
+  // Windows and Linux must not retain Electron's default Alt-activatable menu. Removing it before
+  // either local page loads avoids stealing keyboard ownership; macOS keeps its native app menu.
+  if (process.platform !== 'darwin') window.removeMenu();
   // Renderer IPC begins during load, so authority must name this exact window before loading it.
   mainWindow = window;
   installNavigationPolicy(window.webContents);
