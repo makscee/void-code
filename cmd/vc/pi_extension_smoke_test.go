@@ -20,7 +20,7 @@ func TestManagedExtensionSourceInstallsAtomicallyWithRequiredBootstrap(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"execFileSync(executable, [\"pi-bootstrap\"]", "VC_BOOTSTRAP_EXECUTABLE", "path.isAbsolute(executable)", "pi.registerProvider(CODEX_PROVIDER_ID", "pi.registerProvider(DEEPSEEK_PROVIDER_ID"} {
+	for _, want := range []string{"execFileSync(executable, [\"pi-bootstrap\"]", "VC_BOOTSTRAP_EXECUTABLE", "path.isAbsolute(executable)", "pi.registerProvider(CODEX_PROVIDER_ID"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("extension missing %q", want)
 		}

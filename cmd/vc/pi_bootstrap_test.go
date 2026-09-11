@@ -14,7 +14,8 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 )
 
-func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) {
+// A stale server-side DeepSeek grant must never become a selectable client transport.
+func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -24,8 +25,8 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
 			{"id": "chatgpt-granted", "name": "ChatGPT", "type": "openai-codex-oauth"},
-			{"id": "chatgpt-other", "name": "Other", "type": "openai-codex-oauth"},
 			{"id": "deepseek-granted", "name": "DeepSeek", "type": "deepseek"},
+			{"id": "chatgpt-other", "name": "Other", "type": "openai-codex-oauth"},
 		}})
 	}))
 	defer server.Close()
@@ -42,16 +43,18 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
-	if len(got.Providers) != 3 || got.Providers[0].RelayProviderID != "chatgpt-granted" || got.Providers[1].RelayProviderID != "chatgpt-other" || got.Providers[2].RelayProviderID != "deepseek-granted" {
-		t.Fatalf("providers = %#v", got.Providers)
+	wantIDs := []string{"chatgpt-granted", "chatgpt-other"}
+	wantModels := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"}
+	if len(got.Providers) != len(wantIDs) {
+		t.Fatalf("providers = %#v, want only the two OpenAI grants", got.Providers)
 	}
-	wantCodex := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"}
-	if !reflect.DeepEqual(got.Providers[0].Models, wantCodex) {
-		t.Errorf("Codex bootstrap models = %q, want %q", got.Providers[0].Models, wantCodex)
-	}
-	wantDeepSeek := []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"}
-	if !reflect.DeepEqual(got.Providers[2].Models, wantDeepSeek) {
-		t.Errorf("DeepSeek bootstrap models = %q, want unchanged %q", got.Providers[2].Models, wantDeepSeek)
+	for i, provider := range got.Providers {
+		if provider.Kind != "codex" || provider.RelayProviderID != wantIDs[i] {
+			t.Errorf("provider %d = %#v, want codex grant %q", i, provider, wantIDs[i])
+		}
+		if !reflect.DeepEqual(provider.Models, wantModels) {
+			t.Errorf("provider %q models = %q, want %q", provider.RelayProviderID, provider.Models, wantModels)
+		}
 	}
 	for _, path := range []string{
 		filepath.Join(home, ".pi", "agent", "settings.json"),

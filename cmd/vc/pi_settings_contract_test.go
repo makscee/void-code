@@ -217,15 +217,13 @@ func TestPiDefaultPairIsWiredIntoTheExtensionThatMustAcceptIt(t *testing.T) {
 }
 
 // Acceptance criterion 9: the seed must not assemble a pair no provider can
-// serve. A user who picked void-deepseek and no model gets gpt-5.6-terra
-// appended today — a model the deepseek branch of the extension filters out,
-// so Pi opens on a provider/model pair that does not exist. Seeding only the
-// model was right when there was one provider; with two it invents a
-// combination the user never chose.
+// serve. A third-party provider with no model is incomplete from vc's point of
+// view, but it is foreign state: vc must leave the entire file byte-identical
+// rather than attach its own OpenAI model to somebody else's provider.
 func TestEnsurePiDefaultModelDoesNotInventAProviderModelPair(t *testing.T) {
 	t.Run("foreign provider chosen: nothing is seeded", func(t *testing.T) {
 		dir := piSettingsSandbox(t)
-		const body = `{"defaultProvider":"void-deepseek","theme":"nord"}`
+		const body = `{"defaultProvider":"third-party","permissions":{"allow":["read"]},"theme":"nord"}`
 		path := writePiSettings(t, dir, body, 0600)
 
 		if err := ensurePiDefaultModel(); err != nil {
@@ -234,14 +232,14 @@ func TestEnsurePiDefaultModelDoesNotInventAProviderModelPair(t *testing.T) {
 
 		got := readPiSettings(t, path)
 		if _, ok := got["defaultModel"]; ok {
-			t.Errorf("defaultModel = %#v was seeded next to defaultProvider %q, which cannot serve it", got["defaultModel"], "void-deepseek")
+			t.Errorf("defaultModel = %#v was seeded next to foreign defaultProvider %q", got["defaultModel"], "third-party")
 		}
 		after, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if string(after) != body {
-			t.Errorf("file rewritten although there was nothing to seed\n got: %s\nwant: %s", after, body)
+			t.Errorf("foreign settings were rewritten\n got: %s\nwant: %s", after, body)
 		}
 	})
 

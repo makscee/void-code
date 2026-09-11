@@ -118,9 +118,56 @@ func TestEnsurePiDefaultModelPreservesUnknownFields(t *testing.T) {
 	}
 }
 
-// Acceptance criterion 3: defaultModel already set → file is not touched at all,
-// whatever the value and whoever set it.
-func TestEnsurePiDefaultModelLeavesUserModelAlone(t *testing.T) {
+// A retired managed provider is not a user choice to preserve: both halves move together,
+// while permissions, provider catalogs, unknown values, and the file's mode remain the user's.
+func TestEnsurePiDefaultModelMigratesLegacyDeepSeekSelection(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	const body = `{
+  "defaultProvider": "void-deepseek",
+  "defaultModel": "deepseek/deepseek-v4-flash",
+  "permissions": {"allow": ["read", "grep"], "deny": ["bash"]},
+  "providers": {"third-party": {"baseUrl": "https://provider.invalid", "models": ["custom-model"]}},
+  "lastSessionSeq": 9007199254740993,
+  "theme": "nord"
+}`
+	path := writePiSettings(t, dir, body, 0644)
+	before := readPiSettings(t, path)
+	beforeMode := statPerm(t, path)
+
+	if err := ensurePiDefaultModel(); err != nil {
+		t.Fatalf("ensurePiDefaultModel() error = %v", err)
+	}
+
+	after := readPiSettings(t, path)
+	assertDefaultsWritten(t, after)
+	for key, want := range before {
+		if key == "defaultProvider" || key == "defaultModel" {
+			continue
+		}
+		if got, ok := after[key]; !ok || !reflect.DeepEqual(got, want) {
+			t.Errorf("setting %q = %#v, want preserved %#v", key, got, want)
+		}
+	}
+	if len(after) != len(before) {
+		t.Errorf("migration changed the settings key set: before=%#v after=%#v", before, after)
+	}
+	if got := statPerm(t, path); got != beforeMode {
+		t.Errorf("settings.json mode = %04o, want %04o unchanged", got, beforeMode)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "settings.json" {
+			t.Errorf("migration left staging data beside settings.json: %s", entry.Name())
+		}
+	}
+}
+
+// Current Codex choices and third-party choices are user-owned and remain byte-identical;
+// only the explicitly retired void-deepseek provider is eligible for migration.
+func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string

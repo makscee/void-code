@@ -163,13 +163,16 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 			seen[model.Provider+"/"+model.ID] = true
 		}
 	}
+	for model := range seen {
+		if strings.HasPrefix(model, "void-deepseek/") {
+			t.Fatalf("retired DeepSeek model is still advertised after extension registration: %s", model)
+		}
+	}
 	want := []string{
 		"void-codex/gpt-6-astra",
 		"void-codex/gpt-5.6-sol",
 		"void-codex/gpt-5.6-terra",
 		"void-codex/gpt-5.6-luna",
-		"void-deepseek/deepseek/deepseek-v4-pro",
-		"void-deepseek/deepseek/deepseek-v4-flash",
 	}
 	var missing []string
 	for _, model := range want {
