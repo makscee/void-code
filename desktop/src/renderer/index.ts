@@ -355,8 +355,9 @@ async function selectChat(id: string): Promise<void> { chatTabRename = { editing
 type TabDirection = 1 | -1;
 const pendingTabDirections: TabDirection[] = [];
 let tabNavigationRunning = false;
-let reservedTabKeyups = 0;
+let reservedTabKeyup = false;
 function navigateActiveTab(direction: TabDirection): Promise<void> {
+  if (chatTabRename.editing) return Promise.resolve();
   const workspace = view.workspace;
   if (!workspace || view.recoveryPath) return Promise.resolve();
   const active = workspace.tabs.filter((tab) => tab.location === 'active');
@@ -387,7 +388,7 @@ function ownsTabNavigation(event: KeyboardEvent): boolean {
 function tabNavigationKeydown(event: KeyboardEvent): void {
   if (!ownsTabNavigation(event)) return;
   if (event.target instanceof HTMLInputElement && event.target.className.split(' ').includes('tab-title-input')) return;
-  event.preventDefault(); event.stopImmediatePropagation(); reservedTabKeyups++;
+  event.preventDefault(); event.stopImmediatePropagation(); reservedTabKeyup = true;
   // One direction is removed from this array while in flight, leaving exactly eight pending slots.
   if (!tabNavigationRunning || pendingTabDirections.length < 8) {
     pendingTabDirections.push(event.shiftKey ? -1 : 1);
@@ -395,11 +396,12 @@ function tabNavigationKeydown(event: KeyboardEvent): void {
   }
 }
 function tabNavigationKeyup(event: KeyboardEvent): void {
-  if (event.key !== 'Tab' || event.code !== 'Tab' || reservedTabKeyups === 0) return;
-  reservedTabKeyups--; event.preventDefault(); event.stopImmediatePropagation();
+  if (event.key !== 'Tab' || event.code !== 'Tab' || !reservedTabKeyup) return;
+  reservedTabKeyup = false; event.preventDefault(); event.stopImmediatePropagation();
 }
 document.addEventListener('keydown', tabNavigationKeydown, { capture: true });
 document.addEventListener('keyup', tabNavigationKeyup, { capture: true });
+window.addEventListener('blur', () => { reservedTabKeyup = false; });
 
 async function closeChat(id: string): Promise<void> { chatTabRename = { editing: null }; await stop(id); view = await window.voidTerminal.workspace.close(id); render(); const tab = selectedTab(); if (tab && !runtimes.has(tab.id)) await launch(tab, 'resume'); render(); }
 async function resumeChat(id: string): Promise<void> { chatTabRename = { editing: null }; view = await window.voidTerminal.workspace.resume(id); if (matchMedia('(max-width: 760px)').matches) setRecentOpen(false, false); render(); const tab = selectedTab(); if (tab) await launch(tab, 'resume'); render(); const runtime = runtimes.get(id); if (runtime && !runtime.exited) runtime.terminal.focus(); else (restartButton.hidden ? closeEndedButton : restartButton).focus(); fitAfterLayout(); }
