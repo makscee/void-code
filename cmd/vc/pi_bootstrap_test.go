@@ -66,6 +66,38 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	}
 }
 
+// A retired-only catalog must still bootstrap so the extension can install its local OpenAI tombstone.
+func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer protected-token" {
+			t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+			{"id": "deepseek-retired", "name": "DeepSeek", "type": "deepseek"},
+		}})
+	}))
+	defer server.Close()
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_RELAY_HOST", "https://relay.test:9443")
+	if err := auth.Save("protected-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
+	}
+	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+		t.Fatalf("bootstrap metadata = %#v", got)
+	}
+	if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
+		t.Fatalf("providers = %#v, want a non-nil empty list", got.Providers)
+	}
+}
+
 func TestCurrentPiBootstrapRejectsUnsupportedCurrentGrant(t *testing.T) {
 	cases := []struct {
 		name  string
