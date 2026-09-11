@@ -263,6 +263,34 @@ func TestPiSettingsHasOneOwnerAcrossProcesses(t *testing.T) {
 	})
 }
 
+// A legacy-provider migration must queue behind the same cross-process owner as every
+// other settings edit; otherwise the slower writer can atomically put DeepSeek back.
+func TestLegacyDeepSeekMigrationSharesThePiSettingsOwner(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	path := writePiSettings(t, dir, `{"defaultProvider":"void-deepseek","defaultModel":"deepseek/deepseek-v4-pro","permissions":{"allow":["read"]}}`, 0600)
+	entered := filepath.Join(t.TempDir(), "entered")
+
+	slow := startOwnerHelper(t, "hold-then-write",
+		ownerHelperEnteredEnv+"="+entered,
+		ownerHelperHoldEnv+"="+strconv.Itoa(ownerHelperHoldMS),
+	)
+	waitForOwnerFile(t, entered)
+	migration := startOwnerHelper(t, "seed")
+	migration.wait(t, "legacy DeepSeek migration")
+	slow.wait(t, "hold-then-write")
+
+	got := readPiSettings(t, path)
+	assertDefaultsWritten(t, got)
+	packages, ok := got["packages"].([]any)
+	if !ok || len(packages) != 1 || packages[0] != contractPackagePath {
+		t.Errorf("the concurrent writer's package setting was lost: %#v", got)
+	}
+	permissions, ok := got["permissions"].(map[string]any)
+	if !ok || !reflect.DeepEqual(permissions["allow"], []any{"read"}) {
+		t.Errorf("legacy permissions were lost: %#v", got["permissions"])
+	}
+}
+
 // Acceptance criterion 4: a mutator that returns false leaves the file exactly
 // as it was — same bytes, same mtime, and no staging file left beside it. The
 // mutator here does modify the map, so returning false has to be what stops the

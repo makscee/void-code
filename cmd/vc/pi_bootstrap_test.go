@@ -14,7 +14,8 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 )
 
-func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) {
+// A stale server-side DeepSeek grant must never become a selectable client transport.
+func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -24,8 +25,8 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
 			{"id": "chatgpt-granted", "name": "ChatGPT", "type": "openai-codex-oauth"},
-			{"id": "chatgpt-other", "name": "Other", "type": "openai-codex-oauth"},
 			{"id": "deepseek-granted", "name": "DeepSeek", "type": "deepseek"},
+			{"id": "chatgpt-other", "name": "Other", "type": "openai-codex-oauth"},
 		}})
 	}))
 	defer server.Close()
@@ -42,16 +43,18 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
-	if len(got.Providers) != 3 || got.Providers[0].RelayProviderID != "chatgpt-granted" || got.Providers[1].RelayProviderID != "chatgpt-other" || got.Providers[2].RelayProviderID != "deepseek-granted" {
-		t.Fatalf("providers = %#v", got.Providers)
+	wantIDs := []string{"chatgpt-granted", "chatgpt-other"}
+	wantModels := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"}
+	if len(got.Providers) != len(wantIDs) {
+		t.Fatalf("providers = %#v, want only the two OpenAI grants", got.Providers)
 	}
-	wantCodex := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"}
-	if !reflect.DeepEqual(got.Providers[0].Models, wantCodex) {
-		t.Errorf("Codex bootstrap models = %q, want %q", got.Providers[0].Models, wantCodex)
-	}
-	wantDeepSeek := []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"}
-	if !reflect.DeepEqual(got.Providers[2].Models, wantDeepSeek) {
-		t.Errorf("DeepSeek bootstrap models = %q, want unchanged %q", got.Providers[2].Models, wantDeepSeek)
+	for i, provider := range got.Providers {
+		if provider.Kind != "codex" || provider.RelayProviderID != wantIDs[i] {
+			t.Errorf("provider %d = %#v, want codex grant %q", i, provider, wantIDs[i])
+		}
+		if !reflect.DeepEqual(provider.Models, wantModels) {
+			t.Errorf("provider %q models = %q, want %q", provider.RelayProviderID, provider.Models, wantModels)
+		}
 	}
 	for _, path := range []string{
 		filepath.Join(home, ".pi", "agent", "settings.json"),
@@ -63,16 +66,48 @@ func TestCurrentPiBootstrapUsesProtectedTokenAndCurrentExactGrant(t *testing.T) 
 	}
 }
 
-func TestCurrentPiBootstrapRejectsUnsupportedCurrentGrant(t *testing.T) {
+// A retired-only catalog must still bootstrap so the extension can install its local OpenAI tombstone.
+func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer protected-token" {
+			t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+			{"id": "deepseek-retired", "name": "DeepSeek", "type": "deepseek"},
+		}})
+	}))
+	defer server.Close()
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_RELAY_HOST", "https://relay.test:9443")
+	if err := auth.Save("protected-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
+	}
+	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+		t.Fatalf("bootstrap metadata = %#v", got)
+	}
+	if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
+		t.Fatalf("providers = %#v, want a non-nil empty list", got.Providers)
+	}
+}
+
+// Unsupported entries must not be guessed into an OpenAI grant from ChatGPT-like IDs or names.
+func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing.T) {
 	cases := []struct {
 		name  string
 		id    string
 		grant string
-		label string
 	}{
 		{name: "chatgpt id", id: "chatgpt-incompatible", grant: "Enterprise"},
 		{name: "codex grant name", id: "opaque-name", grant: "Codex subscription"},
-		{name: "chatgpt saved label", id: "opaque-label", grant: "Enterprise", label: "ChatGPT relay"},
+		{name: "chatgpt grant name", id: "opaque-label", grant: "ChatGPT relay"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,37 +115,61 @@ func TestCurrentPiBootstrapRejectsUnsupportedCurrentGrant(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer protected-token" {
+					t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
 					{"id": tc.id, "name": tc.grant, "type": "anthropic-api-key"},
 				}})
 			}))
 			defer server.Close()
 			t.Setenv("VC_AUTH_HOST", server.URL)
+			t.Setenv("VC_RELAY_HOST", "https://relay.test:9443")
 			if err := auth.Save("protected-token"); err != nil {
 				t.Fatal(err)
 			}
 
-			if got, err := currentPiBootstrap(); err == nil {
-				t.Fatalf("explicitly incompatible grant yielded bootstrap: %#v", got.Providers)
+			got, err := currentPiBootstrap()
+			if err != nil {
+				t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
+			}
+			if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+				t.Fatalf("bootstrap metadata = %#v", got)
+			}
+			if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
+				t.Fatalf("providers = %#v, want a non-nil empty list without heuristic grant detection", got.Providers)
 			}
 		})
 	}
 }
 
-func TestCurrentPiBootstrapRejectsRevokedActiveGrant(t *testing.T) {
+// A successful empty catalog is safe bootstrap metadata, not an auth or network failure.
+func TestCurrentPiBootstrapReturnsEmptyProvidersForEmptyCatalog(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer protected-token" {
+			t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{}})
 	}))
 	defer server.Close()
 	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_RELAY_HOST", "https://relay.test:9443")
 	if err := auth.Save("protected-token"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := currentPiBootstrap(); err == nil {
-		t.Fatal("revoked active provider unexpectedly bootstrapped")
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
+	}
+	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+		t.Fatalf("bootstrap metadata = %#v", got)
+	}
+	if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
+		t.Fatalf("providers = %#v, want a non-nil empty list", got.Providers)
 	}
 }
 

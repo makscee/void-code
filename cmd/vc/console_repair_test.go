@@ -72,7 +72,7 @@ func TestStatusDoesNotTreatTokenAsVerified(t *testing.T) {
 		t.Fatalf("status falsely authenticated token: %s", out)
 	}
 }
-func TestPiBootstrapUsesCurrentSubscriptionRatherThanSavedSelection(t *testing.T) {
+func TestPiBootstrapUsesCurrentOpenAIGrantRatherThanSavedSelection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -92,8 +92,8 @@ func TestPiBootstrapUsesCurrentSubscriptionRatherThanSavedSelection(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bootstrap.Providers) != 2 || bootstrap.Providers[0].RelayProviderID != "grant-a" || bootstrap.Providers[1].RelayProviderID != "grant-b" {
-		t.Fatalf("bootstrap did not expose current grants: %#v", bootstrap.Providers)
+	if len(bootstrap.Providers) != 1 || bootstrap.Providers[0].Kind != "codex" || bootstrap.Providers[0].RelayProviderID != "grant-a" {
+		t.Fatalf("bootstrap exposed something other than the current OpenAI grant: %#v", bootstrap.Providers)
 	}
 }
 func TestPiExtensionUsesOnlyTrustedBootstrapPath(t *testing.T) {

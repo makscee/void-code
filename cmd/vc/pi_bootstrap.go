@@ -45,17 +45,16 @@ func currentPiBootstrap() (piBootstrap, error) {
 	if err != nil {
 		return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
 	}
-	out := piBootstrap{Version: 1, RelayURL: fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost), AuthToken: token}
-	for _, info := range infos {
-		switch strings.ToLower(strings.TrimSpace(info.Type)) {
-		case "openai-codex-oauth":
-			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: info.ID, Models: append([]string(nil), piVoidCodexModels...)})
-		case "deepseek":
-			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "deepseek", RelayProviderID: info.ID, Models: append([]string(nil), piVoidDeepSeekModels...)})
-		}
+	out := piBootstrap{
+		Version:   1,
+		RelayURL:  fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost),
+		AuthToken: token,
+		Providers: make([]piBootstrapProvider, 0),
 	}
-	if len(out.Providers) == 0 {
-		return piBootstrap{}, fmt.Errorf("no supported Pi transport in current subscription")
+	for _, info := range infos {
+		if strings.EqualFold(strings.TrimSpace(info.Type), "openai-codex-oauth") {
+			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: info.ID, Models: append([]string(nil), piVoidCodexModels...)})
+		}
 	}
 	return out, nil
 }

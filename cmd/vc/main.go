@@ -427,18 +427,12 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	return spawnHarness(context.Background(), launchPath, piArgs, env)
 }
 
-var (
-	piVoidCodexModels = []string{
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-5.6-luna",
-		"gpt-6-astra",
-	}
-	piVoidDeepSeekModels = []string{
-		"deepseek/deepseek-v4-pro",
-		"deepseek/deepseek-v4-flash",
-	}
-)
+var piVoidCodexModels = []string{
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-6-astra",
+}
 
 // buildPiArgs adds only VC's transport extension. Pi receives all model and
 // provider choice through its own native configuration and UI.

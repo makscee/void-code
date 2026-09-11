@@ -18,11 +18,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CODEX_PROVIDER_ID = "void-codex";
 const CODEX_MODEL_ID = "gpt-5.6-terra";
-const DEEPSEEK_PROVIDER_ID = "void-deepseek";
-const DEEPSEEK_MODEL_ID = "deepseek/deepseek-v4-pro";
 
 interface BootstrapProvider {
-	kind: "codex" | "deepseek";
+	kind: "codex";
 	relayProviderId: string;
 	models: string[];
 }
@@ -41,42 +39,42 @@ export default function (pi: ExtensionAPI) {
 	if (!bootstrap) return;
 	activeBootstrap = bootstrap;
 	let managedSearchAvailable = false;
+	let hasCodexGrant = false;
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
+			hasCodexGrant = true;
 			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
 			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
-			pi.registerProvider(CODEX_PROVIDER_ID, {
-				name: "Void ChatGPT relay",
-				baseUrl: bootstrap.relayUrl,
-				apiKey: bootstrap.authToken,
-				api: "void-codex-sse",
-				headers: { "x-void-provider": provider.relayProviderId },
-				models,
-				streamSimple: streamVoidCodex,
-			});
+			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
 			managedSearchAvailable = true;
 		}
-		if (provider.kind === "deepseek") {
-			const allowed = new Set([DEEPSEEK_MODEL_ID, "deepseek/deepseek-v4-flash"]);
-			const models = provider.models.filter((id) => allowed.has(id)).map((id) => deepseekModel(id, deepseekName(id), 200000, 64000));
-			if (models.length === 0) continue;
-			pi.registerProvider(DEEPSEEK_PROVIDER_ID, {
-				name: "Void DeepSeek relay",
-				baseUrl: bootstrap.relayUrl,
-				apiKey: bootstrap.authToken,
-				authHeader: true,
-				api: "anthropic-messages",
-				headers: { "x-void-provider": provider.relayProviderId },
-				models,
-			});
-		}
+	}
+	if (!hasCodexGrant) {
+		registerVoidCodex(pi, bootstrap, [codexModel(CODEX_MODEL_ID, codexName(CODEX_MODEL_ID))]);
 	}
 	if (managedSearchAvailable) {
 		pi.on("before_agent_start", async (event) => ({
 			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
 		}));
 	}
+}
+
+function registerVoidCodex(
+	pi: ExtensionAPI,
+	bootstrap: Bootstrap,
+	models: Model<any>[],
+	relayProviderId?: string,
+): void {
+	pi.registerProvider(CODEX_PROVIDER_ID, {
+		name: "Void ChatGPT relay",
+		baseUrl: bootstrap.relayUrl,
+		apiKey: bootstrap.authToken,
+		api: "void-codex-sse",
+		...(relayProviderId ? { headers: { "x-void-provider": relayProviderId } } : {}),
+		models,
+		streamSimple: streamVoidCodex,
+	});
 }
 
 function registerDesktopLifecycle(pi: ExtensionAPI): void {
@@ -125,10 +123,6 @@ function codexName(id: string): string {
 	return "GPT-5.6 Terra via Void relay";
 }
 
-function deepseekName(id: string): string {
-	return id.endsWith("flash") ? "DeepSeek V4 Flash via Void relay" : "DeepSeek V4 Pro via Void relay";
-}
-
 function codexModel(id: string, name: string): Model<any> {
 	return {
 		id,
@@ -142,18 +136,6 @@ function codexModel(id: string, name: string): Model<any> {
 		// its default 16,384-token reserve compacts at 255,616 tokens.
 		contextWindow: 272000,
 		maxTokens: 128000,
-	};
-}
-
-function deepseekModel(id: string, name: string, contextWindow: number, maxTokens: number): Model<any> {
-	return {
-		id,
-		name,
-		reasoning: true,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow,
-		maxTokens,
 	};
 }
 
