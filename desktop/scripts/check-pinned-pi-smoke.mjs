@@ -2,7 +2,11 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { assertNamedTestExists } from './pinned-pi-smoke-lib.mjs';
 
-const NAMES = ['TestPiVoidCodexExtensionSmoke', 'TestPiVoidCodeUIExtensionSmoke'];
+const NAMES = [
+  'TestPiVoidCodexExtensionSmoke',
+  'TestPiVoidCodexNoGrantTombstoneSmoke',
+  'TestPiVoidCodeUIExtensionSmoke',
+];
 const FILTER = `^(${NAMES.join('|')})$`;
 const repo = path.resolve(import.meta.dirname, '../..');
 const env = { ...process.env, VC_REQUIRE_PINNED_PI_SMOKE: '1' };
