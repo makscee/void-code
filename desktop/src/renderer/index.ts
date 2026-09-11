@@ -541,7 +541,7 @@ async function recentGeometryProbe(tab: RendererTabRecord, runtime: Runtime) {
       const toggleContract = !recentToggleButton.hidden && recentToggleButton.getAttribute('aria-controls') === 'recent' && recentToggleButton.getAttribute('aria-expanded') === 'true' && recentToggleButton.getAttribute('aria-label')?.includes(String(rowCount)) === true;
       const focusedControlVisible = document.activeElement === lastButton && inside(focusedRow, list) && inside(focusedButton, list);
       const listGeometry = { clientHeight: recentListElement.clientHeight, scrollHeight: recentListElement.scrollHeight };
-      const internalScroll = getComputedStyle(recentListElement).overflowY === 'auto' && (rowCount === 1 || listGeometry.scrollHeight > listGeometry.clientHeight);
+      const internalScroll = getComputedStyle(recentListElement).overflowY === 'auto' && listGeometry.scrollHeight <= listGeometry.clientHeight;
       setRecentOpen(false, false); await nextFrame(); await fitRuntime(tab.id, runtime); const restoredFit = { cols: runtime.terminal.cols, rows: runtime.terminal.rows };
       const assertions = {
         toggleContract,
