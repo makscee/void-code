@@ -39,6 +39,37 @@ it('K3: consumes matching Tab keyup after Control was released, but not unrelate
   await settle(); expect(s.select.mock.calls).toEqual([['b']]);
 });
 
+// Browser auto-repeat produces multiple navigation keydowns but only one physical release.
+it('K3 regression: repeated CtrlTab owns one release, not the following ordinary Tab release', async () => {
+  const s = await setup();
+  expect(s.key().defaultPrevented).toBe(true);
+  for (let i = 0; i < 2; i++) expect(s.key({ repeat: true }).defaultPrevented).toBe(true);
+  expect(s.key({ ctrlKey: false }, 'keyup').defaultPrevented).toBe(true);
+  await settle();
+  expect(s.select.mock.calls).toEqual([['b'], ['c'], ['a']]);
+  expect(s.input).not.toHaveBeenCalled();
+  expect(s.key({ ctrlKey: false }).defaultPrevented).toBe(false);
+  expect(s.key({ ctrlKey: false }, 'keyup').defaultPrevented).toBe(false);
+  await settle(); expect(s.select.mock.calls).toEqual([['b'], ['c'], ['a']]);
+});
+
+// Losing window focus can lose the matching keyup altogether; no OS injection is needed.
+it('K3 regression: window blur clears a lost owned release without disabling normal release ownership', async () => {
+  const s = await setup();
+  expect(s.key().defaultPrevented).toBe(true);
+  expect(s.key({ ctrlKey: false }, 'keyup').defaultPrevented).toBe(true);
+  await settle();
+  expect(s.key().defaultPrevented).toBe(true);
+  dispatch(s.doc.parent!, 'blur', {});
+  await settle();
+  expect(s.select.mock.calls).toEqual([['b'], ['c']]);
+  expect(s.key({ ctrlKey: false }).defaultPrevented).toBe(false);
+  expect.soft(s.key({ ctrlKey: false }, 'keyup').defaultPrevented).toBe(false);
+  expect(s.key().defaultPrevented).toBe(true);
+  expect(s.key({ ctrlKey: false }, 'keyup').defaultPrevented).toBe(true);
+  await settle(); expect(s.select.mock.calls).toEqual([['b'], ['c'], ['a']]);
+});
+
 // These are negative ownership controls, not a replacement for native keyboard routing.
 it('K3: ordinary Tab, ShiftTab, CmdTab, Alt/AltGr, composition and Pi keys retain ownership', async () => {
   const s = await setup();
@@ -111,6 +142,36 @@ it('K4: rapid distinct/repeated keys serialize through select AND resume-start b
   launch.resolve({ showSharedFilesWarning: false }); await settle();
   expect(s.select.mock.calls).toEqual([['b'], ['c'], ['a']]);
   expect(s.input).not.toHaveBeenCalled();
+});
+
+// The queued shortcut predates this edit, but must re-check edit ownership when it executes.
+it('K3/K4 regression: queued CtrlTab preserves a newer B title draft while sleeping-target start is pending', async () => {
+  const s = await setup(); const launch = deferred<{ showSharedFilesWarning: boolean }>();
+  s.start.mockImplementationOnce(() => launch.promise);
+  s.key(); s.key({}, 'keyup'); await settle();
+  expect(s.select.mock.calls).toEqual([['b']]);
+  expect(s.start.mock.calls.at(-1)).toEqual([{ sessionId: 'b', cwd: '/synthetic-no-files', mode: 'resume' }]);
+  expect(s.node('#tabs').children[1].className).toBe('tab selected');
+  s.key(); s.key({}, 'keyup'); await settle();
+  expect(s.select.mock.calls).toEqual([['b']]);
+  s.node('#tabs').children[1].children[0].click(); s.frame();
+  const input = s.node('#tabs').children[1].children[0];
+  expect(input.tagName).toBe('INPUT');
+  const draft = '  newer unfinished B title  ';
+  input.value = draft; dispatch(input, 'input', {});
+  expect(s.doc.contains(input)).toBe(true);
+  expect((document as unknown as { activeElement: unknown }).activeElement).toBe(input);
+  expect(s.rename).not.toHaveBeenCalled();
+  launch.resolve({ showSharedFilesWarning: false }); await settle(); s.frame(); await settle();
+  // render() may rebuild the editor: inspect the current tree, never the detached old input.
+  const currentB = s.node('#tabs').children[1]; const currentDraft = currentB.children[0];
+  expect.soft(s.select.mock.calls, 'queued navigation must not leave the newer active edit').toEqual([['b']]);
+  expect.soft(currentB.className).toBe('tab selected');
+  expect.soft(currentDraft.tagName).toBe('INPUT');
+  expect.soft(currentDraft.value).toBe(draft);
+  expect(s.doc.contains(currentDraft)).toBe(true);
+  expect(s.rename).not.toHaveBeenCalled();
+  expect(s.resume).not.toHaveBeenCalled(); expect(s.newChat).not.toHaveBeenCalled();
 });
 
 // Precomputing queued indexes selects C after C moved to Recent.
