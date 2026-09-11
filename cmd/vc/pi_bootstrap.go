@@ -45,14 +45,16 @@ func currentPiBootstrap() (piBootstrap, error) {
 	if err != nil {
 		return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
 	}
-	out := piBootstrap{Version: 1, RelayURL: fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost), AuthToken: token}
+	out := piBootstrap{
+		Version:   1,
+		RelayURL:  fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost),
+		AuthToken: token,
+		Providers: make([]piBootstrapProvider, 0),
+	}
 	for _, info := range infos {
 		if strings.EqualFold(strings.TrimSpace(info.Type), "openai-codex-oauth") {
 			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: info.ID, Models: append([]string(nil), piVoidCodexModels...)})
 		}
-	}
-	if len(out.Providers) == 0 {
-		return piBootstrap{}, fmt.Errorf("no supported Pi transport in current subscription")
 	}
 	return out, nil
 }

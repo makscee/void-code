@@ -39,28 +39,42 @@ export default function (pi: ExtensionAPI) {
 	if (!bootstrap) return;
 	activeBootstrap = bootstrap;
 	let managedSearchAvailable = false;
+	let hasCodexGrant = false;
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
+			hasCodexGrant = true;
 			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
 			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
-			pi.registerProvider(CODEX_PROVIDER_ID, {
-				name: "Void ChatGPT relay",
-				baseUrl: bootstrap.relayUrl,
-				apiKey: bootstrap.authToken,
-				api: "void-codex-sse",
-				headers: { "x-void-provider": provider.relayProviderId },
-				models,
-				streamSimple: streamVoidCodex,
-			});
+			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
 			managedSearchAvailable = true;
 		}
+	}
+	if (!hasCodexGrant) {
+		registerVoidCodex(pi, bootstrap, [codexModel(CODEX_MODEL_ID, codexName(CODEX_MODEL_ID))]);
 	}
 	if (managedSearchAvailable) {
 		pi.on("before_agent_start", async (event) => ({
 			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
 		}));
 	}
+}
+
+function registerVoidCodex(
+	pi: ExtensionAPI,
+	bootstrap: Bootstrap,
+	models: Model<any>[],
+	relayProviderId?: string,
+): void {
+	pi.registerProvider(CODEX_PROVIDER_ID, {
+		name: "Void ChatGPT relay",
+		baseUrl: bootstrap.relayUrl,
+		apiKey: bootstrap.authToken,
+		api: "void-codex-sse",
+		...(relayProviderId ? { headers: { "x-void-provider": relayProviderId } } : {}),
+		models,
+		streamSimple: streamVoidCodex,
+	});
 }
 
 function registerDesktopLifecycle(pi: ExtensionAPI): void {
