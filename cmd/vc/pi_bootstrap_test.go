@@ -98,16 +98,16 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t 
 	}
 }
 
-func TestCurrentPiBootstrapRejectsUnsupportedCurrentGrant(t *testing.T) {
+// Unsupported entries must not be guessed into an OpenAI grant from ChatGPT-like IDs or names.
+func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing.T) {
 	cases := []struct {
 		name  string
 		id    string
 		grant string
-		label string
 	}{
 		{name: "chatgpt id", id: "chatgpt-incompatible", grant: "Enterprise"},
 		{name: "codex grant name", id: "opaque-name", grant: "Codex subscription"},
-		{name: "chatgpt saved label", id: "opaque-label", grant: "Enterprise", label: "ChatGPT relay"},
+		{name: "chatgpt grant name", id: "opaque-label", grant: "ChatGPT relay"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,37 +115,61 @@ func TestCurrentPiBootstrapRejectsUnsupportedCurrentGrant(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer protected-token" {
+					t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
 					{"id": tc.id, "name": tc.grant, "type": "anthropic-api-key"},
 				}})
 			}))
 			defer server.Close()
 			t.Setenv("VC_AUTH_HOST", server.URL)
+			t.Setenv("VC_RELAY_HOST", "https://relay.test:9443")
 			if err := auth.Save("protected-token"); err != nil {
 				t.Fatal(err)
 			}
 
-			if got, err := currentPiBootstrap(); err == nil {
-				t.Fatalf("explicitly incompatible grant yielded bootstrap: %#v", got.Providers)
+			got, err := currentPiBootstrap()
+			if err != nil {
+				t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
+			}
+			if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+				t.Fatalf("bootstrap metadata = %#v", got)
+			}
+			if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
+				t.Fatalf("providers = %#v, want a non-nil empty list without heuristic grant detection", got.Providers)
 			}
 		})
 	}
 }
 
-func TestCurrentPiBootstrapRejectsRevokedActiveGrant(t *testing.T) {
+// A successful empty catalog is safe bootstrap metadata, not an auth or network failure.
+func TestCurrentPiBootstrapReturnsEmptyProvidersForEmptyCatalog(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer protected-token" {
+			t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{}})
 	}))
 	defer server.Close()
 	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_RELAY_HOST", "https://relay.test:9443")
 	if err := auth.Save("protected-token"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := currentPiBootstrap(); err == nil {
-		t.Fatal("revoked active provider unexpectedly bootstrapped")
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
+	}
+	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+		t.Fatalf("bootstrap metadata = %#v", got)
+	}
+	if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
+		t.Fatalf("providers = %#v, want a non-nil empty list", got.Providers)
 	}
 }
 
