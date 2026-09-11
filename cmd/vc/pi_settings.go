@@ -64,20 +64,21 @@ const (
 )
 
 // ensurePiDefaultModel seeds defaultModel (and defaultProvider alongside it,
-// when the user has not picked one) into Pi's settings.json.
+// when the user has not picked one) into Pi's settings.json. A legacy managed
+// DeepSeek selection is the one retired choice: its provider and model move to
+// the OpenAI default together inside this single atomic settings writer.
 //
-// It is a seed, not a policy: an existing defaultModel — any value, from any
-// provider — ends the call without touching the file, so a user's choice is
-// never taken back. Neither does it invent a pair no provider can serve: a
-// user who chose some other provider and no model gets nothing, because the
-// model vc would append is one that provider's branch of the extension filters
-// out (pi_extension.go). Only vc's own provider, or a file that names no
-// provider at all, gets the model seeded.
-//
-// The file itself belongs to updatePiSettings, which is where the lock, the
-// read and the atomic write live.
+// Other existing model/provider choices are user-owned and leave the file
+// untouched. Neither does vc invent a pair no provider can serve: a user who
+// chose some other provider and no model gets nothing. Only vc's own provider,
+// or a file that names no provider at all, gets the model seeded.
 func ensurePiDefaultModel() error {
 	return updatePiSettings(func(settings map[string]any) bool {
+		if provider, _ := settings["defaultProvider"].(string); provider == "void-deepseek" {
+			settings["defaultProvider"] = piDefaultProvider
+			settings["defaultModel"] = piDefaultModel
+			return true
+		}
 		if isNonEmptyJSONString(settings["defaultModel"]) {
 			return false
 		}

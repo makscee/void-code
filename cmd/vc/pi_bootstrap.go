@@ -47,11 +47,8 @@ func currentPiBootstrap() (piBootstrap, error) {
 	}
 	out := piBootstrap{Version: 1, RelayURL: fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost), AuthToken: token}
 	for _, info := range infos {
-		switch strings.ToLower(strings.TrimSpace(info.Type)) {
-		case "openai-codex-oauth":
+		if strings.EqualFold(strings.TrimSpace(info.Type), "openai-codex-oauth") {
 			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: info.ID, Models: append([]string(nil), piVoidCodexModels...)})
-		case "deepseek":
-			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "deepseek", RelayProviderID: info.ID, Models: append([]string(nil), piVoidDeepSeekModels...)})
 		}
 	}
 	if len(out.Providers) == 0 {
