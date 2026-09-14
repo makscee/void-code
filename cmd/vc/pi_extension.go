@@ -115,6 +115,9 @@ const CLIPBOARD_WIDGET_KEY = "void-code-fullscreen-clipboard";
 const MAX_CLIPBOARD_BYTES = 8 * 1024 * 1024;
 const MAX_CLIPBOARD_WAITING = 8;
 
+function clipboardPayloadAllowed(text: string): boolean {
+	return !text.includes("\0") && Buffer.byteLength(text, "utf8") <= MAX_CLIPBOARD_BYTES;
+}
 
 function clipboardAuthority(platform: string, env: Record<string, string | undefined>): boolean {
 	if (platform !== "darwin" && platform !== "win32") return false;
@@ -237,6 +240,10 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	};
 	const admit = (text: string): void => {
 		if (text.length === 0) return;
+		if (!clipboardPayloadAllowed(text)) {
+			options.notify("Clipboard selection is too large or unsupported.", "warning");
+			return;
+		}
 		if (waiting.length >= MAX_CLIPBOARD_WAITING) {
 			options.notify("Clipboard copy queue is full.", "warning");
 			return;
@@ -427,7 +434,7 @@ export function createNativeClipboardWriter(options: NativeClipboardWriterOption
 	};
 
 	return (text: string, signal?: AbortSignal): Promise<void> => {
-		if (signal?.aborted || text.includes("\0") || Buffer.byteLength(text, "utf8") > MAX_CLIPBOARD_BYTES) return Promise.reject(genericError());
+		if (signal?.aborted || !clipboardPayloadAllowed(text)) return Promise.reject(genericError());
 		if (waiting.length >= MAX_CLIPBOARD_WAITING) return Promise.reject(genericError());
 		return new Promise<void>((resolve, reject) => {
 			waiting.push({ text, signal, resolve, reject });
