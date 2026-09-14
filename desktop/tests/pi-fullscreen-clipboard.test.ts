@@ -171,6 +171,53 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     r.drag([0, 0], [3, 0]); r.terminal.input('\x03'); await flush(); expect(r.write).toHaveBeenCalledTimes(10);
   });
 
+  it('R3: adapter rejects a Pi-extracted NUL snapshot before queueing, notifies text-free, then admits healthy text', async () => {
+    const invalid = 'PRIVATE-NUL\0SECRET';
+    const r = await make(['slow', invalid, 'healthy']); const active = deferred();
+    r.write.mockReturnValueOnce(active.promise);
+    install(await extension(), r);
+    const copyRow = async (row: number): Promise<void> => {
+      r.drag([0, row], [30, row]); r.terminal.input('\x03'); await flush();
+    };
+    await copyRow(0);
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(['slow']);
+    await copyRow(1);
+    expect.soft(r.write, 'invalid snapshot reached writeText while prior IO was active').toHaveBeenCalledTimes(1);
+    expect.soft(r.notify, 'adapter admission rejection was not visible before the active write settled').toHaveBeenCalledTimes(1);
+    expect.soft(r.notify.mock.calls.flat().join(' ')).not.toContain('PRIVATE-NUL');
+    await copyRow(2);
+    active.resolve(); await flush();
+    expect.soft(r.write, 'invalid snapshot was retained in the adapter queue').toHaveBeenCalledTimes(2);
+    expect.soft(r.write.mock.calls.some(([text]) => text === invalid)).toBe(false);
+    expect.soft(r.write.mock.calls.at(-1)?.[0]).toBe('healthy');
+  });
+
+  it('R3: adapter rejects over 8MiB UTF-8 before queueing, notifies text-free, then admits healthy text', async () => {
+    const invalid = `PRIVATE-OVERSIZED-${'я'.repeat(4 * 1024 * 1024)}`;
+    const r = await make(['semantic selection']); const active = deferred();
+    let extracted = 'slow';
+    r.tui.copySelectionToClipboard = function () {
+      this.terminal.write(`\x1b]52;c;${Buffer.from(extracted).toString('base64')}\x07`);
+      this.flash('Copied!');
+    };
+    r.write.mockReturnValueOnce(active.promise);
+    install(await extension(), r);
+    const copy = async (text: string): Promise<void> => {
+      extracted = text; r.drag(); r.terminal.input('\x03'); await flush();
+    };
+    await copy('slow');
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(['slow']);
+    await copy(invalid);
+    expect.soft(r.write, 'oversized snapshot reached writeText while prior IO was active').toHaveBeenCalledTimes(1);
+    expect.soft(r.notify, 'adapter admission rejection was not visible before the active write settled').toHaveBeenCalledTimes(1);
+    expect.soft(r.notify.mock.calls.flat().join(' ')).not.toContain('PRIVATE-OVERSIZED');
+    await copy('healthy');
+    active.resolve(); await flush();
+    expect.soft(r.write, 'oversized snapshot was retained in the adapter queue').toHaveBeenCalledTimes(2);
+    expect.soft(r.write.mock.calls.some(([text]) => text === invalid)).toBe(false);
+    expect.soft(r.write.mock.calls.at(-1)?.[0]).toBe('healthy');
+  });
+
   it('R4/R7: dispose aborts active IO, discards pending work and suppresses late completion', async () => {
     const r = await make(); const pending = deferred(); r.write.mockReturnValue(pending.promise);
     const dispose = install(await extension(), r); r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); r.drag(); r.terminal.input('\x03'); await flush();
