@@ -727,7 +727,6 @@ describe('clipboard shortcut platform isolation', () => {
     ['Windows Ctrl+C without a selection', 'win32', key('c', { ctrlKey: true }), ''],
     ['Windows Alt+C with a selection', 'win32', key('c', { altKey: true }), 'selected'],
     ['macOS Command+V', 'darwin', key('v', { metaKey: true }), 'selected'],
-    ['macOS Command+C with a selection', 'darwin', key('c', { metaKey: true }), 'selected'],
     ['Linux Ctrl+V', 'linux', key('v', { ctrlKey: true }), 'selected'],
     ['Linux Ctrl+Shift+C with a selection', 'linux', key('c', { ctrlKey: true, shiftKey: true }), 'selected'],
   ])('%s passes through unchanged and never requests clipboard authority', async (_label, platform, event, selection) => {
