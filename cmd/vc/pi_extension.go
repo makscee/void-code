@@ -123,8 +123,17 @@ function clipboardCopyIntent(data: string, platform: string): boolean {
 	return matchesKey(data, "ctrl+c") || (platform === "darwin" && matchesKey(data, "super+c"));
 }
 
-function clipboardMouseInput(data: string): boolean {
-	return data.startsWith("\x1b[<") || (data.length === 6 && data.startsWith("\x1b[M"));
+function clipboardSelectionMouseInput(data: string): boolean {
+	const sgr = /^\x1b\[<(\d+);\d+;\d+[Mm]$/.exec(data);
+	if (sgr) {
+		const button = Number.parseInt(sgr[1], 10);
+		return (button & 64) === 0 && (button & 3) === 0;
+	}
+	if (data.length === 6 && data.startsWith("\x1b[M")) {
+		const button = data.charCodeAt(3) - 32;
+		return (button & 64) === 0 && ((button & 3) === 0 || (button & 3) === 3);
+	}
+	return false;
 }
 
 function clipboardAuthority(platform: string, env: Record<string, string | undefined>): boolean {
@@ -314,7 +323,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		if (!retainOwnership()) return originalViewportInput.call(this, data);
 		// Pi's viewport listener predates extension listeners and can consume navigation before
 		// they observe it. Retire selection authority here while preserving both copy intents.
-		if (!isKeyRelease(data) && !clipboardMouseInput(data) && !clipboardCopyIntent(data, options.platform)) selectionFresh = false;
+		if (!isKeyRelease(data) && !clipboardSelectionMouseInput(data) && !clipboardCopyIntent(data, options.platform)) selectionFresh = false;
 		return originalViewportInput.call(this, data);
 	};
 	const managedSetFocus = function (this: any, component: any): any {
