@@ -197,7 +197,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	}
 	if (!target) return failPassive();
 	tui = target;
-	if (tui.mode !== "fullscreen") {
+	if (tui.mode === "regular") {
 		previous?.dispose();
 		return () => {};
 	}
