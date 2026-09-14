@@ -1,5 +1,6 @@
 // Test-only views of pinned private APIs. No editor/key-handler/history implementation.
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, vi } from 'vitest';
@@ -54,7 +55,8 @@ export async function editorRig(consumerFile = interactiveFile) {
   const r = await rig();
   // Thin module imports only PiTui, not SDK index/provider initialization.
   const { CustomEditor } = await import(/* @vite-ignore */ pathToFileURL(path.join(agentDir, 'dist/modes/interactive/components/custom-editor.js')).href);
-  const tuiModule = await import(/* @vite-ignore */ pathToFileURL(path.join(agentDir, 'node_modules/@earendil-works/pi-tui/dist/index.js')).href);
+  const agentRequire = createRequire(path.join(agentDir, 'package.json'));
+  const tuiModule = await import(/* @vite-ignore */ pathToFileURL(agentRequire.resolve('@earendil-works/pi-tui')).href);
   // Read the actual app definitions without loading config.js / user settings.
   const source = readFileSync(path.join(agentDir, 'dist/core/keybindings.js'), 'utf8');
   const definition = source.slice(source.indexOf('export const KEYBINDINGS ='), source.indexOf('const KEYBINDING_NAME_MIGRATIONS'));

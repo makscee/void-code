@@ -42,7 +42,8 @@ export interface TuiView {
 interface PiView {
   TuiAltScreen: new (terminal: MemoryTerminal, hardwareCursor: boolean) => TuiView;
   ScrollView: new (content: ComponentView, options: { primary: boolean; follow: string; scrollbar: string }) => ScrollView;
-  Container: new () => ComponentView & { addChild(component: ComponentView): void };
+  Container: new () => ComponentView & { children: ComponentView[]; addChild(component: ComponentView): void; clear(): void };
+  VStack: new (children: Array<{ component: ComponentView; basis?: number | 'auto'; grow?: number; shrink?: number; minSize?: number }>) => ComponentView;
   Text: new (text: string, paddingX: number, paddingY: number) => ComponentView;
   Input: new () => ComponentView & { handleInput(data: string): void; setValue(text: string): void; getValue(): string };
 }
