@@ -25,7 +25,11 @@ export interface ComponentView {
   handleInput?(data: string): void;
   dispose?(): void;
 }
-export interface ScrollView extends ComponentView { scrollTo(row: number): void }
+export interface ScrollView extends ComponentView {
+  readonly scrollTop: number;
+  scrollTo(row: number): void;
+  scrollBy(lines: number): number;
+}
 export interface TuiView {
   terminal: { write(text: string): void };
   setLayoutRoot(component: ComponentView): void;
