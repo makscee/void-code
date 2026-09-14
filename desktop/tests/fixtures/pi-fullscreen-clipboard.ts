@@ -27,6 +27,7 @@ export interface ComponentView {
 }
 export interface ScrollView extends ComponentView { scrollTo(row: number): void }
 export interface TuiView {
+  terminal: { write(text: string): void };
   setLayoutRoot(component: ComponentView): void;
   setFocus(component: ComponentView): void;
   focusedComponent: ComponentView | null;
