@@ -227,3 +227,49 @@ it.each([
   expect(r.write.mock.calls.map(([text]) => text)).toEqual([selectedText]);
   expect(r.receiver.handleCtrlC).not.toHaveBeenCalled();
 });
+
+it.each([
+  ['up', '\x1b[<64;1;1M', -1, 2],
+  ['down', '\x1b[<65;1;1M', 1, 0],
+] as const)('viewport-consumed SGR wheel %s retires stale selection before Ctrl+C without poisoning the next left drag', async (_direction, input, delta, initialTop) => {
+  const r = await editorRig();
+  rigs.push(r);
+  r.lines.push(...Array.from({ length: 10 }, (_, index) => `line ${index + 2}`));
+  r.draw();
+  r.scroll.scrollTo(initialTop);
+  r.draw();
+  install(await extension(), { ...r, tui: r.reference });
+  r.draft('untouched draft');
+  r.drag();
+  await flush();
+  expect(r.tui.getSelectionBounds(), 'real left-button SGR drag did not establish a pinned Pi selection').toBeDefined();
+
+  const scrollBy = vi.spyOn(r.scroll, 'scrollBy');
+  const topBeforeWheel = r.scroll.scrollTop;
+  r.input(input);
+  expect(scrollBy, `${input} was not parsed and routed by pinned TuiAltScreen wheel behavior`).toHaveBeenCalledWith(delta);
+  expect(r.scroll.scrollTop).toBe(topBeforeWheel + delta);
+
+  r.input('\x03');
+  await flush();
+  expect.soft({
+    nativeWrites: r.write.mock.calls.map(([text]) => text),
+    interrupts: r.receiver.handleCtrlC.mock.calls.length,
+    editorText: r.editor.getText(),
+    editorFocused: r.tui.focusedComponent === r.editor,
+  }, 'viewport-consumed wheel left stale clipboard authority ahead of normal interrupt routing').toEqual({
+    nativeWrites: [],
+    interrupts: 1,
+    editorText: 'untouched draft',
+    editorFocused: true,
+  });
+
+  r.write.mockClear();
+  r.receiver.handleCtrlC.mockClear();
+  r.draw();
+  r.drag();
+  r.input('\x03');
+  await flush();
+  expect(r.write.mock.calls.map(([text]) => text)).toEqual(['строка два\nline 2']);
+  expect(r.receiver.handleCtrlC).not.toHaveBeenCalled();
+});
