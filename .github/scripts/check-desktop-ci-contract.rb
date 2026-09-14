@@ -83,6 +83,56 @@ module DesktopCiContract
   end
 
   PINNED_ACTION = /\A[^@]+@[0-9a-f]{40}\z/
+  WINDOWS_NODE_VERSION = "22.23.1"
+  DESKTOP_INSTALL = "npm ci"
+  PI_INSTALL = "npm ci --prefix runtime/pi --ignore-scripts --no-audit --no-fund"
+  NATIVE_ACCEPTANCE = "node node_modules/vitest/vitest.mjs run tests/pi-fullscreen-native-acceptance.test.ts"
+  NATIVE_OWNER = "I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION"
+  PI_PACKAGE = "${{ github.workspace }}/desktop/runtime/pi/node_modules/@earendil-works/pi-coding-agent"
+
+  def exact_run_step(file, name, steps, command)
+    matching = steps.select { |step| step["run"].to_s.strip == command }
+    assert(matching.size == 1, "#{file} job #{name} must run `#{command}` exactly once: found #{matching.size}")
+    matching.first
+  end
+
+  # The native acceptance belongs in the same small reusable gate as Windows
+  # Go, not in optional desktop packaging. release.yml can publish its CLI
+  # without running desktop-windows-app.yml, so only this shared call edge makes
+  # a green branch run evidence about the native clipboard gate that qualifies
+  # a release.
+  def assert_windows_native_clipboard_suite(file, name, job)
+    steps = Array(job["steps"])
+
+    setup_nodes = steps.select { |step| step["uses"].to_s.start_with?("actions/setup-node@") }
+    assert(setup_nodes.size == 1, "#{file} job #{name} must set up the pinned Windows Node exactly once: found #{setup_nodes.size}")
+    setup_node = setup_nodes.first
+    reference = setup_node.fetch("uses")
+    assert(reference.match?(PINNED_ACTION), "#{file} job #{name} must pin actions/setup-node to a commit SHA, not a moving tag (#{reference})")
+    assert(setup_node.fetch("with", {})["node-version"].to_s == WINDOWS_NODE_VERSION, "#{file} job #{name} must use exact Node #{WINDOWS_NODE_VERSION} for native clipboard acceptance")
+
+    desktop_install = exact_run_step(file, name, steps, DESKTOP_INSTALL)
+    assert(desktop_install["working-directory"] == "desktop", "#{file} job #{name} must install the locked desktop test dependencies from desktop")
+    pi_install = exact_run_step(file, name, steps, PI_INSTALL)
+    assert(pi_install["working-directory"] == "desktop", "#{file} job #{name} must install the locked real Pi tree from desktop/runtime/pi")
+
+    acceptance = exact_run_step(file, name, steps, NATIVE_ACCEPTANCE)
+    assert(acceptance["working-directory"] == "desktop", "#{file} job #{name} must run native clipboard acceptance from desktop")
+    environment = acceptance.fetch("env", {})
+    assert(environment["VC_ISOLATED_CLIPBOARD_ACCEPTANCE"] == NATIVE_OWNER, "#{file} job #{name} must explicitly own the isolated clipboard session")
+    assert(environment["VC_NATIVE_PI_ENTRY"] == "#{PI_PACKAGE}/dist/cli.js", "#{file} job #{name} must run native clipboard acceptance through the unbundled real Pi dist/cli.js")
+    assert(environment["VC_NATIVE_PI_PACKAGE_DIR"] == PI_PACKAGE, "#{file} job #{name} must pass the unbundled real Pi package directory explicitly")
+
+    # A skipped setup can accidentally consume a runner image's Node or cache;
+    # a skipped acceptance simply reports green. Absence, rather than a
+    # particular condition spelling, is therefore the contract on every step.
+    assert(!job.key?("continue-on-error"), "#{file} job #{name} must not declare continue-on-error")
+    steps.each_with_index do |candidate, index|
+      label = candidate["name"] || candidate["uses"] || "step #{index + 1}"
+      assert(!candidate.key?("if"), "#{file} job #{name} #{label} must not be conditional")
+      assert(!candidate.key?("continue-on-error"), "#{file} job #{name} #{label} must not declare continue-on-error")
+    end
+  end
 
   # The suite itself, asserted where it is written rather than where it is
   # called. Everything here used to be asserted twice, once against the copy in
@@ -122,6 +172,7 @@ module DesktopCiContract
 
     suite.each do |name, job|
       assert_windows_go_suite(file, name, job)
+      assert_windows_native_clipboard_suite(file, name, job)
       assert(!job.key?("if"), "#{file} job #{name} must use the default fail-closed success condition: any `if:` on the Windows Go gate -- `always()` above all -- lets the caller proceed while the suite is red")
       assert(!go_test_step(job).key?("if"), "#{file} job #{name} must not make its `go test` step conditional: a skipped step reports success and the gate passes without running anything")
 
@@ -193,6 +244,7 @@ module DesktopCiContract
     pr_windows_calls.each do |name, (file, _suite)|
       call = test_jobs.fetch(name)
       assert(!call.key?("if"), "PR #{name} must not conditionally bypass the Windows Go suite in #{file}")
+      assert(!call.key?("continue-on-error"), "PR #{name} must not allow the shared Windows gate in #{file} to fail")
     end
 
     release_jobs = load_workflow(directory, "release.yml").fetch("jobs")
@@ -213,6 +265,7 @@ module DesktopCiContract
     release_windows_calls.each do |name, (file, _suite)|
       call = release_jobs.fetch(name)
       assert(!call.key?("if"), "release.yml job #{name} must use the default fail-closed success condition: any `if:` on the call to #{file} -- `always()` above all -- lets the release proceed while the suite is red, or skips it outright")
+      assert(!call.key?("continue-on-error"), "release.yml job #{name} must not allow the shared Windows gate in #{file} to fail")
     end
 
     # The same file, not merely a file of the same shape in each. Two reusable
@@ -225,8 +278,11 @@ module DesktopCiContract
       assert_windows_go_workflow(directory, file)
     end
 
-    missing_windows_gate = release_windows_calls.keys - needs(release_jobs.fetch("build"))
-    assert(missing_windows_gate.empty?, "release.yml build must depend on every job that calls the Windows Go suite, alongside test and desktop-pinned-pi-smoke: build.needs is #{needs(release_jobs.fetch('build')).inspect} and does not name #{missing_windows_gate.inspect}, so the suite runs beside the release instead of before it")
+    build = release_jobs.fetch("build")
+    missing_windows_gate = release_windows_calls.keys - needs(build)
+    assert(missing_windows_gate.empty?, "release.yml build must depend on every job that calls the Windows Go suite, alongside test and desktop-pinned-pi-smoke: build.needs is #{needs(build).inspect} and does not name #{missing_windows_gate.inspect}, so the suite runs beside the release instead of before it")
+    assert(!build.key?("if"), "release.yml build must use the default success condition, or always() can publish after the shared Windows gate is red")
+    assert(!build.key?("continue-on-error"), "release.yml build must not declare continue-on-error on the path to publication")
     %w[desktop-mac-app desktop-windows-app].each do |name|
       package_job = release_jobs.fetch(name)
       assert(needs(package_job).include?("desktop-pinned-pi-smoke"), "release #{name} must depend on desktop tests")

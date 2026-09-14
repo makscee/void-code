@@ -45,6 +45,13 @@ jobs:
         with:
           go-version-file: .go-version
           cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            desktop/runtime/pi/package-lock.json
       # ./... and not the two Windows packages: the failures worth catching sit
       # in code nobody marked Windows at all -- a test assuming a unix HOME, a
       # forward slash, a case-sensitive filesystem -- and hand-picking packages
@@ -61,3 +68,16 @@ jobs:
       # surfaces gets fixed under its own spec, not quietly inside this one.
       - name: Run tests
         run: go test -tags vctestfixture ./...
+      - name: Install locked desktop test dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Install the pinned real Pi runtime
+        working-directory: desktop
+        run: npm ci --prefix runtime/pi --ignore-scripts --no-audit --no-fund
+      - name: Run isolated native clipboard acceptance through real Pi
+        working-directory: desktop
+        env:
+          VC_ISOLATED_CLIPBOARD_ACCEPTANCE: I_OWN_THIS_ISOLATED_CLIPBOARD_SESSION
+          VC_NATIVE_PI_ENTRY: ${{ github.workspace }}/desktop/runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+          VC_NATIVE_PI_PACKAGE_DIR: ${{ github.workspace }}/desktop/runtime/pi/node_modules/@earendil-works/pi-coding-agent
+        run: node node_modules/vitest/vitest.mjs run tests/pi-fullscreen-native-acceptance.test.ts

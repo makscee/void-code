@@ -3,6 +3,7 @@ import { activateProductRenderer, createProductTerminal, TERMINAL_OPTIONS, TERMI
 import { RECOVERY_GUIDANCE } from './recovery';
 import { appVersionLabel } from './app-version';
 import { wireProductTerminalClipboard } from './clipboard-shortcuts';
+import { detectRendererPlatform } from './platform';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import { installFileDropHandlers } from './file-drop';
@@ -71,7 +72,7 @@ let codeTimer: ReturnType<typeof setInterval> | undefined;
 // next launch attempt — it is what keeps the sign-in screens visible in place of the generic
 // "chat could not start" screen, overriding the usual "a chat is selected" preflight-hides rule.
 let signinOnStartFailure = false;
-const rendererPlatform = navigator.userAgent.includes('Windows') ? 'win32' : 'other';
+const rendererPlatform = detectRendererPlatform(navigator.userAgent);
 let chatTabRename: ChatTabRenameState = { editing: null };
 
 function announce(message: string): void { noticeElement.textContent = message; noticeElement.hidden = false; }

@@ -87,12 +87,28 @@ assert_rejected("run the release call beside the build instead of before it") do
   end
 end
 
+assert_rejected("let release build run after a red Windows gate") do |directory|
+  mutate_windows_go_call(directory, "if: always() on release build", "release.yml") { |site| site.jobs.fetch("build")["if"] = "${{ always() }}" }
+end
+
+assert_rejected("allow the release build on the publication path to fail") do |directory|
+  mutate_windows_go_call(directory, "continue-on-error on release build", "release.yml") { |site| site.jobs.fetch("build")["continue-on-error"] = true }
+end
+
 assert_rejected("condition the release call with always()") do |directory|
   mutate_windows_go_call(directory, "if: always() on the release call", "release.yml") { |site| site.job["if"] = "${{ always() }}" }
 end
 
 assert_rejected("condition the test.yml call") do |directory|
   mutate_windows_go_call(directory, "if on the test.yml call") { |site| site.job["if"] = "${{ github.event_name == 'pull_request' }}" }
+end
+
+assert_rejected("allow the test.yml call to fail") do |directory|
+  mutate_windows_go_call(directory, "continue-on-error on the test.yml call") { |site| site.job["continue-on-error"] = true }
+end
+
+assert_rejected("allow the release.yml call to fail") do |directory|
+  mutate_windows_go_call(directory, "continue-on-error on the release call", "release.yml") { |site| site.job["continue-on-error"] = true }
 end
 
 # The point of the shared file, mutated: two workflows of the same shape are
@@ -187,6 +203,118 @@ assert_rejected("float the Windows Go toolchain off .go-version") do |directory|
     raise "fixture missing: setup-go does not read .go-version" unless step.fetch("with", {})["go-version-file"] == ".go-version"
 
     step["with"] = step.fetch("with").merge("go-version-file" => nil, "go-version" => "1.21")
+  end
+end
+
+# ---------------------------------------------------------------------------
+# The native clipboard release gate: exact locked tools, exact unbundled Pi,
+# and an explicit private clipboard owner. These mutations are intentionally on
+# the shared Windows workflow, never on optional desktop packaging.
+# ---------------------------------------------------------------------------
+
+assert_rejected("remove pinned Node setup from the shared Windows gate") do |directory|
+  mutate_windows_go_call(directory, "remove setup-node") do |site|
+    steps = Array(site.suite_job["steps"])
+    step = steps.find { |candidate| candidate["uses"].to_s.start_with?("actions/setup-node@") }
+    raise "fixture missing: Windows gate does not use actions/setup-node" unless step
+
+    steps.delete(step)
+  end
+end
+
+assert_rejected("unpin actions/setup-node in the shared Windows gate") do |directory|
+  mutate_windows_go_call(directory, "unpin setup-node") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("actions/setup-node@") }
+    raise "fixture missing: Windows gate does not use actions/setup-node" unless step
+
+    step["uses"] = "actions/setup-node@v4"
+  end
+end
+
+assert_rejected("float the native acceptance Node version") do |directory|
+  mutate_windows_go_call(directory, "change pinned Node version") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["uses"].to_s.start_with?("actions/setup-node@") }
+    raise "fixture missing: Windows gate does not use actions/setup-node" unless step
+    raise "fixture missing: setup-node has no exact Node pin" unless step.fetch("with", {})["node-version"].to_s == DesktopCiContract::WINDOWS_NODE_VERSION
+
+    step["with"]["node-version"] = "22"
+  end
+end
+
+[
+  [DesktopCiContract::DESKTOP_INSTALL, "npm install", "weaken locked desktop dependency install"],
+  [DesktopCiContract::PI_INSTALL, "npm install --prefix runtime/pi", "weaken locked Pi dependency install"]
+].each do |command, replacement, label|
+  assert_rejected(label) do |directory|
+    mutate_windows_go_call(directory, label) do |site|
+      step = Array(site.suite_job["steps"]).find { |candidate| candidate["run"].to_s.strip == command }
+      raise "fixture missing: Windows gate does not run #{command}" unless step
+
+      step["run"] = replacement
+    end
+  end
+end
+
+assert_rejected("remove native clipboard acceptance from the shared Windows gate") do |directory|
+  mutate_windows_go_call(directory, "remove native clipboard acceptance") do |site|
+    steps = Array(site.suite_job["steps"])
+    step = steps.find { |candidate| candidate["run"].to_s.strip == DesktopCiContract::NATIVE_ACCEPTANCE }
+    raise "fixture missing: Windows gate does not run native clipboard acceptance" unless step
+
+    steps.delete(step)
+  end
+end
+
+assert_rejected("replace the native clipboard acceptance target with a fake-only test") do |directory|
+  mutate_windows_go_call(directory, "change native clipboard acceptance target") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["run"].to_s.strip == DesktopCiContract::NATIVE_ACCEPTANCE }
+    raise "fixture missing: Windows gate does not run native clipboard acceptance" unless step
+
+    step["run"] = step.fetch("run").sub("pi-fullscreen-native-acceptance.test.ts", "pi-fullscreen-native-witness.test.ts")
+  end
+end
+
+{
+  "VC_ISOLATED_CLIPBOARD_ACCEPTANCE" => "remove explicit isolated clipboard ownership",
+  "VC_NATIVE_PI_ENTRY" => "remove explicit unbundled Pi entry",
+  "VC_NATIVE_PI_PACKAGE_DIR" => "remove explicit unbundled Pi package directory"
+}.each do |variable, label|
+  assert_rejected(label) do |directory|
+    mutate_windows_go_call(directory, label) do |site|
+      step = Array(site.suite_job["steps"]).find { |candidate| candidate["run"].to_s.strip == DesktopCiContract::NATIVE_ACCEPTANCE }
+      raise "fixture missing: Windows gate does not run native clipboard acceptance" unless step
+      environment = step.fetch("env")
+      raise "fixture missing: native acceptance has no #{variable}" unless environment.key?(variable)
+
+      environment.delete(variable)
+    end
+  end
+end
+
+assert_rejected("substitute the packaged bundle for unbundled real Pi") do |directory|
+  mutate_windows_go_call(directory, "use staged bundle as native Pi entry") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["run"].to_s.strip == DesktopCiContract::NATIVE_ACCEPTANCE }
+    raise "fixture missing: Windows gate does not run native clipboard acceptance" unless step
+
+    step.fetch("env")["VC_NATIVE_PI_ENTRY"] = "${{ github.workspace }}/desktop/resources/staged/pi/agent/pi~BUN.mjs"
+  end
+end
+
+assert_rejected("condition the native clipboard acceptance step") do |directory|
+  mutate_windows_go_call(directory, "if on native clipboard acceptance") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["run"].to_s.strip == DesktopCiContract::NATIVE_ACCEPTANCE }
+    raise "fixture missing: Windows gate does not run native clipboard acceptance" unless step
+
+    step["if"] = "${{ runner.os == 'Windows' }}"
+  end
+end
+
+assert_rejected("allow native clipboard acceptance to fail") do |directory|
+  mutate_windows_go_call(directory, "continue-on-error on native clipboard acceptance") do |site|
+    step = Array(site.suite_job["steps"]).find { |candidate| candidate["run"].to_s.strip == DesktopCiContract::NATIVE_ACCEPTANCE }
+    raise "fixture missing: Windows gate does not run native clipboard acceptance" unless step
+
+    step["continue-on-error"] = true
   end
 end
 

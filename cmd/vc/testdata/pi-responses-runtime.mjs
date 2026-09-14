@@ -43,11 +43,16 @@ for (const scenario of [
   if (scenario.packageDir) process.env.PI_PACKAGE_DIR = scenario.packageDir;
   const jiti = createJiti(import.meta.url, {
     moduleCache: false, fsCache: false, tryNative: false,
-    ...(scenario.alias ? { alias: {
-      '@earendil-works/pi-ai': compatPath,
-      '@earendil-works/pi-ai/compat': compatPath,
-      '@earendil-works/pi-coding-agent': path.join(root, 'dist/index.js'),
-    } } : { virtualModules: {
+    // The real Pi loader supplies pi-tui in every environment, even without AI helpers.
+    alias: {
+      '@earendil-works/pi-tui': require.resolve('@earendil-works/pi-tui'),
+      ...(scenario.alias ? {
+        '@earendil-works/pi-ai': compatPath,
+        '@earendil-works/pi-ai/compat': compatPath,
+        '@earendil-works/pi-coding-agent': path.join(root, 'dist/index.js'),
+      } : {}),
+    },
+    ...(scenario.alias ? {} : { virtualModules: {
       '@earendil-works/pi-ai': compat,
       '@earendil-works/pi-ai/compat': compat,
       '@earendil-works/pi-coding-agent': { getPackageDir: () => scenario.root },
