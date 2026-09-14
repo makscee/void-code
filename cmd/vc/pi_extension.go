@@ -119,6 +119,14 @@ function clipboardPayloadAllowed(text: string): boolean {
 	return !text.includes("\0") && Buffer.byteLength(text, "utf8") <= MAX_CLIPBOARD_BYTES;
 }
 
+function clipboardCopyIntent(data: string, platform: string): boolean {
+	return matchesKey(data, "ctrl+c") || (platform === "darwin" && matchesKey(data, "super+c"));
+}
+
+function clipboardMouseInput(data: string): boolean {
+	return data.startsWith("\x1b[<") || (data.length === 6 && data.startsWith("\x1b[M"));
+}
+
 function clipboardAuthority(platform: string, env: Record<string, string | undefined>): boolean {
 	if (platform !== "darwin" && platform !== "win32") return false;
 	const executable = env.VC_BOOTSTRAP_EXECUTABLE;
@@ -189,6 +197,10 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	}
 	if (!target) return failPassive();
 	tui = target;
+	if (tui.mode !== "fullscreen") {
+		previous?.dispose();
+		return () => {};
+	}
 	if (typeof tui.copySelectionToClipboard !== "function" || typeof tui.getSelectionBounds !== "function" ||
 		typeof tui.handleSelectionMouseEvent !== "function" || typeof tui.handleViewportInput !== "function" ||
 		typeof tui.setFocus !== "function" || typeof tui.showOverlay !== "function" || typeof tui.addInputListener !== "function" ||
@@ -300,8 +312,9 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	};
 	const managedViewportInput = function (this: any, data: string): any {
 		if (!retainOwnership()) return originalViewportInput.call(this, data);
-		// Pi's own viewport listener is older than extension listeners and consumes focus events.
-		if (data === "\x1b[O") selectionFresh = false;
+		// Pi's viewport listener predates extension listeners and can consume navigation before
+		// they observe it. Retire selection authority here while preserving both copy intents.
+		if (!isKeyRelease(data) && !clipboardMouseInput(data) && !clipboardCopyIntent(data, options.platform)) selectionFresh = false;
 		return originalViewportInput.call(this, data);
 	};
 	const managedSetFocus = function (this: any, component: any): any {
@@ -456,12 +469,30 @@ function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: Clipb
 			writeText: createNativeClipboardWriter({ platform: process.platform, env: process.env }),
 		};
 		ctx.ui.setWidget(CLIPBOARD_WIDGET_KEY, (tui) => {
-			const installedDispose = installFullscreenClipboard(tui, {
+			const options = {
 				...io,
-				notify: (message, level) => ctx.ui.notify(message, level),
-			});
+				notify: (message: string, level: "info" | "warning" | "error") => ctx.ui.notify(message, level),
+			};
+			let currentTarget: object | undefined;
+			let currentDispose = (): void => {};
+			let disposed = false;
+			const refresh = (): void => {
+				if (disposed) return;
+				const target = resolveFullscreenClipboardTarget(tui);
+				if (target === currentTarget) return;
+				currentDispose();
+				currentTarget = target;
+				currentDispose = installFullscreenClipboard(tui, options);
+			};
+			refresh();
+			const installedDispose = (): void => {
+				if (disposed) return;
+				disposed = true;
+				currentDispose();
+				currentTarget = undefined;
+			};
 			dispose = installedDispose;
-			return { render: () => [], invalidate: () => {}, dispose: installedDispose };
+			return { render: () => { refresh(); return []; }, invalidate: () => {}, dispose: installedDispose };
 		});
 	});
 	pi.on("session_shutdown", async () => {
