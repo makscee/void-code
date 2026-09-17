@@ -130,6 +130,16 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 				return auth.MeResult{}, false, errors.New("session verification unavailable")
 			})
 		},
+		// An error outranks reached: the server was spoken to and still failed
+		// the check, so whatever body came back is not a fresh identity. Without
+		// this fixture the err test can be dropped from the freshness condition
+		// and every other case stays green — reached=false already hid it.
+		"errorOutranksReachedAndItsPayload": func(t *testing.T, clock *preflightClock) *launchPreflight {
+			return newIdentityPreflight(t, clock, "tok", func(string, string, *http.Client) (auth.MeResult, bool, error) {
+				balance := 999.99
+				return auth.MeResult{UserID: "u-broken", Email: "broken@example.com", BalanceUsd: &balance}, true, errors.New("session verification unavailable")
+			})
+		},
 		"serverNotReached": func(t *testing.T, clock *preflightClock) *launchPreflight {
 			return newIdentityPreflight(t, clock, "tok", func(string, string, *http.Client) (auth.MeResult, bool, error) {
 				return auth.MeResult{}, false, nil
