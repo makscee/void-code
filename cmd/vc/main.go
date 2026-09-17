@@ -136,6 +136,10 @@ func main() {
 				if nudge, ready := currentLaunchPreflight.updateIfReady(); ready && nudge != "" {
 					state.UpdateNudge = nudge
 				}
+				// The preflight already asked the server who this is; without
+				// this seam the screen renders from local state alone and can
+				// only say that someone is logged in.
+				state = welcomeStateFromPreflight(state, currentLaunchPreflight, token, authHost)
 				result, err := runWelcomeCommandTransition(state, welcome.Callbacks{}, rootCmd, os.Args[1:])
 				if result == welcome.SpawnPi {
 					if err != nil {
@@ -165,8 +169,8 @@ func main() {
 						os.Exit(1)
 					}
 					state, token, authHost, currentLaunchPreflight = refreshLaunchAfterLogin(defaultLaunchPreflightDeps())
-					_ = token
-					_ = authHost
+					// token/authHost feed welcomeStateFromPreflight at the top
+					// of the loop, against the preflight just started for them.
 					continue menuLoop
 				case welcome.Quit:
 					os.Exit(0)
