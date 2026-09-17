@@ -138,9 +138,12 @@ func main() {
 				}
 				// The preflight already asked the server who this is; without
 				// this seam the screen renders from local state alone and can
-				// only say that someone is logged in.
+				// only say that someone is logged in. Neither call waits for the
+				// network: whatever the probe has answered by now goes into the
+				// first frame, and a later answer repaints through late.
 				state = welcomeStateFromPreflight(state, currentLaunchPreflight, token, authHost)
-				result, err := runWelcomeCommandTransition(state, welcome.Callbacks{}, rootCmd, os.Args[1:])
+				late := watchLateIdentity(state, currentLaunchPreflight, token, authHost)
+				result, err := runWelcomeCommandTransition(state, welcome.Callbacks{}, late, rootCmd, os.Args[1:])
 				if result == welcome.SpawnPi {
 					if err != nil {
 						handleExecuteError(err)
@@ -312,12 +315,12 @@ func fetchCompatGrants(authHost, token string) ([]compat.Grant, error) {
 
 var welcomeProgramOptions []tea.ProgramOption
 
-func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.RunResult, error) {
+func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks, late <-chan welcome.IdentityUpdate) (welcome.RunResult, error) {
 	opts := welcomeProgramOptions
 	if currentLaunchDiagnostics != nil && currentLaunchDiagnostics.enabled {
 		opts = append(append([]tea.ProgramOption{}, opts...), tea.WithOutput(&firstRenderDiagnosticWriter{out: os.Stdout, diagnostics: currentLaunchDiagnostics}))
 	}
-	return welcome.RunWithOptions(state, cb, opts...)
+	return welcome.RunWithLateIdentity(state, cb, late, opts...)
 }
 
 type firstRenderDiagnosticWriter struct {
@@ -335,8 +338,8 @@ func (w *firstRenderDiagnosticWriter) Write(p []byte) (int, error) {
 // welcome program into Cobra. Non-spawn choices are returned to main for their
 // existing dispatch; the Pi spawn executes Cobra so parsing and error behavior
 // remain identical to every other root invocation.
-func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
-	result, err := runWelcomeScreen(state, cb)
+func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, late <-chan welcome.IdentityUpdate, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
+	result, err := runWelcomeScreen(state, cb, late)
 	currentLaunchDiagnostics.record(phaseSelection, outcomeComplete, sourceLocal)
 	if result != welcome.SpawnPi {
 		return result, err

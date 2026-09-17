@@ -36,6 +36,13 @@ func Run(state AuthState, cb Callbacks) (RunResult, error) { return RunWithOptio
 func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
 	p := tea.NewProgram(newModel(state), opts...)
 	out, err := p.Run()
+	return welcomeRunResult(state, out, err)
+}
+
+// welcomeRunResult maps a finished program to a RunResult. state is the state
+// the screen started from: it decides the fallbacks when the program failed or
+// quit without a choice.
+func welcomeRunResult(state AuthState, out tea.Model, err error) (RunResult, error) {
 	if err != nil {
 		fmt.Print(plainBanner(state))
 		if state.LoggedIn {
@@ -101,6 +108,14 @@ func (m model) MoveCursor(d int) model {
 }
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if update, ok := msg.(IdentityUpdate); ok {
+		m.AuthState = mergeLateIdentity(m.AuthState, update.AuthState)
+		m.items = menuItemsFor(m.AuthState)
+		if m.cursor >= len(m.items) {
+			m.cursor = len(m.items) - 1
+		}
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -190,4 +205,52 @@ func plainBanner(state AuthState) string {
 		sb.WriteString("  " + state.UpdateNudge + "\n")
 	}
 	return sb.String()
+}
+
+// IdentityUpdate carries an answer that arrived after the screen was already
+// drawn. The landing screen renders from local state before the launch
+// preflight has asked anyone anything; this is how the answer catches up.
+type IdentityUpdate struct {
+	AuthState
+}
+
+// mergeLateIdentity applies a late answer to the state on screen. A late answer
+// that failed carries no identity, and the name already on screen is better
+// than nothing: non-empty is never replaced by empty. The update nudge obeys
+// the same rule — a late identity answer knows nothing about updates. The
+// balance is taken as given: money that was not just confirmed is not shown.
+func mergeLateIdentity(current, update AuthState) AuthState {
+	merged := update
+	if merged.Identity == "" {
+		merged.Identity = current.Identity
+	}
+	if merged.UpdateNudge == "" {
+		merged.UpdateNudge = current.UpdateNudge
+	}
+	return merged
+}
+
+// RunWithLateIdentity runs the landing screen and repaints it when an identity
+// answer arrives on late. A nil channel simply means nothing will arrive.
+func RunWithLateIdentity(state AuthState, cb Callbacks, late <-chan IdentityUpdate, opts ...tea.ProgramOption) (RunResult, error) {
+	p := tea.NewProgram(newModel(state), opts...)
+	stopped := make(chan struct{})
+	if late != nil {
+		go func() {
+			for {
+				select {
+				case update, ok := <-late:
+					if !ok {
+						return
+					}
+					p.Send(update)
+				case <-stopped:
+					return
+				}
+			}
+		}()
+	}
+	out, err := p.Run()
+	close(stopped)
+	return welcomeRunResult(state, out, err)
 }

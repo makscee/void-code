@@ -102,6 +102,26 @@ func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool
 		return auth.MeResult{}, false, nil, true
 	}
 }
+
+// authIfReady reports the auth probe's answer only if it has already arrived,
+// the way updateIfReady does for the update check. The landing screen renders
+// before any optional network request completes, so the state it is built from
+// must never wait — awaitAuth, which does wait, keeps its own semantics for the
+// callers that can afford it.
+func (p *launchPreflight) authIfReady(token, authHost string) (auth.MeResult, bool, error, bool) {
+	if !p.reusable(token, authHost) {
+		return auth.MeResult{}, false, nil, false
+	}
+	select {
+	case <-p.authDone:
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		return p.authResult.me, p.authResult.reached, p.authResult.err, true
+	default:
+		return auth.MeResult{}, false, nil, false
+	}
+}
+
 func (p *launchPreflight) updateIfReady() (string, bool) {
 	select {
 	case <-p.updateDone:
