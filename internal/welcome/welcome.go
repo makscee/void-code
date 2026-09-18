@@ -32,13 +32,6 @@ const (
 // Callbacks is intentionally empty: console subscription choices are not persisted here.
 type Callbacks struct{}
 
-func Run(state AuthState, cb Callbacks) (RunResult, error) { return RunWithOptions(state, cb) }
-func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
-	p := tea.NewProgram(newModel(state), opts...)
-	out, err := p.Run()
-	return welcomeRunResult(state, out, err)
-}
-
 // welcomeRunResult maps a finished program to a RunResult. state is the state
 // the screen started from: it decides the fallbacks when the program failed or
 // quit without a choice.
@@ -109,7 +102,7 @@ func (m model) MoveCursor(d int) model {
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if update, ok := msg.(IdentityUpdate); ok {
-		m.AuthState = mergeLateIdentity(m.AuthState, update.AuthState)
+		m.AuthState = MergeIdentity(m.AuthState, update.AuthState)
 		m.items = menuItemsFor(m.AuthState)
 		if m.cursor >= len(m.items) {
 			m.cursor = len(m.items) - 1
@@ -214,14 +207,21 @@ type IdentityUpdate struct {
 	AuthState
 }
 
-// mergeLateIdentity applies a late answer to the state on screen. A late answer
-// that failed carries no identity, and the name already on screen is better
-// than nothing: non-empty is never replaced by empty. The update nudge obeys
-// the same rule — a late identity answer knows nothing about updates. The
-// balance is taken as given: money that was not just confirmed is not shown.
-func mergeLateIdentity(current, update AuthState) AuthState {
-	merged := update
-	if merged.Identity == "" {
+// MergeIdentity applies an identity answer to the state already on screen. It
+// is the only copy of this rule: the late repaint in this package and the next
+// menu frame in cmd/vc both call it, so the two can no longer drift apart.
+//
+//   - an answer that names nobody keeps the name already known — a failed check
+//     is not a reason to forget who is logged in;
+//   - an answer that lost the session is the exception: it erases the name
+//     rather than preserving it, because the session behind it is gone;
+//   - the update nudge belongs to the update check, not to this answer, so it
+//     survives unless the answer carries a newer one;
+//   - everything else, the balance included, is taken from the answer: money
+//     that was not just confirmed is not shown.
+func MergeIdentity(current, answer AuthState) AuthState {
+	merged := answer
+	if merged.LoggedIn && merged.Identity == "" {
 		merged.Identity = current.Identity
 	}
 	if merged.UpdateNudge == "" {

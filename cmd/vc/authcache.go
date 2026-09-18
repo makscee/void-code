@@ -162,6 +162,11 @@ func writeMeCache(authHost, token string, me auth.MeResult, now time.Time) {
 	if err != nil {
 		return
 	}
+	writeMeCacheAt(path, me, now)
+}
+
+// writeMeCacheAt is writeMeCache with the path already resolved.
+func writeMeCacheAt(path string, me auth.MeResult, now time.Time) {
 	record := meCacheRecord{
 		FreshExpiresAt: now.Add(authCacheTTL),
 		Fresh:          me,
@@ -193,11 +198,17 @@ func readAuthTransient(kind, authHost, token string) error {
 	return errAuthTemporarilyUnavailable
 }
 
-func writeAuthTransient(kind, authHost, token string, _ error) {
-	path, err := authCachePath(kind+"-transient", authHost, token)
-	if err != nil {
+func writeAuthTransient(kind, authHost, token string, err error) {
+	path, perr := authCachePath(kind+"-transient", authHost, token)
+	if perr != nil {
 		return
 	}
+	writeAuthTransientAt(path, err)
+}
+
+// writeAuthTransientAt is writeAuthTransient with the path already resolved,
+// for callers that decided where the file goes before they had the answer.
+func writeAuthTransientAt(path string, _ error) {
 	payload, err := json.Marshal(authCacheEnvelope[string]{ExpiresAt: time.Now().Add(authCacheTransientTTL), Value: "temporarily unavailable"})
 	if err == nil {
 		writeAtomicCache(path, payload)

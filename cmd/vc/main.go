@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -112,7 +111,7 @@ func main() {
 		currentLaunchDiagnostics = newLaunchDiagnosticsFromEnv(time.Now, os.Stderr)
 		state, token, authHost, localSource := resolveLocalAuthStateWithSource()
 		currentLaunchDiagnostics.record(phaseLocalStateLoad, outcomeComplete, localSource)
-		currentLaunchPreflight = startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
+		preflight := startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
 		// Interactive only when stdin is a TTY AND --non-interactive was not
 		// passed. cobra has not parsed flags yet at this point, so scan os.Args
 		// for the flag directly (mirrors the early --raw scan above). When not
@@ -131,56 +130,16 @@ func main() {
 			// blocks on a keypress that a non-TTY stdin can never deliver, which
 			// hangs automation callers forever. Fall straight through to spawn.
 		case gateShowWelcome:
-		menuLoop:
-			for {
-				if nudge, ready := currentLaunchPreflight.updateIfReady(); ready && nudge != "" {
-					state.UpdateNudge = nudge
+			// The menu loop lives in runWelcomeMenu, where tests can see what
+			// each frame was handed; main only decides what its result means.
+			switch result, err := runWelcomeMenu(state, token, authHost, preflight, defaultWelcomeMenuDeps()); result {
+			case welcome.SpawnPi:
+				if err != nil {
+					handleExecuteError(err)
 				}
-				// The preflight already asked the server who this is; without
-				// this seam the screen renders from local state alone and can
-				// only say that someone is logged in. Neither call waits for the
-				// network: whatever the probe has answered by now goes into the
-				// first frame, and a later answer repaints through late.
-				state = welcomeStateFromPreflight(state, currentLaunchPreflight, token, authHost)
-				late := watchLateIdentity(state, currentLaunchPreflight, token, authHost)
-				result, err := runWelcomeCommandTransition(state, welcome.Callbacks{}, late, rootCmd, os.Args[1:])
-				if result == welcome.SpawnPi {
-					if err != nil {
-						handleExecuteError(err)
-					}
-					return
-				}
-				switch result {
-				case welcome.RunDoctor:
-					fmt.Println()
-					if derr := runDoctor(); derr != nil {
-						fmt.Fprintf(os.Stderr, "vc: doctor: %v\n", derr)
-					}
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop
-				case welcome.RunProfile:
-					cfg := config.OSResolve()
-					token, _, _ := auth.Load()
-					openProfile(cfg.AuthHost, token, &http.Client{Timeout: 10 * time.Second}, func(u string) { _ = browser.OpenURL(u, os.Stdout) })
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop
-				case welcome.RunLogin:
-					if lerr := runLoginInteractive(); lerr != nil {
-						fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)
-						os.Exit(1)
-					}
-					state, token, authHost, currentLaunchPreflight = refreshLaunchAfterLogin(defaultLaunchPreflightDeps())
-					// token/authHost feed welcomeStateFromPreflight at the top
-					// of the loop, against the preflight just started for them.
-					continue menuLoop
-				case welcome.Quit:
-					os.Exit(0)
-				default:
-					_ = err
-					continue menuLoop
-				}
+				return
+			case welcome.Quit:
+				os.Exit(0)
 			}
 		}
 		// Non-interactive and post-login paths fall through to Cobra execution.
