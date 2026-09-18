@@ -24,8 +24,6 @@ type launchPreflightDeps struct {
 	diagnostics *launchDiagnostics
 }
 
-var currentLaunchPreflight *launchPreflight
-
 type launchPreflight struct {
 	token, authHost string
 	started         time.Time
@@ -33,6 +31,8 @@ type launchPreflight struct {
 	authDone        chan struct{}
 	updateDone      chan struct{}
 	mu              sync.RWMutex
+	cache           probeCachePaths
+	cacheOnce       sync.Once
 	authResult      launchAuthResult
 	updateNudge     string
 }
@@ -45,7 +45,7 @@ func defaultLaunchPreflightDeps() launchPreflightDeps {
 // discovery is intentionally not a launch preflight: the managed Pi extension
 // obtains the current subscription capabilities from pi-bootstrap when Pi starts.
 func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPreflightDeps) *launchPreflight {
-	p := &launchPreflight{token: token, authHost: authHost, started: deps.now(), deps: deps, authDone: make(chan struct{}), updateDone: make(chan struct{})}
+	p := &launchPreflight{token: token, authHost: authHost, started: deps.now(), deps: deps, cache: newProbeCachePaths(authHost, token), authDone: make(chan struct{}), updateDone: make(chan struct{})}
 	go func() {
 		me, reached, err := deps.auth(token, authHost, deps.newClient())
 		p.mu.Lock()
@@ -79,29 +79,37 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 func (p *launchPreflight) reusable(token, authHost string) bool {
 	return p != nil && token == p.token && authHost == p.authHost && p.deps.now().Sub(p.started) <= launchPreflightFreshness
 }
-func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool, error, bool) {
-	if !p.reusable(token, authHost) {
-		return auth.MeResult{}, false, nil, false
-	}
-	remaining := authProbeTimeout - p.deps.now().Sub(p.started)
-	if remaining > 0 {
-		timer := time.NewTimer(remaining)
-		defer timer.Stop()
-		select {
-		case <-p.authDone:
-		case <-timer.C:
-			return auth.MeResult{}, false, nil, true
-		}
-	}
+
+// answerIfDone reports the probe's stored answer if it has already arrived.
+// It neither waits nor looks at the clock: reusability is a separate question,
+// asked once per frame by the caller, and asking it again here is how an answer
+// that lands mid-frame gets counted as "too late" by one half and "already
+// handled" by the other.
+// fileAnswer files the answer in the me cache, exactly once per probe, before
+// the answer is shown to anyone: a caller that sees it sees the cache it
+// produced, never the one it replaced.
+//
+// Filed by the first reader rather than by the probe goroutine itself: an
+// answer nobody ever reads belongs to a launch that is already over, and
+// writing it there means creating files under a home the caller may have
+// finished with.
+func (p *launchPreflight) fileAnswer(answer launchAuthResult) {
+	p.cacheOnce.Do(func() {
+		recordProbeInMeCache(p.cache, p.token, answer.me, answer.reached, answer.err)
+	})
+}
+
+func (p *launchPreflight) answerIfDone() (launchAuthResult, bool) {
 	select {
 	case <-p.authDone:
 		p.mu.RLock()
 		defer p.mu.RUnlock()
-		return p.authResult.me, p.authResult.reached, p.authResult.err, true
+		return p.authResult, true
 	default:
-		return auth.MeResult{}, false, nil, true
+		return launchAuthResult{}, false
 	}
 }
+
 func (p *launchPreflight) updateIfReady() (string, bool) {
 	select {
 	case <-p.updateDone:

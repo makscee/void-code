@@ -32,10 +32,10 @@ const (
 // Callbacks is intentionally empty: console subscription choices are not persisted here.
 type Callbacks struct{}
 
-func Run(state AuthState, cb Callbacks) (RunResult, error) { return RunWithOptions(state, cb) }
-func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
-	p := tea.NewProgram(newModel(state), opts...)
-	out, err := p.Run()
+// welcomeRunResult maps a finished program to a RunResult. state is the state
+// the screen started from: it decides the fallbacks when the program failed or
+// quit without a choice.
+func welcomeRunResult(state AuthState, out tea.Model, err error) (RunResult, error) {
 	if err != nil {
 		fmt.Print(plainBanner(state))
 		if state.LoggedIn {
@@ -101,6 +101,14 @@ func (m model) MoveCursor(d int) model {
 }
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if update, ok := msg.(IdentityUpdate); ok {
+		m.AuthState = MergeIdentity(m.AuthState, update.AuthState)
+		m.items = menuItemsFor(m.AuthState)
+		if m.cursor >= len(m.items) {
+			m.cursor = len(m.items) - 1
+		}
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -190,4 +198,59 @@ func plainBanner(state AuthState) string {
 		sb.WriteString("  " + state.UpdateNudge + "\n")
 	}
 	return sb.String()
+}
+
+// IdentityUpdate carries an answer that arrived after the screen was already
+// drawn. The landing screen renders from local state before the launch
+// preflight has asked anyone anything; this is how the answer catches up.
+type IdentityUpdate struct {
+	AuthState
+}
+
+// MergeIdentity applies an identity answer to the state already on screen. It
+// is the only copy of this rule: the late repaint in this package and the next
+// menu frame in cmd/vc both call it, so the two can no longer drift apart.
+//
+//   - an answer that names nobody keeps the name already known — a failed check
+//     is not a reason to forget who is logged in;
+//   - an answer that lost the session is the exception: it erases the name
+//     rather than preserving it, because the session behind it is gone;
+//   - the update nudge belongs to the update check, not to this answer, so it
+//     survives unless the answer carries a newer one;
+//   - everything else, the balance included, is taken from the answer: money
+//     that was not just confirmed is not shown.
+func MergeIdentity(current, answer AuthState) AuthState {
+	merged := answer
+	if merged.LoggedIn && merged.Identity == "" {
+		merged.Identity = current.Identity
+	}
+	if merged.UpdateNudge == "" {
+		merged.UpdateNudge = current.UpdateNudge
+	}
+	return merged
+}
+
+// RunWithLateIdentity runs the landing screen and repaints it when an identity
+// answer arrives on late. A nil channel simply means nothing will arrive.
+func RunWithLateIdentity(state AuthState, cb Callbacks, late <-chan IdentityUpdate, opts ...tea.ProgramOption) (RunResult, error) {
+	p := tea.NewProgram(newModel(state), opts...)
+	stopped := make(chan struct{})
+	if late != nil {
+		go func() {
+			for {
+				select {
+				case update, ok := <-late:
+					if !ok {
+						return
+					}
+					p.Send(update)
+				case <-stopped:
+					return
+				}
+			}
+		}()
+	}
+	out, err := p.Run()
+	close(stopped)
+	return welcomeRunResult(state, out, err)
 }

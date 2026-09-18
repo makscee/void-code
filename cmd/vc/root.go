@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -82,8 +81,9 @@ func handleExecuteError(err error) {
 		return
 	}
 	if exitErr, ok := err.(interface{ ExitCode() int }); ok && exitErr.ExitCode() >= 0 {
-		os.Exit(exitErr.ExitCode())
+		exitProcess(exitErr.ExitCode())
+		return
 	}
 	// Cobra already prints the error; exit with code 1.
-	os.Exit(1)
+	exitProcess(1)
 }

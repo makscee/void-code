@@ -8,6 +8,9 @@ import (
 )
 
 func TestLaunchPreflightChecksAuthAndUpdateWithoutProviderDiscovery(t *testing.T) {
+	// The probe files its answer in the me cache now, so this test needs a home
+	// of its own like every other test that reaches the cache.
+	withTempHome(t)
 	done := make(chan struct{})
 	deps := launchPreflightDeps{now: time.Now, auth: func(token, host string, _ *http.Client) (auth.MeResult, bool, error) {
 		if token != "t" || host != "h" {
@@ -22,7 +25,11 @@ func TestLaunchPreflightChecksAuthAndUpdateWithoutProviderDiscovery(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("auth did not start")
 	}
-	if _, _, err, reused := p.awaitAuth("t", "h"); !reused || err != nil {
-		t.Fatalf("auth result reused=%v err=%v", reused, err)
+	// awaitAuth, which this used to call, had no production callers left once
+	// the welcome screen stopped waiting for the probe; the stored answer is
+	// read without waiting now, so the test waits for it explicitly.
+	waitForPreflightAuth(t, p)
+	if answer, done := p.answerIfDone(); !done || answer.err != nil {
+		t.Fatalf("auth result done=%v err=%v", done, answer.err)
 	}
 }

@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -87,96 +86,18 @@ func main() {
 		}
 	}
 
-	// --raw: skip title screen and pass tty straight to Pi.
-	// Parse --raw early (before cobra.Execute) so we can skip the welcome gate.
-	// Relay auth is one-shot env injection at Spawn time; vc need not stay
-	// resident, so no pty-proxy is required — cmd.Run() passthrough is enough.
-	hasRaw := false
-	for _, a := range os.Args[1:] {
-		if a == "--raw" {
-			hasRaw = true
-			break
-		}
-		if a == "--" {
-			break // everything after -- is for Pi
-		}
-	}
-
-	// Persistent landing screen — shown on bare `vc` invocation (no sub-command).
-	// Checks auth state, shows banner, waits for any keypress.
-	// Any keypress → logged-in: spawn Pi; logged-out: run login.
-	// Skipped for sub-commands (login/logout/status/update) so automation works.
-	// Skipped when --raw is set (jump straight to spawn, no TUI).
-	hasSubCmd := len(os.Args) > 1 && welcomeGateSkippingSubCommands[os.Args[1]]
-	if !hasSubCmd && !hasRaw {
-		currentLaunchDiagnostics = newLaunchDiagnosticsFromEnv(time.Now, os.Stderr)
-		state, token, authHost, localSource := resolveLocalAuthStateWithSource()
-		currentLaunchDiagnostics.record(phaseLocalStateLoad, outcomeComplete, localSource)
-		currentLaunchPreflight = startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
-		// Interactive only when stdin is a TTY AND --non-interactive was not
-		// passed. cobra has not parsed flags yet at this point, so scan os.Args
-		// for the flag directly (mirrors the early --raw scan above). When not
-		// interactive, the title screen is skipped — same effect as --raw, but
-		// the gate still distinguishes logged-in (spawn) from logged-out (fail).
-		interactive := isStdinTTY() && !hasNonInteractiveArg()
-		switch decideGate(interactive, state.LoggedIn) {
-		case gateFailAuth:
-			// Non-interactive (non-TTY) context with no usable token: fail fast
-			// instead of hanging in the login picker or device-flow poll loop.
-			// Automation callers (void-os, subagents, scripts) re-auth manually.
-			fmt.Fprintln(os.Stderr, "vc: auth failed: session token missing or expired — re-authenticate with `vc login`")
-			os.Exit(1)
-		case gateSpawn:
-			// Non-interactive + logged in: skip the welcome TUI entirely. It
-			// blocks on a keypress that a non-TTY stdin can never deliver, which
-			// hangs automation callers forever. Fall straight through to spawn.
-		case gateShowWelcome:
-		menuLoop:
-			for {
-				if nudge, ready := currentLaunchPreflight.updateIfReady(); ready && nudge != "" {
-					state.UpdateNudge = nudge
-				}
-				result, err := runWelcomeCommandTransition(state, welcome.Callbacks{}, rootCmd, os.Args[1:])
-				if result == welcome.SpawnPi {
-					if err != nil {
-						handleExecuteError(err)
-					}
-					return
-				}
-				switch result {
-				case welcome.RunDoctor:
-					fmt.Println()
-					if derr := runDoctor(); derr != nil {
-						fmt.Fprintf(os.Stderr, "vc: doctor: %v\n", derr)
-					}
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop
-				case welcome.RunProfile:
-					cfg := config.OSResolve()
-					token, _, _ := auth.Load()
-					openProfile(cfg.AuthHost, token, &http.Client{Timeout: 10 * time.Second}, func(u string) { _ = browser.OpenURL(u, os.Stdout) })
-					fmt.Println("\n  press enter to return to the menu…")
-					bufio.NewScanner(os.Stdin).Scan()
-					continue menuLoop
-				case welcome.RunLogin:
-					if lerr := runLoginInteractive(); lerr != nil {
-						fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)
-						os.Exit(1)
-					}
-					state, token, authHost, currentLaunchPreflight = refreshLaunchAfterLogin(defaultLaunchPreflightDeps())
-					_ = token
-					_ = authHost
-					continue menuLoop
-				case welcome.Quit:
-					os.Exit(0)
-				default:
-					_ = err
-					continue menuLoop
-				}
-			}
-		}
-		// Non-interactive and post-login paths fall through to Cobra execution.
+	// Persistent landing screen — shown on bare `vc` invocation (no sub-command,
+	// no --raw). Checks auth state, shows the menu, and decides how the process
+	// ends; the ending itself stays here, through the exitProcess seam.
+	switch runBareLaunch(defaultBareLaunchDeps()) {
+	case bareLaunchSpawned:
+		return // the menu already ran Pi through Cobra
+	case bareLaunchQuit:
+		exitProcess(0)
+		return
+	case bareLaunchAuthFailed:
+		exitProcess(1)
+		return
 	}
 
 	Execute()
@@ -308,12 +229,12 @@ func fetchCompatGrants(authHost, token string) ([]compat.Grant, error) {
 
 var welcomeProgramOptions []tea.ProgramOption
 
-func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.RunResult, error) {
+func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks, late <-chan welcome.IdentityUpdate) (welcome.RunResult, error) {
 	opts := welcomeProgramOptions
 	if currentLaunchDiagnostics != nil && currentLaunchDiagnostics.enabled {
 		opts = append(append([]tea.ProgramOption{}, opts...), tea.WithOutput(&firstRenderDiagnosticWriter{out: os.Stdout, diagnostics: currentLaunchDiagnostics}))
 	}
-	return welcome.RunWithOptions(state, cb, opts...)
+	return welcome.RunWithLateIdentity(state, cb, late, opts...)
 }
 
 type firstRenderDiagnosticWriter struct {
@@ -331,8 +252,8 @@ func (w *firstRenderDiagnosticWriter) Write(p []byte) (int, error) {
 // welcome program into Cobra. Non-spawn choices are returned to main for their
 // existing dispatch; the Pi spawn executes Cobra so parsing and error behavior
 // remain identical to every other root invocation.
-func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
-	result, err := runWelcomeScreen(state, cb)
+func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, late <-chan welcome.IdentityUpdate, cmd *cobra.Command, args []string) (welcome.RunResult, error) {
+	result, err := runWelcomeScreen(state, cb, late)
 	currentLaunchDiagnostics.record(phaseSelection, outcomeComplete, sourceLocal)
 	if result != welcome.SpawnPi {
 		return result, err
@@ -615,7 +536,12 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return me, true, nil
 	}
 	if errors.Is(err, auth.ErrNotLoggedIn) {
-		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+		// The sentinel travels, like ErrAccessNotGranted below: a caller that has
+		// to act on a dead session — the welcome screen stops naming the user and
+		// drops the cached name — cannot branch on prose. A wrapped %w would
+		// append the sentinel's own text to a message written to be read by a
+		// human, so the outcome is carried instead of concatenated.
+		return auth.MeResult{}, false, sessionRejectedError{}
 	}
 	// A refusal is not a failed check. Neither neighbour fits it: the credential
 	// worked, so sending the human back to sign-in cannot help, and the check was
@@ -627,6 +553,16 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
 }
+
+// sessionRejectedError is authGate's 401: the wording vc has always printed,
+// carrying auth.ErrNotLoggedIn for callers that branch on the outcome.
+type sessionRejectedError struct{}
+
+func (sessionRejectedError) Error() string {
+	return "Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate."
+}
+
+func (sessionRejectedError) Unwrap() error { return auth.ErrNotLoggedIn }
 
 // resolveCA determines the relay CA path in priority order:
 //  1. VC_RELAY_CA env override (cfg.CAOverride).
