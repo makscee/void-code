@@ -86,63 +86,16 @@ func main() {
 		}
 	}
 
-	// --raw: skip title screen and pass tty straight to Pi.
-	// Parse --raw early (before cobra.Execute) so we can skip the welcome gate.
-	// Relay auth is one-shot env injection at Spawn time; vc need not stay
-	// resident, so no pty-proxy is required — cmd.Run() passthrough is enough.
-	hasRaw := false
-	for _, a := range os.Args[1:] {
-		if a == "--raw" {
-			hasRaw = true
-			break
-		}
-		if a == "--" {
-			break // everything after -- is for Pi
-		}
-	}
-
-	// Persistent landing screen — shown on bare `vc` invocation (no sub-command).
-	// Checks auth state, shows banner, waits for any keypress.
-	// Any keypress → logged-in: spawn Pi; logged-out: run login.
-	// Skipped for sub-commands (login/logout/status/update) so automation works.
-	// Skipped when --raw is set (jump straight to spawn, no TUI).
-	hasSubCmd := len(os.Args) > 1 && welcomeGateSkippingSubCommands[os.Args[1]]
-	if !hasSubCmd && !hasRaw {
-		currentLaunchDiagnostics = newLaunchDiagnosticsFromEnv(time.Now, os.Stderr)
-		state, token, authHost, localSource := resolveLocalAuthStateWithSource()
-		currentLaunchDiagnostics.record(phaseLocalStateLoad, outcomeComplete, localSource)
-		preflight := startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
-		// Interactive only when stdin is a TTY AND --non-interactive was not
-		// passed. cobra has not parsed flags yet at this point, so scan os.Args
-		// for the flag directly (mirrors the early --raw scan above). When not
-		// interactive, the title screen is skipped — same effect as --raw, but
-		// the gate still distinguishes logged-in (spawn) from logged-out (fail).
-		interactive := isStdinTTY() && !hasNonInteractiveArg()
-		switch decideGate(interactive, state.LoggedIn) {
-		case gateFailAuth:
-			// Non-interactive (non-TTY) context with no usable token: fail fast
-			// instead of hanging in the login picker or device-flow poll loop.
-			// Automation callers (void-os, subagents, scripts) re-auth manually.
-			fmt.Fprintln(os.Stderr, "vc: auth failed: session token missing or expired — re-authenticate with `vc login`")
-			os.Exit(1)
-		case gateSpawn:
-			// Non-interactive + logged in: skip the welcome TUI entirely. It
-			// blocks on a keypress that a non-TTY stdin can never deliver, which
-			// hangs automation callers forever. Fall straight through to spawn.
-		case gateShowWelcome:
-			// The menu loop lives in runWelcomeMenu, where tests can see what
-			// each frame was handed; main only decides what its result means.
-			switch result, err := runWelcomeMenu(state, token, authHost, preflight, defaultWelcomeMenuDeps()); result {
-			case welcome.SpawnPi:
-				if err != nil {
-					handleExecuteError(err)
-				}
-				return
-			case welcome.Quit:
-				os.Exit(0)
-			}
-		}
-		// Non-interactive and post-login paths fall through to Cobra execution.
+	// Persistent landing screen — shown on bare `vc` invocation (no sub-command,
+	// no --raw). Checks auth state, shows the menu, and decides how the process
+	// ends; the ending itself stays here, because os.Exit is main's to call.
+	switch runBareLaunch(defaultBareLaunchDeps()) {
+	case bareLaunchSpawned:
+		return // the menu already ran Pi through Cobra
+	case bareLaunchQuit:
+		os.Exit(0)
+	case bareLaunchAuthFailed:
+		os.Exit(1)
 	}
 
 	Execute()
