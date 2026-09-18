@@ -5,11 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/welcome"
 )
 
@@ -23,6 +26,47 @@ import (
 // It decides rather than exits: main turns the outcome into os.Exit or a fall
 // through to Cobra. That is the only way the three endings can be told apart
 // from a test, and it keeps each ending exactly what it was.
+
+// waitForProbeToReleaseHome waits until a probe has stopped touching the
+// filesystem: both its halves are done, answer and update check.
+//
+// Waiting for the answer alone is not enough and has now cost three fixes in
+// this task. The update half runs on its own goroutine, takes a two-second
+// network timeout, and only then writes ~/.void-code/last-update-check — long
+// after a test that waited on authDone has let its temporary home be deleted,
+// so the file lands in the package sandbox and the HOME guard fails a test that
+// had nothing to do with it.
+func waitForProbeToReleaseHome(t *testing.T, p *launchPreflight) {
+	t.Helper()
+	waitForPreflightAuth(t, p)
+	select {
+	case <-p.updateDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the probe's update check never finished — it is still free to write into a home this test is about to remove")
+	}
+}
+
+// freshUpdateCheckCache makes the launch update check a no-op by pretending it
+// just ran. Without it the real check reaches out to the release host — a test
+// suite has no business generating production traffic, and the two-second
+// timeout would be paid on every run.
+func freshUpdateCheckCache(t *testing.T) {
+	t.Helper()
+	path, err := config.UpdateCacheFilePath()
+	if err != nil {
+		t.Fatalf("update cache path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("update cache dir: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("update cache sentinel: %v", err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatalf("update cache mtime: %v", err)
+	}
+}
 
 // bareLaunchProbe records the menu call the path made, so a test can see what
 // the menu was actually handed.
@@ -235,6 +279,7 @@ func TestRunBareLaunchEndsTheProcessOnSpawnAndReportsItsError(t *testing.T) {
 // reaching a server, the menu by putting that answer on a screen.
 func TestDefaultBareLaunchDepsCarryTheRealProbeAndTheRealMenu(t *testing.T) {
 	withTempHome(t)
+	freshUpdateCheckCache(t)
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -252,7 +297,7 @@ func TestDefaultBareLaunchDepsCarryTheRealProbeAndTheRealMenu(t *testing.T) {
 	if p == nil {
 		t.Fatal("the default path starts no probe")
 	}
-	waitForPreflightAuth(t, p)
+	waitForProbeToReleaseHome(t, p)
 	if requests == 0 {
 		t.Fatal("the default probe never asked the server anything")
 	}
@@ -289,4 +334,47 @@ func TestDefaultBareLaunchDepsCarryTheRealProbeAndTheRealMenu(t *testing.T) {
 		t.Fatal("the default menu never returned")
 	}
 	_ = keys.Close()
+}
+
+// The probe has two halves and only one of them is about identity. The other is
+// the update check, and turning it off in the default wiring costs every user
+// their upgrade nudge while the suite stays green — the same class of silent
+// removal this whole task is about, on the half nobody was watching.
+//
+// What is pinned here is that the launch probe actually runs its update half.
+// The sentinel is pre-touched, so the check short-circuits before any network
+// call: this test proves the branch was entered, not what the release server
+// said. See the report for why the address itself cannot be observed today.
+func TestDefaultBareLaunchDepsRunTheUpdateCheck(t *testing.T) {
+	withTempHome(t)
+	freshUpdateCheckCache(t)
+
+	previous := currentLaunchDiagnostics
+	diagnostics := newLaunchDiagnostics(true, time.Now, io.Discard)
+	currentLaunchDiagnostics = diagnostics
+	t.Cleanup(func() { currentLaunchDiagnostics = previous })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"userId":"u-real","email":"real@example.com"}`))
+	}))
+	defer srv.Close()
+
+	p := defaultBareLaunchDeps().startProbe("tok", srv.URL)
+	if p == nil {
+		t.Fatal("the default path starts no probe")
+	}
+	waitForProbeToReleaseHome(t, p)
+
+	var update *launchDiagnosticRecord
+	for i := range diagnostics.pending {
+		if diagnostics.pending[i].phase == phaseUpdateComplete {
+			update = &diagnostics.pending[i]
+		}
+	}
+	if update == nil {
+		t.Fatalf("no %s record at all: %+v", phaseUpdateComplete, diagnostics.pending)
+	}
+	if update.source != sourceFresh {
+		t.Fatalf("%s recorded with source %q, want %q — the launch probe skipped the update check, so nobody is ever told a new version exists", phaseUpdateComplete, update.source, sourceFresh)
+	}
 }
