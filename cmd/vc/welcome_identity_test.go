@@ -47,6 +47,13 @@ func (c *preflightClock) Now() time.Time { return c.now }
 
 func newIdentityPreflight(t *testing.T, clock *preflightClock, token string, authFn func(string, string, *http.Client) (auth.MeResult, bool, error)) *launchPreflight {
 	t.Helper()
+	return newIdentityPreflightFor(t, clock, token, "https://auth.example", authFn)
+}
+
+// newIdentityPreflightFor is the same, for the cases that need the probe filed
+// against a real host — a test server whose request count is the evidence.
+func newIdentityPreflightFor(t *testing.T, clock *preflightClock, token, authHost string, authFn func(string, string, *http.Client) (auth.MeResult, bool, error)) *launchPreflight {
+	t.Helper()
 	deps := launchPreflightDeps{
 		now:         clock.Now,
 		auth:        authFn,
@@ -56,7 +63,7 @@ func newIdentityPreflight(t *testing.T, clock *preflightClock, token string, aut
 	}
 	// withUpdate=false: the nudge reaches the screen through local state, which
 	// is exactly what point 5 of the contract says must not be lost.
-	return startLaunchPreflight(token, "https://auth.example", false, deps)
+	return startLaunchPreflight(token, authHost, false, deps)
 }
 
 // waitForPreflightAuth blocks until the preflight has stored its auth result.

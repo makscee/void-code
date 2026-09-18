@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"net/http"
-	"sync"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -118,68 +118,47 @@ func TestWelcomeScreenStateDeliversAFailedAnswerToo(t *testing.T) {
 	}
 }
 
-// Point 2, stated as the invariant rather than as a timing: an answer this
-// preflight will produce is never lost. The clock is the trap — it fires the
-// server's answer in the middle of the call, between a first look at the
-// preflight and any second one. A single poll cannot lose it; two polls do.
-func TestWelcomeScreenStatePendingAnswerIsNeverLostBetweenPolls(t *testing.T) {
-	withTempHome(t) // empty home: an identity in the result can only be the answer
+// Point 2 as far as it is observable from outside: while the answer is still
+// in flight the frame says so — the remembered name, unverified, no money —
+// and the answer itself arrives on the channel presented as checked.
+//
+// What this does NOT pin is the two-poll shape that lost an answer landing
+// mid-call: welcomeScreenState consults the clock once and the stored answer
+// once, and a second read of the same stored answer is invisible from here.
+// See the report accompanying this test for the seam that would close it.
+func TestWelcomeScreenStatePendingAnswerIsRememberedThenDelivered(t *testing.T) {
+	withTempHome(t)
+	base := time.Now()
+	// A different name in the cache, so "the frame shows the answer" cannot be
+	// confused with "the frame shows the last known identity".
+	writeMeCache("https://auth.example", "tok", auth.MeResult{UserID: "u-cached", Email: "cached@example.com"}, base.Add(-10*time.Minute))
+	clock := &preflightClock{now: base}
 	unblock := make(chan struct{})
-	now := time.Now()
-	var p *launchPreflight
-	var (
-		mu       sync.Mutex
-		looks    int
-		release  sync.Once
-		released bool
-	)
-	fire := func() {
-		release.Do(func() { close(unblock) })
-	}
-
-	// Every look at the preflight goes through reusable(), which asks the clock.
-	// Look 1 is the preflight's own start; a second look decides the frame. The
-	// answer is fired on the third — the look a two-poll implementation takes
-	// after the frame is already decided, measured on the two-call version this
-	// replaces: releasing there left the answer in neither half.
-	releaseOnThirdLook := func() time.Time {
-		mu.Lock()
-		looks++
-		fireNow := looks == 3 && !released
-		if fireNow {
-			released = true
-		}
-		mu.Unlock()
-		if fireNow {
-			fire()
-			<-p.authDone // the answer is stored before this look returns
-		}
-		return now
-	}
-
-	deps := launchPreflightDeps{
-		now: releaseOnThirdLook,
-		auth: func(string, string, *http.Client) (auth.MeResult, bool, error) {
-			<-unblock
-			return auth.MeResult{UserID: "u-fresh", Email: "fresh@example.com"}, true, nil
-		},
-		update:      func() string { return "" },
-		newClient:   func() *http.Client { return &http.Client{} },
-		diagnostics: newLaunchDiagnostics(false, time.Now, nil),
-	}
-	p = startLaunchPreflight("tok", "https://auth.example", false, deps)
+	balance := 12.5
+	p := newIdentityPreflight(t, clock, "tok", func(string, string, *http.Client) (auth.MeResult, bool, error) {
+		<-unblock
+		return auth.MeResult{UserID: "u-fresh", Email: "fresh@example.com", BalanceUsd: &balance}, true, nil
+	})
 
 	frame, late := welcomeScreenState(loggedInLocalState(), p, "tok", "https://auth.example")
 
-	if frame.Identity == "fresh@example.com" {
-		return // the answer made it into the frame: nothing was lost
-	}
 	if late == nil {
-		t.Fatalf("the answer is neither in the frame (Identity=%q) nor on a channel — it was dropped between two polls of the same preflight", frame.Identity)
+		t.Fatal("no channel while the answer is still in flight")
 	}
-	fire() // a single-poll implementation may never reach the third look
-	if got := receiveLateIdentity(t, late); got.Identity != "fresh@example.com" {
+	if frame.Identity != "cached@example.com" {
+		t.Fatalf("frame Identity = %q, want the last known %q while the answer is still in flight", frame.Identity, "cached@example.com")
+	}
+	if !frame.IdentityUnverified || frame.BalanceUsd != nil {
+		t.Fatalf("frame presents a remembered name as checked (%+v)", frame)
+	}
+
+	close(unblock)
+	got := receiveLateIdentity(t, late)
+	if got.Identity != "fresh@example.com" {
 		t.Fatalf("late Identity = %q, want %q", got.Identity, "fresh@example.com")
+	}
+	if got.IdentityUnverified || got.BalanceUsd == nil {
+		t.Fatalf("the delivered answer is not presented as checked (%+v)", got.AuthState)
 	}
 }
 
@@ -294,5 +273,101 @@ func TestWelcomeScreenStateForgetsTheUserWhenTheTokenIsRejected(t *testing.T) {
 	}
 	if cached, ok := readMeCache("https://auth.example", "tok", time.Now()); ok {
 		t.Fatalf("me cache still holds %+v after the token was rejected — the next launch would name a user who no longer has a session", cached.Me)
+	}
+}
+
+// Hole 1. A probe that failed on the network has to leave that behind it, or
+// the next caller walks into the same timeout. Observable without opening the
+// cache file: the next lookup answers "temporarily unavailable" from what the
+// probe left, and never reaches the server to find out.
+func TestFailedProbeStopsTheNextLookupFromRetryingIntoTheSameTimeout(t *testing.T) {
+	withTempHome(t)
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"userId":"u-server","email":"server@example.com"}`))
+	}))
+	defer srv.Close()
+
+	clock := &preflightClock{now: time.Now()}
+	p := newIdentityPreflightFor(t, clock, "tok", srv.URL, func(string, string, *http.Client) (auth.MeResult, bool, error) {
+		return auth.MeResult{}, false, errors.New("dial tcp: i/o timeout")
+	})
+	waitForPreflightAuth(t, p)
+
+	// Drawing the frame is what files the answer, good or bad.
+	welcomeScreenState(loggedInLocalState(), p, "tok", srv.URL)
+
+	state, err := cachedFetchMeState(srv.URL, "tok", srv.Client())
+	if !errors.Is(err, errAuthTemporarilyUnavailable) {
+		t.Fatalf("next lookup returned (%+v, %v), want %v — the failed probe was not remembered", state, err, errAuthTemporarilyUnavailable)
+	}
+	if requests != 0 {
+		t.Fatalf("next lookup made %d request(s) to the server, want 0 — it retried into the failure the probe had just hit", requests)
+	}
+}
+
+// Hole 3. The answer that arrives after the frame must be filed too. Otherwise
+// a user whose answer is late and who starts Pi straight away never acquires a
+// "last known identity" at all, and the next launch has nothing to show.
+func TestLateAnswerIsFiledInTheMeCache(t *testing.T) {
+	withTempHome(t) // empty home: anything in the cache afterwards came from the late answer
+	clock := &preflightClock{now: time.Now()}
+	unblock := make(chan struct{})
+	balance := 12.5
+	p := newIdentityPreflight(t, clock, "tok", func(string, string, *http.Client) (auth.MeResult, bool, error) {
+		<-unblock
+		return auth.MeResult{UserID: "u-fresh", Email: "fresh@example.com", BalanceUsd: &balance}, true, nil
+	})
+
+	_, late := welcomeScreenState(loggedInLocalState(), p, "tok", "https://auth.example")
+	if late == nil {
+		t.Fatal("no channel while the answer is still in flight")
+	}
+	if cached, ok := readMeCache("https://auth.example", "tok", time.Now()); ok {
+		t.Fatalf("me cache already holds %+v before any answer arrived", cached.Me)
+	}
+
+	close(unblock)
+	if got := receiveLateIdentity(t, late); got.Identity != "fresh@example.com" {
+		t.Fatalf("late Identity = %q, want %q", got.Identity, "fresh@example.com")
+	}
+
+	cached, ok := readMeCache("https://auth.example", "tok", time.Now())
+	if !ok {
+		t.Fatal("me cache holds nothing after the late answer — a launch that answers slowly leaves no last known identity behind")
+	}
+	if cached.Me.Email != "fresh@example.com" || cached.Me.UserID != "u-fresh" {
+		t.Fatalf("cached identity = %+v, want email fresh@example.com and userID u-fresh", cached.Me)
+	}
+}
+
+// Hole 2, as a fixed scene rather than a race: the cache says one name and the
+// answer another. A frame built while the answer was available must show the
+// answer — verified and with the balance — not the cached name it supersedes.
+func TestFrameShowsTheAvailableAnswerRatherThanTheCachedName(t *testing.T) {
+	withTempHome(t)
+	base := time.Now()
+	writeMeCache("https://auth.example", "tok", auth.MeResult{UserID: "u-cached", Email: "cached@example.com"}, base.Add(-10*time.Minute))
+	clock := &preflightClock{now: base}
+	balance := 12.5
+	p := newIdentityPreflight(t, clock, "tok", func(string, string, *http.Client) (auth.MeResult, bool, error) {
+		return auth.MeResult{UserID: "u-fresh", Email: "fresh@example.com", BalanceUsd: &balance}, true, nil
+	})
+	waitForPreflightAuth(t, p)
+
+	frame, late := welcomeScreenState(loggedInLocalState(), p, "tok", "https://auth.example")
+
+	if frame.Identity != "fresh@example.com" {
+		t.Fatalf("frame Identity = %q, want the answer %q rather than the cached name", frame.Identity, "fresh@example.com")
+	}
+	if frame.IdentityUnverified {
+		t.Fatalf("frame marked unverified while the answer was available (%+v)", frame)
+	}
+	if frame.BalanceUsd == nil || *frame.BalanceUsd != balance {
+		t.Fatalf("frame BalanceUsd = %v, want %v — the answer carried it", frame.BalanceUsd, balance)
+	}
+	if late != nil {
+		t.Fatal("a channel was opened for an answer that is already in the frame")
 	}
 }
