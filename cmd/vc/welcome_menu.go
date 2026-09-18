@@ -18,10 +18,6 @@ import (
 // the loop itself is testable — while it lived in main() the lines that wired
 // the identity in could be deleted with the whole suite staying green.
 type welcomeMenuDeps struct {
-	// args is the argv this wiring was built for: the screen hands it to Cobra
-	// when the menu spawns Pi. Build the deps with welcomeMenuDepsFor to change
-	// it — screen is constructed for the argv given there.
-	args    []string
 	screen  func(welcome.AuthState, <-chan welcome.IdentityUpdate) (welcome.RunResult, error)
 	doctor  func()
 	profile func()
@@ -78,9 +74,12 @@ func runWelcomeMenu(state welcome.AuthState, token, authHost string, p *launchPr
 // defaultWelcomeMenuDeps wires the menu for the process's own argv.
 func defaultWelcomeMenuDeps() welcomeMenuDeps { return welcomeMenuDepsFor(os.Args) }
 
+// welcomeMenuDepsFor wires the menu for one argv: the screen hands it to Cobra
+// when the menu spawns Pi. It is the only way to choose that argv — the screen
+// is built here and reads nothing later, so a caller who wants different args
+// builds the deps again rather than assigning a field.
 func welcomeMenuDepsFor(args []string) welcomeMenuDeps {
 	return welcomeMenuDeps{
-		args: args,
 		screen: func(state welcome.AuthState, late <-chan welcome.IdentityUpdate) (welcome.RunResult, error) {
 			return runWelcomeCommandTransition(state, welcome.Callbacks{}, late, rootCmd, args[1:])
 		},
