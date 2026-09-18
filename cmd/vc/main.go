@@ -581,7 +581,12 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return me, true, nil
 	}
 	if errors.Is(err, auth.ErrNotLoggedIn) {
-		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+		// The sentinel travels, like ErrAccessNotGranted below: a caller that has
+		// to act on a dead session — the welcome screen stops naming the user and
+		// drops the cached name — cannot branch on prose. A wrapped %w would
+		// append the sentinel's own text to a message written to be read by a
+		// human, so the outcome is carried instead of concatenated.
+		return auth.MeResult{}, false, sessionRejectedError{}
 	}
 	// A refusal is not a failed check. Neither neighbour fits it: the credential
 	// worked, so sending the human back to sign-in cannot help, and the check was
@@ -593,6 +598,16 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
 }
+
+// sessionRejectedError is authGate's 401: the wording vc has always printed,
+// carrying auth.ErrNotLoggedIn for callers that branch on the outcome.
+type sessionRejectedError struct{}
+
+func (sessionRejectedError) Error() string {
+	return "Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate."
+}
+
+func (sessionRejectedError) Unwrap() error { return auth.ErrNotLoggedIn }
 
 // resolveCA determines the relay CA path in priority order:
 //  1. VC_RELAY_CA env override (cfg.CAOverride).

@@ -40,8 +40,14 @@ func runWelcomeMenu(state welcome.AuthState, token, authHost string, p *launchPr
 		}
 		// One poll per frame, and the state it produces is what the next frame
 		// starts from: that is how a name learned on iteration one survives
-		// iteration two, when the preflight may no longer be reusable.
-		state, late := welcomeScreenState(state, p, token, authHost)
+		// iteration two, when the preflight may no longer be reusable, and how
+		// the identity gained by logging in survives the iteration that gained
+		// it. The assignment is deliberately not `:=` — a short declaration here
+		// would make a new state for this iteration only, and every branch below
+		// that writes state (login above all) would write into something that
+		// dies at the closing brace.
+		var late <-chan welcome.IdentityUpdate
+		state, late = welcomeScreenState(state, p, token, authHost)
 		result, err := deps.screen(state, late)
 		switch result {
 		case welcome.RunDoctor:
@@ -51,12 +57,16 @@ func runWelcomeMenu(state welcome.AuthState, token, authHost string, p *launchPr
 			// The balance on screen was a snapshot of launch, and the user just
 			// went where it changes. Ask again rather than keep claiming it.
 			p = startLaunchPreflight(token, authHost, false, deps.preflight)
-		case welcome.ShowTopUp:
-			p = startLaunchPreflight(token, authHost, false, deps.preflight)
 		case welcome.RunLogin:
 			state, token, authHost, p = deps.login()
-		default:
+		case welcome.SpawnPi, welcome.Quit:
 			return result, err
+		default:
+			// Anything else redraws, as the loop has always done. ShowTopUp used
+			// to have a branch here that re-ran the probe; it never ran, because
+			// the model keeps that result to itself (internal/welcome: it sets
+			// topUpView and returns without a result). There is no re-probe
+			// after topping up, and this says so rather than pretending.
 		}
 	}
 }
