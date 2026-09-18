@@ -440,7 +440,6 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		// Draining the channel to close is what proves the watcher is finished.
 		close(blocked)
 		waitForPreflightAuth(t, p)
-		for range late {
-		}
+		drainLateIdentity(t, late)
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -86,10 +87,16 @@ func (b *bareLaunchProbe) menu(state welcome.AuthState, token, authHost string, 
 	return b.result, b.err
 }
 
-// startedProbes records every probe the path started, so a test can say both
-// how many there were and which one the menu was handed.
+// startedProbes records every probe the path started — the object and the
+// arguments it was started with. The arguments matter as much as the object:
+// a probe started for the empty token is a real probe, handed to the real menu,
+// that can never match the token the frame is built for, so the screen falls
+// back to the cached name on every frame and the cache is never written either.
+// Nothing about the call graph looks wrong; only the arguments do.
 type startedProbes struct {
-	all []*launchPreflight
+	all    []*launchPreflight
+	tokens []string
+	hosts  []string
 }
 
 func (s *startedProbes) count() int { return len(s.all) }
@@ -113,6 +120,8 @@ func testBareLaunchDeps(t *testing.T, menu *bareLaunchProbe) (bareLaunchDeps, *b
 				return auth.MeResult{UserID: "u-probe", Email: "probe@example.com"}, true, nil
 			})
 			started.all = append(started.all, p)
+			started.tokens = append(started.tokens, token)
+			started.hosts = append(started.hosts, authHost)
 			return p
 		},
 		menu:        menu.menu,
@@ -155,6 +164,12 @@ func TestRunBareLaunchOnATTYBuildsTheMenuFromTheProbeAndLocalState(t *testing.T)
 	}
 	if menu.p != started.all[0] {
 		t.Fatal("menu was handed a different probe than the one this path started")
+	}
+	// Started for the credentials local state resolved — the same pair the menu
+	// then builds its frames against. A probe started for anything else answers
+	// about somebody else, or about nobody.
+	if started.tokens[0] != "tok" || started.hosts[0] != "https://auth.example" {
+		t.Fatalf("probe started for token %q at %q, want the pair local state resolved (%q at %q)", started.tokens[0], started.hosts[0], "tok", "https://auth.example")
 	}
 	waitForPreflightAuth(t, menu.p)
 	if answer, done := menu.p.answerIfDone(); !done || answer.me.Email != "probe@example.com" {
@@ -362,44 +377,87 @@ func TestDefaultBareLaunchDepsCarryTheRealProbeAndTheRealMenu(t *testing.T) {
 }
 
 // The probe has two halves and only one of them is about identity. The other is
-// the update check, and turning it off in the default wiring costs every user
+// the update check, and taking it out of the default wiring costs every user
 // their upgrade nudge while the suite stays green — the same class of silent
 // removal this whole task is about, on the half nobody was watching.
 //
-// What is pinned here is that the launch probe actually runs its update half.
-// The sentinel is pre-touched, so the check short-circuits before any network
-// call: this test proves the branch was entered, not what the release server
-// said. See the report for why the address itself cannot be observed today.
+// Three separate things have to hold, and each needs its own observation:
+// the probe runs an update half at all, that half's answer reaches the screen,
+// and the function it runs is the real check rather than a stub.
 func TestDefaultBareLaunchDepsRunTheUpdateCheck(t *testing.T) {
-	withTempHome(t)
-	freshUpdateCheckCache(t)
+	// A phase record only says the branch was entered: launch_preflight.go
+	// writes update_complete/fresh whenever withUpdate is true, whatever the
+	// check returns. That catches withUpdate being flipped off and nothing else.
+	t.Run("theProbeHasAnUpdateHalf", func(t *testing.T) {
+		withTempHome(t)
+		freshUpdateCheckCache(t)
 
-	previous := currentLaunchDiagnostics
-	diagnostics := newLaunchDiagnostics(true, time.Now, io.Discard)
-	currentLaunchDiagnostics = diagnostics
-	t.Cleanup(func() { currentLaunchDiagnostics = previous })
+		previous := currentLaunchDiagnostics
+		diagnostics := newLaunchDiagnostics(true, time.Now, io.Discard)
+		currentLaunchDiagnostics = diagnostics
+		t.Cleanup(func() { currentLaunchDiagnostics = previous })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"userId":"u-real","email":"real@example.com"}`))
-	}))
-	defer srv.Close()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"userId":"u-real","email":"real@example.com"}`))
+		}))
+		defer srv.Close()
 
-	p := defaultBareLaunchDeps().startProbe("tok", srv.URL)
-	if p == nil {
-		t.Fatal("the default path starts no probe")
-	}
-	waitForProbeToReleaseHome(t, p)
-
-	var update *launchDiagnosticRecord
-	for i := range diagnostics.pending {
-		if diagnostics.pending[i].phase == phaseUpdateComplete {
-			update = &diagnostics.pending[i]
+		p := defaultBareLaunchDeps().startProbe("tok", srv.URL)
+		if p == nil {
+			t.Fatal("the default path starts no probe")
 		}
-	}
-	if update == nil {
-		t.Fatalf("no %s record at all: %+v", phaseUpdateComplete, diagnostics.pending)
-	}
-	if update.source != sourceFresh {
-		t.Fatalf("%s recorded with source %q, want %q — the launch probe skipped the update check, so nobody is ever told a new version exists", phaseUpdateComplete, update.source, sourceFresh)
-	}
+		waitForProbeToReleaseHome(t, p)
+
+		var update *launchDiagnosticRecord
+		for i := range diagnostics.pending {
+			if diagnostics.pending[i].phase == phaseUpdateComplete {
+				update = &diagnostics.pending[i]
+			}
+		}
+		if update == nil {
+			t.Fatalf("no %s record at all: %+v", phaseUpdateComplete, diagnostics.pending)
+		}
+		if update.source != sourceFresh {
+			t.Fatalf("%s recorded with source %q, want %q — the probe was started with its update half switched off", phaseUpdateComplete, update.source, sourceFresh)
+		}
+	})
+
+	// What the check answers has to survive the trip to the screen. Nothing
+	// above observes this: the phase record is written whether the answer is a
+	// nudge or an empty string.
+	t.Run("whatTheCheckAnswersReachesTheScreen", func(t *testing.T) {
+		withTempHome(t)
+		nudge := "update available · run vc update to install v9.9.9"
+		deps := launchPreflightDeps{
+			now:         time.Now,
+			auth:        func(string, string, *http.Client) (auth.MeResult, bool, error) { return auth.MeResult{}, false, nil },
+			update:      func() string { return nudge },
+			newClient:   func() *http.Client { return &http.Client{} },
+			diagnostics: newLaunchDiagnostics(false, time.Now, nil),
+		}
+		p := startLaunchPreflight("tok", "https://auth.example", true, deps)
+		waitForProbeToReleaseHome(t, p)
+
+		got, ready := p.updateIfReady()
+		if !ready {
+			t.Fatal("the update half never reported ready")
+		}
+		if got != nudge {
+			t.Fatalf("nudge = %q, want %q — what the check found never left the probe", got, nudge)
+		}
+	})
+
+	// And the check itself has to be the real one. The release address is a
+	// compile-time constant with no injection point (internal/update/update.go:26),
+	// so a test cannot watch the request without generating production traffic;
+	// comparing the function the default deps carry is the closest honest thing.
+	// Replace launchUpdateCheck with a stub that answers "" and this fails —
+	// no phase record and no nudge test can tell the difference.
+	t.Run("theCheckInTheDefaultDepsIsTheRealOne", func(t *testing.T) {
+		wired := reflect.ValueOf(defaultLaunchPreflightDeps().update).Pointer()
+		real := reflect.ValueOf(launchUpdateCheck).Pointer()
+		if wired != real {
+			t.Fatal("the default probe does not run launchUpdateCheck — something else is wired in, and no user will hear about a new version")
+		}
+	})
 }

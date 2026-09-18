@@ -147,7 +147,7 @@ func TestRunWelcomeMenuDoesNotPresentAStaleBalanceAsVerified(t *testing.T) {
 	if _, err := runWelcomeMenu(loggedInLocalState(), "tok", "https://auth.example", p, failingMenuDeps(t, screen, deps)); err != nil {
 		t.Fatalf("menu returned %v", err)
 	}
-	drainLateChannels(calls)
+	drainLateChannels(t, calls)
 
 	if len(calls) != 2 {
 		t.Fatalf("screen drawn %d times, want 2", len(calls))
@@ -179,13 +179,13 @@ func awaitProbe(t *testing.T, probes <-chan struct{}, which string) {
 // drainLateChannels waits out the watchers a frame may have left behind. They
 // file their answer in the me cache, and a watcher still running when the
 // test's temporary home is removed writes into a directory mid-deletion.
-func drainLateChannels(calls []menuScreenCall) {
+func drainLateChannels(t *testing.T, calls []menuScreenCall) {
+	t.Helper()
 	for _, call := range calls {
 		if call.late == nil {
 			continue
 		}
-		for range call.late {
-		}
+		drainLateIdentity(t, call.late)
 	}
 }
 

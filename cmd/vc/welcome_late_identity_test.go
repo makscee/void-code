@@ -24,6 +24,28 @@ import (
 // receiveLateIdentity takes the one update the channel owes us, or says which
 // way it failed: nothing sent, or closed empty. The deadline is a failure
 // guard — the fixtures answer as soon as they are released.
+// drainLateIdentity waits out the watcher behind a late channel, on a deadline.
+//
+// Never `for range late` without one: a nil channel blocks forever, so an
+// implementation that stops opening channels turns every test that drains one
+// into a hung goroutine. CI then reports `panic: test timed out` with a dump of
+// every goroutine in the process, and the test that actually had the assertion
+// never runs — the failure loses the name of the thing that broke.
+func drainLateIdentity(t *testing.T, late <-chan welcome.IdentityUpdate) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case _, ok := <-late:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the late-identity channel never closed — either no channel was opened at all, or its watcher is still running")
+		}
+	}
+}
+
 func receiveLateIdentity(t *testing.T, late <-chan welcome.IdentityUpdate) welcome.IdentityUpdate {
 	t.Helper()
 	select {
