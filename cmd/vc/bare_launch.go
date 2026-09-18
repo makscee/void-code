@@ -53,12 +53,6 @@ func runBareLaunch(deps bareLaunchDeps) bareLaunchOutcome {
 		return bareLaunchFallThrough
 	}
 
-	// hasNonInteractiveArg reads the same argv indirection every early scan
-	// does, so the path's own args are what it sees.
-	previousArgs := osArgs
-	osArgs = deps.args
-	defer func() { osArgs = previousArgs }()
-
 	// Published before the probe starts: everything downstream — the probe's own
 	// phases and the screen's first render — records into this trace.
 	currentLaunchDiagnostics = deps.diagnostics
@@ -71,7 +65,7 @@ func runBareLaunch(deps bareLaunchDeps) bareLaunchOutcome {
 	// argv directly (mirrors the early --raw scan). When not interactive, the
 	// title screen is skipped — same effect as --raw, but the gate still
 	// distinguishes logged-in (spawn) from logged-out (fail).
-	interactive := deps.stdinTTY() && !hasNonInteractiveArg()
+	interactive := deps.stdinTTY() && !hasNonInteractiveArgIn(deps.args)
 	switch decideGate(interactive, state.LoggedIn) {
 	case gateFailAuth:
 		// Non-interactive (non-TTY) context with no usable token: fail fast
@@ -117,8 +111,9 @@ func isBareLaunch(args []string) bool {
 }
 
 func defaultBareLaunchDeps() bareLaunchDeps {
+	args := os.Args
 	return bareLaunchDeps{
-		args:        os.Args,
+		args:        args,
 		stderr:      os.Stderr,
 		stdinTTY:    isStdinTTY,
 		diagnostics: newLaunchDiagnosticsFromEnv(time.Now, os.Stderr),
@@ -127,7 +122,9 @@ func defaultBareLaunchDeps() bareLaunchDeps {
 			return startLaunchPreflight(token, authHost, true, defaultLaunchPreflightDeps())
 		},
 		menu: func(state welcome.AuthState, token, authHost string, p *launchPreflight) (welcome.RunResult, error) {
-			return runWelcomeMenu(state, token, authHost, p, defaultWelcomeMenuDeps())
+			// The menu's own screen hands argv to Cobra, so it is built for
+			// this path's argv rather than for the process's.
+			return runWelcomeMenu(state, token, authHost, p, welcomeMenuDepsFor(args))
 		},
 		handleError: handleExecuteError,
 	}

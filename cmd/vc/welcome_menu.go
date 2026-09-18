@@ -18,6 +18,10 @@ import (
 // the loop itself is testable — while it lived in main() the lines that wired
 // the identity in could be deleted with the whole suite staying green.
 type welcomeMenuDeps struct {
+	// args is the argv this wiring was built for: the screen hands it to Cobra
+	// when the menu spawns Pi. Build the deps with welcomeMenuDepsFor to change
+	// it — screen is constructed for the argv given there.
+	args    []string
 	screen  func(welcome.AuthState, <-chan welcome.IdentityUpdate) (welcome.RunResult, error)
 	doctor  func()
 	profile func()
@@ -71,10 +75,14 @@ func runWelcomeMenu(state welcome.AuthState, token, authHost string, p *launchPr
 	}
 }
 
-func defaultWelcomeMenuDeps() welcomeMenuDeps {
+// defaultWelcomeMenuDeps wires the menu for the process's own argv.
+func defaultWelcomeMenuDeps() welcomeMenuDeps { return welcomeMenuDepsFor(os.Args) }
+
+func welcomeMenuDepsFor(args []string) welcomeMenuDeps {
 	return welcomeMenuDeps{
+		args: args,
 		screen: func(state welcome.AuthState, late <-chan welcome.IdentityUpdate) (welcome.RunResult, error) {
-			return runWelcomeCommandTransition(state, welcome.Callbacks{}, late, rootCmd, os.Args[1:])
+			return runWelcomeCommandTransition(state, welcome.Callbacks{}, late, rootCmd, args[1:])
 		},
 		doctor: func() {
 			fmt.Println()
@@ -92,7 +100,12 @@ func defaultWelcomeMenuDeps() welcomeMenuDeps {
 		login: func() (welcome.AuthState, string, string, *launchPreflight) {
 			if lerr := runLoginInteractive(); lerr != nil {
 				fmt.Fprintf(os.Stderr, "vc: login failed: %v\n", lerr)
-				os.Exit(1)
+				// Through the process seam, like every other ending: exitProcess
+				// is os.Exit in production and a stub in a test, where it
+				// returns — so the failed login must not be handed back as one
+				// that worked.
+				exitProcess(1)
+				return welcome.AuthState{LoggedIn: false}, "", "", nil
 			}
 			return refreshLaunchAfterLogin(defaultLaunchPreflightDeps())
 		},

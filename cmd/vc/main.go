@@ -88,14 +88,16 @@ func main() {
 
 	// Persistent landing screen — shown on bare `vc` invocation (no sub-command,
 	// no --raw). Checks auth state, shows the menu, and decides how the process
-	// ends; the ending itself stays here, because os.Exit is main's to call.
+	// ends; the ending itself stays here, through the exitProcess seam.
 	switch runBareLaunch(defaultBareLaunchDeps()) {
 	case bareLaunchSpawned:
 		return // the menu already ran Pi through Cobra
 	case bareLaunchQuit:
-		os.Exit(0)
+		exitProcess(0)
+		return
 	case bareLaunchAuthFailed:
-		os.Exit(1)
+		exitProcess(1)
+		return
 	}
 
 	Execute()

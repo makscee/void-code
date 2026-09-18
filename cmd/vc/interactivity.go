@@ -26,12 +26,17 @@ func nonInteractive() bool {
 	return nonInteractiveFlag || !interactiveStdin()
 }
 
-// hasNonInteractiveArg scans os.Args for --non-interactive before cobra parses.
-// The bare-launch gate in main() runs before rootCmd.Execute(), so the cobra
-// flag value is not yet populated there — this mirrors the early --raw scan.
-// Stops at "--" (everything after is for claude).
-func hasNonInteractiveArg() bool {
-	for _, a := range osArgs[1:] {
+// hasNonInteractiveArg scans the process argv for --non-interactive before cobra
+// parses. Kept for callers that have no argv of their own; a caller that does
+// should pass it to hasNonInteractiveArgIn instead of assigning osArgs.
+func hasNonInteractiveArg() bool { return hasNonInteractiveArgIn(osArgs) }
+
+// hasNonInteractiveArgIn scans the given argv for --non-interactive. The
+// bare-launch gate runs before rootCmd.Execute(), so the cobra flag value is not
+// yet populated there — this mirrors the early --raw scan. Stops at "--"
+// (everything after is for claude).
+func hasNonInteractiveArgIn(args []string) bool {
+	for _, a := range args[1:] {
 		if a == "--" {
 			return false
 		}
