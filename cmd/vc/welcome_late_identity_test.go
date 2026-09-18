@@ -21,9 +21,6 @@ import (
 // Three outcomes are possible for a pending answer and only two are allowed:
 // in the frame, or on the channel. Neither is the bug.
 
-// receiveLateIdentity takes the one update the channel owes us, or says which
-// way it failed: nothing sent, or closed empty. The deadline is a failure
-// guard — the fixtures answer as soon as they are released.
 // drainLateIdentity waits out the watcher behind a late channel, on a deadline.
 //
 // Never `for range late` without one: a nil channel blocks forever, so an
@@ -46,6 +43,9 @@ func drainLateIdentity(t *testing.T, late <-chan welcome.IdentityUpdate) {
 	}
 }
 
+// receiveLateIdentity takes the one update the channel owes us, or says which
+// way it failed: nothing sent, or closed empty. The deadline is a failure
+// guard — the fixtures answer as soon as they are released.
 func receiveLateIdentity(t *testing.T, late <-chan welcome.IdentityUpdate) welcome.IdentityUpdate {
 	t.Helper()
 	select {

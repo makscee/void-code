@@ -46,12 +46,14 @@ func TestNonInteractiveFlag_Registered(t *testing.T) {
 	}
 }
 
-// TestHasNonInteractiveArg verifies the early os.Args scan used by the bare-launch
-// gate (before cobra parses flags). It must detect the flag and stop at "--".
-func TestHasNonInteractiveArg(t *testing.T) {
-	prev := osArgs
-	t.Cleanup(func() { osArgs = prev })
-
+// TestHasNonInteractiveArgIn verifies the early argv scan the bare-launch gate
+// runs before cobra parses flags. It must detect the flag and stop at "--".
+//
+// Against hasNonInteractiveArgIn, which is what the gate calls: it passes the
+// argv the path was built for (bareLaunchDeps.args). The older wrapper that
+// read a process-wide argv global has no callers left on the launch path, so
+// pinning it here would have pinned dead code and kept it alive.
+func TestHasNonInteractiveArgIn(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
@@ -64,9 +66,8 @@ func TestHasNonInteractiveArg(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			osArgs = tc.args
-			if got := hasNonInteractiveArg(); got != tc.want {
-				t.Errorf("hasNonInteractiveArg(%v) = %v, want %v", tc.args, got, tc.want)
+			if got := hasNonInteractiveArgIn(tc.args); got != tc.want {
+				t.Errorf("hasNonInteractiveArgIn(%v) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
 	}

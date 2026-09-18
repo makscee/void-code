@@ -378,16 +378,29 @@ func TestDefaultBareLaunchDepsCarryTheRealProbeAndTheRealMenu(t *testing.T) {
 
 // The probe has two halves and only one of them is about identity. The other is
 // the update check, and taking it out of the default wiring costs every user
-// their upgrade nudge while the suite stays green — the same class of silent
-// removal this whole task is about, on the half nobody was watching.
+// their upgrade nudge while the suite stays green.
 //
-// Three separate things have to hold, and each needs its own observation:
-// the probe runs an update half at all, that half's answer reaches the screen,
-// and the function it runs is the real check rather than a stub.
-func TestDefaultBareLaunchDepsRunTheUpdateCheck(t *testing.T) {
+// What these three pin is the WIRING around that check, and nothing inside it:
+//
+//   - the probe is started with its update half switched on;
+//   - whatever the check answers reaches the screen rather than dying in the
+//     probe;
+//   - the function wired into the default deps is launchUpdateCheck itself.
+//
+// What they do NOT pin is that launchUpdateCheck works. Gut its body — make it
+// return "" on the first line — and all three stay green: the phase record is
+// written whether the check found anything or not, the delivery subtest feeds
+// its own answer through a stub, and the address of a hollow function is the
+// address of the function. Covering the body means watching the request it
+// makes, and the release address is a compile-time constant with no injection
+// point (internal/update/update.go:26), so that needs a change to production
+// code for the sake of observability — deliberately out of scope here and
+// tracked separately. Until then this is a wiring test, and its failures say so.
+func TestDefaultBareLaunchDepsWireTheUpdateCheck(t *testing.T) {
 	// A phase record only says the branch was entered: launch_preflight.go
 	// writes update_complete/fresh whenever withUpdate is true, whatever the
 	// check returns. That catches withUpdate being flipped off and nothing else.
+	// It says nothing about whether an update was looked for, let alone found.
 	t.Run("theProbeHasAnUpdateHalf", func(t *testing.T) {
 		withTempHome(t)
 		freshUpdateCheckCache(t)
@@ -420,11 +433,15 @@ func TestDefaultBareLaunchDepsRunTheUpdateCheck(t *testing.T) {
 		if update.source != sourceFresh {
 			t.Fatalf("%s recorded with source %q, want %q — the probe was started with its update half switched off", phaseUpdateComplete, update.source, sourceFresh)
 		}
+		// Deliberately no claim here about what the check found: this fixture
+		// pre-touches the sentinel, so the real check short-circuits and returns
+		// "" exactly as a hollow one would.
 	})
 
 	// What the check answers has to survive the trip to the screen. Nothing
 	// above observes this: the phase record is written whether the answer is a
-	// nudge or an empty string.
+	// nudge or an empty string. The answer here is this test's own — the subject
+	// is the plumbing between the check and the frame, not the check.
 	t.Run("whatTheCheckAnswersReachesTheScreen", func(t *testing.T) {
 		withTempHome(t)
 		nudge := "update available · run vc update to install v9.9.9"
@@ -443,21 +460,18 @@ func TestDefaultBareLaunchDepsRunTheUpdateCheck(t *testing.T) {
 			t.Fatal("the update half never reported ready")
 		}
 		if got != nudge {
-			t.Fatalf("nudge = %q, want %q — what the check found never left the probe", got, nudge)
+			t.Fatalf("nudge = %q, want %q — an update answer does not survive the trip from the probe to the frame", got, nudge)
 		}
 	})
 
-	// And the check itself has to be the real one. The release address is a
-	// compile-time constant with no injection point (internal/update/update.go:26),
-	// so a test cannot watch the request without generating production traffic;
-	// comparing the function the default deps carry is the closest honest thing.
-	// Replace launchUpdateCheck with a stub that answers "" and this fails —
-	// no phase record and no nudge test can tell the difference.
+	// And the function wired in has to be launchUpdateCheck rather than some
+	// stub. This catches a replacement of the function, not a hollowing-out of
+	// it: an emptied launchUpdateCheck has the same address as a working one.
 	t.Run("theCheckInTheDefaultDepsIsTheRealOne", func(t *testing.T) {
 		wired := reflect.ValueOf(defaultLaunchPreflightDeps().update).Pointer()
 		real := reflect.ValueOf(launchUpdateCheck).Pointer()
 		if wired != real {
-			t.Fatal("the default probe does not run launchUpdateCheck — something else is wired in, and no user will hear about a new version")
+			t.Fatal("the default probe does not run launchUpdateCheck — something else is wired in where the update check belongs")
 		}
 	})
 }
