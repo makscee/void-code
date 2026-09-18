@@ -26,6 +26,21 @@ describe('pinned registry fixture controls — actual bound ExtensionAPI and Age
     rig.close();
   });
 
+  it('native widening re-registration replaces the surviving object without changing logical selection', async () => {
+    const rig = await pinRig();
+    rig.pi.registerProvider(provider, controlConfig([F]));
+    const old = requiredModel(rig, F);
+    expect(await rig.pi.setModel(old)).toBe(true);
+    const selectionCount = rig.selections.length;
+    rig.pi.registerProvider(provider, controlConfig([F, A]));
+    const fresh = requiredModel(rig, F);
+    expect(fresh).not.toBe(old);
+    expect(rig.session.model).not.toBe(old);
+    expect(rig.session.model).toMatchObject({ provider, id: F });
+    expect(rig.selections).toHaveLength(selectionCount);
+    rig.close();
+  });
+
   it('native invalid registration throws synchronously before replacing old config or selected object', async () => {
     const rig = await pinRig();
     rig.pi.registerProvider(provider, controlConfig());
@@ -164,7 +179,15 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
     expect(calls[0].snapshot?.pendingEffectPlan).toEqual(token);
     expect(calls.map(c => c.method)).toEqual(fault === 'register_invalid' ? ['register'] : ['register', 'set']);
     expect(registryIds(rig)).toEqual(fault === 'register_invalid' ? (direction === 'widening' ? [F] : [A, B, F]) : d.authority.allowedCodexModelIds);
-    expect(rig.session.model).toBe(fault === 'reject_after' ? requiredModel(rig, after.desiredTarget.selectionModelId!) : stale);
+    const selected = rig.session.model;
+    if (fault === 'register_invalid') expect(selected).toBe(stale);
+    else if (fault === 'reject_after') expect(selected).toBe(requiredModel(rig, after.desiredTarget.selectionModelId!));
+    else if (direction === 'widening') {
+      const freshSurvivor = requiredModel(rig, F);
+      expect(freshSurvivor).not.toBe(stale);
+      expect(selected).not.toBe(stale);
+      expect(selected).toMatchObject({ provider, id: F });
+    } else expect(selected).toBe(stale);
     const staged = models.find(m => m.id === after.desiredTarget.selectionModelId)!;
     await blocked(rig, [stale, staged]);
     expect(rig.boundary.maximumActive).toBeLessThanOrEqual(1);

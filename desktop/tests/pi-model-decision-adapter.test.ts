@@ -332,9 +332,13 @@ describe('R5 paired production witnesses — actual managed stream Response.head
     const rig = await wider(); rig.dequeueBarrier.value = deferred<void>();
     const response = await receiveHeaders(rig, encoded(decision('12', true)));
     await rig.boundary.entered.promise;
-    await blocked(rig, [models[0] as Parameters<typeof rig.stream>[0], requiredModel(rig, F)]);
+    const staged = requiredModel(rig, F);
+    await blocked(rig, [models[0] as Parameters<typeof rig.stream>[0], staged]);
     rig.now.value = 1000n * NS;
     rig.dequeueBarrier.value.resolve(); rig.dequeueBarrier.value = null; await rig.controller().whenIdle();
-    assertClosed(rig.controller().snapshot()); await blocked(rig, [requiredModel(rig, F)]); await response.release();
+    assertClosed(rig.controller().snapshot());
+    expect(registryIds(rig)).toEqual([]); expect(rig.registry.find(staged.provider, F)).toBeUndefined();
+    const posts = rig.http.posts; await blocked(rig, [staged]); expect(rig.http.posts).toBe(posts);
+    await response.release();
   });
 });
