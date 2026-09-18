@@ -126,3 +126,76 @@ func TestLateAnswerReplacesOneIdentityWithAnother(t *testing.T) {
 		t.Fatalf("balance from the late answer did not reach the view:\n%s", view)
 	}
 }
+
+// The merge rule lives here and nowhere else. It used to exist twice — once in
+// this package for the late repaint, once in cmd/vc for the next menu frame —
+// and the two copies could drift apart without a single test noticing: a
+// mutation in either half survived the whole suite. One exported rule, called
+// by both sides, is what makes a mutation in it fail both packages.
+
+func TestMergeIdentityKeepsAKnownNameWhenTheAnswerHasNone(t *testing.T) {
+	current := welcome.AuthState{LoggedIn: true, Identity: "known@example.com", UpdateNudge: "update available"}
+	answer := welcome.AuthState{LoggedIn: true, IdentityUnverified: true}
+
+	merged := welcome.MergeIdentity(current, answer)
+
+	if merged.Identity != "known@example.com" {
+		t.Fatalf("Identity = %q, want the known %q", merged.Identity, "known@example.com")
+	}
+	if !merged.IdentityUnverified {
+		t.Fatalf("IdentityUnverified = false, want true — the kept name was not re-checked (%+v)", merged)
+	}
+	if merged.UpdateNudge != "update available" {
+		t.Fatalf("UpdateNudge = %q, want it kept — an identity answer knows nothing about updates", merged.UpdateNudge)
+	}
+}
+
+func TestMergeIdentityTakesTheAnswersNameAndMoney(t *testing.T) {
+	balance := 3.25
+	current := welcome.AuthState{LoggedIn: true, Identity: "stale@example.com", IdentityUnverified: true, UpdateNudge: "update available"}
+	answer := welcome.AuthState{LoggedIn: true, Identity: "fresh@example.com", BalanceUsd: &balance}
+
+	merged := welcome.MergeIdentity(current, answer)
+
+	if merged.Identity != "fresh@example.com" {
+		t.Fatalf("Identity = %q, want %q", merged.Identity, "fresh@example.com")
+	}
+	if merged.IdentityUnverified {
+		t.Fatalf("IdentityUnverified = true on a checked answer (%+v)", merged)
+	}
+	if merged.BalanceUsd == nil || *merged.BalanceUsd != balance {
+		t.Fatalf("BalanceUsd = %v, want %v", merged.BalanceUsd, balance)
+	}
+	if merged.UpdateNudge != "update available" {
+		t.Fatalf("UpdateNudge = %q, want it kept", merged.UpdateNudge)
+	}
+}
+
+func TestMergeIdentityPrefersTheAnswersOwnNudge(t *testing.T) {
+	current := welcome.AuthState{LoggedIn: true, Identity: "known@example.com", UpdateNudge: "old nudge"}
+	answer := welcome.AuthState{LoggedIn: true, Identity: "known@example.com", UpdateNudge: "new nudge"}
+
+	if merged := welcome.MergeIdentity(current, answer); merged.UpdateNudge != "new nudge" {
+		t.Fatalf("UpdateNudge = %q, want %q — a nudge the answer carries is the newer one", merged.UpdateNudge, "new nudge")
+	}
+}
+
+// A rejected token is the one answer that must erase rather than preserve:
+// keeping the name here would put it straight back on a screen that has just
+// learned the session is gone.
+func TestMergeIdentityDoesNotResurrectTheNameOfALoggedOutAnswer(t *testing.T) {
+	current := welcome.AuthState{LoggedIn: true, Identity: "known@example.com", UpdateNudge: "update available"}
+	answer := welcome.AuthState{LoggedIn: false}
+
+	merged := welcome.MergeIdentity(current, answer)
+
+	if merged.LoggedIn {
+		t.Fatalf("LoggedIn = true after a logged-out answer (%+v)", merged)
+	}
+	if merged.Identity != "" {
+		t.Fatalf("Identity = %q after a logged-out answer, want empty", merged.Identity)
+	}
+	if merged.UpdateNudge != "update available" {
+		t.Fatalf("UpdateNudge = %q, want it kept — losing the session says nothing about updates", merged.UpdateNudge)
+	}
+}

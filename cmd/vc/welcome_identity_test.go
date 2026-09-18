@@ -13,7 +13,9 @@ import (
 // The welcome screen must show who the logged-in user is. It is drawn from
 // local state only (resolveLocalAuthStateWithSource fills LoggedIn and
 // IdentityUnverified and nothing else), while the launch preflight that already
-// asked the server is never consulted. welcomeStateFromPreflight joins the two.
+// asked the server is never consulted. welcomeScreenState joins the two, and it
+// answers with a pair: the frame to draw now, and the channel a later answer
+// arrives on — both decided by one poll of the preflight (v3, point 2).
 //
 // The contract these tests pin (v2, after the review panel):
 //
@@ -59,7 +61,7 @@ func newIdentityPreflight(t *testing.T, clock *preflightClock, token string, aut
 
 // waitForPreflightAuth blocks until the preflight has stored its auth result.
 //
-// Needed because point D forbids welcomeStateFromPreflight from waiting for the
+// Needed because point D forbids welcomeScreenState from waiting for the
 // answer itself: a test that wants the fresh-answer branch has to know the
 // answer already arrived, or it races the goroutine that stores it. The timeout
 // is a failure guard, not a delay — these fixtures answer immediately.
@@ -70,6 +72,14 @@ func waitForPreflightAuth(t *testing.T, p *launchPreflight) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("preflight auth never completed")
 	}
+}
+
+// welcomeScreenStateOnly keeps the subtests that are about the drawn frame
+// readable: welcomeScreenState answers with the pair (frame, late channel) from
+// a single poll, and these cases assert on the frame half.
+func welcomeScreenStateOnly(local welcome.AuthState, p *launchPreflight, token, authHost string) welcome.AuthState {
+	state, _ := welcomeScreenState(local, p, token, authHost)
+	return state
 }
 
 func loggedInLocalState() welcome.AuthState {
@@ -90,7 +100,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		waitForPreflightAuth(t, p)
 
 		local := welcome.AuthState{LoggedIn: false, UpdateNudge: welcomeIdentityNudge}
-		got := welcomeStateFromPreflight(local, p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(local, p, "tok", "https://auth.example")
 
 		if got != local {
 			t.Fatalf("logged-out state changed: got %+v, want %+v", got, local)
@@ -107,7 +117,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 		if !got.LoggedIn {
 			t.Fatalf("LoggedIn = false, want true (%+v)", got)
@@ -135,7 +145,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 		if got.Identity != "u-fresh" {
 			t.Fatalf("Identity = %q, want %q", got.Identity, "u-fresh")
@@ -163,7 +173,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 		cached, ok := readMeCache("https://auth.example", "tok", time.Now())
 		if !ok {
@@ -188,7 +198,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 		if got.Identity != "cached@example.com" {
 			t.Fatalf("Identity = %q, want %q", got.Identity, "cached@example.com")
@@ -246,7 +256,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 			p := build(t, clock)
 			waitForPreflightAuth(t, p)
 
-			got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+			got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 			if !got.LoggedIn {
 				t.Fatalf("LoggedIn = false, want true (%+v)", got)
@@ -276,7 +286,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 		if got.Identity != "u-cached" {
 			t.Fatalf("Identity = %q, want %q", got.Identity, "u-cached")
@@ -301,7 +311,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		waitForPreflightAuth(t, p)
 
 		local := welcome.AuthState{LoggedIn: true, Identity: "known@example.com", IdentityUnverified: true, UpdateNudge: welcomeIdentityNudge}
-		got := welcomeStateFromPreflight(local, p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(local, p, "tok", "https://auth.example")
 
 		if got.Identity != "known@example.com" {
 			t.Fatalf("Identity = %q, want %q — a known identity must not be replaced by nothing", got.Identity, "known@example.com")
@@ -331,14 +341,14 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		first := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		first := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 		if first.Identity != "fresh@example.com" {
 			t.Fatalf("first render Identity = %q, want %q", first.Identity, "fresh@example.com")
 		}
 
 		// Five minutes pass in the menu; the preflight stops being reusable.
 		clock.now = clock.now.Add(launchPreflightFreshness + time.Minute)
-		second := welcomeStateFromPreflight(first, p, "tok", "https://auth.example")
+		second := welcomeScreenStateOnly(first, p, "tok", "https://auth.example")
 
 		if second.Identity != "fresh@example.com" {
 			t.Fatalf("Identity after the preflight went stale = %q, want %q", second.Identity, "fresh@example.com")
@@ -362,7 +372,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 		waitForPreflightAuth(t, p)
 
-		got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 
 		if !got.LoggedIn {
 			t.Fatalf("LoggedIn = false, want true (%+v)", got)
@@ -397,7 +407,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 
 		start := time.Now()
-		got := welcomeStateFromPreflight(loggedInLocalState(), p, "tok", "https://auth.example")
+		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
 		elapsed := time.Since(start)
 
 		// Well under authProbeTimeout (2s): the point is that nothing is waited
