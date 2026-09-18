@@ -276,11 +276,21 @@ func TestWelcomeScreenStateForgetsTheUserWhenTheTokenIsRejected(t *testing.T) {
 	}
 }
 
-// Hole 1. A probe that failed on the network has to leave that behind it, or
-// the next caller walks into the same timeout. Observable without opening the
-// cache file: the next lookup answers "temporarily unavailable" from what the
-// probe left, and never reaches the server to find out.
-func TestFailedProbeStopsTheNextLookupFromRetryingIntoTheSameTimeout(t *testing.T) {
+// A probe that failed on the network leaves a transient marker behind it, so
+// that the next lookup does not walk into the same timeout.
+//
+// This observes it through cachedFetchMeState — and that reader has no
+// production callers: it is reachable only from cachedFetchMe, which has none
+// either (measured: `grep -rn "cachedFetchMeState\|cachedFetchMe(" --include=*.go
+// . | grep -v _test` lists definitions only). So the marker is written by live
+// code and read by nobody: today nothing in production is faster or gentler for
+// it existing. The observation is kept because it is the only one there is, and
+// because it does pin the write; what it cannot do is prove the invariant earns
+// its keep. The live consumer this is waiting for is the menu's own re-probe
+// after `Open profile`, which today starts a fresh probe into whatever failure
+// the last one just hit. Either that path learns to consult the marker, or the
+// branch that writes it should go — a decision for the owner, not for a test.
+func TestFailedProbeIsRememberedSoTheNextLookupDoesNotRetryIntoIt(t *testing.T) {
 	withTempHome(t)
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -369,5 +379,60 @@ func TestFrameShowsTheAvailableAnswerRatherThanTheCachedName(t *testing.T) {
 	}
 	if late != nil {
 		t.Fatal("a channel was opened for an answer that is already in the frame")
+	}
+}
+
+// B2. Every other test here hands the probe a fake auth function, which is
+// below authGate — the layer that actually runs in production. So this one
+// starts the probe the way defaultLaunchPreflightDeps does, with authGate
+// itself, and lets a real 401 travel the whole way: server → FetchMe →
+// authGate → the probe's stored answer → the frame. If the rejection loses its
+// identity along that path, the screen keeps naming a user whose session is
+// gone, and the cached name outlives the session that earned it.
+func TestRejectedTokenStopsNamingTheUserThroughTheRealAuthGate(t *testing.T) {
+	withTempHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	// The name a previous, working session left behind.
+	writeMeCache(srv.URL, "tok", auth.MeResult{UserID: "u-cached", Email: "cached@example.com"}, time.Now())
+
+	deps := launchPreflightDeps{
+		now:         time.Now,
+		auth:        authGate, // the production probe, not a stand-in
+		update:      func() string { return "" },
+		newClient:   srv.Client,
+		diagnostics: newLaunchDiagnostics(false, time.Now, nil),
+	}
+	p := startLaunchPreflight("tok", srv.URL, false, deps)
+	waitForPreflightAuth(t, p)
+
+	local := welcome.AuthState{LoggedIn: true, Identity: "cached@example.com", IdentityUnverified: true, UpdateNudge: welcomeIdentityNudge}
+	frame, late := welcomeScreenState(local, p, "tok", srv.URL)
+	if late != nil {
+		t.Fatal("a channel was opened for an answer that already arrived")
+	}
+
+	if frame.LoggedIn {
+		t.Fatalf("frame still logged in after the server rejected the token (%+v)", frame)
+	}
+	if frame.Identity != "" {
+		t.Fatalf("frame Identity = %q after the server rejected the token, want the screen to stop naming anyone", frame.Identity)
+	}
+	if frame.UpdateNudge != welcomeIdentityNudge {
+		t.Fatalf("UpdateNudge = %q, want %q — losing the session says nothing about updates", frame.UpdateNudge, welcomeIdentityNudge)
+	}
+	if cached, ok := readMeCache(srv.URL, "tok", time.Now()); ok {
+		t.Fatalf("me cache still holds %+v — the next launch would name a user who has no session", cached.Me)
+	}
+
+	// And the frame after it, built when the probe is no longer reusable, has
+	// nothing left to resurrect the name from either.
+	next, _ := welcomeScreenState(frame, nil, "tok", srv.URL)
+	if next.Identity != "" {
+		t.Fatalf("the next frame names %q again after the rejection", next.Identity)
 	}
 }

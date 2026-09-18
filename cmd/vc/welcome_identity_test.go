@@ -405,8 +405,13 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		withTempHome(t)
 		base := time.Now()
 		writeMeCache("https://auth.example", "tok", auth.MeResult{UserID: "u-cached", Email: "cached@example.com"}, base.Add(-10*time.Minute))
+		// Released and drained inside the subtest, not from t.Cleanup: cleanups
+		// run last-registered-first, so a release registered after withTempHome
+		// wakes the probe goroutine while the temporary home is being removed,
+		// and it files its answer into a directory mid-deletion. That made this
+		// subtest fail at random and, worse, made a mutant's red
+		// indistinguishable from noise.
 		blocked := make(chan struct{})
-		t.Cleanup(func() { close(blocked) })
 		clock := &preflightClock{now: base}
 		p := newIdentityPreflight(t, clock, "tok", func(string, string, *http.Client) (auth.MeResult, bool, error) {
 			<-blocked // the server never answers while this test runs
@@ -414,7 +419,7 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		})
 
 		start := time.Now()
-		got := welcomeScreenStateOnly(loggedInLocalState(), p, "tok", "https://auth.example")
+		got, late := welcomeScreenState(loggedInLocalState(), p, "tok", "https://auth.example")
 		elapsed := time.Since(start)
 
 		// Well under authProbeTimeout (2s): the point is that nothing is waited
@@ -428,6 +433,14 @@ func TestWelcomeStateFromPreflight(t *testing.T) {
 		}
 		if !got.IdentityUnverified {
 			t.Fatalf("IdentityUnverified = false while the answer is still in flight (%+v)", got)
+		}
+
+		// Waiting for the answer is not enough: the watcher files it in the
+		// cache after that, under the home this subtest is about to delete.
+		// Draining the channel to close is what proves the watcher is finished.
+		close(blocked)
+		waitForPreflightAuth(t, p)
+		for range late {
 		}
 	})
 }
