@@ -86,11 +86,20 @@ func (b *bareLaunchProbe) menu(state welcome.AuthState, token, authHost string, 
 	return b.result, b.err
 }
 
+// startedProbes records every probe the path started, so a test can say both
+// how many there were and which one the menu was handed.
+type startedProbes struct {
+	all []*launchPreflight
+}
+
+func (s *startedProbes) count() int { return len(s.all) }
+
 // testBareLaunchDeps is a path that reaches nothing real: no terminal, no
 // network, no process exit. Each test overrides the one edge it is about.
-func testBareLaunchDeps(t *testing.T, menu *bareLaunchProbe) (bareLaunchDeps, *bytes.Buffer) {
+func testBareLaunchDeps(t *testing.T, menu *bareLaunchProbe) (bareLaunchDeps, *bytes.Buffer, *startedProbes) {
 	t.Helper()
 	stderr := &bytes.Buffer{}
+	started := &startedProbes{}
 	return bareLaunchDeps{
 		args:        []string{"vc"},
 		stderr:      stderr,
@@ -100,19 +109,21 @@ func testBareLaunchDeps(t *testing.T, menu *bareLaunchProbe) (bareLaunchDeps, *b
 			return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, "tok", "https://auth.example", sourceLocal
 		},
 		startProbe: func(token, authHost string) *launchPreflight {
-			return newIdentityPreflight(t, &preflightClock{now: time.Now()}, token, func(string, string, *http.Client) (auth.MeResult, bool, error) {
+			p := newIdentityPreflight(t, &preflightClock{now: time.Now()}, token, func(string, string, *http.Client) (auth.MeResult, bool, error) {
 				return auth.MeResult{UserID: "u-probe", Email: "probe@example.com"}, true, nil
 			})
+			started.all = append(started.all, p)
+			return p
 		},
 		menu:        menu.menu,
 		handleError: func(error) { t.Fatal("the path handled an error none of its parts produced") },
-	}, stderr
+	}, stderr, started
 }
 
 func TestRunBareLaunchOnATTYBuildsTheMenuFromTheProbeAndLocalState(t *testing.T) {
 	withTempHome(t)
 	menu := &bareLaunchProbe{result: welcome.Quit}
-	deps, stderr := testBareLaunchDeps(t, menu)
+	deps, stderr, started := testBareLaunchDeps(t, menu)
 
 	previous := currentLaunchDiagnostics
 	t.Cleanup(func() { currentLaunchDiagnostics = previous })
@@ -131,9 +142,23 @@ func TestRunBareLaunchOnATTYBuildsTheMenuFromTheProbeAndLocalState(t *testing.T)
 	if menu.p == nil {
 		t.Fatal("menu got no preflight — nothing would ever ask the server who this is")
 	}
+	// Exactly one, and that one. Comparing the answers instead would prove
+	// nothing: two probes started against the same server answer identically,
+	// so a path that starts a second and throws the first away — one wasted
+	// /v1/vc/me on every launch — would read as correct.
+	//
+	// Identity is safe to demand here because runBareLaunch does not re-probe:
+	// the re-probe after `Open profile` belongs to the menu, behind its own
+	// deps, and never reaches this seam.
+	if started.count() != 1 {
+		t.Fatalf("the path started %d probes, want exactly 1 — every extra one is a request the user pays for and nobody reads", started.count())
+	}
+	if menu.p != started.all[0] {
+		t.Fatal("menu was handed a different probe than the one this path started")
+	}
 	waitForPreflightAuth(t, menu.p)
 	if answer, done := menu.p.answerIfDone(); !done || answer.me.Email != "probe@example.com" {
-		t.Fatalf("the preflight handed to the menu is not the one this path started (done=%v answer=%+v)", done, answer.me)
+		t.Fatalf("the probe handed to the menu never answered (done=%v answer=%+v)", done, answer.me)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want nothing on the interactive path", stderr.String())
@@ -185,7 +210,7 @@ func TestRunBareLaunchTellsTheThreeGateOutcomesApart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			withTempHome(t)
 			menu := &bareLaunchProbe{result: welcome.Quit}
-			deps, stderr := testBareLaunchDeps(t, menu)
+			deps, stderr, _ := testBareLaunchDeps(t, menu)
 			deps.args = tc.args
 			deps.stdinTTY = func() bool { return tc.tty }
 			loggedIn := tc.loggedIn
@@ -217,7 +242,7 @@ func TestRunBareLaunchPassesOnSubCommandsAndRaw(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			withTempHome(t)
 			menu := &bareLaunchProbe{result: welcome.Quit}
-			deps, _ := testBareLaunchDeps(t, menu)
+			deps, _, _ := testBareLaunchDeps(t, menu)
 			deps.args = args
 			probes := 0
 			deps.startProbe = func(string, string) *launchPreflight { probes++; return nil }
@@ -244,7 +269,7 @@ func TestRunBareLaunchEndsTheProcessOnSpawnAndReportsItsError(t *testing.T) {
 	t.Run("spawnWithoutError", func(t *testing.T) {
 		withTempHome(t)
 		menu := &bareLaunchProbe{result: welcome.SpawnPi}
-		deps, _ := testBareLaunchDeps(t, menu)
+		deps, _, _ := testBareLaunchDeps(t, menu)
 		previous := currentLaunchDiagnostics
 		t.Cleanup(func() { currentLaunchDiagnostics = previous })
 
@@ -257,7 +282,7 @@ func TestRunBareLaunchEndsTheProcessOnSpawnAndReportsItsError(t *testing.T) {
 		withTempHome(t)
 		failure := io.ErrUnexpectedEOF
 		menu := &bareLaunchProbe{result: welcome.SpawnPi, err: failure}
-		deps, _ := testBareLaunchDeps(t, menu)
+		deps, _, _ := testBareLaunchDeps(t, menu)
 		handled := []error{}
 		deps.handleError = func(err error) { handled = append(handled, err) }
 		previous := currentLaunchDiagnostics
