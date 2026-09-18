@@ -108,20 +108,26 @@ func TestRunWelcomeMenuHandsTheScreenAnIdentityAndAChannel(t *testing.T) {
 	}
 }
 
-// Point 4: the preflight answer is a snapshot of launch. "Top up" and "Open
-// profile" are the two places where the money on screen can change while the
-// menu is open, so a second frame may not keep claiming a verified balance that
-// nobody re-checked. Either it is asked again, or it is shown unverified and
-// without a number.
+// Point 4: the preflight answer is a snapshot of launch, and `Open profile` is
+// the live path where the money can change while the menu is open, so the probe
+// has to be re-run rather than the old number re-shown.
+//
+// Probes are counted by the events they send rather than by a shared int: the
+// probe runs on its own goroutine, so an int written there and read here is a
+// data race, and a mutex alone would only make the race quiet — the read can
+// still land before the re-probe's goroutine has run at all. Waiting for the
+// event is what makes the observation both race-free and decisive, and it waits
+// in the test rather than in the menu: the menu must never block on the network
+// before a frame.
 func TestRunWelcomeMenuDoesNotPresentAStaleBalanceAsVerified(t *testing.T) {
 	withTempHome(t)
 	clock := &preflightClock{now: time.Now()}
 	balance := 12.5
-	authCalls := 0
+	probes := make(chan struct{}, 8)
 	deps := launchPreflightDeps{
 		now: clock.Now,
 		auth: func(string, string, *http.Client) (auth.MeResult, bool, error) {
-			authCalls++
+			probes <- struct{}{}
 			return auth.MeResult{UserID: "u-fresh", Email: "fresh@example.com", BalanceUsd: &balance}, true, nil
 		},
 		update:      func() string { return "" },
@@ -130,43 +136,56 @@ func TestRunWelcomeMenuDoesNotPresentAStaleBalanceAsVerified(t *testing.T) {
 	}
 	p := startLaunchPreflight("tok", "https://auth.example", false, deps)
 	waitForPreflightAuth(t, p)
+	awaitProbe(t, probes, "the launch probe")
 
-	callsBeforeSecondFrame := 0
 	var calls []menuScreenCall
 	screen := scriptedScreen(t, &calls,
-		func() welcome.RunResult {
-			callsBeforeSecondFrame = authCalls
-			return welcome.RunProfile // the user goes off to spend money
-		},
+		func() welcome.RunResult { return welcome.RunProfile }, // the user goes off to spend money
 		func() welcome.RunResult { return welcome.Quit },
 	)
 
 	if _, err := runWelcomeMenu(loggedInLocalState(), "tok", "https://auth.example", p, failingMenuDeps(t, screen, deps)); err != nil {
 		t.Fatalf("menu returned %v", err)
 	}
+	drainLateChannels(calls)
+
 	if len(calls) != 2 {
 		t.Fatalf("screen drawn %d times, want 2", len(calls))
 	}
-
 	// Sanity: the launch answer is fresh, so the first frame may show money.
 	if calls[0].state.BalanceUsd == nil || calls[0].state.IdentityUnverified {
 		t.Fatalf("first frame should carry the just-checked balance, got %+v", calls[0].state)
 	}
 
-	// `Open profile` is the one live path where the balance can change while
-	// the menu is open (the ShowTopUp branch is unreachable: the model keeps
-	// that result to itself and never returns it to the loop). So the probe
-	// must actually be re-run, not merely hedged with an "unverified" label.
-	if authCalls <= callsBeforeSecondFrame {
-		t.Fatalf("the server was not asked again after `Open profile` (auth calls: %d before, %d after) — the balance on the next frame is a snapshot of launch", callsBeforeSecondFrame, authCalls)
-	}
+	awaitProbe(t, probes, "the re-probe after `Open profile`")
+
 	second := calls[1].state
-	if second.BalanceUsd != nil && !second.IdentityUnverified && authCalls == callsBeforeSecondFrame {
-		t.Fatalf("second frame shows $%.2f as verified after `Open profile`, but the server was never asked again (auth calls: %d) — the number may be stale", *second.BalanceUsd, authCalls)
-	}
-	// Whatever it chose, it may not forget who is logged in.
 	if second.Identity != "fresh@example.com" {
 		t.Fatalf("second frame Identity = %q, want %q", second.Identity, "fresh@example.com")
+	}
+}
+
+// awaitProbe waits for one probe to start. The deadline only decides how a
+// failure reads: a probe that was started is already on its way.
+func awaitProbe(t *testing.T, probes <-chan struct{}, which string) {
+	t.Helper()
+	select {
+	case <-probes:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s never ran — the balance on the next frame is a snapshot of launch", which)
+	}
+}
+
+// drainLateChannels waits out the watchers a frame may have left behind. They
+// file their answer in the me cache, and a watcher still running when the
+// test's temporary home is removed writes into a directory mid-deletion.
+func drainLateChannels(calls []menuScreenCall) {
+	for _, call := range calls {
+		if call.late == nil {
+			continue
+		}
+		for range call.late {
+		}
 	}
 }
 
