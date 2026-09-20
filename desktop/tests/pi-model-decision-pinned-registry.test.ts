@@ -1,6 +1,25 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { A, B, F, NS, assertClosed, assertPins, blocked, bootstrap, configurePinFetch, controlConfig, decision, deferred, encoded, legacy, models, pinRig, productRig, provider, receiveHeaders, registryIds, requiredModel } from './fixtures/pi-model-decision';
-import type { Fault, ProductRig } from './fixtures/pi-model-decision';
+import type { Fault, ProductRig, Rig } from './fixtures/pi-model-decision';
+
+type NativeSelectionEvent = {
+  type: 'model_select';
+  model: { id: string; provider: string };
+  previousModel?: { id: string; provider: string };
+  source: 'set' | 'cycle' | 'restore';
+};
+
+function nextNativeSelection(rig: Rig, modelId: string, source: NativeSelectionEvent['source'] = 'set'): Promise<NativeSelectionEvent> {
+  const witnessed = deferred<NativeSelectionEvent>();
+  let resolved = false;
+  rig.pi.on('model_select', event => {
+    const selection = event as NativeSelectionEvent;
+    if (resolved || selection.source !== source || selection.model.provider !== provider || selection.model.id !== modelId) return;
+    resolved = true;
+    witnessed.resolve(selection);
+  });
+  return witnessed.promise;
+}
 
 beforeAll(async () => { assertPins(); await configurePinFetch(); }, 60_000);
 
@@ -23,6 +42,44 @@ describe('pinned registry fixture controls — actual bound ExtensionAPI and Age
     expect(registryIds(rig)).toEqual([]);
     expect(rig.session.model).toBe(fresh);
     expect(rig.registry.find(provider, F)).toBeUndefined();
+    rig.close();
+  });
+
+  it('native method entry precedes selection; model_select witnesses the applied object', async () => {
+    const methodEntered = deferred<void>();
+    const authEntered = deferred<void>();
+    const releaseAuth = deferred<void>();
+    const rig = await pinRig(pi => {
+      const nativeSetModel = pi.setModel.bind(pi);
+      pi.setModel = model => {
+        methodEntered.resolve();
+        return nativeSetModel(model);
+      };
+    });
+    rig.pi.registerProvider(provider, controlConfig());
+    const target = requiredModel(rig, F);
+    const before = rig.session.model;
+    const selectionCount = rig.selections.length;
+    const selectionEvent = nextNativeSelection(rig, F);
+    const originalCheckAuth = rig.runtime.checkAuth;
+    rig.runtime.checkAuth = async id => {
+      authEntered.resolve();
+      await releaseAuth.promise;
+      return originalCheckAuth.call(rig.runtime, id);
+    };
+
+    const selecting = rig.pi.setModel(target);
+    await Promise.all([methodEntered.promise, authEntered.promise]);
+    expect(rig.selections).toHaveLength(selectionCount);
+    expect(rig.session.model).toBe(before);
+
+    releaseAuth.resolve();
+    const event = await selectionEvent;
+    expect(event).toMatchObject({ type: 'model_select', model: { provider, id: F }, source: 'set' });
+    expect(rig.selections.at(-1)).toBe(event);
+    expect(rig.session.model).toBe(event.model);
+    expect(await selecting).toBe(true);
+    rig.runtime.checkAuth = originalCheckAuth;
     rig.close();
   });
 
@@ -141,8 +198,10 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
   });
   it.each(['set', 'cycle'] as const)('real own model_select is provisional; interleaved user %s cannot overwrite memory or deadlock worker', async action => {
     const rig = await productRig({ startup: decision('11') }); rigs.push(rig); await rig.pi.setModel(requiredModel(rig, A)); await rig.readback(decision('12', true));
-    const stale = rig.session.model!; rig.boundary.entered = deferred<void>(); rig.boundary.holdSet = deferred<void>();
-    const response = await receiveHeaders(rig, encoded(decision('13'))); await rig.boundary.entered.promise;
+    const stale = rig.session.model!; rig.boundary.holdSet = deferred<void>();
+    const nativeOwnSelection = nextNativeSelection(rig, A);
+    const response = await receiveHeaders(rig, encoded(decision('13'))); const nativeOwn = await nativeOwnSelection;
+    expect(rig.session.model).toBe(nativeOwn.model);
     const pending = rig.controller().snapshot(); expect(pending.preRestrictionModelId).toBe(A); assertClosed(pending);
     const own = rig.trace.filter(t => t.kind === 'event-ingress' && t.event?.type === 'localModelSelected' && t.event.ownEffectToken !== null).at(-1);
     expect(own?.event).toMatchObject({ ownEffectToken: pending.pendingEffectPlan, modelId: A, providerId: provider });
@@ -155,9 +214,11 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
 
   it.each(['success', 'failure'] as const)('real old-epoch %s cannot cross navigateTree rebase; fresh request context must reapply', async outcome => {
     const rig = await productRig({ startup: decision('11') }); rigs.push(rig); await rig.pi.setModel(requiredModel(rig, A));
-    const root = rig.sm.getBranch()[0].id; rig.boundary.entered = deferred<void>(); rig.boundary.holdSet = deferred<void>();
+    const root = rig.sm.getBranch()[0].id; rig.boundary.holdSet = deferred<void>();
     if (outcome === 'failure') rig.boundary.fault = 'reject_after';
-    const response = await receiveHeaders(rig, encoded(decision('12', true))); await rig.boundary.entered.promise;
+    const obsoleteSelection = nextNativeSelection(rig, F);
+    const response = await receiveHeaders(rig, encoded(decision('12', true))); const obsolete = await obsoleteSelection;
+    expect(rig.session.model).toBe(obsolete.model);
     const old = rig.controller().snapshot(); await rig.session.navigateTree(root, { summarize: false });
     const rebased = rig.controller().snapshot(); expect(rebased.branchContextEpoch).toBe(old.branchContextEpoch + 1n); expect(rebased.highestSeenGeneration).toBe('12'); assertClosed(rebased);
     rig.boundary.holdSet.resolve(); rig.boundary.holdSet = null; await rig.controller().whenIdle(); assertClosed(rig.controller().snapshot());
@@ -239,10 +300,11 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
   it.each(['success', 'failure'].flatMap(outcome => ['full', 'legacy'].map(input => ({ outcome, input }))))('real delayed stale $input $outcome cannot acknowledge/fail/cancel superseding authority; single worker repairs', async ({ outcome, input }) => {
     const rig = await productRig({ startup: decision() }); rigs.push(rig);
     await rig.pi.setModel(requiredModel(rig, A)); const old = rig.session.model!;
-    rig.boundary.entered = deferred<void>(); rig.boundary.holdSet = deferred<void>();
+    rig.boundary.holdSet = deferred<void>();
     if (outcome === 'failure') rig.boundary.fault = 'reject_after';
+    const obsoleteSelection = nextNativeSelection(rig, F);
     const response = await receiveHeaders(rig, input === 'legacy' ? legacy() : encoded(decision('12', true)));
-    await rig.boundary.entered.promise;
+    const obsolete = await obsoleteSelection; expect(rig.session.model).toBe(obsolete.model);
     const previous = rig.controller().snapshot(); await blocked(rig, [old, requiredModel(rig, F)]);
     const d = decision(input === 'legacy' ? '12' : '13', input === 'legacy'); if (input === 'full') d.authority.allowedCodexModelIds = [B, F];
     const delivered = rig.respondReadback(d);
