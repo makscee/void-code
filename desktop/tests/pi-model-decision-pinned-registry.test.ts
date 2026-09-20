@@ -26,6 +26,24 @@ describe('pinned registry fixture controls — actual bound ExtensionAPI and Age
     rig.close();
   });
 
+  it('native setModel retains its argument identity when the replacement registry has a distinct logical row', async () => {
+    const rig = await pinRig();
+    rig.pi.registerProvider(provider, controlConfig());
+    const stale = requiredModel(rig, A);
+    expect(await rig.pi.setModel(stale)).toBe(true);
+    const passed = models.find(model => model.id === F)!;
+    rig.pi.registerProvider(provider, controlConfig([F]));
+    const fresh = requiredModel(rig, F);
+    expect(passed).not.toBe(fresh);
+    expect(await rig.pi.setModel(passed)).toBe(true);
+    expect(rig.session.model).toBe(passed);
+    expect(rig.session.model).not.toBe(fresh);
+    expect(rig.session.model).toMatchObject({ provider, id: F });
+    expect(registryIds(rig)).toEqual([F]);
+    expect(rig.registry.find(provider, A)).toBeUndefined();
+    rig.close();
+  });
+
   it('native widening re-registration replaces the surviving object without changing logical selection', async () => {
     const rig = await pinRig();
     rig.pi.registerProvider(provider, controlConfig([F]));
@@ -181,8 +199,10 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
     expect(registryIds(rig)).toEqual(fault === 'register_invalid' ? (direction === 'widening' ? [F] : [A, B, F]) : d.authority.allowedCodexModelIds);
     const selected = rig.session.model;
     if (fault === 'register_invalid') expect(selected).toBe(stale);
-    else if (fault === 'reject_after') expect(selected).toBe(requiredModel(rig, after.desiredTarget.selectionModelId!));
-    else if (direction === 'widening') {
+    else if (fault === 'reject_after') {
+      expect(selected).toMatchObject({ provider, id: after.desiredTarget.selectionModelId });
+      expect(d.authority.allowedCodexModelIds).toContain(selected?.id);
+    } else if (direction === 'widening') {
       const freshSurvivor = requiredModel(rig, F);
       expect(freshSurvivor).not.toBe(stale);
       expect(selected).not.toBe(stale);
