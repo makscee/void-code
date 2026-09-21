@@ -365,9 +365,10 @@ export interface Controller {
 export interface Product extends Record<string, unknown> {
   default(pi: Pinned.ExtensionAPI, options: unknown): void | Promise<void>;
   getModelDecisionController(pi: Pinned.ExtensionAPI): Controller;
+  parseBootstrap(input: unknown): { ok: boolean; bootstrap?: unknown };
   streamVoidCodex: Ai.StreamFunction;
 }
-export async function managed(): Promise<Product> { return await productModule('pi_extension.ts', ['default', 'getModelDecisionController', 'streamVoidCodex']) as Product; }
+export async function managed(): Promise<Product> { return await productModule('pi_extension.ts', ['default', 'getModelDecisionController', 'parseBootstrap', 'streamVoidCodex']) as Product; }
 export type Fault = 'register_invalid' | 'false' | 'throw' | 'reject_before' | 'reject_after' | 'native_false' | 'native_reject';
 export class MethodBoundary {
   fault: Fault | null = null;
