@@ -24,6 +24,12 @@ const (
 	// base URL, where the access-request route actually lives; the check
 	// follows relay, not the sign-in host.
 	EnvAccessCheckHost = "VC_ACCESS_CHECK_HOST"
+
+	// Model-decision timing is explicit runtime configuration. These values have
+	// no compiled defaults; the bootstrap boundary validates them before use.
+	EnvModelDecisionPollIntervalSeconds = "VC_MODEL_DECISION_POLL_INTERVAL_SECONDS"
+	EnvModelDecisionTTLSeconds          = "VC_MODEL_DECISION_TTL_SECONDS"
+	EnvModelDecisionExpirySkewSeconds   = "VC_MODEL_DECISION_EXPIRY_SKEW_SECONDS"
 )
 
 // Defaults — DNS names, not raw IPs (grill decision A8/A10).
@@ -52,6 +58,13 @@ type Config struct {
 	// ErrAccessNotGranted made next door, for the same reason.
 	// Base URL, no trailing slash.
 	AccessCheckHost string
+
+	// Model-decision timing values are retained exactly as supplied. They are
+	// intentionally empty when their environment variables are unset; the Go
+	// bootstrap boundary validates them and supplies no defaults.
+	ModelDecisionPollIntervalSeconds string
+	ModelDecisionTTLSeconds          string
+	ModelDecisionExpirySkewSeconds   string
 }
 
 // Resolve builds Config from env, falling back to compiled defaults.
@@ -106,6 +119,10 @@ func Resolve(getenv func(string) string) Config {
 		Lang:        lang,
 
 		AccessCheckHost: accessCheckHost,
+
+		ModelDecisionPollIntervalSeconds: getenv(EnvModelDecisionPollIntervalSeconds),
+		ModelDecisionTTLSeconds:          getenv(EnvModelDecisionTTLSeconds),
+		ModelDecisionExpirySkewSeconds:   getenv(EnvModelDecisionExpirySkewSeconds),
 	}
 }
 

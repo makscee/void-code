@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/makscee/void-code/internal/auth"
@@ -29,12 +30,6 @@ type piModelDecisionDescriptor struct {
 	CatalogExpirySkewSeconds  string `json:"catalogExpirySkewSeconds"`
 }
 
-const (
-	piModelDecisionPollIntervalSeconds       = "17"
-	piModelDecisionCatalogDecisionTTLSeconds = "120"
-	piModelDecisionCatalogExpirySkewSeconds  = "2"
-)
-
 type piBootstrapProvider struct {
 	Kind            string   `json:"kind"`
 	RelayProviderID string   `json:"relayProviderId"`
@@ -51,6 +46,51 @@ var piBootstrapCmd = &cobra.Command{Use: "pi-bootstrap", Short: "Return transien
 
 func init() { rootCmd.AddCommand(piBootstrapCmd) }
 
+type piModelDecisionTiming struct {
+	pollIntervalSeconds string
+	decisionTTLSeconds  string
+	expirySkewSeconds   string
+}
+
+func parseCanonicalModelDecisionSeconds(name, value string, min, max uint64) (uint64, error) {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return 0, fmt.Errorf("%s must be a canonical unsigned decimal", name)
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, fmt.Errorf("%s must be a canonical unsigned decimal", name)
+		}
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("%s must be in [%d,%d]", name, min, max)
+	}
+	return n, nil
+}
+
+func configuredModelDecisionTiming(cfg config.Config) (piModelDecisionTiming, error) {
+	_, err := parseCanonicalModelDecisionSeconds(config.EnvModelDecisionPollIntervalSeconds, cfg.ModelDecisionPollIntervalSeconds, 1, 300)
+	if err != nil {
+		return piModelDecisionTiming{}, err
+	}
+	ttl, err := parseCanonicalModelDecisionSeconds(config.EnvModelDecisionTTLSeconds, cfg.ModelDecisionTTLSeconds, 1, 2147483647)
+	if err != nil {
+		return piModelDecisionTiming{}, err
+	}
+	skew, err := parseCanonicalModelDecisionSeconds(config.EnvModelDecisionExpirySkewSeconds, cfg.ModelDecisionExpirySkewSeconds, 0, 2147483647)
+	if err != nil {
+		return piModelDecisionTiming{}, err
+	}
+	if skew >= ttl {
+		return piModelDecisionTiming{}, fmt.Errorf("%s must be less than %s", config.EnvModelDecisionExpirySkewSeconds, config.EnvModelDecisionTTLSeconds)
+	}
+	return piModelDecisionTiming{
+		pollIntervalSeconds: cfg.ModelDecisionPollIntervalSeconds,
+		decisionTTLSeconds:  cfg.ModelDecisionTTLSeconds,
+		expirySkewSeconds:   cfg.ModelDecisionExpirySkewSeconds,
+	}, nil
+}
+
 // currentPiBootstrap exposes every subscription-granted Pi transport to Pi,
 // not a VC-selected active provider. Pi's native model picker owns selection.
 func currentPiBootstrap() (piBootstrap, error) {
@@ -59,6 +99,10 @@ func currentPiBootstrap() (piBootstrap, error) {
 		return piBootstrap{}, fmt.Errorf("Pi bootstrap requires `vc login`")
 	}
 	cfg := config.OSResolve()
+	timing, err := configuredModelDecisionTiming(cfg)
+	if err != nil {
+		return piBootstrap{}, fmt.Errorf("invalid model-decision timing configuration: %w", err)
+	}
 	readback, err := url.Parse(cfg.AccessCheckHost)
 	if err != nil || strings.TrimSpace(cfg.AccessCheckHost) != cfg.AccessCheckHost ||
 		(readback.Scheme != "http" && readback.Scheme != "https") || readback.Host == "" ||
@@ -77,9 +121,9 @@ func currentPiBootstrap() (piBootstrap, error) {
 		ModelDecision: &piModelDecisionDescriptor{
 			SchemaVersion:             1,
 			ReadbackURL:               cfg.AccessCheckHost + "/v1/vc/me",
-			PollIntervalSeconds:       piModelDecisionPollIntervalSeconds,
-			CatalogDecisionTTLSeconds: piModelDecisionCatalogDecisionTTLSeconds,
-			CatalogExpirySkewSeconds:  piModelDecisionCatalogExpirySkewSeconds,
+			PollIntervalSeconds:       timing.pollIntervalSeconds,
+			CatalogDecisionTTLSeconds: timing.decisionTTLSeconds,
+			CatalogExpirySkewSeconds:  timing.expirySkewSeconds,
 		},
 	}
 	for _, info := range infos {
