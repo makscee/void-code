@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/makscee/void-code/internal/auth"
@@ -123,9 +124,11 @@ func TestCurrentPiBootstrapRejectsInvalidModelDecisionTimingConfiguration(t *tes
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
+			var providerRequests atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				providerRequests.Add(1)
 				if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer fixture-token" {
-					t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+					t.Errorf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
 					{"id": "opaque-provider-grant", "name": "opaque", "type": "openai-codex-oauth"},
@@ -139,7 +142,11 @@ func TestCurrentPiBootstrapRejectsInvalidModelDecisionTimingConfiguration(t *tes
 				t.Fatal(err)
 			}
 
-			if _, err := currentPiBootstrap(); err == nil {
+			_, err := currentPiBootstrap()
+			if got := providerRequests.Load(); got != 0 {
+				t.Errorf("Auth provider requests = %d, want 0 before rejecting invalid timing configuration", got)
+			}
+			if err == nil {
 				t.Fatal("currentPiBootstrap() succeeded with invalid model-decision timing configuration; want fail-closed error")
 			}
 		})
@@ -150,9 +157,11 @@ func TestCurrentPiBootstrapRejectsMissingModelDecisionTiming(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	var providerRequests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerRequests.Add(1)
 		if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer fixture-token" {
-			t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+			t.Errorf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
 			{"id": "opaque-provider-grant", "name": "opaque", "type": "openai-codex-oauth"},
@@ -170,7 +179,11 @@ func TestCurrentPiBootstrapRejectsMissingModelDecisionTiming(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := currentPiBootstrap(); err == nil {
+	_, err := currentPiBootstrap()
+	if got := providerRequests.Load(); got != 0 {
+		t.Errorf("Auth provider requests = %d, want 0 before rejecting missing timing configuration", got)
+	}
+	if err == nil {
 		t.Fatal("currentPiBootstrap() succeeded without model-decision timing configuration; want fail-closed error")
 	}
 }
