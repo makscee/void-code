@@ -9,7 +9,7 @@ import { errorMonitor } from 'node:events';
 import { InteractiveMode, SessionManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
-import managed, { getModelDecisionController } from './managed.ts';
+import managed from './managed.ts';
 import { nativeWitness, preserveNativeFailure } from './pi-fullscreen-native-witness.ts';
 import type { ComponentView, LifecycleHandler, TuiView, WidgetContent, WidgetOptions } from './pi-fullscreen-clipboard';
 
@@ -59,11 +59,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   tui.start();
   const failures: string[] = [];
   const handlers = new Map<string, LifecycleHandler[]>();
-  let providers = 0;
   let widgets = 0;
   const api = new Proxy(pi, { get(target, key) {
     if (key === 'on') return (name: string, handler: LifecycleHandler) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); };
-    if (key === 'registerProvider') return (...args: Parameters<ExtensionAPI['registerProvider']>) => { providers++; return target.registerProvider(...args); };
     return Reflect.get(target, key);
   } });
   // Narrow, provenance-bound hook extracted from the selected consumer's actual
@@ -97,11 +95,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   assert.equal(disposed, 2); assert.equal(receiver.extensionWidgetsBelow.size, 0);
   setWidget('astra-consumer-control', undefined); assert.equal(disposed, 2);
   const sessionManager = SessionManager.inMemory(process.cwd());
-  const ctx = { mode: 'tui', hasUI: true, sessionManager,
-    // The real Pi context keeps the current model here. Supplying the already-selected
-    // compatibility model lets the production effect skip a synthetic model selection while
-    // still requiring the real provider-registration effect to settle.
-    model: { provider: 'void-codex', id: 'gpt-5.6-terra' }, ui: {
+  const ctx = { mode: 'tui', hasUI: true, sessionManager, ui: {
     notify: (message: string) => failures.push(message),
     setWidget: (key: string, value: WidgetContent, options?: WidgetOptions) => {
       if (typeof value === 'function') widgets++;
@@ -116,19 +110,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // The actual consumer loader imports the unchanged Go-managed source above.
   const fixtureReadbackURL = 'https://fixture-readback.invalid/opaque/native-clipboard?fixture=1';
   const fixtureAuthToken = 'fixture-native-auth-not-a-credential';
-  const fixtureDecision = {
-    schemaVersion: 1, generation: '11', outcome: 'catalog',
-    evaluatedAt: '2026-09-16T12:00:00.000000000Z', validUntil: '2026-09-16T12:02:00.000000000Z',
-    authority: {
-      effectiveAssignmentRevision: '1', assignmentHeadRevision: '2', scheduledSuccessor: null,
-      policyRevision: '3', tierId: 'fixture-tier', tierModelSetDigest: 'fixture-set', calibrationRevision: '4',
-      providerGrantSetRevision: '5', poolRevision: '6', poolCollectionRevision: '7', controlRevision: '8',
-      controlEpoch: '9', quotaLatchRevision: '10', quotaEpisode: null, inputFingerprint: 'fixture-native-fingerprint',
-      controlMode: 'active', quotaState: 'normal', restrictionActive: false,
-      allowedCodexModelIds: ['gpt-5.6-terra'], defaultCodexModelId: 'gpt-5.6-terra',
-      fallbackCodexModelId: 'gpt-5.6-terra', effectiveCodexModelId: 'gpt-5.6-terra',
-    },
-  };
   const fixtureBootstrap = {
     version: 2, relayUrl: 'https://fixture-relay.invalid/managed', authToken: fixtureAuthToken,
     providers: [{ kind: 'codex', relayProviderId: 'fixture-native-route', models: ['gpt-5.6-terra'] }],
@@ -136,20 +117,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       schemaVersion: 1, readbackUrl: fixtureReadbackURL, pollIntervalSeconds: '30',
       catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '5',
     },
-  };
-  // Install the responder before constructing the managed extension. The controller captures
-  // no fixture transport: its real session_start handler performs this fetch itself.
-  const originalFetch = globalThis.fetch;
-  let readbackCalls = 0;
-  globalThis.fetch = async (...args: Parameters<typeof fetch>): ReturnType<typeof fetch> => {
-    const [input, init] = args;
-    const requestURL = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    assert.equal(requestURL, fixtureReadbackURL);
-    assert.equal(init?.method, 'GET');
-    assert.equal(init?.cache, 'no-store');
-    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${fixtureAuthToken}`);
-    readbackCalls++;
-    return new Response(JSON.stringify(fixtureDecision), { headers: { 'content-type': 'application/json' } });
   };
   const originalExec = childProcess.execFileSync;
   const previousBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
@@ -167,29 +134,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     else process.env.VC_BOOTSTRAP_EXECUTABLE = previousBootstrapExecutable;
     syncBuiltinESMExports();
   }
-  assert.equal(providers, 0, 'managed provider registered before V2 authority application');
-  assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
-
-  try {
-    syncBuiltinESMExports();
-    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
-    const controller = getModelDecisionController(api);
-    const authorityDeadline = Date.now() + 5000;
-    let snapshot = controller.snapshot();
-    let selectable = controller.isSelectable('void-codex', 'gpt-5.6-terra');
-    while (
-      Date.now() < authorityDeadline &&
-      (providers === 0 || snapshot.authorityStatus !== 'active' || !selectable)
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      snapshot = controller.snapshot();
-      selectable = controller.isSelectable('void-codex', 'gpt-5.6-terra');
-    }
-    assert.ok(readbackCalls > 0, 'V2 session_start did not perform configured readback before authority timeout');
-    assert.ok(providers > 0, 'V2 authority did not register managed provider before timeout');
-    assert.equal(snapshot.authorityStatus, 'active', `V2 authority was not applied before timeout (status: ${snapshot.authorityStatus})`);
-    assert.ok(selectable, 'V2 authority did not leave the selected model usable before timeout');
-  } finally { globalThis.fetch = originalFetch; syncBuiltinESMExports(); }
+  // managed() registers fullscreen clipboard first and the model-decision controller second.
+  // Invoke only the real clipboard lifecycle callback: invoking every captured session_start
+  // callback here would run the controller while Pi is still loading the extension factory,
+  // before action methods such as registerProvider exist.
+  const clipboardSessionStart = handlers.get('session_start')?.[0];
+  assert.ok(clipboardSessionStart, 'default clipboard lifecycle missing');
+  const clipboardSessionShutdown = handlers.get('session_shutdown')?.[0];
+  assert.ok(clipboardSessionShutdown, 'default clipboard shutdown lifecycle missing');
+  syncBuiltinESMExports();
+  await clipboardSessionStart({ reason: 'startup' }, ctx);
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;
@@ -231,7 +185,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } as typeof originalSpawn;
   try {
     syncBuiltinESMExports();
-    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    await clipboardSessionStart({ reason: 'startup' }, ctx);
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
     for (const [index, marker] of markers.entries()) {
       failureIndex = index;
@@ -282,7 +236,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     });
   } finally {
     try {
-      for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+      await clipboardSessionShutdown({ reason: 'quit' }, ctx);
       consumer.clearExtensionWidgets.call(receiver);
       tui.stop({ preserveScreen: true });
     } catch (error) {
