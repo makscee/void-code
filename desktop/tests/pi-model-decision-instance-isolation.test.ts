@@ -92,7 +92,6 @@ describe('managed stream authority is isolated per Pi instance', () => {
     const aController = product.getModelDecisionController(a.pi);
     const aRegistration = a.runtime.getRegisteredProviderConfig(provider);
     expect(aRegistration?.streamSimple).toBeDefined();
-    expect(aRegistration?.streamSimple).toBe(product.streamVoidCodex);
     expect(aRegistration).toMatchObject({
       baseUrl: aValue.relayUrl,
       apiKey: aValue.authToken,

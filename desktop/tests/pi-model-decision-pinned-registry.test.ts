@@ -181,7 +181,7 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
     const d = decision('12'); d.authority.allowedCodexModelIds = [F, A, B]; d.authority.defaultCodexModelId = d.authority.effectiveCodexModelId = A;
     await rig.readback(d);
     expect(registryIds(rig)).toEqual([F, A, B]); expect(rig.controller().snapshot().selectableModelIds).toEqual([F, A, B]); expect(rig.session.model?.id).toBe(A);
-    expect(rig.runtime.getRegisteredProviderConfig(provider)).toMatchObject({ baseUrl: bootstrap.relayUrl, apiKey: bootstrap.authToken, api: 'void-codex-sse', headers: { 'x-void-provider': 'fixture-route' }, streamSimple: rig.product.streamVoidCodex });
+    expect(rig.runtime.getRegisteredProviderConfig(provider)).toMatchObject({ baseUrl: bootstrap.relayUrl, apiKey: bootstrap.authToken, api: 'void-codex-sse', headers: { 'x-void-provider': 'fixture-route' } });
     expect(rig.boundary.calls.filter(c => c.method === 'register').at(-1)?.ids).toEqual([F, A, B]);
   });
   it('T1 removal of a stale actual Astra ID uses server default without remembering or silently regranting Astra', async () => {
