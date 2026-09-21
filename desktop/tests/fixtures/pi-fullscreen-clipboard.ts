@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -66,12 +66,20 @@ export async function realPi(): Promise<PiView> {
   return import(/* @vite-ignore */ pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
 }
 export function embeddedSource(): string {
-  // Same Go raw-string extraction used by scripts/check-bundled-pi-smoke.mjs.
+  const typeScript = path.resolve('../cmd/vc/pi_extension.ts');
+  if (existsSync(typeScript)) {
+    const source = readFileSync(typeScript, 'utf8');
+    expect(source, 'authoritative managed transport source fixture').toMatch(/^\/\/ void-code-managed-pi-extension:v1/);
+    return source;
+  }
+
+  // Pre-migration RED compatibility only. Once the TypeScript source exists it is authoritative,
+  // and malformed or unreadable TypeScript must fail instead of falling back to duplicate Go bytes.
   const go = readFileSync(path.resolve('../cmd/vc/pi_extension.go'), 'utf8');
   const marker = 'const piVoidCodexExtensionSource = `';
   const start = go.indexOf(marker);
   const end = go.indexOf('`', start + marker.length);
-  expect(start, 'managed transport source fixture').toBeGreaterThanOrEqual(0);
+  expect(start, 'legacy managed transport source fixture').toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return go.slice(start + marker.length, end);
 }

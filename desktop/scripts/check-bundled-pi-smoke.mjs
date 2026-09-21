@@ -16,7 +16,7 @@
 //     arrive, Pi does NOT fail -- it reads somebody else's package.json or none at all, and becomes
 //     version 0.0.0 with somebody else's app name and settings directory.
 //
-// The extension is the real one, from cmd/vc/pi_extension.go, not a toy: it is the one that breaks.
+// The extension is the real one, from cmd/vc/pi_extension.ts, not a toy: it is the one that breaks.
 //
 // This lives on the pinned-Pi provision path because Pi is vendored and pinned by hash: a silent
 // failure is impossible in production and possible exactly at the moment somebody bumps the pin.
@@ -85,16 +85,27 @@ async function main() {
     const home = path.join(work, 'home');
     await mkdir(home, { recursive: true });
 
-    // Exactly the extension text vc writes for the user. A Go raw string cannot contain a backtick, so
-    // the bounds are unambiguous.
-    const extensionGo = await readFile(path.join(repo, 'cmd/vc/pi_extension.go'), 'utf8');
-    const marker = 'const piVoidCodexExtensionSource = `';
-    const opens = extensionGo.indexOf(marker);
-    const closes = opens < 0 ? -1 : extensionGo.indexOf('`', opens + marker.length);
-    if (closes < 0) die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_extension.go has no raw string piVoidCodexExtensionSource.\n  If it was renamed, fix it here rather than switching the check off.');
-    const extensionSource = extensionGo.slice(opens + marker.length, closes);
-    if (!extensionSource.startsWith('// void-code-managed-pi-extension:v1')) {
-      die('the smoke\'s own setup, not the bundle', '  The extracted extension does not start with its own version marker -- the Go parse has drifted.');
+    // Exactly the authoritative TypeScript extension text vc writes for the user. Before the source
+    // migration lands, this RED commit alone retains the old Go raw string as a compatibility input.
+    // Once the TypeScript path exists, an invalid or unreadable file must fail here: duplicate Go
+    // bytes can never mask a broken authority. Exact Go embedding is owned by the Go wire test.
+    const extensionTypeScript = path.join(repo, 'cmd/vc/pi_extension.ts');
+    let extensionSource;
+    if (existsSync(extensionTypeScript)) {
+      extensionSource = await readFile(extensionTypeScript, 'utf8');
+      if (!extensionSource.startsWith('// void-code-managed-pi-extension:v1')) {
+        die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_extension.ts does not start with its ownership marker.');
+      }
+    } else {
+      const extensionGo = await readFile(path.join(repo, 'cmd/vc/pi_extension.go'), 'utf8');
+      const marker = 'const piVoidCodexExtensionSource = `';
+      const opens = extensionGo.indexOf(marker);
+      const closes = opens < 0 ? -1 : extensionGo.indexOf('`', opens + marker.length);
+      if (closes < 0) die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_extension.ts is absent and cmd/vc/pi_extension.go has no legacy raw string piVoidCodexExtensionSource.\n  Keep the fallback only until the authoritative TypeScript migration lands.');
+      extensionSource = extensionGo.slice(opens + marker.length, closes);
+      if (!extensionSource.startsWith('// void-code-managed-pi-extension:v1')) {
+        die('the smoke\'s own setup, not the bundle', '  The legacy extracted extension does not start with its ownership marker.');
+      }
     }
     const extension = path.join(work, 'extension.ts');
     await writeFile(extension, extensionSource);
