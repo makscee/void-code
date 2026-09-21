@@ -89,12 +89,18 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	}
 
 	bootstrapPayload, err := json.Marshal(map[string]any{
-		"version":   1,
+		"version":   2,
 		"relayUrl":  upstream.URL,
 		"authToken": "local-only",
 		"providers": []map[string]any{
 			{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-5.6-terra"}},
-			{"kind": "deepseek", "relayProviderId": "deepseek-local", "models": []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"}},
+		},
+		"modelDecision": map[string]any{
+			"schemaVersion":             1,
+			"readbackUrl":               "https://fixture.invalid/v1/vc/me",
+			"pollIntervalSeconds":       "30",
+			"catalogDecisionTtlSeconds": "300",
+			"catalogExpirySkewSeconds":  "5",
 		},
 	})
 	if err != nil {

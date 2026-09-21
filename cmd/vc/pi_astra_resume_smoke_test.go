@@ -38,7 +38,7 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const bootstrapJSON = `{"version":1,"relayUrl":"https://relay.invalid","authToken":"local-only","providers":[{"kind":"codex","relayProviderId":"codex-local","models":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-6-astra"]},{"kind":"deepseek","relayProviderId":"deepseek-local","models":["deepseek/deepseek-v4-pro","deepseek/deepseek-v4-flash"]}]}`
+	const bootstrapJSON = `{"version":2,"relayUrl":"https://relay.invalid","authToken":"local-only","providers":[{"kind":"codex","relayProviderId":"codex-local","models":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-6-astra"]}],"modelDecision":{"schemaVersion":1,"readbackUrl":"https://fixture.invalid/v1/vc/me","pollIntervalSeconds":"30","catalogDecisionTtlSeconds":"300","catalogExpirySkewSeconds":"5"}}`
 	bootstrap := filepath.Join(work, "bootstrap.sh")
 	if err := os.WriteFile(bootstrap, []byte("#!/bin/sh\n[ \"$1\" = \"pi-bootstrap\" ] || exit 1\nprintf '%s' '"+bootstrapJSON+"'\n"), 0700); err != nil {
 		t.Fatal(err)

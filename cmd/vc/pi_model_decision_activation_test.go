@@ -27,7 +27,9 @@ func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T)
 		}})
 	}))
 	defer server.Close()
+	const accessCheckHost = "https://access-check.fixture.invalid:9444"
 	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", accessCheckHost)
 	t.Setenv("VC_RELAY_HOST", "https://relay.fixture.invalid:9443")
 	if err := auth.Save("fixture-token"); err != nil {
 		t.Fatal(err)
@@ -45,6 +47,10 @@ func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T)
 	}
 
 	descriptor := got.ModelDecision
+	const wantReadbackURL = accessCheckHost + "/v1/vc/me"
+	if descriptor.ReadbackURL != wantReadbackURL {
+		t.Errorf("readback URL = %q, want configured access-check authority %q", descriptor.ReadbackURL, wantReadbackURL)
+	}
 	readback, err := url.Parse(descriptor.ReadbackURL)
 	if err != nil || (readback.Scheme != "http" && readback.Scheme != "https") || readback.Host == "" {
 		t.Errorf("readback URL = %q, want an opaque absolute HTTP(S) authority URL", descriptor.ReadbackURL)
