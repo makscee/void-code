@@ -32,8 +32,6 @@ interface Bootstrap {
 	providers: BootstrapProvider[];
 	modelDecision?: ModelDecisionConfig;
 }
-let activeBootstrap: Bootstrap | undefined;
-let activeModelController: ModelDecisionController | undefined;
 const MANAGED_WEB_SEARCH_INSTRUCTION = "For current or externally verifiable facts, use web_search. Use multiple queries for research, inspect primary sources with fetch_content, and cite links. Use get_search_content to revisit stored results.";
 
 interface ClipboardIOOptions {
@@ -62,14 +60,11 @@ interface ClipboardExtensionOptions {
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
-	activeBootstrap = undefined;
-	activeModelController = undefined;
 	const bootstrap = options?.modelDecision ? options.modelDecision.bootstrap : loadBootstrap();
 	if (!bootstrap) return;
 	const parsed = parseBootstrap(bootstrap);
 	if (!parsed.ok) return;
 	const transport = parsed.bootstrap;
-	activeBootstrap = transport;
 	const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
 	const ceiling = options?.modelDecision?.compatibilityModels ?? transport.providers.flatMap(provider => {
 		if (provider.kind === "codex") {
@@ -78,7 +73,7 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 		return [];
 	});
 	const controller = new ModelDecisionController(pi, transport, ceiling, options?.modelDecision);
-	modelControllers.set(pi, controller); activeModelController = controller;
+	modelControllers.set(pi, controller);
 	let managedSearchAvailable = false;
 	for (const provider of transport.providers) {
 		if (provider.kind === "codex") managedSearchAvailable = true;
@@ -90,8 +85,10 @@ function registerVoidCodex(
 	pi: ExtensionAPI,
 	bootstrap: Bootstrap,
 	models: Model<any>[],
-	relayProviderId?: string,
+	relayProviderId: string | undefined,
+	controller: ModelDecisionController,
 ): void {
+	const stream = bindVoidCodexStream(bootstrap, controller);
 	pi.registerProvider(CODEX_PROVIDER_ID, {
 		name: "Void ChatGPT relay",
 		baseUrl: bootstrap.relayUrl,
@@ -99,7 +96,7 @@ function registerVoidCodex(
 		api: "void-codex-sse",
 		...(relayProviderId ? { headers: { "x-void-provider": relayProviderId } } : {}),
 		models,
-		streamSimple: streamVoidCodex,
+		streamSimple: stream,
 	});
 }
 
@@ -574,15 +571,29 @@ function codexModel(id: string, name: string): Model<any> {
 	};
 }
 
+function bindVoidCodexStream(
+	bootstrap: Bootstrap,
+	controller: ModelDecisionController,
+): (model: Model<any>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
+	return (model, context, options) => streamVoidCodexWithAuthority(model, context, options, bootstrap, controller);
+}
+
 export function streamVoidCodex(
 	model: Model<any>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	return streamVoidCodexWithAuthority(model, context, options);
+}
+
+function streamVoidCodexWithAuthority(
+	model: Model<any>,
+	context: Context,
+	options?: SimpleStreamOptions,
+	bootstrap?: Bootstrap,
+	controller?: ModelDecisionController,
+): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
-	// Capture the runtime, but never cache its permission across an await.
-	const controller = activeModelController;
-	const bootstrap = activeBootstrap;
 
 	(async () => {
 		const output: AssistantMessage = {
@@ -604,7 +615,7 @@ export function streamVoidCodex(
 		};
 
 		try {
-			if (controller && !controller.isSelectable(model.provider, model.id)) throw new Error("Void model decision is closed");
+			if (!controller || !controller.isSelectable(model.provider, model.id)) throw new Error("Void model decision is closed");
 			if (!bootstrap) throw new Error("Void provider bootstrap is unavailable");
 			const relayURL = bootstrap.relayUrl.replace(/\/+$/, "") + "/codex/responses";
 			const token = bootstrap.authToken;
@@ -624,18 +635,16 @@ export function streamVoidCodex(
 			if (options?.sessionId) headers["x-pi-session-id"] = options.sessionId;
 
 			// This is the admission linearization point, after all asynchronous payload hooks.
-			if (controller && !controller.isSelectable(model.provider, model.id)) throw new Error("Void model decision is closed");
-			const request = controller?.requestContext();
+			if (!controller.isSelectable(model.provider, model.id)) throw new Error("Void model decision is closed");
+			const request = controller.requestContext();
 			const response = await fetch(relayURL, {
 				method: "POST",
 				headers,
 				body,
 				signal: options?.signal,
 			});
-			if (controller && request) {
-				const snapshot = snapshotDecisionHeaders(response.headers);
-				await controller.receiveHeaders(snapshot, request);
-			}
+			const snapshot = snapshotDecisionHeaders(response.headers);
+			await controller.receiveHeaders(snapshot, request);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			if (!response.ok) {
 				throw new Error("Void relay Codex request failed: HTTP " + response.status + ": " + (await response.text()));
@@ -647,7 +656,7 @@ export function streamVoidCodex(
 			await processResponsesStream(parseSSE(response, options?.signal), output, stream, model);
 			normalizeUsage(output);
 			if (options?.signal?.aborted) throw new Error("Request was aborted");
-			if (controller) void controller.requestReadback();
+			void controller.requestReadback();
 			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 			stream.end();
 		} catch (error) {
@@ -1511,7 +1520,7 @@ class ModelDecisionController {
 				let stage = "register_provider";
 				try {
 					if (!this.bootstrap) throw new Error("bootstrap_unavailable");
-					registerVoidCodex(this.pi, this.bootstrap, structuredClone(effect.orderedModels), this.bootstrap.providers.find(p => p.kind === "codex")?.relayProviderId);
+					registerVoidCodex(this.pi, this.bootstrap, structuredClone(effect.orderedModels), this.bootstrap.providers.find(p => p.kind === "codex")?.relayProviderId, this);
 					const selection = effect.selectionModelId;
 					if (selection !== null && (this.ctx.model?.provider !== CODEX_PROVIDER_ID || this.ctx.model?.id !== selection)) {
 						stage = "resolve_model";
