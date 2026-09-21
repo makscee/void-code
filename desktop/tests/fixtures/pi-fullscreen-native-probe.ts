@@ -123,15 +123,33 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // The actual consumer loader imports the unchanged Go-managed source above.
   const fixtureReadbackURL = 'https://fixture-readback.invalid/opaque/native-clipboard?fixture=1';
   const fixtureAuthToken = 'fixture-native-auth-not-a-credential';
-  const fixtureBootstrap = {
-    version: 2, relayUrl: 'https://fixture-relay.invalid/managed', authToken: fixtureAuthToken,
-    providers: [{ kind: 'codex', relayProviderId: 'fixture-native-route', models: ['gpt-5.6-terra'] }],
-    modelDecision: {
-      schemaVersion: 1, readbackUrl: fixtureReadbackURL, pollIntervalSeconds: '30',
-      catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '5',
+  const fixtureDecision = {
+    schemaVersion: 1, generation: '1', outcome: 'catalog',
+    evaluatedAt: '2099-01-01T00:00:00.000000000Z', validUntil: '2099-01-01T00:05:00.000000000Z',
+    authority: {
+      effectiveAssignmentRevision: '1', assignmentHeadRevision: '1', scheduledSuccessor: null,
+      policyRevision: '1', tierId: 'fixture-tier', tierModelSetDigest: 'fixture-set', calibrationRevision: '1',
+      providerGrantSetRevision: '1', poolRevision: '1', poolCollectionRevision: '1', controlRevision: '1',
+      controlEpoch: '1', quotaLatchRevision: '1', quotaEpisode: null, inputFingerprint: 'fixture-fingerprint',
+      controlMode: 'active', quotaState: 'normal', restrictionActive: false,
+      allowedCodexModelIds: ['gpt-5.6-terra'], defaultCodexModelId: 'gpt-5.6-terra',
+      fallbackCodexModelId: 'gpt-5.6-terra', effectiveCodexModelId: 'gpt-5.6-terra',
     },
   };
   const originalExec = childProcess.execFileSync;
+  const originalFetch = globalThis.fetch;
+  const maxReadbacks = 16;
+  let readbackCount = 0;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, fixtureReadbackURL);
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.cache, 'no-store');
+    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${fixtureAuthToken}`);
+    assert.ok(readbackCount < maxReadbacks, 'fixture readback limit exceeded');
+    readbackCount++;
+    return new Response(JSON.stringify(fixtureDecision), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
   const previousBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
   process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
   childProcess.execFileSync = ((file: string, args: string[]) => {
@@ -259,6 +277,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       throw acceptanceFailed ? acceptanceError : error;
     } finally {
       childProcess.spawn = originalSpawn;
+      globalThis.fetch = originalFetch;
       syncBuiltinESMExports();
       // Native operations and lifecycle cleanup have finished; builtins are restored.
       for (const record of records) process.stderr.write(`${JSON.stringify(record)}\n`);
