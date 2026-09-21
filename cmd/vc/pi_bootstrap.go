@@ -105,8 +105,8 @@ func currentPiBootstrap() (piBootstrap, error) {
 	}
 	readback, err := url.Parse(cfg.AccessCheckHost)
 	if err != nil || strings.TrimSpace(cfg.AccessCheckHost) != cfg.AccessCheckHost ||
-		(readback.Scheme != "http" && readback.Scheme != "https") || readback.Host == "" ||
-		readback.User != nil || readback.Path != "" || readback.RawQuery != "" || readback.Fragment != "" {
+		(readback.Scheme != "http" && readback.Scheme != "https") || readback.Opaque != "" || readback.Host == "" ||
+		readback.User != nil || readback.Path != "" || readback.RawPath != "" || readback.ForceQuery || readback.RawQuery != "" || readback.Fragment != "" || readback.RawFragment != "" {
 		return piBootstrap{}, fmt.Errorf("configured model-decision readback authority is invalid")
 	}
 	infos, err := fetchProvidersLive(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
