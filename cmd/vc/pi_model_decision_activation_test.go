@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 // The live bootstrap boundary is the input to the managed authority controller;
 // accepting a V1 transport here would silently select the legacy extension path.
 func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -48,6 +50,16 @@ func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T)
 
 	descriptor := got.ModelDecision
 	const wantReadbackURL = accessCheckHost + "/v1/vc/me"
+	wantDescriptor := &piModelDecisionDescriptor{
+		SchemaVersion:             1,
+		ReadbackURL:               wantReadbackURL,
+		PollIntervalSeconds:       "19",
+		CatalogDecisionTTLSeconds: "241",
+		CatalogExpirySkewSeconds:  "7",
+	}
+	if !reflect.DeepEqual(descriptor, wantDescriptor) {
+		t.Errorf("modelDecision = %#v, want exact configured V2 descriptor %#v", descriptor, wantDescriptor)
+	}
 	if descriptor.ReadbackURL != wantReadbackURL {
 		t.Errorf("readback URL = %q, want configured access-check authority %q", descriptor.ReadbackURL, wantReadbackURL)
 	}
@@ -55,11 +67,49 @@ func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T)
 	if err != nil || (readback.Scheme != "http" && readback.Scheme != "https") || readback.Host == "" {
 		t.Errorf("readback URL = %q, want an opaque absolute HTTP(S) authority URL", descriptor.ReadbackURL)
 	}
+	for field, values := range map[string][2]string{
+		"pollIntervalSeconds":       {descriptor.PollIntervalSeconds, "19"},
+		"catalogDecisionTtlSeconds": {descriptor.CatalogDecisionTTLSeconds, "241"},
+		"catalogExpirySkewSeconds":  {descriptor.CatalogExpirySkewSeconds, "7"},
+	} {
+		if got, want := values[0], values[1]; got != want {
+			t.Errorf("%s = %q, want exactly configured fixture value %q", field, got, want)
+		}
+	}
 	boundedDescriptorSeconds(t, "pollIntervalSeconds", descriptor.PollIntervalSeconds, 1, 300)
 	ttl := boundedDescriptorSeconds(t, "catalogDecisionTtlSeconds", descriptor.CatalogDecisionTTLSeconds, 1, 2147483647)
 	skew := boundedDescriptorSeconds(t, "catalogExpirySkewSeconds", descriptor.CatalogExpirySkewSeconds, 0, 2147483647)
 	if skew >= ttl {
 		t.Errorf("catalog expiry skew = %d, want less than decision TTL %d", skew, ttl)
+	}
+}
+
+func TestCurrentPiBootstrapRejectsMissingModelDecisionTiming(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer fixture-token" {
+			t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+			{"id": "opaque-provider-grant", "name": "opaque", "type": "openai-codex-oauth"},
+		}})
+	}))
+	defer server.Close()
+	const accessCheckHost = "https://access-check.fixture.invalid:9444"
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", accessCheckHost)
+	t.Setenv("VC_RELAY_HOST", "https://relay.fixture.invalid:9443")
+	t.Setenv(modelDecisionPollIntervalEnv, "")
+	t.Setenv(modelDecisionTTLSecondsEnv, "")
+	t.Setenv(modelDecisionExpirySkewSecondsEnv, "")
+	if err := auth.Save("fixture-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := currentPiBootstrap(); err == nil {
+		t.Fatal("currentPiBootstrap() succeeded without model-decision timing configuration; want fail-closed error")
 	}
 }
 

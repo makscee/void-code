@@ -14,8 +14,22 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 )
 
+const (
+	modelDecisionPollIntervalEnv      = "VC_MODEL_DECISION_POLL_INTERVAL_SECONDS"
+	modelDecisionTTLSecondsEnv        = "VC_MODEL_DECISION_TTL_SECONDS"
+	modelDecisionExpirySkewSecondsEnv = "VC_MODEL_DECISION_EXPIRY_SKEW_SECONDS"
+)
+
+func configureModelDecisionTimingFixture(t *testing.T) {
+	t.Helper()
+	t.Setenv(modelDecisionPollIntervalEnv, "19")
+	t.Setenv(modelDecisionTTLSecondsEnv, "241")
+	t.Setenv(modelDecisionExpirySkewSecondsEnv, "7")
+}
+
 // A stale server-side DeepSeek grant must never become a selectable client transport.
 func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -68,6 +82,7 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 
 // A retired-only catalog must still bootstrap so the extension can remain fail-closed without treating it as a transport failure.
 func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -111,6 +126,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			configureModelDecisionTimingFixture(t)
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
@@ -145,6 +161,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing
 
 // A successful empty catalog is safe bootstrap metadata, not an auth or network failure.
 func TestCurrentPiBootstrapReturnsEmptyProvidersForEmptyCatalog(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
