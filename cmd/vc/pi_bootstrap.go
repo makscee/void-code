@@ -16,6 +16,16 @@ type piBootstrap struct {
 	RelayURL  string                `json:"relayUrl"`
 	AuthToken string                `json:"authToken"`
 	Providers []piBootstrapProvider `json:"providers"`
+	// Additive wire only. Live output remains V1 until a configured server authority exists.
+	ModelDecision *piModelDecisionDescriptor `json:"modelDecision,omitempty"`
+}
+
+type piModelDecisionDescriptor struct {
+	SchemaVersion             int    `json:"schemaVersion"`
+	ReadbackURL               string `json:"readbackUrl"`
+	PollIntervalSeconds       string `json:"pollIntervalSeconds"`
+	CatalogDecisionTTLSeconds string `json:"catalogDecisionTtlSeconds"`
+	CatalogExpirySkewSeconds  string `json:"catalogExpirySkewSeconds"`
 }
 type piBootstrapProvider struct {
 	Kind            string   `json:"kind"`
