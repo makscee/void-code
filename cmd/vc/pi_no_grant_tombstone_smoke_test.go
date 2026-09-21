@@ -31,7 +31,7 @@ func TestPiVoidCodexV1SourceDoesNotRegisterManagedCatalog(t *testing.T) {
 }
 
 // A V1 no-grant bootstrap must fail closed before any managed transport is registered.
-func TestPiVoidCodexV1NoGrantFailsClosedSmoke(t *testing.T) {
+func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the trusted bootstrap stub is a POSIX shell script; the pinned smoke stages darwin-arm64")
 	}
