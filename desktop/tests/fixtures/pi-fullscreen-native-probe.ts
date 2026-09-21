@@ -9,7 +9,7 @@ import { errorMonitor } from 'node:events';
 import { InteractiveMode, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
-import managed from './managed.ts';
+import managed, { getModelDecisionController } from './managed.ts';
 import { nativeWitness, preserveNativeFailure } from './pi-fullscreen-native-witness.ts';
 import type { ComponentView, LifecycleHandler, TuiView, WidgetContent, WidgetOptions } from './pi-fullscreen-clipboard';
 
@@ -109,18 +109,71 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } };
   // Substitute only bootstrap, never native clipboard IO or the managed factory.
   // The actual consumer loader imports the unchanged Go-managed source above.
+  const fixtureReadbackURL = 'https://fixture-readback.invalid/opaque/native-clipboard?fixture=1';
+  const fixtureAuthToken = 'fixture-native-auth-not-a-credential';
+  const fixtureDecision = {
+    schemaVersion: 1, generation: '11', outcome: 'catalog',
+    evaluatedAt: '2026-09-16T12:00:00.000000000Z', validUntil: '2026-09-16T12:02:00.000000000Z',
+    authority: {
+      effectiveAssignmentRevision: '1', assignmentHeadRevision: '2', scheduledSuccessor: null,
+      policyRevision: '3', tierId: 'fixture-tier', tierModelSetDigest: 'fixture-set', calibrationRevision: '4',
+      providerGrantSetRevision: '5', poolRevision: '6', poolCollectionRevision: '7', controlRevision: '8',
+      controlEpoch: '9', quotaLatchRevision: '10', quotaEpisode: null, inputFingerprint: 'fixture-native-fingerprint',
+      controlMode: 'active', quotaState: 'normal', restrictionActive: false,
+      allowedCodexModelIds: ['gpt-5.6-terra'], defaultCodexModelId: 'gpt-5.6-terra',
+      fallbackCodexModelId: 'gpt-5.6-terra', effectiveCodexModelId: 'gpt-5.6-terra',
+    },
+  };
+  const fixtureBootstrap = {
+    version: 2, relayUrl: 'https://fixture-relay.invalid/managed', authToken: fixtureAuthToken,
+    providers: [{ kind: 'codex', relayProviderId: 'fixture-native-route', models: ['gpt-5.6-terra'] }],
+    modelDecision: {
+      schemaVersion: 1, readbackUrl: fixtureReadbackURL, pollIntervalSeconds: '30',
+      catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '5',
+    },
+  };
   const originalExec = childProcess.execFileSync;
+  const previousBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
   process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
   childProcess.execFileSync = ((file: string, args: string[]) => {
     assert.equal(file, process.execPath); assert.deepEqual(args, ['pi-bootstrap']);
-    return JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] });
+    return JSON.stringify(fixtureBootstrap);
   }) as typeof execFileSync;
   try {
     syncBuiltinESMExports();
     await managed(api); // NO clipboardIO: exercise the real production default registration.
-  } finally { childProcess.execFileSync = originalExec; syncBuiltinESMExports(); }
-  assert.ok(providers > 0, 'synthetic bootstrap did not register provider');
+  } finally {
+    childProcess.execFileSync = originalExec;
+    if (previousBootstrapExecutable === undefined) delete process.env.VC_BOOTSTRAP_EXECUTABLE;
+    else process.env.VC_BOOTSTRAP_EXECUTABLE = previousBootstrapExecutable;
+    syncBuiltinESMExports();
+  }
+  assert.equal(providers, 0, 'managed provider registered before V2 authority application');
   assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
+
+  // The readback responder is fixture-owned and scoped to the configured opaque URL.
+  // It feeds the production parser/reducer/effect path; all other network is forbidden.
+  const originalFetch = globalThis.fetch;
+  let readbackCalls = 0;
+  globalThis.fetch = async (...args: Parameters<typeof fetch>): ReturnType<typeof fetch> => {
+    const [input, init] = args;
+    const requestURL = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    assert.equal(requestURL, fixtureReadbackURL);
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.cache, 'no-store');
+    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${fixtureAuthToken}`);
+    readbackCalls++;
+    return new Response(JSON.stringify(fixtureDecision), { headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    syncBuiltinESMExports();
+    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    const deadline = Date.now() + 5000;
+    while (providers === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(readbackCalls > 0, 'V2 session_start did not perform configured readback');
+    await getModelDecisionController(api).whenIdle();
+    assert.ok(providers > 0, 'V2 authority did not register managed provider');
+  } finally { globalThis.fetch = originalFetch; syncBuiltinESMExports(); }
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;
