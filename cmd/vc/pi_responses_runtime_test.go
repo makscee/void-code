@@ -35,7 +35,7 @@ func TestPiResponsesRuntimeLocal(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(voidCodexSmokeDecision())
 	}))
 	defer server.Close()
-	runPiResponsesRuntime(t, node, root, voidCodexSmokeBootstrap(t, server.URL+"/v1/vc/me", server.URL+"/relay"))
+	runPiResponsesRuntime(t, node, root, voidCodexSmokeBootstrap(t, server.URL+"/v1/vc/me", server.URL))
 }
 
 func runPiResponsesRuntime(t *testing.T, node, root, bootstrap string) {

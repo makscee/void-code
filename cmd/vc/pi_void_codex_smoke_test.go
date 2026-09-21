@@ -84,7 +84,7 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(voidCodexSmokeDecision())
 	}))
 	defer server.Close()
-	bootstrapJSON := voidCodexSmokeBootstrap(t, server.URL+"/v1/vc/me", server.URL+"/relay")
+	bootstrapJSON := voidCodexSmokeBootstrap(t, server.URL+"/v1/vc/me", server.URL)
 
 	runPiResponsesRuntime(t, prerequisites.node, filepath.Dir(filepath.Dir(prerequisites.piEntry)), bootstrapJSON)
 }
