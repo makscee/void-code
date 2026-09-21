@@ -247,11 +247,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const beforeSelection = operation;
       lines = marker.split('\n'); tui.renderNow();
       input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
+      failureStage = 'selection-bounds';
       assert.ok((tui as unknown as TuiView).getSelectionBounds()?.start.scrollView === scroll, 'real scroll-view selection missing');
       // Give queued microtasks/timers a turn: mouse release alone has no authority.
       await new Promise((resolve) => setTimeout(resolve, 20));
+      failureStage = 'selection-no-native-spawn';
       assert.equal(operation, beforeSelection, 'selection started a native writer without a copy key');
+      failureStage = 'selection-no-osc52';
       assert.equal(liveOsc52, 0, 'selection leaked to live OSC52 writer');
+      failureStage = 'selection-no-flash';
       assert.equal(succeeded, index, 'selection flashed Copied without a copy key');
       failureStage = 'native-completion';
       input(process.platform === 'darwin' ? '\x1b[99;9u' : '\x03');
