@@ -173,11 +173,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   try {
     syncBuiltinESMExports();
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
-    const deadline = Date.now() + 5000;
-    while (providers === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.ok(readbackCalls > 0, 'V2 session_start did not perform configured readback');
-    await getModelDecisionController(api).whenIdle();
-    assert.ok(providers > 0, 'V2 authority did not register managed provider');
+    const controller = getModelDecisionController(api);
+    const authorityDeadline = Date.now() + 5000;
+    let snapshot = controller.snapshot();
+    let selectable = controller.isSelectable('void-codex', 'gpt-5.6-terra');
+    while (
+      Date.now() < authorityDeadline &&
+      (providers === 0 || snapshot.authorityStatus !== 'active' || !selectable)
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      snapshot = controller.snapshot();
+      selectable = controller.isSelectable('void-codex', 'gpt-5.6-terra');
+    }
+    assert.ok(readbackCalls > 0, 'V2 session_start did not perform configured readback before authority timeout');
+    assert.ok(providers > 0, 'V2 authority did not register managed provider before timeout');
+    assert.equal(snapshot.authorityStatus, 'active', `V2 authority was not applied before timeout (status: ${snapshot.authorityStatus})`);
+    assert.ok(selectable, 'V2 authority did not leave the selected model usable before timeout');
   } finally { globalThis.fetch = originalFetch; syncBuiltinESMExports(); }
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);

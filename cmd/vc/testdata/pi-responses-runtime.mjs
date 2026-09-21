@@ -108,17 +108,21 @@ for (const scenario of [
     const controller = managedModule.getModelDecisionController(api);
     const ctx = { sessionManager, model: { provider: 'void-codex', id: 'gpt-5.6-terra' } };
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
-    const registrationDeadline = Date.now() + 5000;
-    while (!providers.has('void-codex') && Date.now() < registrationDeadline) {
+    const authorityDeadline = Date.now() + 5000;
+    let snapshot = controller.snapshot();
+    let selectable = controller.isSelectable('void-codex', 'gpt-5.6-terra');
+    while (
+      Date.now() < authorityDeadline &&
+      (!providers.has('void-codex') || snapshot.authorityStatus !== 'active' || !selectable)
+    ) {
       await new Promise(resolve => setTimeout(resolve, 10));
+      snapshot = controller.snapshot();
+      selectable = controller.isSelectable('void-codex', 'gpt-5.6-terra');
     }
-    await controller.whenIdle();
     const provider = providers.get('void-codex');
-    assert.ok(provider, 'V2 authority did not register the managed provider');
-    assert.ok(provider, 'provider must register');
-    const snapshot = controller.snapshot();
-    assert.equal(snapshot.authorityStatus, 'active', `V2 authority status: ${snapshot.authorityStatus}`);
-    assert.ok(controller.isSelectable('void-codex', 'gpt-5.6-terra'), 'V2 authority did not leave the selected model usable');
+    assert.ok(provider, 'V2 authority did not register the managed provider before timeout');
+    assert.equal(snapshot.authorityStatus, 'active', `V2 authority was not applied before timeout (status: ${snapshot.authorityStatus})`);
+    assert.ok(selectable, 'V2 authority did not leave the selected model usable before timeout');
     const model = { ...provider.models[0], provider: 'void-codex', api: provider.api };
     const stream = provider.streamSimple(model, {
       systemPrompt: 'Offline regression',
