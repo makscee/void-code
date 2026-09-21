@@ -6,7 +6,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { errorMonitor } from 'node:events';
-import { InteractiveMode, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { InteractiveMode, SessionManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
 import managed, { getModelDecisionController } from './managed.ts';
@@ -96,7 +96,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   setWidget('astra-consumer-control', undefined);
   assert.equal(disposed, 2); assert.equal(receiver.extensionWidgetsBelow.size, 0);
   setWidget('astra-consumer-control', undefined); assert.equal(disposed, 2);
-  const ctx = { mode: 'tui', hasUI: true, ui: {
+  const sessionManager = SessionManager.inMemory(process.cwd());
+  const ctx = { mode: 'tui', hasUI: true, sessionManager,
+    // The real Pi context keeps the current model here. Supplying the already-selected
+    // compatibility model lets the production effect skip a synthetic model selection while
+    // still requiring the real provider-registration effect to settle.
+    model: { provider: 'void-codex', id: 'gpt-5.6-terra' }, ui: {
     notify: (message: string) => failures.push(message),
     setWidget: (key: string, value: WidgetContent, options?: WidgetOptions) => {
       if (typeof value === 'function') widgets++;
@@ -132,6 +137,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '5',
     },
   };
+  // Install the responder before constructing the managed extension. The controller captures
+  // no fixture transport: its real session_start handler performs this fetch itself.
+  const originalFetch = globalThis.fetch;
+  let readbackCalls = 0;
+  globalThis.fetch = async (...args: Parameters<typeof fetch>): ReturnType<typeof fetch> => {
+    const [input, init] = args;
+    const requestURL = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    assert.equal(requestURL, fixtureReadbackURL);
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.cache, 'no-store');
+    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${fixtureAuthToken}`);
+    readbackCalls++;
+    return new Response(JSON.stringify(fixtureDecision), { headers: { 'content-type': 'application/json' } });
+  };
   const originalExec = childProcess.execFileSync;
   const previousBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
   process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
@@ -151,20 +170,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   assert.equal(providers, 0, 'managed provider registered before V2 authority application');
   assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
 
-  // The readback responder is fixture-owned and scoped to the configured opaque URL.
-  // It feeds the production parser/reducer/effect path; all other network is forbidden.
-  const originalFetch = globalThis.fetch;
-  let readbackCalls = 0;
-  globalThis.fetch = async (...args: Parameters<typeof fetch>): ReturnType<typeof fetch> => {
-    const [input, init] = args;
-    const requestURL = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    assert.equal(requestURL, fixtureReadbackURL);
-    assert.equal(init?.method, 'GET');
-    assert.equal(init?.cache, 'no-store');
-    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${fixtureAuthToken}`);
-    readbackCalls++;
-    return new Response(JSON.stringify(fixtureDecision), { headers: { 'content-type': 'application/json' } });
-  };
   try {
     syncBuiltinESMExports();
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);

@@ -1,12 +1,17 @@
 // Offline regression of the complete managed provider, not a resolver mock or model listing.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [root, extension, work] = process.argv.slice(2);
+const [root, extension, work, bootstrapFile] = process.argv.slice(2);
 const require = createRequire(path.join(root, 'package.json'));
+const bootstrap = JSON.parse(readFileSync(bootstrapFile, 'utf8'));
+const readbackURL = bootstrap.modelDecision.readbackUrl;
+const relayURL = bootstrap.relayUrl + '/codex/responses';
+const agent = await import(pathToFileURL(path.join(root, 'dist/index.js')));
+const { SessionManager } = agent;
 const { createJiti } = await import(pathToFileURL(require.resolve('jiti')));
 const aiModules = require.resolve.paths('@earendil-works/pi-ai').find(dir => existsSync(path.join(dir, '@earendil-works/pi-ai/package.json')));
 assert.ok(aiModules, 'test requires the runtime pi-ai dependency');
@@ -59,9 +64,19 @@ for (const scenario of [
     } }),
   });
   let requests = 0;
+  const originalFetch = globalThis.fetch;
+  let handlers;
+  let sessionManager;
   globalThis.fetch = async (url, options) => {
+    const requestURL = typeof url === 'string' ? url : url.href;
+    if (requestURL === readbackURL) {
+      assert.equal(options.method, 'GET');
+      assert.equal(options.cache, 'no-store');
+      assert.equal(new Headers(options.headers).get('authorization'), `Bearer ${bootstrap.authToken}`);
+      return originalFetch(url, options);
+    }
     requests++;
-    assert.equal(url, 'https://relay.invalid/codex/responses');
+    assert.equal(requestURL, relayURL);
     const body = JSON.parse(options.body);
     assert.equal(body.model, 'gpt-5.6-terra');
     assert.equal(body.tools[0].name, 'read');
@@ -79,10 +94,31 @@ for (const scenario of [
   };
   try {
     const providers = new Map();
-    const factory = await jiti.import(extension, { default: true });
-    factory({ on() {}, registerProvider(id, config) { providers.set(id, config); } });
+    handlers = new Map();
+    sessionManager = SessionManager.inMemory(work);
+    const api = {
+      on(name, handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+      registerProvider(id, config) { providers.set(id, config); },
+      appendEntry(type, data) { sessionManager.appendCustomEntry(type, data); },
+      async setModel() { return true; },
+    };
+    const managedModule = await jiti.import(extension);
+    const factory = managedModule.default;
+    await factory(api);
+    const controller = managedModule.getModelDecisionController(api);
+    const ctx = { sessionManager, model: { provider: 'void-codex', id: 'gpt-5.6-terra' } };
+    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    const registrationDeadline = Date.now() + 5000;
+    while (!providers.has('void-codex') && Date.now() < registrationDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    await controller.whenIdle();
     const provider = providers.get('void-codex');
+    assert.ok(provider, 'V2 authority did not register the managed provider');
     assert.ok(provider, 'provider must register');
+    const snapshot = controller.snapshot();
+    assert.equal(snapshot.authorityStatus, 'active', `V2 authority status: ${snapshot.authorityStatus}`);
+    assert.ok(controller.isSelectable('void-codex', 'gpt-5.6-terra'), 'V2 authority did not leave the selected model usable');
     const model = { ...provider.models[0], provider: 'void-codex', api: provider.api };
     const stream = provider.streamSimple(model, {
       systemPrompt: 'Offline regression',
@@ -109,6 +145,9 @@ for (const scenario of [
   } catch (error) {
     failed++;
     console.error(JSON.stringify({ scenario: scenario.name, pass: false, error: error.message }));
+  } finally {
+    for (const handler of handlers?.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, { sessionManager });
+    globalThis.fetch = originalFetch;
   }
 }
 process.exitCode = failed ? 1 : 0;
