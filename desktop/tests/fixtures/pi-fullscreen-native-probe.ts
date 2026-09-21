@@ -173,6 +173,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     else process.env.VC_BOOTSTRAP_EXECUTABLE = previousBootstrapExecutable;
     syncBuiltinESMExports();
   }
+  // Clipboard-only control fixture: this prevents Pi --list-models from exiting with no models
+  // before the actual native clipboard consumer witness runs. It is not managed provider
+  // registration, production authority, or a path to the production reducer/controller/stream.
+  pi.registerProvider('fixture-clipboard-control', {
+    name: 'Fixture clipboard control',
+    baseUrl: 'https://fixture-clipboard-control.invalid',
+    apiKey: 'fixture-clipboard-control-no-credential',
+    api: 'fixture-clipboard-control',
+    models: [{
+      id: 'fixture-clipboard-control-model', name: 'Fixture Clipboard Control', api: 'fixture-clipboard-control',
+      reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 512,
+    }],
+    streamSimple: () => { throw new Error('fixture clipboard control stream must never be called'); },
+  });
   // managed() registers fullscreen clipboard first and the model-decision controller second.
   // The controller was forwarded to Pi above, so the real pinned lifecycle invokes it after
   // extension loading and action methods such as registerProvider are initialized.
