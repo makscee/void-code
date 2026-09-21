@@ -143,7 +143,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const clipboardSessionShutdown = handlers.get('session_shutdown')?.[0];
   assert.ok(clipboardSessionShutdown, 'default clipboard shutdown lifecycle missing');
   syncBuiltinESMExports();
-  await clipboardSessionStart({ reason: 'startup' }, ctx);
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;
