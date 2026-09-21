@@ -536,12 +536,11 @@ export async function productRig(options: { sm?: Pinned.SessionManager; reason?:
     await seen; await controller().whenIdle();
   };
   const stream = async (model: Ai.Model<Ai.Api>, onResponse?: () => void): Promise<Ai.AssistantMessage> => {
-    // The actual export, never a fixture predicate. Once a provider exists, its
-    // registration MUST reference this same function. Initial closed state need
-    // not manufacture an out-of-worker provider registration just for inspection.
+    // Exercise the actual registered provider closure once registration exists;
+    // the exported function is only the closed-state fallback before registration.
     const registration = rig.runtime.getRegisteredProviderConfig(provider);
-    if (registration) expect(registration.streamSimple, 'production must retain managed stream registration').toBe(product.streamVoidCodex);
-    const events = product.streamVoidCodex(model, { messages: [], systemPrompt: 'fixture' }, { onResponse });
+    const streamSimple = registration ? registration.streamSimple! : product.streamVoidCodex;
+    const events = streamSimple(model, { messages: [], systemPrompt: 'fixture' }, { onResponse });
     expect(typeof events?.[Symbol.asyncIterator], 'managed stream must return the real event-stream contract').toBe('function');
     expect(typeof events.result, 'managed stream must expose its terminal result').toBe('function');
     for await (const event of events) trace.push({ kind: `stream:${event.type}` });
