@@ -2,12 +2,25 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { managed, pinRig, registryIds } from './fixtures/pi-model-decision';
+import { bootstrap, managed, pinRig, registryIds } from './fixtures/pi-model-decision';
 
 let activeRig: Awaited<ReturnType<typeof pinRig>> | undefined;
 afterEach(() => {
   activeRig?.close();
   activeRig = undefined;
+});
+
+it.each([
+  ['not-a-url', false],
+  ['/relative', false],
+  ['ftp://relay.fixture.invalid', false],
+  ['https://user:pass@relay.fixture.invalid', false],
+  ['https://relay.fixture.invalid:443', true],
+] as const)('validates the V2 relay bootstrap URL %s', async (relayUrl, expected) => {
+  const product = await managed();
+  const result = product.parseBootstrap({ ...structuredClone(bootstrap), relayUrl });
+  expect(result.ok).toBe(expected);
+  if (!expected) expect(result).toEqual({ ok: false });
 });
 
 it('fails closed when the live loader receives V1 instead of registering a managed catalog', async () => {
