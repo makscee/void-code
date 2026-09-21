@@ -15,6 +15,10 @@ it.each([
   ['/relative', false],
   ['ftp://relay.fixture.invalid', false],
   ['https://user:pass@relay.fixture.invalid', false],
+  ['https://relay.fixture.invalid/base', false],
+  ['https://relay.fixture.invalid?route=1', false],
+  ['https://relay.fixture.invalid#fragment', false],
+  ['https://relay.fixture.invalid/', true],
   ['https://relay.fixture.invalid:443', true],
 ] as const)('validates the V2 relay bootstrap URL %s', async (relayUrl, expected) => {
   const product = await managed();

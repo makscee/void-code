@@ -86,6 +86,35 @@ func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T)
 	}
 }
 
+func TestCurrentPiBootstrapRejectsForceQueryReadbackBeforeAuth(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	var providerRequests atomic.Int64
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerRequests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+			{"id": "opaque-provider-grant", "name": "opaque", "type": "openai-codex-oauth"},
+		}})
+	}))
+	defer authServer.Close()
+	t.Setenv("VC_AUTH_HOST", authServer.URL)
+	t.Setenv("VC_ACCESS_CHECK_HOST", "https://access-check.fixture.invalid?")
+	t.Setenv("VC_RELAY_HOST", "https://relay.fixture.invalid:9443")
+	if err := auth.Save("fixture-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := currentPiBootstrap()
+	if got := providerRequests.Load(); got != 0 {
+		t.Errorf("currentPiBootstrap() contacted the distinct Auth endpoint %d time(s) before rejecting the ForceQuery readback authority", got)
+	}
+	if err == nil {
+		t.Fatal("currentPiBootstrap() accepted a ForceQuery readback authority; want fail-closed error before Auth")
+	}
+}
+
 // Invalid timing input must not be silently replaced by production defaults and emitted as V2 metadata.
 func TestCurrentPiBootstrapRejectsInvalidModelDecisionTimingConfiguration(t *testing.T) {
 	cases := []struct {
