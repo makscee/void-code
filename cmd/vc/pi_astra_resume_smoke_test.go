@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,7 +40,20 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const bootstrapJSON = `{"version":2,"relayUrl":"https://relay.invalid","authToken":"local-only","providers":[{"kind":"codex","relayProviderId":"codex-local","models":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-6-astra"]}],"modelDecision":{"schemaVersion":1,"readbackUrl":"https://fixture.invalid/v1/vc/me","pollIntervalSeconds":"30","catalogDecisionTtlSeconds":"300","catalogExpirySkewSeconds":"5"}}`
+	readback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/me" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer smoke" {
+			http.Error(w, "fixture bearer mismatch", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(voidCodexSmokeDecision())
+	}))
+	defer readback.Close()
+	bootstrapJSON := voidCodexSmokeBootstrap(t, readback.URL+"/v1/vc/me", readback.URL)
 	bootstrap := filepath.Join(work, "bootstrap.sh")
 	if err := os.WriteFile(bootstrap, []byte("#!/bin/sh\n[ \"$1\" = \"pi-bootstrap\" ] || exit 1\nprintf '%s' '"+bootstrapJSON+"'\n"), 0700); err != nil {
 		t.Fatal(err)

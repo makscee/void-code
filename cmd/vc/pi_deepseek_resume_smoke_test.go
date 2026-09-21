@@ -52,6 +52,20 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	}
 	prerequisites := requireOrSkipPinnedPiSmoke(t, root)
 
+	readback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/me" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer smoke" {
+			http.Error(w, "fixture bearer mismatch", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(voidCodexSmokeDecision())
+	}))
+	defer readback.Close()
+
 	var (
 		callsMu sync.Mutex
 		calls   []resumeUpstreamCall
@@ -91,13 +105,13 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	bootstrapPayload, err := json.Marshal(map[string]any{
 		"version":   2,
 		"relayUrl":  upstream.URL,
-		"authToken": "local-only",
+		"authToken": "smoke",
 		"providers": []map[string]any{
-			{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-5.6-terra"}},
+			{"kind": "codex", "relayProviderId": "codex-local", "models": voidCodexSmokeModels},
 		},
 		"modelDecision": map[string]any{
 			"schemaVersion":             1,
-			"readbackUrl":               "https://fixture.invalid/v1/vc/me",
+			"readbackUrl":               readback.URL + "/v1/vc/me",
 			"pollIntervalSeconds":       "30",
 			"catalogDecisionTtlSeconds": "300",
 			"catalogExpirySkewSeconds":  "5",
