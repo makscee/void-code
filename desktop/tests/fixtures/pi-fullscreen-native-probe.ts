@@ -136,6 +136,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       fallbackCodexModelId: 'gpt-5.6-terra', effectiveCodexModelId: 'gpt-5.6-terra',
     },
   };
+  const fixtureBootstrap = {
+    version: 2, relayUrl: 'https://fixture-relay.invalid', authToken: fixtureAuthToken,
+    providers: [{ kind: 'codex', relayProviderId: 'fixture-native-route', models: ['gpt-5.6-terra'] }],
+    modelDecision: {
+      schemaVersion: 1, readbackUrl: fixtureReadbackURL, pollIntervalSeconds: '30',
+      catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '5',
+    },
+  };
   const originalExec = childProcess.execFileSync;
   const originalFetch = globalThis.fetch;
   const maxReadbacks = 16;
