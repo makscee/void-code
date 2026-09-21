@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/makscee/void-code/internal/auth"
@@ -16,7 +17,7 @@ type piBootstrap struct {
 	RelayURL  string                `json:"relayUrl"`
 	AuthToken string                `json:"authToken"`
 	Providers []piBootstrapProvider `json:"providers"`
-	// Additive wire only. Live output remains V1 until a configured server authority exists.
+	// V2 is emitted only with a complete descriptor; the extension fails closed otherwise.
 	ModelDecision *piModelDecisionDescriptor `json:"modelDecision,omitempty"`
 }
 
@@ -27,6 +28,13 @@ type piModelDecisionDescriptor struct {
 	CatalogDecisionTTLSeconds string `json:"catalogDecisionTtlSeconds"`
 	CatalogExpirySkewSeconds  string `json:"catalogExpirySkewSeconds"`
 }
+
+const (
+	piModelDecisionPollIntervalSeconds       = "17"
+	piModelDecisionCatalogDecisionTTLSeconds = "120"
+	piModelDecisionCatalogExpirySkewSeconds  = "2"
+)
+
 type piBootstrapProvider struct {
 	Kind            string   `json:"kind"`
 	RelayProviderID string   `json:"relayProviderId"`
@@ -51,15 +59,28 @@ func currentPiBootstrap() (piBootstrap, error) {
 		return piBootstrap{}, fmt.Errorf("Pi bootstrap requires `vc login`")
 	}
 	cfg := config.OSResolve()
+	readback, err := url.Parse(cfg.AccessCheckHost)
+	if err != nil || strings.TrimSpace(cfg.AccessCheckHost) != cfg.AccessCheckHost ||
+		(readback.Scheme != "http" && readback.Scheme != "https") || readback.Host == "" ||
+		readback.User != nil || readback.Path != "" || readback.RawQuery != "" || readback.Fragment != "" {
+		return piBootstrap{}, fmt.Errorf("configured model-decision readback authority is invalid")
+	}
 	infos, err := fetchProvidersLive(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
 	if err != nil {
 		return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
 	}
 	out := piBootstrap{
-		Version:   1,
+		Version:   2,
 		RelayURL:  fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost),
 		AuthToken: token,
 		Providers: make([]piBootstrapProvider, 0),
+		ModelDecision: &piModelDecisionDescriptor{
+			SchemaVersion:             1,
+			ReadbackURL:               cfg.AccessCheckHost + "/v1/vc/me",
+			PollIntervalSeconds:       piModelDecisionPollIntervalSeconds,
+			CatalogDecisionTTLSeconds: piModelDecisionCatalogDecisionTTLSeconds,
+			CatalogExpirySkewSeconds:  piModelDecisionCatalogExpirySkewSeconds,
+		},
 	}
 	for _, info := range infos {
 		if strings.EqualFold(strings.TrimSpace(info.Type), "openai-codex-oauth") {

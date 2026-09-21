@@ -62,42 +62,28 @@ interface ClipboardExtensionOptions {
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
+	activeBootstrap = undefined;
+	activeModelController = undefined;
 	const bootstrap = options?.modelDecision ? options.modelDecision.bootstrap : loadBootstrap();
 	if (!bootstrap) return;
-	if (options?.modelDecision || bootstrap.version !== 1) {
-		const parsed = parseBootstrap(bootstrap);
-		const transport = parsed.ok ? parsed.bootstrap : undefined;
-		activeBootstrap = transport;
-		const ceiling = options?.modelDecision?.compatibilityModels ?? (transport?.providers.flatMap(provider => provider.models)
-			.filter(id => [CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"].includes(id))
-			.map(id => codexModel(id, codexName(id))) ?? []);
-		const controller = new ModelDecisionController(pi, transport, ceiling, options?.modelDecision);
-		modelControllers.set(pi, controller); activeModelController = controller;
-		if (transport?.providers.some(p => p.kind === "codex")) pi.on("before_agent_start", async event => ({ systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION }));
-		return;
-	}
-	activeBootstrap = bootstrap;
-	activeModelController = undefined;
-	let managedSearchAvailable = false;
-	let hasCodexGrant = false;
-	for (const provider of bootstrap.providers) {
+	const parsed = parseBootstrap(bootstrap);
+	if (!parsed.ok) return;
+	const transport = parsed.bootstrap;
+	activeBootstrap = transport;
+	const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
+	const ceiling = options?.modelDecision?.compatibilityModels ?? transport.providers.flatMap(provider => {
 		if (provider.kind === "codex") {
-			hasCodexGrant = true;
-			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
-			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
-			if (models.length === 0) continue;
-			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
-			managedSearchAvailable = true;
+			return provider.models.filter(id => allowed.has(id)).map(id => codexModel(id, codexName(id)));
 		}
+		return [];
+	});
+	const controller = new ModelDecisionController(pi, transport, ceiling, options?.modelDecision);
+	modelControllers.set(pi, controller); activeModelController = controller;
+	let managedSearchAvailable = false;
+	for (const provider of transport.providers) {
+		if (provider.kind === "codex") managedSearchAvailable = true;
 	}
-	if (!hasCodexGrant) {
-		registerVoidCodex(pi, bootstrap, [codexModel(CODEX_MODEL_ID, codexName(CODEX_MODEL_ID))]);
-	}
-	if (managedSearchAvailable) {
-		pi.on("before_agent_start", async (event) => ({
-			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
-		}));
-	}
+	if (managedSearchAvailable) pi.on("before_agent_start", async event => ({ systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION }));
 }
 
 function registerVoidCodex(
