@@ -59,9 +59,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   tui.start();
   const failures: string[] = [];
   const handlers = new Map<string, LifecycleHandler[]>();
+  let forwardedControllerSessionStart: LifecycleHandler | undefined;
   let widgets = 0;
+  const realOn = pi.on.bind(pi) as (name: string, handler: LifecycleHandler) => void;
   const api = new Proxy(pi, { get(target, key) {
-    if (key === 'on') return (name: string, handler: LifecycleHandler) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); };
+    if (key === 'on') return (name: string, handler: LifecycleHandler) => {
+      const captured = handlers.get(name) ?? [];
+      captured.push(handler);
+      handlers.set(name, captured);
+      // managed() registers clipboard first and model-decision second. Only the
+      // controller must enter Pi's real lifecycle; clipboard stays isolated for
+      // the manually supplied consumer UI context below.
+      if (name === 'session_start' && captured.length === 2) {
+        realOn(name, handler);
+        forwardedControllerSessionStart = handler;
+      }
+    };
     return Reflect.get(target, key);
   } });
   // Narrow, provenance-bound hook extracted from the selected consumer's actual
@@ -135,10 +148,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     syncBuiltinESMExports();
   }
   // managed() registers fullscreen clipboard first and the model-decision controller second.
-  // Invoke only the real clipboard lifecycle callback: invoking every captured session_start
-  // callback here would run the controller while Pi is still loading the extension factory,
-  // before action methods such as registerProvider exist.
-  const clipboardSessionStart = handlers.get('session_start')?.[0];
+  // The controller was forwarded to Pi above, so the real pinned lifecycle invokes it after
+  // extension loading and action methods such as registerProvider are initialized.
+  const sessionStarts = handlers.get('session_start');
+  assert.equal(sessionStarts?.length, 2, 'default session_start registration order changed');
+  assert.equal(forwardedControllerSessionStart, sessionStarts?.[1], 'model-decision session_start was not forwarded to real Pi');
+  const clipboardSessionStart = sessionStarts?.[0];
   assert.ok(clipboardSessionStart, 'default clipboard lifecycle missing');
   const clipboardSessionShutdown = handlers.get('session_shutdown')?.[0];
   assert.ok(clipboardSessionShutdown, 'default clipboard shutdown lifecycle missing');
