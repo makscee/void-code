@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -81,6 +82,67 @@ func TestCurrentPiBootstrapEmitsValidatedV2ModelDecisionDescriptor(t *testing.T)
 	skew := boundedDescriptorSeconds(t, "catalogExpirySkewSeconds", descriptor.CatalogExpirySkewSeconds, 0, 2147483647)
 	if skew >= ttl {
 		t.Errorf("catalog expiry skew = %d, want less than decision TTL %d", skew, ttl)
+	}
+}
+
+// Invalid timing input must not be silently replaced by production defaults and emitted as V2 metadata.
+func TestCurrentPiBootstrapRejectsInvalidModelDecisionTimingConfiguration(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		value   string
+		missing bool
+	}{
+		{name: "poll zero", env: modelDecisionPollIntervalEnv, value: "0"},
+		{name: "poll above maximum", env: modelDecisionPollIntervalEnv, value: "301"},
+		{name: "poll noncanonical leading zero", env: modelDecisionPollIntervalEnv, value: "01"},
+		{name: "poll negative", env: modelDecisionPollIntervalEnv, value: "-1"},
+		{name: "poll missing", env: modelDecisionPollIntervalEnv, missing: true},
+		{name: "ttl zero", env: modelDecisionTTLSecondsEnv, value: "0"},
+		{name: "ttl above maximum", env: modelDecisionTTLSecondsEnv, value: "2147483648"},
+		{name: "ttl noncanonical leading zero", env: modelDecisionTTLSecondsEnv, value: "01"},
+		{name: "ttl negative", env: modelDecisionTTLSecondsEnv, value: "-1"},
+		{name: "ttl missing", env: modelDecisionTTLSecondsEnv, missing: true},
+		{name: "skew negative", env: modelDecisionExpirySkewSecondsEnv, value: "-1"},
+		{name: "skew equal ttl", env: modelDecisionExpirySkewSecondsEnv, value: "241"},
+		{name: "skew greater than ttl", env: modelDecisionExpirySkewSecondsEnv, value: "242"},
+		{name: "skew noncanonical leading zero", env: modelDecisionExpirySkewSecondsEnv, value: "01"},
+		{name: "skew missing", env: modelDecisionExpirySkewSecondsEnv, missing: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configureModelDecisionTimingFixture(t)
+			if tc.missing {
+				if err := os.Unsetenv(tc.env); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv(tc.env, tc.value)
+			}
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/vc/providers" || r.Header.Get("Authorization") != "Bearer fixture-token" {
+					t.Fatalf("unexpected provider request %s %q", r.URL.Path, r.Header.Get("Authorization"))
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+					{"id": "opaque-provider-grant", "name": "opaque", "type": "openai-codex-oauth"},
+				}})
+			}))
+			defer server.Close()
+			t.Setenv("VC_AUTH_HOST", server.URL)
+			t.Setenv("VC_ACCESS_CHECK_HOST", "https://access-check.fixture.invalid:9444")
+			t.Setenv("VC_RELAY_HOST", "https://relay.fixture.invalid:9443")
+			if err := auth.Save("fixture-token"); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := currentPiBootstrap(); err == nil {
+				t.Fatal("currentPiBootstrap() succeeded with invalid model-decision timing configuration; want fail-closed error")
+			}
+		})
 	}
 }
 
