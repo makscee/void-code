@@ -5,10 +5,14 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
 import { expect, it, vi } from 'vitest';
+import { embeddedSource } from './fixtures/pi-fullscreen-clipboard';
 import { nativeWitness, preserveNativeFailure } from './fixtures/pi-fullscreen-native-witness';
 
-const source = readFileSync('../cmd/vc/pi_extension.go', 'utf8');
-const script = source.match(/args = \["-NoProfile", "-NonInteractive", "-Sta", "-Command", "(.*?)"\];/)![1];
+function windowsClipboardScript(): string {
+  const match = embeddedSource().match(/args = \["-NoProfile", "-NonInteractive", "-Sta", "-Command", "(.*?)"\];/);
+  if (!match) throw new Error('authoritative managed extension has no Windows clipboard PowerShell command');
+  return match[1];
+}
 function fake() {
   const stream = () => Object.assign(new EventEmitter(), { destroy: vi.fn(), end: vi.fn() });
   const child = Object.assign(new EventEmitter(), { stdin: stream(), stdout: stream(), stderr: stream(), kill: vi.fn() });
@@ -17,8 +21,9 @@ function fake() {
 }
 const directLoad = "[void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')";
 const legacyLoad = 'Add-Type -AssemblyName System.Windows.Forms';
-const directScript = script.replace(legacyLoad, directLoad);
-it.each([script, directScript])('uses original options and only synthetic first marker; accepts only whole fixed phase lines (%#)', async (script) => {
+it.each(['legacy', 'direct'] as const)('uses original options and only synthetic first marker; accepts only whole fixed phase lines (%s)', async (loadKind) => {
+  const sourceScript = windowsClipboardScript();
+  const script = loadKind === 'legacy' ? sourceScript : sourceScript.replace(legacyLoad, directLoad);
   const f = fake(); const output: object[] = [];
   const options = { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] };
   const args = ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Sta', '-Command', script], options] as Parameters<typeof spawn>;
@@ -43,14 +48,16 @@ it.each([script, directScript])('uses original options and only synthetic first 
   for (const stream of [f.child.stdin, f.child.stdout, f.child.stderr]) expect(stream.destroy).toHaveBeenCalledOnce();
   expect(f.child.kill).not.toHaveBeenCalled();
 });
-it.each([
-  directScript.replace(directLoad, ''),
-  directScript.replace(directLoad, `${directLoad}; ${directLoad}`),
-  directScript.replace(directLoad, `${directLoad}; ${legacyLoad}`),
-  directScript.replace('b77a5c561934e089', '0000000000000000'),
-])('refuses missing, duplicate, ambiguous or wrong-identity Forms boundaries (%#)', async (script) => {
+it.each(['missing', 'duplicate', 'ambiguous', 'wrong-identity'] as const)('refuses %s Forms boundaries', async (fault) => {
+  const directScript = windowsClipboardScript().replace(legacyLoad, directLoad);
+  const scripts = {
+    missing: directScript.replace(directLoad, ''),
+    duplicate: directScript.replace(directLoad, `${directLoad}; ${directLoad}`),
+    ambiguous: directScript.replace(directLoad, `${directLoad}; ${legacyLoad}`),
+    'wrong-identity': directScript.replace('b77a5c561934e089', '0000000000000000'),
+  };
   const f = fake();
-  await expect(nativeWitness(f.spawn, ['powershell.exe', ['-Command', script], {}], 'synthetic', () => {})).rejects.toThrow('WITNESS_SCRIPT_REFUSED');
+  await expect(nativeWitness(f.spawn, ['powershell.exe', ['-Command', scripts[fault]], {}], 'synthetic', () => {})).rejects.toThrow('WITNESS_SCRIPT_REFUSED');
   expect(f.launch).not.toHaveBeenCalled();
 });
 it.each([true, false])('bounded owned child cleanup (close delivered=%s)', async (close) => {
@@ -58,7 +65,7 @@ it.each([true, false])('bounded owned child cleanup (close delivered=%s)', async
   try {
     const f = fake();
     if (close) f.child.kill.mockImplementation(() => { f.child.emit('close', null, 'SIGKILL'); });
-    const result = nativeWitness(f.spawn, ['powershell.exe', ['-Command', script], {}], 'synthetic', () => {});
+    const result = nativeWitness(f.spawn, ['powershell.exe', ['-Command', windowsClipboardScript()], {}], 'synthetic', () => {});
     await vi.advanceTimersByTimeAsync(5000); await result;
     expect(f.child.kill).toHaveBeenCalledWith('SIGKILL');
     expect(f.child.stderr.destroy).toHaveBeenCalledOnce();
