@@ -992,6 +992,7 @@ function parseConfig(value: unknown): ModelDecisionConfig | null {
 }
 export function parseBootstrap(input: unknown): { ok: false } | { ok: true; bootstrap: Bootstrap & { modelDecision: ModelDecisionConfig } } {
 	if (!closed(input, ["version", "relayUrl", "authToken", "providers", "modelDecision"]) || input.version !== 2 || !boundedString(input.relayUrl, 8192) || !boundedString(input.authToken, 16384) || !Array.isArray(input.providers)) return { ok: false };
+	try { const url = new URL(input.relayUrl); if (!["https:", "http:"].includes(url.protocol) || !url.hostname || url.username || url.password) return { ok: false }; } catch { return { ok: false }; }
 	if (!input.providers.every(p => closed(p, ["kind", "relayProviderId", "models"]) && p.kind === "codex" && boundedString(p.relayProviderId) && Array.isArray(p.models) && p.models.length <= 64 && p.models.every((id: unknown) => boundedString(id, 128)))) return { ok: false };
 	const config = parseConfig(input.modelDecision);
 	if (!config) return { ok: false };
