@@ -2,11 +2,11 @@
 // No account, PTY, GUI, terminal emulator selection or global stdout interception.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { errorMonitor } from 'node:events';
-import { InteractiveMode, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { InteractiveMode, SessionManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { TuiAltScreen, ScrollView } from '@earendil-works/pi-tui';
 import managed from './managed.ts';
@@ -45,11 +45,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     ObjC.unwrap(text.dataUsingEncoding($.NSUTF8StringEncoding).base64EncodedStringWithOptions(0));
   `;
   let input: (data: string) => void = () => {};
+  type Osc52Stage = 'startup' | 'selection' | 'copy' | 'readback' | 'cleanup';
+  let osc52Stage: Osc52Stage = 'startup';
   let liveOsc52 = 0;
+  const osc52ByStage: Record<Osc52Stage, number> = { startup: 0, selection: 0, copy: 0, readback: 0, cleanup: 0 };
+  const maxOsc52Diagnostics = 8;
   const terminal = {
     columns: 80, rows: 8, kittyProtocolActive: false,
     start(callback: (data: string) => void) { input = callback; }, stop() {}, async drainInput() {},
-    write(data: string) { if (data.includes('\x1b]52;')) liveOsc52++; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
+    write(data: string) {
+      if (!data.includes('\x1b]52;')) return;
+      liveOsc52 = Math.min(maxOsc52Diagnostics, liveOsc52 + 1);
+      osc52ByStage[osc52Stage] = Math.min(maxOsc52Diagnostics, osc52ByStage[osc52Stage] + 1);
+    }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
     clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
   };
   const tui = new TuiAltScreen(terminal, false);
@@ -59,11 +67,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   tui.start();
   const failures: string[] = [];
   const handlers = new Map<string, LifecycleHandler[]>();
-  let providers = 0;
+  let forwardedControllerSessionStart: LifecycleHandler | undefined;
   let widgets = 0;
+  const realOn = pi.on.bind(pi) as (name: string, handler: LifecycleHandler) => void;
   const api = new Proxy(pi, { get(target, key) {
-    if (key === 'on') return (name: string, handler: LifecycleHandler) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); };
-    if (key === 'registerProvider') return (...args: Parameters<ExtensionAPI['registerProvider']>) => { providers++; return target.registerProvider(...args); };
+    if (key === 'on') return (name: string, handler: LifecycleHandler) => {
+      const captured = handlers.get(name) ?? [];
+      captured.push(handler);
+      handlers.set(name, captured);
+      // managed() registers clipboard first and model-decision second. Only the
+      // controller must enter Pi's real lifecycle; clipboard stays isolated for
+      // the manually supplied consumer UI context below.
+      if (name === 'session_start' && captured.length === 2) {
+        realOn(name, handler);
+        forwardedControllerSessionStart = handler;
+      }
+    };
     return Reflect.get(target, key);
   } });
   // Narrow, provenance-bound hook extracted from the selected consumer's actual
@@ -96,7 +115,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   setWidget('astra-consumer-control', undefined);
   assert.equal(disposed, 2); assert.equal(receiver.extensionWidgetsBelow.size, 0);
   setWidget('astra-consumer-control', undefined); assert.equal(disposed, 2);
-  const ctx = { mode: 'tui', hasUI: true, ui: {
+  const sessionManager = SessionManager.inMemory(process.cwd());
+  const ctx = { mode: 'tui', hasUI: true, sessionManager, ui: {
     notify: (message: string) => failures.push(message),
     setWidget: (key: string, value: WidgetContent, options?: WidgetOptions) => {
       if (typeof value === 'function') widgets++;
@@ -109,18 +129,83 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } };
   // Substitute only bootstrap, never native clipboard IO or the managed factory.
   // The actual consumer loader imports the unchanged Go-managed source above.
+  const fixtureBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
+  assert.ok(fixtureBootstrapExecutable && path.isAbsolute(fixtureBootstrapExecutable));
+  assert.equal(path.basename(fixtureBootstrapExecutable), 'fixture-bootstrap-never-executed');
+  assert.equal(existsSync(fixtureBootstrapExecutable), false, 'fixture bootstrap must stay unreachable');
+  const fixtureReadbackURL = 'https://fixture-readback.invalid/opaque/native-clipboard?fixture=1';
+  const fixtureAuthToken = 'fixture-native-auth-not-a-credential';
+  const fixtureDecision = {
+    schemaVersion: 1, generation: '1', outcome: 'catalog',
+    evaluatedAt: '2099-01-01T00:00:00.000000000Z', validUntil: '2099-01-01T00:05:00.000000000Z',
+    authority: {
+      effectiveAssignmentRevision: '1', assignmentHeadRevision: '1', scheduledSuccessor: null,
+      policyRevision: '1', tierId: 'fixture-tier', tierModelSetDigest: 'fixture-set', calibrationRevision: '1',
+      providerGrantSetRevision: '1', poolRevision: '1', poolCollectionRevision: '1', controlRevision: '1',
+      controlEpoch: '1', quotaLatchRevision: '1', quotaEpisode: null, inputFingerprint: 'fixture-fingerprint',
+      controlMode: 'active', quotaState: 'normal', restrictionActive: false,
+      allowedCodexModelIds: ['gpt-5.6-terra'], defaultCodexModelId: 'gpt-5.6-terra',
+      fallbackCodexModelId: 'gpt-5.6-terra', effectiveCodexModelId: 'gpt-5.6-terra',
+    },
+  };
+  const fixtureBootstrap = {
+    version: 2, relayUrl: 'https://fixture-relay.invalid', authToken: fixtureAuthToken,
+    providers: [{ kind: 'codex', relayProviderId: 'fixture-native-route', models: ['gpt-5.6-terra'] }],
+    modelDecision: {
+      schemaVersion: 1, readbackUrl: fixtureReadbackURL, pollIntervalSeconds: '30',
+      catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '5',
+    },
+  };
   const originalExec = childProcess.execFileSync;
-  process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
+  const originalFetch = globalThis.fetch;
+  const maxReadbacks = 16;
+  let readbackCount = 0;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, fixtureReadbackURL);
+    assert.equal(init?.method, 'GET');
+    assert.equal(init?.cache, 'no-store');
+    assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${fixtureAuthToken}`);
+    assert.ok(readbackCount < maxReadbacks, 'fixture readback limit exceeded');
+    readbackCount++;
+    return new Response(JSON.stringify(fixtureDecision), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
   childProcess.execFileSync = ((file: string, args: string[]) => {
-    assert.equal(file, process.execPath); assert.deepEqual(args, ['pi-bootstrap']);
-    return JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] });
+    assert.equal(file, fixtureBootstrapExecutable); assert.deepEqual(args, ['pi-bootstrap']);
+    return JSON.stringify(fixtureBootstrap);
   }) as typeof execFileSync;
   try {
     syncBuiltinESMExports();
     await managed(api); // NO clipboardIO: exercise the real production default registration.
-  } finally { childProcess.execFileSync = originalExec; syncBuiltinESMExports(); }
-  assert.ok(providers > 0, 'synthetic bootstrap did not register provider');
-  assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
+  } finally {
+    childProcess.execFileSync = originalExec;
+    syncBuiltinESMExports();
+  }
+  // Clipboard-only control fixture: this prevents Pi --list-models from exiting with no models
+  // before the actual native clipboard consumer witness runs. It is not managed provider
+  // registration, production authority, or a path to the production reducer/controller/stream.
+  pi.registerProvider('fixture-clipboard-control', {
+    name: 'Fixture clipboard control',
+    baseUrl: 'https://fixture-clipboard-control.invalid',
+    apiKey: 'fixture-clipboard-control-no-credential',
+    api: 'fixture-clipboard-control',
+    models: [{
+      id: 'fixture-clipboard-control-model', name: 'Fixture Clipboard Control', api: 'fixture-clipboard-control',
+      reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 512,
+    }],
+    streamSimple: () => { throw new Error('fixture clipboard control stream must never be called'); },
+  });
+  // managed() registers fullscreen clipboard first and the model-decision controller second.
+  // The controller was forwarded to Pi above, so the real pinned lifecycle invokes it after
+  // extension loading and action methods such as registerProvider are initialized.
+  const sessionStarts = handlers.get('session_start');
+  assert.equal(sessionStarts?.length, 2, 'default session_start registration order changed');
+  assert.equal(forwardedControllerSessionStart, sessionStarts?.[1], 'model-decision session_start was not forwarded to real Pi');
+  const clipboardSessionStart = sessionStarts?.[0];
+  assert.ok(clipboardSessionStart, 'default clipboard lifecycle missing');
+  const clipboardSessionShutdown = handlers.get('session_shutdown')?.[0];
+  assert.ok(clipboardSessionShutdown, 'default clipboard shutdown lifecycle missing');
+  syncBuiltinESMExports();
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;
@@ -162,28 +247,37 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } as typeof originalSpawn;
   try {
     syncBuiltinESMExports();
-    for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    await clipboardSessionStart({ reason: 'startup' }, ctx);
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
+    failureStage = 'startup-no-osc52';
+    assert.equal(liveOsc52, 0, `startup emitted OSC52 (${JSON.stringify(osc52ByStage)})`);
     for (const [index, marker] of markers.entries()) {
       failureIndex = index;
       failureStage = 'selection-without-copy';
+      osc52Stage = 'selection';
       const beforeSelection = operation;
       lines = marker.split('\n'); tui.renderNow();
       input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
+      failureStage = 'selection-bounds';
       assert.ok((tui as unknown as TuiView).getSelectionBounds()?.start.scrollView === scroll, 'real scroll-view selection missing');
       // Give queued microtasks/timers a turn: mouse release alone has no authority.
       await new Promise((resolve) => setTimeout(resolve, 20));
+      failureStage = 'selection-no-native-spawn';
       assert.equal(operation, beforeSelection, 'selection started a native writer without a copy key');
-      assert.equal(liveOsc52, 0, 'selection leaked to live OSC52 writer');
+      failureStage = 'selection-no-osc52';
+      assert.equal(liveOsc52, 0, `selection leaked to live OSC52 writer (${JSON.stringify(osc52ByStage)})`);
+      failureStage = 'selection-no-flash';
       assert.equal(succeeded, index, 'selection flashed Copied without a copy key');
       failureStage = 'native-completion';
+      osc52Stage = 'copy';
       input(process.platform === 'darwin' ? '\x1b[99;9u' : '\x03');
       assert.equal(succeeded, index, 'Copied! preceded asynchronous native completion');
       const deadline = Date.now() + 6500;
       while (succeeded <= index && failures.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(failures, []); assert.equal(succeeded, index + 1, 'native completion missing');
-      assert.equal(liveOsc52, 0, 'explicit copy leaked to live OSC52 writer');
+      assert.equal(liveOsc52, 0, `explicit copy leaked to live OSC52 writer (${JSON.stringify(osc52ByStage)})`);
       failureStage = 'independent-readback';
+      osc52Stage = 'readback';
       let readback: string;
       try {
         const encoded = process.platform === 'darwin'
@@ -205,15 +299,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } catch (error) {
     acceptanceFailed = true;
     acceptanceError = error;
-    process.stderr.write(`${JSON.stringify({ event: 'acceptance-failure', stage: failureStage, index: failureIndex })}\n`);
+    process.stderr.write(`${JSON.stringify({ event: 'acceptance-failure', stage: failureStage, index: failureIndex, osc52: osc52ByStage })}\n`);
     await preserveNativeFailure(error, async () => {
       if (process.platform === 'win32' && process.env.VC_R8_PRIVATE_LAUNCHER === 'VERIFIED' && firstNativeArgs) {
         await nativeWitness(originalSpawn, firstNativeArgs, markers[0], (record) => process.stderr.write(`${JSON.stringify(record)}\n`));
       }
     });
   } finally {
+    osc52Stage = 'cleanup';
     try {
-      for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);
+      await clipboardSessionShutdown({ reason: 'quit' }, ctx);
       consumer.clearExtensionWidgets.call(receiver);
       tui.stop({ preserveScreen: true });
     } catch (error) {
@@ -222,6 +317,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       throw acceptanceFailed ? acceptanceError : error;
     } finally {
       childProcess.spawn = originalSpawn;
+      globalThis.fetch = originalFetch;
       syncBuiltinESMExports();
       // Native operations and lifecycle cleanup have finished; builtins are restored.
       for (const record of records) process.stderr.write(`${JSON.stringify(record)}\n`);

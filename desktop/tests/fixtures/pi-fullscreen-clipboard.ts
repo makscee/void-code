@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,6 +17,10 @@ export const agentMetadata = {
   VERSION: JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version as string,
   getPackageDir: () => agentDir,
 };
+export function realSessionManager(): unknown {
+  const pinned = require(path.join(agentDir, 'dist/index.js')) as { SessionManager: { inMemory(cwd: string): unknown } };
+  return pinned.SessionManager.inMemory(path.resolve('.'));
+}
 // Narrow views of the real pinned Pi objects, including private selection seams.
 // These describe fixture access only; no selection or keyboard behavior is emulated.
 export interface ComponentView {
@@ -66,30 +70,75 @@ export async function realPi(): Promise<PiView> {
   return import(/* @vite-ignore */ pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
 }
 export function embeddedSource(): string {
-  // Same Go raw-string extraction used by scripts/check-bundled-pi-smoke.mjs.
+  const typeScript = path.resolve('../cmd/vc/pi_extension.ts');
+  if (existsSync(typeScript)) {
+    const source = readFileSync(typeScript, 'utf8');
+    expect(source, 'authoritative managed transport source fixture').toMatch(/^\/\/ void-code-managed-pi-extension:v1/);
+    return source;
+  }
+
+  // Pre-migration RED compatibility only. Once the TypeScript source exists it is authoritative,
+  // and malformed or unreadable TypeScript must fail instead of falling back to duplicate Go bytes.
   const go = readFileSync(path.resolve('../cmd/vc/pi_extension.go'), 'utf8');
   const marker = 'const piVoidCodexExtensionSource = `';
   const start = go.indexOf(marker);
   const end = go.indexOf('`', start + marker.length);
-  expect(start, 'managed transport source fixture').toBeGreaterThanOrEqual(0);
+  expect(start, 'legacy managed transport source fixture').toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return go.slice(start + marker.length, end);
 }
 export type WriteText = (text: string, signal: AbortSignal) => Promise<void>;
 export type ClipboardOptions = { platform: string; env: Record<string, string>; piVersion: string; writeText: WriteText; notify: (message: string, level: string) => void };
+export interface ModelDecisionControllerView {
+  requestReadback(): Promise<void>;
+  whenIdle(): Promise<void>;
+  snapshot(): { authorityStatus: string };
+}
+export type PiExtensionAPI = { on(name: string, handler: LifecycleHandler): unknown; registerProvider: (...args: unknown[]) => unknown };
 export type ExtensionModule = {
-  default: (pi: { on(name: string, handler: LifecycleHandler): unknown; registerProvider: (...args: unknown[]) => unknown }, options?: { clipboardIO: Omit<ClipboardOptions, 'notify'> }) => unknown;
+  default: (pi: PiExtensionAPI, options?: { clipboardIO: Omit<ClipboardOptions, 'notify'> }) => unknown;
+  getModelDecisionController: (pi: PiExtensionAPI) => ModelDecisionControllerView;
   installFullscreenClipboard?: (tui: TuiView, options: ClipboardOptions) => () => void;
   createNativeClipboardWriter?: (options: { platform: string; env: Record<string, string>; spawn: Spawn }) => (text: string, signal?: AbortSignal) => Promise<void>;
 };
 export const localEnv = { VC_BOOTSTRAP_EXECUTABLE: '/isolated/vc', SystemRoot: 'C:\\Windows' };
+const fixtureReadbackUrl = 'https://fixture.invalid/opaque/fullscreen-readback?fixture=1';
+const fixtureDecision = {
+  schemaVersion: 1,
+  generation: '1',
+  outcome: 'catalog',
+  evaluatedAt: '2099-01-01T00:00:00.000000000Z',
+  validUntil: '2099-01-01T00:05:00.000000000Z',
+  authority: {
+    effectiveAssignmentRevision: '1', assignmentHeadRevision: '1', scheduledSuccessor: null,
+    policyRevision: '1', tierId: 'fixture-tier', tierModelSetDigest: 'fixture-model-set', calibrationRevision: '1',
+    providerGrantSetRevision: '1', poolRevision: '1', poolCollectionRevision: '1', controlRevision: '1', controlEpoch: '1',
+    quotaLatchRevision: '1', quotaEpisode: null, inputFingerprint: 'fixture-input', controlMode: 'active', quotaState: 'normal',
+    restrictionActive: false, allowedCodexModelIds: ['gpt-5.6-terra'], defaultCodexModelId: 'gpt-5.6-terra',
+    fallbackCodexModelId: 'gpt-5.6-terra', effectiveCodexModelId: 'gpt-5.6-terra',
+  },
+};
+const fixtureBootstrap = {
+  version: 2,
+  relayUrl: 'https://relay.fixture.invalid',
+  authToken: 'fixture-opaque-bearer',
+  providers: [{ kind: 'codex', relayProviderId: 'fixture-opaque-route', models: ['gpt-5.6-terra'] }],
+  modelDecision: {
+    schemaVersion: 1, readbackUrl: fixtureReadbackUrl, pollIntervalSeconds: '300',
+    catalogDecisionTtlSeconds: '300', catalogExpirySkewSeconds: '1',
+  },
+};
+const fixtureFetch = async (input: unknown): Promise<Response> => {
+  if (input !== fixtureReadbackUrl) throw new Error('unit fixture forbids network and non-fixture hosts');
+  return new Response(JSON.stringify(fixtureDecision), { status: 200, headers: { 'content-type': 'application/json' } });
+};
 export async function extension(env = localEnv, spawn?: Spawn, agentExports: Record<string, unknown> = {}): Promise<ExtensionModule> {
   const tui = await realPi();
   const code = transformSync(embeddedSource(), { loader: 'ts', format: 'cjs', target: 'node22', logLevel: 'silent' }).code;
   const module = { exports: {} };
   const safeRequire = (id: string): unknown => {
     if (id === 'node:child_process' || id === 'child_process') return {
-      execFileSync: vi.fn(() => JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] })),
+      execFileSync: vi.fn(() => JSON.stringify(fixtureBootstrap)),
       spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
     };
     if (id === '@earendil-works/pi-tui') return tui;
@@ -106,7 +155,7 @@ export async function extension(env = localEnv, spawn?: Spawn, agentExports: Rec
     });
     return require(id);
   };
-  new Function('require', 'module', 'exports', 'process', 'console', 'fetch', code)(safeRequire, module, module.exports, { env, platform: 'darwin', pid: 999 }, { error: vi.fn(), log: vi.fn(), warn: vi.fn() }, () => { throw new Error('unit fixture forbids network'); });
+  new Function('require', 'module', 'exports', 'process', 'console', 'fetch', code)(safeRequire, module, module.exports, { env, platform: 'darwin', pid: 999, hrtime: { bigint: () => process.hrtime.bigint() } }, { error: vi.fn(), log: vi.fn(), warn: vi.fn() }, fixtureFetch);
   return module.exports as ExtensionModule;
 }
 export function install(module: ExtensionModule, rig: Rig, overrides: Partial<ClipboardOptions> = {}): () => void {

@@ -16,43 +16,21 @@ import (
 	"time"
 )
 
-// A source-only checkout must retain the local Terra tombstone even when the pinned runtime smoke skips.
-func TestPiVoidCodexNoGrantSourceRegistersLocalTerraTombstone(t *testing.T) {
+// A source-only checkout must not retain the pre-R5 local Terra tombstone path.
+func TestPiVoidCodexV1SourceDoesNotRegisterManagedCatalog(t *testing.T) {
 	code := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(piVoidCodexExtensionSource, "")
 	code = regexp.MustCompile(`(?m)^[\t ]*//[^\n]*(?:\n|$)`).ReplaceAllString(code, "")
 
-	required := []struct {
-		name    string
-		pattern string
-	}{
-		{
-			name:    "Terra model identity",
-			pattern: `(?m)^[\t ]*const[\t ]+CODEX_MODEL_ID[\t ]*=[\t ]*"gpt-5\.6-terra"[\t ]*;`,
-		},
-		{
-			name:    "absence-first Codex grant state",
-			pattern: `(?m)^[\t ]*let[\t ]+hasCodexGrant[\t ]*=[\t ]*false[\t ]*;`,
-		},
-		{
-			name:    "Codex grant observation",
-			pattern: `(?m)^[\t ]*if[\t ]*\([\t ]*provider\.kind[\t ]*===[\t ]*"codex"[\t ]*\)[\t ]*\{[\t\r\n ]*hasCodexGrant[\t ]*=[\t ]*true[\t ]*;`,
-		},
-		{
-			name: "explicit no-grant local Terra registration",
-			pattern: `(?m)^[\t ]*if[\t ]*\([\t ]*!hasCodexGrant[\t ]*\)[\t ]*\{[\t\r\n ]*` +
-				`registerVoidCodex[\t ]*\([\t ]*pi[\t ]*,[\t ]*bootstrap[\t ]*,[\t ]*\[[\t ]*` +
-				`codexModel[\t ]*\([\t ]*CODEX_MODEL_ID[\t ]*,[\t ]*codexName[\t ]*\([\t ]*CODEX_MODEL_ID[\t ]*\)[\t ]*\)[\t ]*` +
-				`\][\t ]*\)[\t ]*;[\t\r\n ]*\}`,
-		},
-	}
-	for _, contract := range required {
-		if !regexp.MustCompile(contract.pattern).MatchString(code) {
-			t.Errorf("embedded Pi extension is missing %s", contract.name)
-		}
+	legacyTombstone := regexp.MustCompile(`(?m)^[\t ]*if[\t ]*\([\t ]*!hasCodexGrant[\t ]*\)[\t ]*\{[\t\r\n ]*` +
+		`registerVoidCodex[\t ]*\([\t ]*pi[\t ]*,[\t ]*bootstrap[\t ]*,[\t ]*\[[\t ]*` +
+		`codexModel[\t ]*\([\t ]*CODEX_MODEL_ID[\t ]*,[\t ]*codexName[\t ]*\([\t ]*CODEX_MODEL_ID[\t ]*\)[\t ]*\)[\t ]*` +
+		`\][\t ]*\)[\t ]*;[\t\r\n ]*\}`)
+	if legacyTombstone.MatchString(code) {
+		t.Fatal("embedded Pi extension still invents a managed Terra catalog when the V1/no-grant path is taken")
 	}
 }
 
-// Without a local tombstone, Pi falls away from the managed Terra model instead of reporting the missing Void grant.
+// A V1 no-grant bootstrap must fail closed before any managed transport is registered.
 func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the trusted bootstrap stub is a POSIX shell script; the pinned smoke stages darwin-arm64")
@@ -105,7 +83,7 @@ func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, prerequisites.node, prerequisites.piEntry,
-		"-e", extension, "--offline", "--no-tools", "--no-context-files", "-p", "PING")
+		"-e", extension, "--offline", "--no-tools", "--no-context-files", "--list-models")
 	command.Dir = work
 	command.Env = []string{
 		"PATH=/usr/bin:/bin",
@@ -118,13 +96,14 @@ func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	output, runErr := command.CombinedOutput()
 
 	if got := upstreamCalls.Load(); got != 0 {
-		t.Fatalf("no-grant prompt made %d loopback upstream call(s), want zero; Pi output:\n%s", got, output)
+		t.Fatalf("V1 no-grant model listing made %d loopback upstream call(s), want zero; Pi output:\n%s", got, output)
 	}
-	const wantError = "Void Codex provider grant is unavailable"
-	if !strings.Contains(string(output), wantError) {
-		t.Fatalf("managed void-codex/gpt-5.6-terra tombstone was not reached; want %q, run error=%v; Pi output:\n%s", wantError, runErr, output)
+	if runErr != nil {
+		t.Fatalf("V1 no-grant model listing failed: %v; Pi output:\n%s", runErr, output)
 	}
-	if runErr == nil {
-		t.Fatalf("no-grant prompt exited successfully after reporting %q; Pi output:\n%s", wantError, output)
+	for _, line := range strings.Split(string(output), "\n") {
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "void-codex" {
+			t.Fatalf("V1 no-grant bootstrap registered managed model %q; Pi output:\n%s", strings.Join(fields[:2], " "), output)
+		}
 	}
 }

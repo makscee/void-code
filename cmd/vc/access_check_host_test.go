@@ -191,6 +191,7 @@ func TestProviderListStaysOnTheSignInHost(t *testing.T) {
 
 	// Only which host was asked matters here; whatever the bootstrap makes of
 	// an empty list is another test's business.
+	configureModelDecisionTimingFixture(t)
 	_, _ = currentPiBootstrap()
 
 	signIn.assertReached(t, "the provider list")

@@ -11,12 +11,12 @@
 //     and friends -- eagerly, before an extension asks for anything. With no node_modules on disk
 //     that kills EVERY extension, including the transport extension vc installs, and in the app it
 //     shows up as "VC cannot see a provider". So the assertion is not that the extension loaded but
-//     what follows from it: provider void-codex is registered and its models are listed.
+//     what follows from it: after V2 authority, provider void-codex is available with its managed models.
 //  2. In bundle mode getPackageDir() is computed from process.execPath. If PI_PACKAGE_DIR does not
 //     arrive, Pi does NOT fail -- it reads somebody else's package.json or none at all, and becomes
 //     version 0.0.0 with somebody else's app name and settings directory.
 //
-// The extension is the real one, from cmd/vc/pi_extension.go, not a toy: it is the one that breaks.
+// The extension is the real one, from cmd/vc/pi_extension.ts, not a toy: it is the one that breaks.
 //
 // This lives on the pinned-Pi provision path because Pi is vendored and pinned by hash: a silent
 // failure is impossible in production and possible exactly at the moment somebody bumps the pin.
@@ -48,6 +48,201 @@ class SmokeFailure extends Error {
 
 function die(what, detail) {
   throw new SmokeFailure(what, detail);
+}
+
+const RPC_TIMEOUT_MS = 120000;
+const RPC_READINESS_TIMEOUT_MS = 30000;
+const RPC_DIAGNOSTIC_LIMIT = 12000;
+
+function appendBounded(current, addition) {
+  const next = `${current}${addition}`;
+  return next.length <= RPC_DIAGNOSTIC_LIMIT ? next : next.slice(-RPC_DIAGNOSTIC_LIMIT);
+}
+
+function sanitizeRpcText(value, secrets = []) {
+  let text = String(value ?? '').replace(/\x1b\[[0-?]*[ -\/@-~]/g, '');
+  for (const secret of secrets) {
+    if (secret) text = text.split(secret).join('<redacted>');
+  }
+  text = [...text].map((character) => {
+    const code = character.codePointAt(0);
+    return code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d ? '?' : character;
+  }).join('');
+  return text.length <= RPC_DIAGNOSTIC_LIMIT ? text : `${text.slice(0, RPC_DIAGNOSTIC_LIMIT)}\n  ... output truncated ...`;
+}
+
+function rpcDiagnostics(error, stdout, stderr, secrets) {
+  const detail = [`  ${error instanceof Error ? error.message : String(error)}`];
+  const out = sanitizeRpcText(stdout, secrets);
+  const err = sanitizeRpcText(stderr, secrets);
+  if (out) detail.push(`  stdout:\n${out.split('\n').map((line) => `    ${line}`).join('\n')}`);
+  if (err) detail.push(`  stderr:\n${err.split('\n').map((line) => `    ${line}`).join('\n')}`);
+  return detail.join('\n');
+}
+
+async function runRpcTurn({ entry, packageDir, cwd, extension, uiExtension, env, models, model, reply, secrets }) {
+  const child = spawn(process.execPath, [
+    entry, '--mode', 'rpc', '-e', extension, '-e', uiExtension, '--offline', '--no-session',
+  ], {
+    cwd,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let inputBuffer = '';
+  let nextId = 0;
+  let stopped = false;
+  let exitFailure;
+  const pending = new Map();
+  const events = [];
+  const eventWaiters = [];
+
+  const rememberEvent = (event) => {
+    events.push(event);
+    if (events.length > 64) events.shift();
+    for (let index = eventWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = eventWaiters[index];
+      if (!waiter.predicate(event)) continue;
+      eventWaiters.splice(index, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(event);
+    }
+  };
+  const rejectPending = (error) => {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    pending.clear();
+    for (const waiter of eventWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  };
+  const onLine = (line) => {
+    const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line;
+    stdout = appendBounded(stdout, `${trimmed}\n`);
+    if (!trimmed) return;
+    let message;
+    try {
+      message = JSON.parse(trimmed);
+    } catch {
+      // Pi's protocol is JSONL, but an unrelated line must not make a valid response with
+      // another id disappear. Keep it in bounded diagnostics and continue reading.
+      return;
+    }
+    if (message?.type === 'response' && typeof message.id === 'string') {
+      const request = pending.get(message.id);
+      if (request) {
+        pending.delete(message.id);
+        clearTimeout(request.timer);
+        request.resolve(message);
+      }
+      return;
+    }
+    rememberEvent(message);
+  };
+  child.stdout.on('data', (chunk) => {
+    inputBuffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    while (true) {
+      const newline = inputBuffer.indexOf('\n');
+      if (newline < 0) break;
+      onLine(inputBuffer.slice(0, newline));
+      inputBuffer = inputBuffer.slice(newline + 1);
+    }
+    if (inputBuffer.length > RPC_DIAGNOSTIC_LIMIT) inputBuffer = inputBuffer.slice(-RPC_DIAGNOSTIC_LIMIT);
+  });
+  child.stderr.on('data', (chunk) => { stderr = appendBounded(stderr, chunk.toString('utf8')); });
+  child.once('error', (error) => {
+    exitFailure = error;
+    rejectPending(error);
+  });
+  child.once('exit', (code, signal) => {
+    if (stopped) return;
+    const error = new Error(`Pi RPC exited before the smoke completed (code ${code ?? 'n/a'}, signal ${signal ?? 'n/a'})`);
+    exitFailure = error;
+    rejectPending(error);
+  });
+
+  const response = (id) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`timed out waiting for RPC response ${id}`));
+    }, RPC_TIMEOUT_MS);
+    pending.set(id, { resolve, reject, timer });
+  });
+  const command = async (type, fields = {}) => {
+    if (exitFailure) throw exitFailure;
+    const id = `bundled-smoke-${++nextId}`;
+    const result = response(id);
+    child.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`);
+    const message = await result;
+    if (!message.success) throw new Error(`RPC ${type} failed: ${message.error ?? 'unspecified error'}`);
+    return message.data;
+  };
+  const waitForEvent = (predicate, timeout = RPC_TIMEOUT_MS) => {
+    const existing = events.find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = eventWaiters.findIndex((waiter) => waiter.resolve === resolve);
+        if (index >= 0) eventWaiters.splice(index, 1);
+        reject(new Error('timed out waiting for the Pi RPC lifecycle event'));
+      }, timeout);
+      eventWaiters.push({ predicate, resolve, reject, timer });
+    });
+  };
+  const stop = async () => {
+    stopped = true;
+    rejectPending(new Error('Pi RPC smoke child is stopping'));
+    if (!child.stdin.destroyed) child.stdin.end();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve();
+      }, 2000);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+  };
+
+  try {
+    // The extension's startup handler begins the authenticated V2 readback asynchronously. Do not
+    // select a provider or model here: readiness is the managed catalog appearing in Pi itself.
+    const deadline = Date.now() + RPC_READINESS_TIMEOUT_MS;
+    let available = [];
+    while (Date.now() < deadline) {
+      const data = await command('get_available_models');
+      available = Array.isArray(data?.models) ? data.models : [];
+      const missing = models.filter((expected) => !available.some((candidate) => candidate?.provider === 'void-codex' && candidate?.id === expected));
+      if (missing.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const missing = models.filter((expected) => !available.some((candidate) => candidate?.provider === 'void-codex' && candidate?.id === expected));
+    if (missing.length > 0) throw new Error(`V2 authority did not publish all void-codex models within ${RPC_READINESS_TIMEOUT_MS}ms: ${missing.join(', ')}`);
+    const selected = available.find((candidate) => candidate?.provider === 'void-codex' && candidate?.id === model);
+    if (!selected) throw new Error(`V2 authority did not publish void-codex/${model} within ${RPC_READINESS_TIMEOUT_MS}ms`);
+
+    const set = await command('set_model', { provider: 'void-codex', modelId: model });
+    if (set?.provider !== 'void-codex' || set?.id !== model) throw new Error(`RPC set_model selected an unexpected model: ${JSON.stringify(set)}`);
+    const state = await command('get_state');
+    if (state?.model?.provider !== 'void-codex' || state?.model?.id !== model) throw new Error(`RPC state did not retain void-codex/${model}`);
+
+    const settled = waitForEvent((event) => event?.type === 'agent_settled');
+    await command('prompt', { message: 'PING' });
+    await settled;
+    const spoken = events
+      .filter((event) => event?.type === 'message_update' && event?.assistantMessageEvent?.type === 'text_delta')
+      .map((event) => event.assistantMessageEvent.delta)
+      .join('');
+    if (!spoken.includes(reply)) throw new Error(`the canned relay marker ${reply} was absent from the RPC turn`);
+    return spoken;
+  } catch (error) {
+    return { failed: rpcDiagnostics(error, stdout, stderr, secrets) };
+  } finally {
+    await stop();
+  }
 }
 
 async function main() {
@@ -85,16 +280,27 @@ async function main() {
     const home = path.join(work, 'home');
     await mkdir(home, { recursive: true });
 
-    // Exactly the extension text vc writes for the user. A Go raw string cannot contain a backtick, so
-    // the bounds are unambiguous.
-    const extensionGo = await readFile(path.join(repo, 'cmd/vc/pi_extension.go'), 'utf8');
-    const marker = 'const piVoidCodexExtensionSource = `';
-    const opens = extensionGo.indexOf(marker);
-    const closes = opens < 0 ? -1 : extensionGo.indexOf('`', opens + marker.length);
-    if (closes < 0) die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_extension.go has no raw string piVoidCodexExtensionSource.\n  If it was renamed, fix it here rather than switching the check off.');
-    const extensionSource = extensionGo.slice(opens + marker.length, closes);
-    if (!extensionSource.startsWith('// void-code-managed-pi-extension:v1')) {
-      die('the smoke\'s own setup, not the bundle', '  The extracted extension does not start with its own version marker -- the Go parse has drifted.');
+    // Exactly the authoritative TypeScript extension text vc writes for the user. Before the source
+    // migration lands, this RED commit alone retains the old Go raw string as a compatibility input.
+    // Once the TypeScript path exists, an invalid or unreadable file must fail here: duplicate Go
+    // bytes can never mask a broken authority. Exact Go embedding is owned by the Go wire test.
+    const extensionTypeScript = path.join(repo, 'cmd/vc/pi_extension.ts');
+    let extensionSource;
+    if (existsSync(extensionTypeScript)) {
+      extensionSource = await readFile(extensionTypeScript, 'utf8');
+      if (!extensionSource.startsWith('// void-code-managed-pi-extension:v1')) {
+        die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_extension.ts does not start with its ownership marker.');
+      }
+    } else {
+      const extensionGo = await readFile(path.join(repo, 'cmd/vc/pi_extension.go'), 'utf8');
+      const marker = 'const piVoidCodexExtensionSource = `';
+      const opens = extensionGo.indexOf(marker);
+      const closes = opens < 0 ? -1 : extensionGo.indexOf('`', opens + marker.length);
+      if (closes < 0) die('the smoke\'s own setup, not the bundle', '  cmd/vc/pi_extension.ts is absent and cmd/vc/pi_extension.go has no legacy raw string piVoidCodexExtensionSource.\n  Keep the fallback only until the authoritative TypeScript migration lands.');
+      extensionSource = extensionGo.slice(opens + marker.length, closes);
+      if (!extensionSource.startsWith('// void-code-managed-pi-extension:v1')) {
+        die('the smoke\'s own setup, not the bundle', '  The legacy extracted extension does not start with its ownership marker.');
+      }
     }
     const extension = path.join(work, 'extension.ts');
     await writeFile(extension, extensionSource);
@@ -115,6 +321,20 @@ async function main() {
     // registered provider, not a live relay. One stub for every platform -- see piSmokeBootstrapPlan
     // for why the shell script it replaced could not be one.
     const models = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
+    const authToken = 'bundled-pi-smoke-not-a-credential';
+    const modelDecision = {
+      schemaVersion: 1, generation: '1', outcome: 'catalog',
+      evaluatedAt: '2099-01-01T00:00:00.000000000Z', validUntil: '2099-01-01T00:02:00.000000000Z',
+      authority: {
+        effectiveAssignmentRevision: '1', assignmentHeadRevision: '1', scheduledSuccessor: null,
+        policyRevision: '1', tierId: 'bundled-smoke-tier', tierModelSetDigest: 'bundled-smoke-set', calibrationRevision: '1',
+        providerGrantSetRevision: '1', poolRevision: '1', poolCollectionRevision: '1', controlRevision: '1',
+        controlEpoch: '1', quotaLatchRevision: '1', quotaEpisode: null, inputFingerprint: 'bundled-smoke-fingerprint',
+        controlMode: 'active', quotaState: 'normal', restrictionActive: false,
+        allowedCodexModelIds: models, defaultCodexModelId: models[0],
+        fallbackCodexModelId: models[0], effectiveCodexModelId: models[0],
+      },
+    };
     // The relay is a real local process now, not an unreachable name. Registering a provider turned
     // out to prove nothing about holding a conversation: the extension resolves
     // `@earendil-works/pi-ai/compat` on disk and loads a file beside it, and it does that while
@@ -122,7 +342,12 @@ async function main() {
     // Checking the answer instead of the registration is the only way that door gets watched.
     const reply = 'VOID-SMOKE-PONG-6f21';
     const relay = spawn(process.execPath, [path.join(desktop, 'scripts/pi-smoke-relay.mjs')], {
-      env: { ...process.env, VC_SMOKE_RELAY_REPLY: reply },
+      env: {
+        ...process.env,
+        VC_SMOKE_RELAY_REPLY: reply,
+        VC_SMOKE_RELAY_AUTH_TOKEN: authToken,
+        VC_SMOKE_RELAY_DECISION_JSON: JSON.stringify(modelDecision),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     // Killed however this ends, and in one place rather than after each step. A run that fails on
@@ -138,7 +363,20 @@ async function main() {
         relay.once('error', (error) => { clearTimeout(failed); reject(error); });
         relay.once('exit', (code) => { clearTimeout(failed); reject(new Error(`the canned relay exited before answering (code ${code})`)); });
       }).catch((error) => die('the smoke\'s own setup, not the bundle', `  ${error.message}`));
-      const bootstrapAnswer = JSON.stringify({ version: 1, relayUrl, authToken: 'smoke', providers: [{ kind: 'codex', relayProviderId: 'smoke-provider', models }] });
+      const readbackUrl = `${relayUrl}/v1/vc/me?fixture=bundled-pi-smoke`;
+      const bootstrapAnswer = JSON.stringify({
+        version: 2,
+        relayUrl,
+        authToken,
+        providers: [{ kind: 'codex', relayProviderId: 'smoke-provider', models }],
+        modelDecision: {
+          schemaVersion: 1,
+          readbackUrl,
+          pollIntervalSeconds: '30',
+          catalogDecisionTtlSeconds: '300',
+          catalogExpirySkewSeconds: '5',
+        },
+      });
       const stub = piSmokeBootstrapPlan({ target, directory: work });
       // Built for the machine this runs on, not for the target: the stub is the test's own fixture and
       // has to start here. The bundle is the thing built for the target.
@@ -170,16 +408,19 @@ async function main() {
         }
       };
 
-      const turn = ['-e', extension, '-e', uiExtension, '--provider', 'void-codex', '--model', models[0], '-p', 'PING'];
       const turnEnv = { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, VC_DESKTOP_SESSION: '1', PI_SKIP_VERSION_CHECK: '1' };
 
       // 0. The road macOS ships on, and it has to be checked before the tree is bundled because
       // bundling destroys it. Every target this smoke runs is bundled, so without this the resolver
       // road is exercised by nothing at all -- and it is half the product.
       const installed = path.join(piRoot, 'node_modules/@earendil-works/pi-coding-agent');
-      const onInstalled = run(path.join(installed, 'dist/cli.js'), installed, turn, turnEnv);
-      if (onInstalled.failed !== undefined || !onInstalled.includes(reply)) {
-        die('holding a conversation on the installed tree, before any bundling', `  This is what macOS ships: Pi installed, its Responses helpers reached through\n  import.meta.resolve. A failure here is not about the bundle at all.\n${`${onInstalled.failed ?? onInstalled}`.split('\n').slice(0, 10).map((line) => `    ${line}`).join('\n')}`);
+      const onInstalled = await runRpcTurn({
+        entry: path.join(installed, 'dist/cli.js'), packageDir: installed, cwd: work, extension, uiExtension,
+        env: { ...piSmokeRunEnv({ target, home, packageDir: installed }), ...turnEnv },
+        models, model: models[0], reply, secrets: [authToken, relayUrl],
+      });
+      if (onInstalled.failed !== undefined) {
+        die('holding a conversation on the installed tree, before any bundling', `  This is what macOS ships: Pi installed, its Responses helpers reached through\n  import.meta.resolve. A failure here is not about the bundle at all.\n${onInstalled.failed.split('\n').map((line) => `    ${line}`).join('\n')}`);
       }
 
       // Built through bundleForSmoke rather than by calling the bundler directly: it is what compares
@@ -192,21 +433,7 @@ async function main() {
       const entry = path.join(piRoot, bundle.entry);
       const packageDir = path.join(piRoot, bundle.packageDir);
 
-      // 1. The provider the app connects a model through.
-      const listed = run(entry, packageDir, ['-e', extension, '-e', uiExtension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, VC_DESKTOP_SESSION: '1' });
-      if (listed.failed !== undefined) {
-        die('running the bundle with the real extension', `  The entry point did not survive --list-models. Output:\n${listed.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
-      }
-      // No regular expressions: a row of the model table starts with the provider name and then the
-      // model id. Look for that pair rather than a substring anywhere in the output -- otherwise an
-      // error message that happens to name the provider would pass.
-      const rows = listed.split('\n').map((line) => line.trim().split(/\s+/));
-      const missing = models.filter((model) => !rows.some(([provider, id]) => provider === 'void-codex' && id === model));
-      if (missing.length > 0) {
-        die('the real extension registering its provider', `  void-codex was not registered: models ${missing.join(', ')} are not listed.\n  In the app this looks like "VC cannot see a provider" and like nothing else.\n\n  The usual cause: Pi stopped entering bundle mode by file name (isBunBinary), so the loader\n  went back to aliases built with require.resolve -- and node_modules is gone.\n  Look at config.js, the line about "$bunfs" / "~BUN" / "%7EBUN".`);
-      }
-
-      // 2. The other silent failure of the same mode: the package directory is not found.
+      // 1. The other silent failure of the same mode: the package directory is not found.
       const version = run(entry, packageDir, ['--version'], {});
       if (version.failed !== undefined) die('running the bundle', `  --version did not survive:\n${version.failed.split('\n').slice(0, 8).map((line) => `    ${line}`).join('\n')}`);
       const printed = version.trim();
@@ -217,15 +444,15 @@ async function main() {
         die('the bundle matching the pin', `  The entry point reports ${printed}; resource-pins.json pins ${pins.pi.version}.`);
       }
 
-      // 3. The turn itself, which is the whole point and was the thing nobody checked. Registration and
-      // the version are still asserted above, because they name a different failure: "no provider at
-      // all" and "a provider that cannot answer" send a reader to different places.
-      const spoken = run(entry, packageDir, turn, turnEnv);
-        if (spoken.failed !== undefined) {
-        die('holding a conversation on the bundled runtime', `  The bundle registers its provider and lists its models, and then cannot answer. Output:\n${spoken.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}\n\n  The usual cause: something in the extension resolves a module path on disk -- the transport\n  extension calls import.meta.resolve('@earendil-works/pi-ai/compat') and loads a file next to\n  it -- and a bundle has no disk to resolve against. Registration does not touch that path;\n  building the request does.`);
-      }
-      if (!spoken.includes(reply)) {
-        die('holding a conversation on the bundled runtime', `  The turn ended without the answer the canned relay sent. Expected ${reply} in:\n${spoken.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
+      // 2. The turn itself, including post-authority model readiness, which is the whole point and was
+      // the thing nobody checked.
+      const spoken = await runRpcTurn({
+        entry, packageDir, cwd: work, extension, uiExtension,
+        env: { ...piSmokeRunEnv({ target, home, packageDir }), ...turnEnv },
+        models, model: models[0], reply, secrets: [authToken, relayUrl],
+      });
+      if (spoken.failed !== undefined) {
+        die('holding a conversation on the bundled runtime', `  The bundle must let the real V2 extension publish authority, select its model, and answer through one Pi RPC child.\n${spoken.failed.split('\n').map((line) => `    ${line}`).join('\n')}`);
       }
 
       console.log(`bundled pi smoke: ${target} bundle, void-codex registered by the real extension (${models.join(', ')}), a turn answered ${reply} on the installed tree and on the bundle, version ${printed}, node_modules gone`);

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,7 +40,30 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const bootstrapJSON = `{"version":1,"relayUrl":"https://relay.invalid","authToken":"local-only","providers":[{"kind":"codex","relayProviderId":"codex-local","models":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-6-astra"]},{"kind":"deepseek","relayProviderId":"deepseek-local","models":["deepseek/deepseek-v4-pro","deepseek/deepseek-v4-flash"]}]}`
+	readback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/me" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer smoke" {
+			http.Error(w, "fixture bearer mismatch", http.StatusUnauthorized)
+			return
+		}
+		decision := voidCodexSmokeDecision()
+		authority, ok := decision["authority"].(map[string]any)
+		if !ok {
+			http.Error(w, "fixture decision authority is malformed", http.StatusInternalServerError)
+			return
+		}
+		// This fixture represents the server readback for the persisted Astra branch. The
+		// controller must apply this authority before Pi exposes or reports the model.
+		authority["defaultCodexModelId"] = "gpt-6-astra"
+		authority["effectiveCodexModelId"] = "gpt-6-astra"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(decision)
+	}))
+	defer readback.Close()
+	bootstrapJSON := voidCodexSmokeBootstrap(t, readback.URL+"/v1/vc/me", readback.URL)
 	bootstrap := filepath.Join(work, "bootstrap.sh")
 	if err := os.WriteFile(bootstrap, []byte("#!/bin/sh\n[ \"$1\" = \"pi-bootstrap\" ] || exit 1\nprintf '%s' '"+bootstrapJSON+"'\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -86,49 +111,32 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 	records := make(chan map[string]json.RawMessage)
 	readErrors := make(chan error, 1)
 	go readStrictJSONL(stdout, records, readErrors)
-	for _, request := range []string{
-		`{"id":"state","type":"get_state"}` + "\n",
-		`{"id":"models","type":"get_available_models"}` + "\n",
-	} {
-		if _, err := io.WriteString(stdin, request); err != nil {
-			t.Fatalf("send RPC command: %v", err)
-		}
+	available, polls, err := waitForPiVoidCodexModels(ctx, stdin, records, readErrors, &stderr, "astra-models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polls < 1 {
+		t.Fatalf("V2 readiness poll count = %d, want at least one actual RPC poll", polls)
 	}
 
-	responses := map[string]map[string]json.RawMessage{}
-	for len(responses) < 2 {
-		select {
-		case record, ok := <-records:
-			if !ok {
-				t.Fatalf("pinned Pi closed RPC stdout before both responses; stderr=%s", stderr.String())
-			}
-			var kind, id string
-			_ = json.Unmarshal(record["type"], &kind)
-			_ = json.Unmarshal(record["id"], &id)
-			if kind == "response" && (id == "state" || id == "models") {
-				responses[id] = record
-			}
-		case err := <-readErrors:
-			t.Fatalf("invalid pinned Pi RPC JSONL: %v; stderr=%s", err, stderr.String())
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for pinned Pi RPC responses: %v; stderr=%s", ctx.Err(), stderr.String())
+	stateResponse, err := func() (map[string]json.RawMessage, error) {
+		const id = "astra-state"
+		if err := sendPiRPC(stdin, id, "get_state", nil); err != nil {
+			return nil, fmt.Errorf("send get_state RPC: %w", err)
 		}
+		return waitForPiRPCResponse(ctx, records, readErrors, &stderr, id)
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := piRPCResponseError(stateResponse, "get_state"); err != nil {
+		t.Fatal(err)
 	}
 	if err := stdin.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := command.Wait(); err != nil {
-		t.Fatalf("pinned Pi RPC process failed: %v; stderr=%s", err, stderr.String())
-	}
-
-	for id, commandName := range map[string]string{"state": "get_state", "models": "get_available_models"} {
-		var success bool
-		var gotCommand string
-		_ = json.Unmarshal(responses[id]["success"], &success)
-		_ = json.Unmarshal(responses[id]["command"], &gotCommand)
-		if !success || gotCommand != commandName {
-			t.Fatalf("RPC %s response = %s", id, mustJSON(responses[id]))
-		}
+		t.Fatalf("pinned Pi RPC process failed after readiness/state readback: %v; stderr=%s", err, stderr.String())
 	}
 
 	var state struct {
@@ -138,7 +146,7 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		} `json:"model"`
 		MessageCount int `json:"messageCount"`
 	}
-	if err := json.Unmarshal(responses["state"]["data"], &state); err != nil {
+	if err := json.Unmarshal(stateResponse["data"], &state); err != nil {
 		t.Fatal(err)
 	}
 	if state.Model == nil || state.Model.Provider != "void-codex" || state.Model.ID != "gpt-6-astra" {
@@ -148,21 +156,7 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		t.Fatalf("resumed message count = %d, want the persisted message", state.MessageCount)
 	}
 
-	var available struct {
-		Models []struct {
-			Provider string `json:"provider"`
-			ID       string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(responses["models"]["data"], &available); err != nil {
-		t.Fatal(err)
-	}
-	seen := map[string]bool{}
-	for _, model := range available.Models {
-		if strings.HasPrefix(model.Provider, "void-") {
-			seen[model.Provider+"/"+model.ID] = true
-		}
-	}
+	seen := available
 	for model := range seen {
 		if strings.HasPrefix(model, "void-deepseek/") {
 			t.Fatalf("retired DeepSeek model is still advertised after extension registration: %s", model)

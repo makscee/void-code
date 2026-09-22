@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,20 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	}
 	prerequisites := requireOrSkipPinnedPiSmoke(t, root)
 
+	readback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vc/me" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer smoke" {
+			http.Error(w, "fixture bearer mismatch", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(voidCodexSmokeDecision())
+	}))
+	defer readback.Close()
+
 	var (
 		callsMu sync.Mutex
 		calls   []resumeUpstreamCall
@@ -89,12 +104,18 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	}
 
 	bootstrapPayload, err := json.Marshal(map[string]any{
-		"version":   1,
+		"version":   2,
 		"relayUrl":  upstream.URL,
-		"authToken": "local-only",
+		"authToken": "smoke",
 		"providers": []map[string]any{
-			{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-5.6-terra"}},
-			{"kind": "deepseek", "relayProviderId": "deepseek-local", "models": []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"}},
+			{"kind": "codex", "relayProviderId": "codex-local", "models": voidCodexSmokeModels},
+		},
+		"modelDecision": map[string]any{
+			"schemaVersion":             1,
+			"readbackUrl":               readback.URL + "/v1/vc/me",
+			"pollIntervalSeconds":       "30",
+			"catalogDecisionTtlSeconds": "300",
+			"catalogExpirySkewSeconds":  "5",
 		},
 	})
 	if err != nil {
@@ -128,26 +149,76 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, prerequisites.node, prerequisites.piEntry,
-		"-e", extension, "--offline", "--no-tools", "--no-context-files", "--session", session, "-p", "PING")
+		"-e", extension, "--offline", "--no-tools", "--no-context-files", "--mode", "rpc", "--session", session)
 	command.Dir = work
 	command.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TERM=dumb", "PI_CODING_AGENT_DIR=" + agentDir, "VC_BOOTSTRAP_EXECUTABLE=" + bootstrap}
-	output, runErr := command.CombinedOutput()
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	records := make(chan map[string]json.RawMessage)
+	readErrors := make(chan error, 1)
+	go readStrictJSONL(stdout, records, readErrors)
+	_, polls, err := waitForPiVoidCodexModels(ctx, stdin, records, readErrors, &stderr, "deepseek-models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polls < 1 {
+		t.Fatalf("V2 readiness poll count = %d, want at least one actual RPC poll", polls)
+	}
+
+	callsMu.Lock()
+	if len(calls) != 0 {
+		callsMu.Unlock()
+		t.Fatalf("upstream calls occurred before the readiness barrier: %#v", calls)
+	}
+	callsMu.Unlock()
+
+	const promptID = "deepseek-prompt"
+	if err := sendPiRPC(stdin, promptID, "prompt", map[string]any{"message": "PING"}); err != nil {
+		t.Fatalf("send PING RPC: %v", err)
+	}
+	promptResponse, err := waitForPiRPCResponse(ctx, records, readErrors, &stderr, promptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := piRPCResponseError(promptResponse, "prompt"); err != nil {
+		t.Fatalf("resumed prompt was not accepted after V2 readiness: %v", err)
+	}
+	events, err := waitForPiAgentSettled(ctx, records, readErrors, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runErr := command.Wait()
+	output := mustJSON(events)
 
 	callsMu.Lock()
 	observed := append([]resumeUpstreamCall(nil), calls...)
 	callsMu.Unlock()
 	for _, call := range observed {
 		if call.provider == "deepseek-local" || call.path == "/v1/messages" {
-			t.Fatalf("legacy DeepSeek resume dispatched to the retired transport: %#v\nPi output:\n%s", observed, output)
+			t.Fatalf("legacy DeepSeek resume dispatched to the retired transport: %#v\nPi RPC events:\n%s", observed, output)
 		}
 	}
 	if runErr != nil {
-		t.Fatalf("legacy session did not complete on the OpenAI fallback: %v\nupstream calls: %#v\nPi output:\n%s", runErr, observed, output)
+		t.Fatalf("legacy session did not complete on the OpenAI fallback: %v\nupstream calls: %#v\nPi RPC events:\n%s\nstderr=%s", runErr, observed, output, stderr.String())
 	}
 	if len(observed) != 1 || observed[0].provider != "codex-local" || observed[0].path != "/codex/responses" || observed[0].model != "gpt-5.6-terra" {
 		t.Fatalf("fallback upstream calls = %#v, want one gpt-5.6-terra call through codex-local /codex/responses", observed)
 	}
-	if !strings.Contains(string(output), "OPENAI_FALLBACK_OK") {
+	if !strings.Contains(output, "OPENAI_FALLBACK_OK") {
 		t.Fatalf("OpenAI fallback response did not reach the resumed session:\n%s", output)
 	}
 }

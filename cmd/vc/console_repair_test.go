@@ -88,6 +88,7 @@ func TestPiBootstrapUsesCurrentOpenAIGrantRatherThanSavedSelection(t *testing.T)
 	if err := auth.Save("token"); err != nil {
 		t.Fatal(err)
 	}
+	configureModelDecisionTimingFixture(t)
 	bootstrap, err := currentPiBootstrap()
 	if err != nil {
 		t.Fatal(err)

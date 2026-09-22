@@ -14,8 +14,22 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 )
 
+const (
+	modelDecisionPollIntervalEnv      = "VC_MODEL_DECISION_POLL_INTERVAL_SECONDS"
+	modelDecisionTTLSecondsEnv        = "VC_MODEL_DECISION_TTL_SECONDS"
+	modelDecisionExpirySkewSecondsEnv = "VC_MODEL_DECISION_EXPIRY_SKEW_SECONDS"
+)
+
+func configureModelDecisionTimingFixture(t *testing.T) {
+	t.Helper()
+	t.Setenv(modelDecisionPollIntervalEnv, "19")
+	t.Setenv(modelDecisionTTLSecondsEnv, "241")
+	t.Setenv(modelDecisionExpirySkewSecondsEnv, "7")
+}
+
 // A stale server-side DeepSeek grant must never become a selectable client transport.
 func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -40,7 +54,7 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+	if got.Version != 2 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
 	wantIDs := []string{"chatgpt-granted", "chatgpt-other"}
@@ -66,8 +80,9 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	}
 }
 
-// A retired-only catalog must still bootstrap so the extension can install its local OpenAI tombstone.
+// A retired-only catalog must still bootstrap so the extension can remain fail-closed without treating it as a transport failure.
 func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -90,7 +105,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t 
 	if err != nil {
 		t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
 	}
-	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+	if got.Version != 2 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
 	if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
@@ -111,6 +126,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			configureModelDecisionTimingFixture(t)
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
@@ -133,7 +149,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing
 			if err != nil {
 				t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
 			}
-			if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+			if got.Version != 2 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 				t.Fatalf("bootstrap metadata = %#v", got)
 			}
 			if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {
@@ -145,6 +161,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForUnsupportedCatalog(t *testing
 
 // A successful empty catalog is safe bootstrap metadata, not an auth or network failure.
 func TestCurrentPiBootstrapReturnsEmptyProvidersForEmptyCatalog(t *testing.T) {
+	configureModelDecisionTimingFixture(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -165,7 +182,7 @@ func TestCurrentPiBootstrapReturnsEmptyProvidersForEmptyCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("currentPiBootstrap() error = %v, want valid bootstrap metadata", err)
 	}
-	if got.Version != 1 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
+	if got.Version != 2 || got.RelayURL != "https://relay.test:9443" || got.AuthToken != "protected-token" {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
 	if !reflect.DeepEqual(got.Providers, []piBootstrapProvider{}) {

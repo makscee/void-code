@@ -38,7 +38,7 @@ it.each(['ok', 'mismatch', 'throw'])('independent Windows reader uses direct CLR
 });
 const observerStart = probe.indexOf('  const originalSpawn = childProcess.spawn;');
 const observerEnd = probe.indexOf('  try {\n    syncBuiltinESMExports();', observerStart);
-const cleanupStart = probe.lastIndexOf('\n  } finally {') + 1;
+const cleanupStart = probe.indexOf('\n  } finally {', observerEnd) + 1;
 expect(observerStart).toBeGreaterThan(0);
 expect(observerEnd).toBeGreaterThan(observerStart);
 expect(cleanupStart).toBeGreaterThan(observerEnd);
@@ -62,7 +62,7 @@ it.each([false, true])('observer buffers fake child events until cleanup/restora
   const builtins = { spawn: originalSpawn };
   const cleanupError = new Error('synthetic cleanup failure');
   const result = runInNewContext(observerControl, {
-    childProcess: builtins, path, performance, errorMonitor,
+    childProcess: builtins, path, performance, errorMonitor, originalFetch: () => {}, globalThis: {},
     process: { stderr: { write: (line: string) => {
       expect(stages).toEqual(['shutdown', 'widgets', 'stop', 'restored']);
       expect(builtins.spawn).toBe(originalSpawn);
@@ -90,6 +90,7 @@ it.each([false, true])('observer buffers fake child events until cleanup/restora
       expect(child.eventNames()).not.toContain('data');
     },
     handlers: new Map([['session_shutdown', [async () => { expect(writes).toEqual([]); stages.push('shutdown'); }]]]),
+    clipboardSessionShutdown: async () => { expect(writes).toEqual([]); stages.push('shutdown'); },
     ctx: {}, receiver: {},
     consumer: { clearExtensionWidgets: () => { expect(writes).toEqual([]); stages.push('widgets'); } },
     tui: { stop: () => {
@@ -151,7 +152,7 @@ it.each([
             ownedWork = request.work;
             if (setupFailure) throw new Error('PRIVATE_CLIPBOARD_COMPILE_FAILED');
             expect(request.node).toBe(process.execPath);
-            expect(request.args).toEqual([entry, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '-e', path.join(request.work, 'probe.ts'), '--list-models']);
+            expect(request.args).toEqual([entry, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--provider', 'fixture-clipboard-control', '--model', 'fixture-clipboard-control-model', '-e', path.join(request.work, 'probe.ts'), '--list-models']);
             expect(request.env.PI_PACKAGE_DIR).toBe(work);
             expect(request.env).not.toHaveProperty('LANG');
             expect(request.env).not.toHaveProperty('PRIVATE_PARENT_SECRET');
