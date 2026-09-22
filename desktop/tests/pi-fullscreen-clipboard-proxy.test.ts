@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { actualReference, deferred, extension, flush, install, localEnv, oscCopies, rig, widgetUI, type LifecycleHandler, type Rig, type TuiView, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
+import { actualReference, deferred, extension, flush, install, localEnv, oscCopies, realSessionManager, rig, widgetUI, type LifecycleHandler, type Rig, type TuiView, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -189,19 +189,25 @@ describe.each(['raw', 'actual-proxy'] as const)('%s paired semantic boundary', (
     });
     ui.setWidget('control', factory); ui.setWidget('control', undefined);
     expect(factory.mock.results[0].value.dispose).toHaveBeenCalledTimes(1);
-    const handlers = new Map<string, LifecycleHandler>();
+    const handlers = new Map<string, LifecycleHandler[]>();
+    const sessionManager = realSessionManager() as { appendCustomEntry(type: string, data: unknown): string };
+    const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn(), appendEntry: (type: string, data: unknown) => sessionManager.appendCustomEntry(type, data) };
     const module = await extension();
-    await module.default({ on: (name, handler) => handlers.set(name, handler), registerProvider: vi.fn() }, {
+    await module.default(pi, {
       clipboardIO: { platform: 'darwin', env: localEnv, piVersion: '0.84.1', writeText: r.write },
     });
-    const ctx = { mode: 'tui', hasUI: true, ui };
+    const ctx = { mode: 'tui', hasUI: true, sessionManager, ui };
+    const controller = module.getModelDecisionController(pi);
     for (let cycle = 0; cycle < 2; cycle++) {
-      await handlers.get('session_start')!({ reason: cycle ? 'reload' : 'startup' }, ctx);
+      for (const handler of handlers.get('session_start') ?? []) await handler({ reason: cycle ? 'reload' : 'startup' }, ctx);
+      await controller.requestReadback();
+      await controller.whenIdle();
+      expect(controller.snapshot().authorityStatus).toBe('active');
       r.flash.mockClear();
       r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();
       expect.soft(r.write.mock.calls.map(([value]) => value)).toEqual([text]);
       expect.soft(oscCopies(r.terminal)).toEqual([]);
-      await handlers.get('session_shutdown')!({ reason: 'reload' }, ctx);
+      for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'reload' }, ctx);
       r.write.mockClear(); r.terminal.output.length = 0;
       r.drag(); await flush();
       expect(r.write).not.toHaveBeenCalled(); expect.soft(oscCopies(r.terminal)).toEqual([text]);

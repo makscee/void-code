@@ -11,6 +11,7 @@ import {
   interactiveFile,
   localEnv,
   realPi,
+  realSessionManager,
   rig,
   type ComponentView,
   type LifecycleHandler,
@@ -84,12 +85,12 @@ function hookValues(tui: TuiView): unknown[] {
 it('renderer switch: the persistent actual widget retires old hooks and equips the next fullscreen renderer exactly once', async () => {
   const r = await rig();
   rigs.push(r);
-  const pi = await realPi();
+  const pinnedPi = await realPi();
   const interactive = await import(/* @vite-ignore */ pathToFileURL(interactiveFile).href);
   const prototype = interactive.InteractiveMode.prototype as unknown as InteractivePrototype;
-  const above = new pi.Container() as WidgetContainer;
-  const below = new pi.Container() as WidgetContainer;
-  const fullscreenLayoutRoot = new pi.VStack([
+  const above = new pinnedPi.Container() as WidgetContainer;
+  const below = new pinnedPi.Container() as WidgetContainer;
+  const fullscreenLayoutRoot = new pinnedPi.VStack([
     { component: r.scroll, basis: 0, grow: 1, shrink: 1, minSize: 1 },
     { component: above, basis: 'auto', grow: 0, shrink: 1, minSize: 0 },
     { component: below, basis: 'auto', grow: 0, shrink: 1, minSize: 0 },
@@ -122,19 +123,23 @@ it('renderer switch: the persistent actual widget retires old hooks and equips t
 
   const firstFullscreen = mode.renderer;
   const originalHooks = hookValues(firstFullscreen);
-  const handlers = new Map<string, LifecycleHandler>();
+  const handlers = new Map<string, LifecycleHandler[]>();
+  const sessionManager = realSessionManager() as { appendCustomEntry(type: string, data: unknown): string };
+  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn(), appendEntry: (type: string, data: unknown) => sessionManager.appendCustomEntry(type, data) };
   r.disposers.push(() => {
-    void handlers.get('session_shutdown')?.({ reason: 'test-cleanup' }, ctx);
+    for (const handler of handlers.get('session_shutdown') ?? []) void handler({ reason: 'test-cleanup' }, ctx);
     if (mode.renderer !== r.tui) mode.renderer.stop({ preserveScreen: true });
   });
   const widgetFactories = vi.fn();
   const module = await extension();
-  await module.default({ on: (name, handler) => handlers.set(name, handler), registerProvider: vi.fn() }, {
+  await module.default(pi, {
     clipboardIO: { platform: 'darwin', env: localEnv, piVersion: '0.84.1', writeText: r.write },
   });
+  const controller = module.getModelDecisionController(pi);
   const ctx = {
     mode: 'tui',
     hasUI: true,
+    sessionManager,
     ui: {
       setWidget(key: string, content: WidgetContent, options?: WidgetOptions) {
         const counted = typeof content === 'function' ? ((tui: TuiView, theme: { fg(color: string, text: string): string }) => {
@@ -147,7 +152,10 @@ it('renderer switch: the persistent actual widget retires old hooks and equips t
       setEditorComponent: vi.fn(),
     },
   };
-  await handlers.get('session_start')!({ reason: 'startup' }, ctx);
+  for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+  await controller.requestReadback();
+  await controller.whenIdle();
+  expect(controller.snapshot().authorityStatus).toBe('active');
   expect(widgetFactories).toHaveBeenCalledTimes(1);
   expect(firstFullscreen.inputListeners).toHaveLength(2);
 
@@ -186,7 +194,7 @@ it('renderer switch: the persistent actual widget retires old hooks and equips t
   await flush();
   expect(r.write.mock.calls.map(([text]) => text)).toEqual([selectedText]);
 
-  await handlers.get('session_shutdown')!({ reason: 'shutdown' }, ctx);
+  for (const handler of handlers.get('session_shutdown') ?? []) await handler({ reason: 'shutdown' }, ctx);
   expect(nextFullscreen.inputListeners).toHaveLength(1);
   nextFullscreen.stop({ preserveScreen: true });
 });
