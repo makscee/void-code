@@ -93,13 +93,13 @@ it.each([
   const code = transformSync(`(async () => { let acceptanceFailed = false; let acceptanceError; try { if (fail) throw original; ${branch}\n } })()`, { loader: 'ts' }).code;
   const result = runInNewContext(code, {
     fail, original, console: { log: success }, process: { platform, env: { VC_R8_PRIVATE_LAUNCHER: verified ? 'VERIFIED' : undefined }, stderr: { write } },
-    failureStage: 'native-completion', failureIndex: 0, firstNativeArgs: [], originalSpawn: () => {}, markers: ['synthetic'],
+    failureStage: 'native-completion', failureIndex: 0, osc52ByStage: { startup: 0, selection: 0, copy: 0, readback: 0, cleanup: 0 }, firstNativeArgs: [], originalSpawn: () => {}, markers: ['synthetic'],
     nativeWitness: witness, preserveNativeFailure,
   });
   if (fail) await expect(result).rejects.toBe(original); else await result;
   expect(witness).toHaveBeenCalledTimes(calls);
   expect(success).toHaveBeenCalledTimes(fail ? 0 : 1);
-  if (fail) expect(JSON.parse(write.mock.calls[0][0])).toEqual({ event: 'acceptance-failure', stage: 'native-completion', index: 0 });
+  if (fail) expect(JSON.parse(write.mock.calls[0][0])).toEqual({ event: 'acceptance-failure', stage: 'native-completion', index: 0, osc52: { startup: 0, selection: 0, copy: 0, readback: 0, cleanup: 0 } });
 });
 it('fixture runs witness only in catch, Windows verified launcher, never substitutes success or readbacks', () => {
   const probe = readFileSync('tests/fixtures/pi-fullscreen-native-probe.ts', 'utf8');
