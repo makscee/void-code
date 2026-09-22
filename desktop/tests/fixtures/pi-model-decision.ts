@@ -508,8 +508,17 @@ export class MethodBoundary {
     return wrapped;
   }
 }
+export interface PinBinding {
+  // This is the exact object passed to the managed product, not necessarily the
+  // native API object supplied by loadExtensionFromFactory (fixtures may wrap it).
+  pi: Pinned.ExtensionAPI;
+  controller?: Controller;
+}
 export interface Rig {
   pi: Pinned.ExtensionAPI;
+  // Native API supplied by Pi; pi is the exact product binding when a fixture wraps it.
+  nativePi: Pinned.ExtensionAPI;
+  controller?: Controller;
   session: Pinned.AgentSession;
   runtime: Pinned.ModelRuntime;
   registry: Pinned.ModelRegistry;
@@ -518,7 +527,7 @@ export interface Rig {
   selections: unknown[];
   close(): void;
 }
-export async function pinRig(factory?: (pi: Pinned.ExtensionAPI, runtime: Pinned.ModelRuntime) => void | Promise<void>, sm?: Pinned.SessionManager, reason: Pinned.SessionStartEvent | 'startup' | 'resume' | 'fork' | 'new' | 'reload' = 'startup'): Promise<Rig> {
+export async function pinRig(factory?: (pi: Pinned.ExtensionAPI, runtime: Pinned.ModelRuntime) => void | Promise<void | PinBinding>, sm?: Pinned.SessionManager, reason: Pinned.SessionStartEvent | 'startup' | 'resume' | 'fork' | 'new' | 'reload' = 'startup'): Promise<Rig> {
   const p = await pinned();
   const l = await loader();
   const ai = await importPin('node_modules/@earendil-works/pi-ai/dist/index.js') as unknown as typeof Ai;
@@ -527,11 +536,14 @@ export async function pinRig(factory?: (pi: Pinned.ExtensionAPI, runtime: Pinned
   const extensionRuntime = l.createExtensionRuntime();
   const selections: unknown[] = [];
   let api!: Pinned.ExtensionAPI;
+  let binding: PinBinding | undefined;
   const extension = await l.loadExtensionFromFactory(async pi => {
     api = pi;
     pi.on('model_select', event => { selections.push(event); });
-    await factory?.(pi, runtime);
+    binding = await factory?.(pi, runtime);
   }, repo, p.createEventBus(), extensionRuntime);
+  const boundPi = binding?.pi ?? api;
+  const initialController = binding?.controller;
   let loadResult = { extensions: [extension], errors: [], runtime: extensionRuntime };
   const resourceLoader: Pinned.ResourceLoader = {
     getExtensions: () => loadResult,
@@ -550,7 +562,7 @@ export async function pinRig(factory?: (pi: Pinned.ExtensionAPI, runtime: Pinned
   };
   const { session } = await p.createAgentSession({ cwd: repo, agentDir: repo, sessionManager: manager, modelRuntime: runtime, settingsManager: p.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }), resourceLoader, noTools: 'all', sessionStartEvent: typeof reason === 'string' ? { type: 'session_start', reason } : reason });
   await session.bindExtensions({ mode: 'rpc', onError: event => { throw new Error(`PIN RUNNER ERROR: ${event.error}`); } });
-  return { get pi() { return api; }, session, runtime, registry: new p.ModelRegistry(runtime), sm: manager, loadResult, selections, close: () => session.dispose() };
+  return { pi: boundPi, nativePi: api, controller: initialController, session, runtime, registry: new p.ModelRegistry(runtime), sm: manager, loadResult, selections, close: () => session.dispose() };
 }
 export function controlConfig(ids = [A, B, F]): Pinned.ProviderConfig {
   return { baseUrl: 'http://fixture.invalid', apiKey: 'fixture-not-a-credential', api: 'void-codex-sse', models: models.filter(m => ids.includes(m.id)) as unknown as Pinned.ProviderConfig['models'], streamSimple: () => { throw new Error('control must never stream'); } };
@@ -587,6 +599,7 @@ export async function productRig(options: { sm?: Pinned.SessionManager; reason?:
   const workerBarrier = { value: null as Deferred<void> | null };
   const dequeueBarrier = { value: null as Deferred<void> | null };
   let bound!: Pinned.ExtensionAPI;
+  let boundController!: Controller;
   if (options.startup) http.enqueue({ method: 'GET', headers: [['content-type', 'application/json']], body: canonical(options.startup) });
   const rig = await pinRig(async (api, runtime) => {
     bound = boundary.wrap(api, runtime);
@@ -600,9 +613,11 @@ export async function productRig(options: { sm?: Pinned.SessionManager; reason?:
       beforeWorker: () => workerBarrier.value?.promise,
       beforeDequeue: (event: Event) => event.type.startsWith('piEffects') ? dequeueBarrier.value?.promise : undefined,
     } });
-    boundary.currentSnapshot = () => product.getModelDecisionController(bound).snapshot();
+    boundController = product.getModelDecisionController(bound);
+    boundary.currentSnapshot = () => boundController.snapshot();
+    return { pi: bound, controller: boundController };
   }, options.sm, options.reason);
-  const controller = (): Controller => product.getModelDecisionController(bound);
+  const controller = (): Controller => boundController;
   boundary.currentSnapshot = () => controller().snapshot();
   const respondReadback = async (d: Decision): Promise<void> => {
     const seen = waitForTrace(isReadback(d.generation));
