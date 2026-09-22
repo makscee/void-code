@@ -68,7 +68,9 @@ class PhaseDiagnostics {
 async function openInstance(product: Product, http: HttpFixture, value: Transport, mark: (phase: Phase) => void): Promise<Rig> {
   const readbackStarted = http.nextRequest();
   const applied = deferred<void>();
+  let productPi!: Parameters<Product['default']>[0];
   const rig = await pinRig(async pi => {
+    productPi = pi;
     await product.default(pi, {
       modelDecision: {
         bootstrap: structuredClone(value),
@@ -80,9 +82,11 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
         },
       },
     });
+    return { pi, controller: product.getModelDecisionController(pi) };
   });
   activeRigs.push(rig);
-  const controller = product.getModelDecisionController(rig.pi);
+  expect(rig.pi).toBe(productPi);
+  const controller = rig.controller!;
   void controller.requestReadback();
   mark('A-session-started');
   await readbackStarted;
@@ -133,7 +137,9 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
     });
 
     const bStarted = http.nextRequest();
+    let bProductPi!: Parameters<Product['default']>[0];
     const b = await pinRig(async pi => {
+      bProductPi = pi;
       await product.default(pi, {
         modelDecision: {
           bootstrap: structuredClone(bValue),
@@ -141,9 +147,11 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
           nowMonoNs: () => 12n * NS,
         },
       });
+      return { pi, controller: product.getModelDecisionController(pi) };
     });
     activeRigs.push(b);
-    const bController = product.getModelDecisionController(b.pi);
+    expect(b.pi).toBe(bProductPi);
+    const bController = b.controller!;
     void bController.requestReadback();
     diagnostics.mark('B-session-started');
     await bStarted;

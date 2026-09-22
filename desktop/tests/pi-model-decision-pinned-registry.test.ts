@@ -205,7 +205,7 @@ describe('R2/R3/F3 product failure witnesses — real Pi partial effects and act
     const pending = rig.controller().snapshot(); expect(pending.preRestrictionModelId).toBe(A); assertClosed(pending);
     const own = rig.trace.filter(t => t.kind === 'event-ingress' && t.event?.type === 'localModelSelected' && t.event.ownEffectToken !== null).at(-1);
     expect(own?.event).toMatchObject({ ownEffectToken: pending.pendingEffectPlan, modelId: A, providerId: provider });
-    if (action === 'set') await rig.pi.setModel(requiredModel(rig, B)); else await rig.session.cycleModel('forward');
+    if (action === 'set') await rig.nativePi.setModel(requiredModel(rig, B)); else await rig.session.cycleModel('forward');
     expect(rig.controller().snapshot().preRestrictionModelId).toBe(A); assertClosed(rig.controller().snapshot());
     await blocked(rig, [stale, requiredModel(rig, B)]);
     rig.boundary.holdSet.resolve(); rig.boundary.holdSet = null; await rig.controller().whenIdle();
