@@ -198,6 +198,7 @@ interface FixtureGlobalState {
 }
 const fixtureGlobalState = new WeakMap<Dispatcher, FixtureGlobalState>();
 const closedFixtureDispatchers = new WeakSet<Dispatcher>();
+const fixtureHosts = new Map<string, HttpFixture[]>();
 interface Undici {
   fetch: typeof fetch; Headers: typeof Headers;
   Agent: new (options: { connect: (options: { hostname: string }, callback: (error: Error | null, socket: Duplex | null) => void) => void; connections: number; pipelining: number; maxHeaderSize: number }) => Dispatcher;
@@ -232,11 +233,21 @@ class FixtureSocket extends Duplex {
   setNoDelay(): this { return this; }
   setKeepAlive(): this { return this; }
 }
+export interface FixtureDiagnostics {
+  requests: number;
+  gets: number;
+  posts: number;
+  pending: number;
+  replies: number;
+  symbols: string[];
+}
 export class HttpFixture {
   readonly requests: RequestRecord[] = [];
   readonly emitted: string[] = [];
   readonly trace: string[] = [];
+  readonly symbolicTrace: string[] = [];
   readonly pending: { request: RequestRecord; socket: FixtureSocket }[] = [];
+  private static readonly maxSymbolicEntries = 64;
   readonly replies: HttpReply[] = [];
   readonly dispatcher: Dispatcher;
   private previous: Dispatcher;
@@ -245,7 +256,10 @@ export class HttpFixture {
   private restoreReader: () => void;
   private closed = false;
   private waiters: (() => void)[] = [];
-  constructor() {
+  constructor(readonly host = 'fixture.invalid') {
+    const owners = fixtureHosts.get(host) ?? [];
+    owners.push(this);
+    fixtureHosts.set(host, owners);
     this.previous = undici.getGlobalDispatcher();
     const previousFetch = globalThis.fetch;
     const previousHeaders = globalThis.Headers;
@@ -260,22 +274,29 @@ export class HttpFixture {
     ReadableStreamDefaultReader.prototype.read = observedRead;
     this.restoreReader = () => { if (ReadableStreamDefaultReader.prototype.read === observedRead) ReadableStreamDefaultReader.prototype.read = previousRead; };
     this.dispatcher = new undici.Agent({ connections: 16, pipelining: 0, maxHeaderSize: 300_000, connect: (options, done) => {
-      if (options.hostname !== 'fixture.invalid') { done(new Error(`NETWORK FORBIDDEN: ${options.hostname}`), null); return; }
-      const socket = new FixtureSocket((request, sock) => {
-        this.requests.push(request); this.trace.push(`${request.method}:${request.path}`);
-        this.pending.push({ request, socket: sock }); this.flush();
-        // Unexpected model traffic must drain to an ordinary zero-POST assertion,
-        // not hang waiting for a fixture reply and masquerade as a timeout.
-        if (request.method === 'POST' && this.pending.some(item => item.socket === sock)) {
-          this.replies.push({ method: 'POST', urlPath: request.path, status: 599, headers: [], body: 'fixture-unplanned-model-request' });
-          this.flush();
-        }
-        this.waiters.splice(0).forEach(resolve => resolve());
-      });
+      const fixture = fixtureHosts.get(options.hostname)?.at(-1);
+      if (!fixture) { done(new Error(`NETWORK FORBIDDEN: ${options.hostname}`), null); return; }
+      const socket = new FixtureSocket((request, sock) => fixture.accept(request, sock));
       queueMicrotask(() => done(null, socket));
     } });
     fixtureGlobalState.set(this.dispatcher, { previous: this.previous, previousFetch, previousHeaders });
     undici.setGlobalDispatcher(this.dispatcher);
+  }
+  private markSymbol(symbol: string): void { if (this.symbolicTrace.length < HttpFixture.maxSymbolicEntries) this.symbolicTrace.push(symbol); }
+  private accept(request: RequestRecord, socket: FixtureSocket): void {
+    this.requests.push(request); this.trace.push(`${request.method}:${request.path}`); this.markSymbol(`request:${request.method}`);
+    this.pending.push({ request, socket }); this.flush();
+    // Unexpected model traffic must drain to an ordinary zero-POST assertion,
+    // not hang waiting for a fixture reply and masquerade as a timeout.
+    if (request.method === 'POST' && this.pending.some(item => item.socket === socket)) {
+      this.replies.push({ method: 'POST', urlPath: request.path, status: 599, headers: [], body: 'fixture-unplanned-model-request' });
+      this.flush();
+    }
+    this.waiters.splice(0).forEach(resolve => resolve());
+  }
+  diagnostics(): FixtureDiagnostics {
+    const bounded = (value: number): number => Math.min(value, 999);
+    return { requests: bounded(this.requests.length), gets: bounded(this.gets), posts: bounded(this.posts), pending: bounded(this.pending.length), replies: bounded(this.replies.length), symbols: this.symbolicTrace.slice(-32) };
   }
   enqueue(reply: HttpReply): void { this.replies.push(reply); this.flush(); }
   private flush(): void {
@@ -287,8 +308,8 @@ export class HttpFixture {
       const { socket } = this.pending.splice(requestIndex, 1)[0];
       const header = `HTTP/1.1 ${reply.status ?? 200} OK\r\n${reply.headers.map(([k, v]) => `${k}: ${v}\r\n`).join('')}Content-Length: ${Buffer.byteLength(reply.body)}\r\nConnection: close\r\n\r\n`;
       const send = (): void => {
-        this.emitted.push(header); this.trace.push('headers-emitted'); socket.push(Buffer.from(header, 'latin1'));
-        const body = (): void => { this.trace.push('body-emitted'); socket.push(Buffer.from(reply.body)); socket.push(null); };
+        this.emitted.push(header); this.trace.push('headers-emitted'); this.markSymbol('headers-emitted'); socket.push(Buffer.from(header, 'latin1'));
+        const body = (): void => { this.trace.push('body-emitted'); this.markSymbol('body-emitted'); socket.push(Buffer.from(reply.body)); socket.push(null); };
         if (reply.hold) void reply.hold.promise.then(body); else body();
       };
       if (reply.headerHold) void reply.headerHold.promise.then(send); else send();
@@ -325,6 +346,12 @@ export class HttpFixture {
         if (globalThis.Headers === this.installedHeaders) globalThis.Headers = restoreHeaders;
       }
     } finally {
+      const owners = fixtureHosts.get(this.host);
+      if (owners) {
+        const index = owners.lastIndexOf(this);
+        if (index >= 0) owners.splice(index, 1);
+        if (owners.length === 0) fixtureHosts.delete(this.host);
+      }
       closedFixtureDispatchers.add(this.dispatcher);
       await this.dispatcher.destroy();
     }
