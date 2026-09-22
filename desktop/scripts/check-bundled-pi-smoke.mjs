@@ -50,6 +50,198 @@ function die(what, detail) {
   throw new SmokeFailure(what, detail);
 }
 
+const RPC_TIMEOUT_MS = 120000;
+const RPC_READINESS_TIMEOUT_MS = 30000;
+const RPC_DIAGNOSTIC_LIMIT = 12000;
+
+function appendBounded(current, addition) {
+  const next = `${current}${addition}`;
+  return next.length <= RPC_DIAGNOSTIC_LIMIT ? next : next.slice(-RPC_DIAGNOSTIC_LIMIT);
+}
+
+function sanitizeRpcText(value, secrets = []) {
+  let text = String(value ?? '').replace(/\x1b\[[0-?]*[ -\/@-~]/g, '');
+  for (const secret of secrets) {
+    if (secret) text = text.split(secret).join('<redacted>');
+  }
+  text = [...text].map((character) => {
+    const code = character.codePointAt(0);
+    return code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d ? '?' : character;
+  }).join('');
+  return text.length <= RPC_DIAGNOSTIC_LIMIT ? text : `${text.slice(0, RPC_DIAGNOSTIC_LIMIT)}\n  ... output truncated ...`;
+}
+
+function rpcDiagnostics(error, stdout, stderr, secrets) {
+  const detail = [`  ${error instanceof Error ? error.message : String(error)}`];
+  const out = sanitizeRpcText(stdout, secrets);
+  const err = sanitizeRpcText(stderr, secrets);
+  if (out) detail.push(`  stdout:\n${out.split('\n').map((line) => `    ${line}`).join('\n')}`);
+  if (err) detail.push(`  stderr:\n${err.split('\n').map((line) => `    ${line}`).join('\n')}`);
+  return detail.join('\n');
+}
+
+async function runRpcTurn({ entry, packageDir, cwd, extension, uiExtension, env, model, reply, secrets }) {
+  const child = spawn(process.execPath, [
+    entry, '--mode', 'rpc', '-e', extension, '-e', uiExtension, '--offline', '--no-session',
+  ], {
+    cwd,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let inputBuffer = '';
+  let nextId = 0;
+  let stopped = false;
+  let exitFailure;
+  const pending = new Map();
+  const events = [];
+  const eventWaiters = [];
+
+  const rememberEvent = (event) => {
+    events.push(event);
+    if (events.length > 64) events.shift();
+    for (let index = eventWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = eventWaiters[index];
+      if (!waiter.predicate(event)) continue;
+      eventWaiters.splice(index, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(event);
+    }
+  };
+  const rejectPending = (error) => {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    pending.clear();
+    for (const waiter of eventWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  };
+  const onLine = (line) => {
+    const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line;
+    stdout = appendBounded(stdout, `${trimmed}\n`);
+    if (!trimmed) return;
+    let message;
+    try {
+      message = JSON.parse(trimmed);
+    } catch {
+      // Pi's protocol is JSONL, but an unrelated line must not make a valid response with
+      // another id disappear. Keep it in bounded diagnostics and continue reading.
+      return;
+    }
+    if (message?.type === 'response' && typeof message.id === 'string') {
+      const request = pending.get(message.id);
+      if (request) {
+        pending.delete(message.id);
+        clearTimeout(request.timer);
+        request.resolve(message);
+      }
+      return;
+    }
+    rememberEvent(message);
+  };
+  child.stdout.on('data', (chunk) => {
+    inputBuffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    while (true) {
+      const newline = inputBuffer.indexOf('\n');
+      if (newline < 0) break;
+      onLine(inputBuffer.slice(0, newline));
+      inputBuffer = inputBuffer.slice(newline + 1);
+    }
+    if (inputBuffer.length > RPC_DIAGNOSTIC_LIMIT) inputBuffer = inputBuffer.slice(-RPC_DIAGNOSTIC_LIMIT);
+  });
+  child.stderr.on('data', (chunk) => { stderr = appendBounded(stderr, chunk.toString('utf8')); });
+  child.once('error', (error) => {
+    exitFailure = error;
+    rejectPending(error);
+  });
+  child.once('exit', (code, signal) => {
+    if (stopped) return;
+    const error = new Error(`Pi RPC exited before the smoke completed (code ${code ?? 'n/a'}, signal ${signal ?? 'n/a'})`);
+    exitFailure = error;
+    rejectPending(error);
+  });
+
+  const response = (id) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`timed out waiting for RPC response ${id}`));
+    }, RPC_TIMEOUT_MS);
+    pending.set(id, { resolve, reject, timer });
+  });
+  const command = async (type, fields = {}) => {
+    if (exitFailure) throw exitFailure;
+    const id = `bundled-smoke-${++nextId}`;
+    const result = response(id);
+    child.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`);
+    const message = await result;
+    if (!message.success) throw new Error(`RPC ${type} failed: ${message.error ?? 'unspecified error'}`);
+    return message.data;
+  };
+  const waitForEvent = (predicate, timeout = RPC_TIMEOUT_MS) => {
+    const existing = events.find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const index = eventWaiters.findIndex((waiter) => waiter.resolve === resolve);
+        if (index >= 0) eventWaiters.splice(index, 1);
+        reject(new Error('timed out waiting for the Pi RPC lifecycle event'));
+      }, timeout);
+      eventWaiters.push({ predicate, resolve, reject, timer });
+    });
+  };
+  const stop = async () => {
+    stopped = true;
+    rejectPending(new Error('Pi RPC smoke child is stopping'));
+    if (!child.stdin.destroyed) child.stdin.end();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve();
+      }, 2000);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+  };
+
+  try {
+    // The extension's startup handler begins the authenticated V2 readback asynchronously. Do not
+    // select a provider or model here: readiness is the managed catalog appearing in Pi itself.
+    const deadline = Date.now() + RPC_READINESS_TIMEOUT_MS;
+    let available = [];
+    while (Date.now() < deadline) {
+      const data = await command('get_available_models');
+      available = Array.isArray(data?.models) ? data.models : [];
+      if (available.some((candidate) => candidate?.provider === 'void-codex' && candidate?.id === model)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const selected = available.find((candidate) => candidate?.provider === 'void-codex' && candidate?.id === model);
+    if (!selected) throw new Error(`V2 authority did not publish void-codex/${model} within ${RPC_READINESS_TIMEOUT_MS}ms`);
+
+    const set = await command('set_model', { provider: 'void-codex', modelId: model });
+    if (set?.provider !== 'void-codex' || set?.id !== model) throw new Error(`RPC set_model selected an unexpected model: ${JSON.stringify(set)}`);
+    const state = await command('get_state');
+    if (state?.model?.provider !== 'void-codex' || state?.model?.id !== model) throw new Error(`RPC state did not retain void-codex/${model}`);
+
+    const settled = waitForEvent((event) => event?.type === 'agent_settled');
+    await command('prompt', { message: 'PING' });
+    await settled;
+    const spoken = events
+      .filter((event) => event?.type === 'message_update' && event?.assistantMessageEvent?.type === 'text_delta')
+      .map((event) => event.assistantMessageEvent.delta)
+      .join('');
+    if (!spoken.includes(reply)) throw new Error(`the canned relay marker ${reply} was absent from the RPC turn`);
+    return spoken;
+  } catch (error) {
+    return { failed: rpcDiagnostics(error, stdout, stderr, secrets) };
+  } finally {
+    await stop();
+  }
+}
+
 async function main() {
   // Which platform is being checked comes from the caller, never from the host: bundling for
   // `${process.platform}-${process.arch}` is what let a macOS runner report success for a darwin
@@ -213,16 +405,19 @@ async function main() {
         }
       };
 
-      const turn = ['-e', extension, '-e', uiExtension, '--provider', 'void-codex', '--model', models[0], '-p', 'PING'];
       const turnEnv = { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, VC_DESKTOP_SESSION: '1', PI_SKIP_VERSION_CHECK: '1' };
 
       // 0. The road macOS ships on, and it has to be checked before the tree is bundled because
       // bundling destroys it. Every target this smoke runs is bundled, so without this the resolver
       // road is exercised by nothing at all -- and it is half the product.
       const installed = path.join(piRoot, 'node_modules/@earendil-works/pi-coding-agent');
-      const onInstalled = run(path.join(installed, 'dist/cli.js'), installed, turn, turnEnv);
-      if (onInstalled.failed !== undefined || !onInstalled.includes(reply)) {
-        die('holding a conversation on the installed tree, before any bundling', `  This is what macOS ships: Pi installed, its Responses helpers reached through\n  import.meta.resolve. A failure here is not about the bundle at all.\n${`${onInstalled.failed ?? onInstalled}`.split('\n').slice(0, 10).map((line) => `    ${line}`).join('\n')}`);
+      const onInstalled = await runRpcTurn({
+        entry: path.join(installed, 'dist/cli.js'), packageDir: installed, cwd: work, extension, uiExtension,
+        env: { ...piSmokeRunEnv({ target, home, packageDir: installed }), ...turnEnv },
+        model: models[0], reply, secrets: [authToken, relayUrl],
+      });
+      if (onInstalled.failed !== undefined) {
+        die('holding a conversation on the installed tree, before any bundling', `  This is what macOS ships: Pi installed, its Responses helpers reached through\n  import.meta.resolve. A failure here is not about the bundle at all.\n${onInstalled.failed.split('\n').map((line) => `    ${line}`).join('\n')}`);
       }
 
       // Built through bundleForSmoke rather than by calling the bundler directly: it is what compares
@@ -263,12 +458,13 @@ async function main() {
       // 3. The turn itself, which is the whole point and was the thing nobody checked. Registration and
       // the version are still asserted above, because they name a different failure: "no provider at
       // all" and "a provider that cannot answer" send a reader to different places.
-      const spoken = run(entry, packageDir, turn, turnEnv);
-        if (spoken.failed !== undefined) {
-        die('holding a conversation on the bundled runtime', `  The bundle registers its provider and lists its models, and then cannot answer. Output:\n${spoken.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}\n\n  The usual cause: something in the extension resolves a module path on disk -- the transport\n  extension calls import.meta.resolve('@earendil-works/pi-ai/compat') and loads a file next to\n  it -- and a bundle has no disk to resolve against. Registration does not touch that path;\n  building the request does.`);
-      }
-      if (!spoken.includes(reply)) {
-        die('holding a conversation on the bundled runtime', `  The turn ended without the answer the canned relay sent. Expected ${reply} in:\n${spoken.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
+      const spoken = await runRpcTurn({
+        entry, packageDir, cwd: work, extension, uiExtension,
+        env: { ...piSmokeRunEnv({ target, home, packageDir }), ...turnEnv },
+        model: models[0], reply, secrets: [authToken, relayUrl],
+      });
+      if (spoken.failed !== undefined) {
+        die('holding a conversation on the bundled runtime', `  The bundle must let the real V2 extension publish authority, select its model, and answer through one Pi RPC child.\n${spoken.failed.split('\n').map((line) => `    ${line}`).join('\n')}`);
       }
 
       console.log(`bundled pi smoke: ${target} bundle, void-codex registered by the real extension (${models.join(', ')}), a turn answered ${reply} on the installed tree and on the bundle, version ${printed}, node_modules gone`);
