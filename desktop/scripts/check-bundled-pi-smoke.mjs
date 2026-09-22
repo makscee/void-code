@@ -126,6 +126,20 @@ async function main() {
     // registered provider, not a live relay. One stub for every platform -- see piSmokeBootstrapPlan
     // for why the shell script it replaced could not be one.
     const models = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
+    const authToken = 'bundled-pi-smoke-not-a-credential';
+    const modelDecision = {
+      schemaVersion: 1, generation: '1', outcome: 'catalog',
+      evaluatedAt: '2099-01-01T00:00:00.000000000Z', validUntil: '2099-01-01T00:02:00.000000000Z',
+      authority: {
+        effectiveAssignmentRevision: '1', assignmentHeadRevision: '1', scheduledSuccessor: null,
+        policyRevision: '1', tierId: 'bundled-smoke-tier', tierModelSetDigest: 'bundled-smoke-set', calibrationRevision: '1',
+        providerGrantSetRevision: '1', poolRevision: '1', poolCollectionRevision: '1', controlRevision: '1',
+        controlEpoch: '1', quotaLatchRevision: '1', quotaEpisode: null, inputFingerprint: 'bundled-smoke-fingerprint',
+        controlMode: 'active', quotaState: 'normal', restrictionActive: false,
+        allowedCodexModelIds: models, defaultCodexModelId: models[0],
+        fallbackCodexModelId: models[0], effectiveCodexModelId: models[0],
+      },
+    };
     // The relay is a real local process now, not an unreachable name. Registering a provider turned
     // out to prove nothing about holding a conversation: the extension resolves
     // `@earendil-works/pi-ai/compat` on disk and loads a file beside it, and it does that while
@@ -133,7 +147,12 @@ async function main() {
     // Checking the answer instead of the registration is the only way that door gets watched.
     const reply = 'VOID-SMOKE-PONG-6f21';
     const relay = spawn(process.execPath, [path.join(desktop, 'scripts/pi-smoke-relay.mjs')], {
-      env: { ...process.env, VC_SMOKE_RELAY_REPLY: reply },
+      env: {
+        ...process.env,
+        VC_SMOKE_RELAY_REPLY: reply,
+        VC_SMOKE_RELAY_AUTH_TOKEN: authToken,
+        VC_SMOKE_RELAY_DECISION_JSON: JSON.stringify(modelDecision),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     // Killed however this ends, and in one place rather than after each step. A run that fails on
@@ -149,7 +168,20 @@ async function main() {
         relay.once('error', (error) => { clearTimeout(failed); reject(error); });
         relay.once('exit', (code) => { clearTimeout(failed); reject(new Error(`the canned relay exited before answering (code ${code})`)); });
       }).catch((error) => die('the smoke\'s own setup, not the bundle', `  ${error.message}`));
-      const bootstrapAnswer = JSON.stringify({ version: 1, relayUrl, authToken: 'smoke', providers: [{ kind: 'codex', relayProviderId: 'smoke-provider', models }] });
+      const readbackUrl = `${relayUrl}/v1/vc/me?fixture=bundled-pi-smoke`;
+      const bootstrapAnswer = JSON.stringify({
+        version: 2,
+        relayUrl,
+        authToken,
+        providers: [{ kind: 'codex', relayProviderId: 'smoke-provider', models }],
+        modelDecision: {
+          schemaVersion: 1,
+          readbackUrl,
+          pollIntervalSeconds: '30',
+          catalogDecisionTtlSeconds: '300',
+          catalogExpirySkewSeconds: '5',
+        },
+      });
       const stub = piSmokeBootstrapPlan({ target, directory: work });
       // Built for the machine this runs on, not for the target: the stub is the test's own fixture and
       // has to start here. The bundle is the thing built for the target.

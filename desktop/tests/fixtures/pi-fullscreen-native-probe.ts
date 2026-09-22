@@ -2,7 +2,7 @@
 // No account, PTY, GUI, terminal emulator selection or global stdout interception.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { errorMonitor } from 'node:events';
@@ -45,11 +45,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     ObjC.unwrap(text.dataUsingEncoding($.NSUTF8StringEncoding).base64EncodedStringWithOptions(0));
   `;
   let input: (data: string) => void = () => {};
+  type Osc52Stage = 'startup' | 'selection' | 'copy' | 'readback' | 'cleanup';
+  let osc52Stage: Osc52Stage = 'startup';
   let liveOsc52 = 0;
+  const osc52ByStage: Record<Osc52Stage, number> = { startup: 0, selection: 0, copy: 0, readback: 0, cleanup: 0 };
+  const maxOsc52Diagnostics = 8;
   const terminal = {
     columns: 80, rows: 8, kittyProtocolActive: false,
     start(callback: (data: string) => void) { input = callback; }, stop() {}, async drainInput() {},
-    write(data: string) { if (data.includes('\x1b]52;')) liveOsc52++; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
+    write(data: string) {
+      if (!data.includes('\x1b]52;')) return;
+      liveOsc52 = Math.min(maxOsc52Diagnostics, liveOsc52 + 1);
+      osc52ByStage[osc52Stage] = Math.min(maxOsc52Diagnostics, osc52ByStage[osc52Stage] + 1);
+    }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
     clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {},
   };
   const tui = new TuiAltScreen(terminal, false);
@@ -121,6 +129,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } };
   // Substitute only bootstrap, never native clipboard IO or the managed factory.
   // The actual consumer loader imports the unchanged Go-managed source above.
+  const fixtureBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
+  assert.ok(fixtureBootstrapExecutable && path.isAbsolute(fixtureBootstrapExecutable));
+  assert.equal(path.basename(fixtureBootstrapExecutable), 'fixture-bootstrap-never-executed');
+  assert.equal(existsSync(fixtureBootstrapExecutable), false, 'fixture bootstrap must stay unreachable');
   const fixtureReadbackURL = 'https://fixture-readback.invalid/opaque/native-clipboard?fixture=1';
   const fixtureAuthToken = 'fixture-native-auth-not-a-credential';
   const fixtureDecision = {
@@ -158,10 +170,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     return new Response(JSON.stringify(fixtureDecision), { status: 200, headers: { 'content-type': 'application/json' } });
   };
 
-  const previousBootstrapExecutable = process.env.VC_BOOTSTRAP_EXECUTABLE;
-  process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
   childProcess.execFileSync = ((file: string, args: string[]) => {
-    assert.equal(file, process.execPath); assert.deepEqual(args, ['pi-bootstrap']);
+    assert.equal(file, fixtureBootstrapExecutable); assert.deepEqual(args, ['pi-bootstrap']);
     return JSON.stringify(fixtureBootstrap);
   }) as typeof execFileSync;
   try {
@@ -169,8 +179,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     await managed(api); // NO clipboardIO: exercise the real production default registration.
   } finally {
     childProcess.execFileSync = originalExec;
-    if (previousBootstrapExecutable === undefined) delete process.env.VC_BOOTSTRAP_EXECUTABLE;
-    else process.env.VC_BOOTSTRAP_EXECUTABLE = previousBootstrapExecutable;
     syncBuiltinESMExports();
   }
   // Clipboard-only control fixture: this prevents Pi --list-models from exiting with no models
@@ -241,9 +249,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     syncBuiltinESMExports();
     await clipboardSessionStart({ reason: 'startup' }, ctx);
     assert.ok(widgets > 0, 'default factory did not acquire real TUI through setWidget');
+    failureStage = 'startup-no-osc52';
+    assert.equal(liveOsc52, 0, `startup emitted OSC52 (${JSON.stringify(osc52ByStage)})`);
     for (const [index, marker] of markers.entries()) {
       failureIndex = index;
       failureStage = 'selection-without-copy';
+      osc52Stage = 'selection';
       const beforeSelection = operation;
       lines = marker.split('\n'); tui.renderNow();
       input('\x1b[<0;1;1M'); input(`\x1b[<32;60;${lines.length}M`); input(`\x1b[<0;60;${lines.length}m`);
@@ -254,17 +265,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       failureStage = 'selection-no-native-spawn';
       assert.equal(operation, beforeSelection, 'selection started a native writer without a copy key');
       failureStage = 'selection-no-osc52';
-      assert.equal(liveOsc52, 0, 'selection leaked to live OSC52 writer');
+      assert.equal(liveOsc52, 0, `selection leaked to live OSC52 writer (${JSON.stringify(osc52ByStage)})`);
       failureStage = 'selection-no-flash';
       assert.equal(succeeded, index, 'selection flashed Copied without a copy key');
       failureStage = 'native-completion';
+      osc52Stage = 'copy';
       input(process.platform === 'darwin' ? '\x1b[99;9u' : '\x03');
       assert.equal(succeeded, index, 'Copied! preceded asynchronous native completion');
       const deadline = Date.now() + 6500;
       while (succeeded <= index && failures.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(failures, []); assert.equal(succeeded, index + 1, 'native completion missing');
-      assert.equal(liveOsc52, 0, 'explicit copy leaked to live OSC52 writer');
+      assert.equal(liveOsc52, 0, `explicit copy leaked to live OSC52 writer (${JSON.stringify(osc52ByStage)})`);
       failureStage = 'independent-readback';
+      osc52Stage = 'readback';
       let readback: string;
       try {
         const encoded = process.platform === 'darwin'
@@ -286,13 +299,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } catch (error) {
     acceptanceFailed = true;
     acceptanceError = error;
-    process.stderr.write(`${JSON.stringify({ event: 'acceptance-failure', stage: failureStage, index: failureIndex })}\n`);
+    process.stderr.write(`${JSON.stringify({ event: 'acceptance-failure', stage: failureStage, index: failureIndex, osc52: osc52ByStage })}\n`);
     await preserveNativeFailure(error, async () => {
       if (process.platform === 'win32' && process.env.VC_R8_PRIVATE_LAUNCHER === 'VERIFIED' && firstNativeArgs) {
         await nativeWitness(originalSpawn, firstNativeArgs, markers[0], (record) => process.stderr.write(`${JSON.stringify(record)}\n`));
       }
     });
   } finally {
+    osc52Stage = 'cleanup';
     try {
       await clipboardSessionShutdown({ reason: 'quit' }, ctx);
       consumer.clearExtensionWidgets.call(receiver);
