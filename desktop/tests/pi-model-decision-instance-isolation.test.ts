@@ -24,11 +24,16 @@ const activeRigs: Rig[] = [];
 const activeHttp: HttpFixture[] = [];
 
 afterEach(async () => {
-  for (const rig of activeRigs.splice(0).reverse()) {
-    await rig.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-    rig.close();
+  const rigs = activeRigs.splice(0).reverse();
+  const httpFixtures = activeHttp.splice(0).reverse();
+  try {
+    for (const rig of rigs) {
+      try { await rig.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); }
+      finally { rig.close(); }
+    }
+  } finally {
+    for (const http of httpFixtures) await http.close();
   }
-  for (const http of activeHttp.splice(0).reverse()) await http.close();
 });
 
 beforeAll(async () => {
@@ -81,7 +86,7 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
   return rig;
 }
 
-describe('managed stream authority is isolated per Pi instance', () => {
+describe.sequential('managed stream authority is isolated per Pi instance', () => {
   it('keeps A transport and permission after the same module initializes B', async () => {
     const product = await managed();
     const http = new HttpFixture();
