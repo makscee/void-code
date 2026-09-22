@@ -87,35 +87,32 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
 		}));
 	}
-	registerModelRetirementMigration(pi);
 }
 
 // Pi sessions are append-only. On every startup and in-process resume, inspect
 // the active branch and append a normal model_change to the explicit successor.
 // The latest entry is then current, so repeated reconciliation is a no-op.
-function registerModelRetirementMigration(pi: ExtensionAPI): void {
-	pi.on("session_start", async (_event, ctx) => {
-		const branch = ctx.sessionManager?.getBranch?.();
-		if (!branch) return;
-		const selected = [...branch].reverse().find((entry) => entry.type === "model_change") as
-			| { provider: string; modelId: string }
-			| undefined;
-		const retired = selected?.provider === CODEX_PROVIDER_ID && MODEL_RETIREMENTS.has(selected.modelId) ? selected : undefined;
-		if (!retired) return;
-		const successorId = MODEL_RETIREMENTS.get(retired.modelId)!;
-		const successor = ctx.modelRegistry.find(CODEX_PROVIDER_ID, successorId);
-		if (!successor) {
-			console.error("void-code: cannot migrate retired model " + retired.modelId + " to unavailable successor " + successorId);
-			return;
+async function migrateRetiredModel(pi: ExtensionAPI, ctx: any): Promise<void> {
+	const branch = ctx.sessionManager?.getBranch?.();
+	if (!branch) return;
+	const selected = [...branch].reverse().find((entry) => entry.type === "model_change") as
+		| { provider: string; modelId: string }
+		| undefined;
+	const retired = selected?.provider === CODEX_PROVIDER_ID && MODEL_RETIREMENTS.has(selected.modelId) ? selected : undefined;
+	if (!retired) return;
+	const successorId = MODEL_RETIREMENTS.get(retired.modelId)!;
+	const successor = ctx.modelRegistry.find(CODEX_PROVIDER_ID, successorId);
+	if (!successor) {
+		console.error("void-code: cannot migrate retired model " + retired.modelId + " to unavailable successor " + successorId);
+		return;
+	}
+	try {
+		if (!await pi.setModel(successor)) {
+			console.error("void-code: cannot activate successor " + successorId + "; check subscription access");
 		}
-		try {
-			if (!await pi.setModel(successor)) {
-				console.error("void-code: cannot activate successor " + successorId + "; check subscription access");
-			}
-		} catch (error) {
-			console.error("void-code: cannot persist retired model migration to " + successorId + ": " + (error instanceof Error ? error.message : String(error)));
-		}
-	});
+	} catch (error) {
+		console.error("void-code: cannot persist retired model migration to " + successorId + ": " + (error instanceof Error ? error.message : String(error)));
+	}
 }
 
 function registerVoidCodex(
@@ -502,6 +499,7 @@ export function createNativeClipboardWriter(options: NativeClipboardWriterOption
 function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: ClipboardIOOptions): void {
 	let dispose: (() => void) | undefined;
 	pi.on("session_start", async (_event, ctx) => {
+		await migrateRetiredModel(pi, ctx);
 		dispose?.();
 		dispose = undefined;
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
