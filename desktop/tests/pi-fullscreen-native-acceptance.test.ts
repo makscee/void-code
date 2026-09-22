@@ -38,8 +38,9 @@ it.skipIf(!gated)('R8: actual consumer selection reaches isolated OS clipboard f
       VC_ISOLATED_CLIPBOARD_ACCEPTANCE: process.env.VC_ISOLATED_CLIPBOARD_ACCEPTANCE,
       VC_R8_CONSUMER_REFERENCE: referencePath,
     };
-    // --list-models awaits async extension factories, but needs no model, account or prompt.
-    const args = [entry!, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '-e', path.join(work, 'probe.ts'), '--list-models'];
+    // Keep the real Pi session on the unreachable fixture model. The model is selected only
+    // to preserve the consumer TUI path; its provider stream is an explicit throw in probe.ts.
+    const args = [entry!, '--offline', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--provider', 'fixture-clipboard-control', '--model', 'fixture-clipboard-control-model', '-e', path.join(work, 'probe.ts'), '--list-models'];
     const result = process.platform === 'win32'
       ? runPrivateWindowsClipboard({ work, node: process.execPath, args, env })
       : spawnSync(process.execPath, args, {
