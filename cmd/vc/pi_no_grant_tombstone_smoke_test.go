@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// A source-only checkout must retain the local Terra tombstone even when the pinned runtime smoke skips.
-func TestPiVoidCodexNoGrantSourceRegistersLocalTerraTombstone(t *testing.T) {
+// A source-only checkout must retain the local Sol tombstone even when the pinned runtime smoke skips.
+func TestPiVoidCodexNoGrantSourceRegistersLocalSolTombstone(t *testing.T) {
 	code := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(piVoidCodexExtensionSource, "")
 	code = regexp.MustCompile(`(?m)^[\t ]*//[^\n]*(?:\n|$)`).ReplaceAllString(code, "")
 
@@ -26,8 +26,8 @@ func TestPiVoidCodexNoGrantSourceRegistersLocalTerraTombstone(t *testing.T) {
 		pattern string
 	}{
 		{
-			name:    "Terra model identity",
-			pattern: `(?m)^[\t ]*const[\t ]+CODEX_MODEL_ID[\t ]*=[\t ]*"gpt-5\.6-terra"[\t ]*;`,
+			name:    "Sol model identity",
+			pattern: `(?m)^[\t ]*const[\t ]+CODEX_MODEL_ID[\t ]*=[\t ]*"gpt-6-sol"[\t ]*;`,
 		},
 		{
 			name:    "absence-first Codex grant state",
@@ -38,7 +38,7 @@ func TestPiVoidCodexNoGrantSourceRegistersLocalTerraTombstone(t *testing.T) {
 			pattern: `(?m)^[\t ]*if[\t ]*\([\t ]*provider\.kind[\t ]*===[\t ]*"codex"[\t ]*\)[\t ]*\{[\t\r\n ]*hasCodexGrant[\t ]*=[\t ]*true[\t ]*;`,
 		},
 		{
-			name: "explicit no-grant local Terra registration",
+			name: "explicit no-grant local Sol registration",
 			pattern: `(?m)^[\t ]*if[\t ]*\([\t ]*!hasCodexGrant[\t ]*\)[\t ]*\{[\t\r\n ]*` +
 				`registerVoidCodex[\t ]*\([\t ]*pi[\t ]*,[\t ]*bootstrap[\t ]*,[\t ]*\[[\t ]*` +
 				`codexModel[\t ]*\([\t ]*CODEX_MODEL_ID[\t ]*,[\t ]*codexName[\t ]*\([\t ]*CODEX_MODEL_ID[\t ]*\)[\t ]*\)[\t ]*` +
@@ -52,7 +52,7 @@ func TestPiVoidCodexNoGrantSourceRegistersLocalTerraTombstone(t *testing.T) {
 	}
 }
 
-// Without a local tombstone, Pi falls away from the managed Terra model instead of reporting the missing Void grant.
+// Without a local tombstone, Pi falls away from the managed Sol model instead of reporting the missing Void grant.
 func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the trusted bootstrap stub is a POSIX shell script; the pinned smoke stages darwin-arm64")
@@ -78,7 +78,7 @@ func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(agentDir, "settings.json"),
-		[]byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-terra"}`),
+		[]byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-6-sol"}`),
 		0600,
 	); err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	}
 	const wantError = "Void Codex provider grant is unavailable"
 	if !strings.Contains(string(output), wantError) {
-		t.Fatalf("managed void-codex/gpt-5.6-terra tombstone was not reached; want %q, run error=%v; Pi output:\n%s", wantError, runErr, output)
+		t.Fatalf("managed void-codex/gpt-6-sol tombstone was not reached; want %q, run error=%v; Pi output:\n%s", wantError, runErr, output)
 	}
 	if runErr == nil {
 		t.Fatalf("no-grant prompt exited successfully after reporting %q; Pi output:\n%s", wantError, output)

@@ -89,7 +89,7 @@ export async function extension(env = localEnv, spawn?: Spawn, agentExports: Rec
   const module = { exports: {} };
   const safeRequire = (id: string): unknown => {
     if (id === 'node:child_process' || id === 'child_process') return {
-      execFileSync: vi.fn(() => JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] })),
+      execFileSync: vi.fn(() => JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-6-sol'] }] })),
       spawn: spawn ?? (() => { throw new Error('unit fixture forbids native clipboard IO'); }),
     };
     if (id === '@earendil-works/pi-tui') return tui;

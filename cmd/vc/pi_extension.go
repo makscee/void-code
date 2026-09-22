@@ -18,7 +18,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
 const CODEX_PROVIDER_ID = "void-codex";
-const CODEX_MODEL_ID = "gpt-5.6-terra";
+const CODEX_MODEL_ID = "gpt-6-sol";
+const MODEL_RETIREMENTS = new Map<string, string>([
+	["gpt-5.6-sol", "gpt-6-sol"],
+	["gpt-5.6-terra", "gpt-6-sol"],
+	["gpt-5.6-luna", "gpt-6-luna"],
+]);
 
 interface BootstrapProvider {
 	kind: "codex";
@@ -67,7 +72,7 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
 			hasCodexGrant = true;
-			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"]);
+			const allowed = new Set([CODEX_MODEL_ID, "gpt-6-luna", "gpt-6-astra"]);
 			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
 			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
@@ -82,6 +87,35 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 			systemPrompt: event.systemPrompt + "\n\n" + MANAGED_WEB_SEARCH_INSTRUCTION,
 		}));
 	}
+	registerModelRetirementMigration(pi);
+}
+
+// Pi sessions are append-only. On every startup and in-process resume, inspect
+// the active branch and append a normal model_change to the explicit successor.
+// The latest entry is then current, so repeated reconciliation is a no-op.
+function registerModelRetirementMigration(pi: ExtensionAPI): void {
+	pi.on("session_start", async (_event, ctx) => {
+		const branch = ctx.sessionManager?.getBranch?.();
+		if (!branch) return;
+		const selected = [...branch].reverse().find((entry) => entry.type === "model_change") as
+			| { provider: string; modelId: string }
+			| undefined;
+		const retired = selected?.provider === CODEX_PROVIDER_ID && MODEL_RETIREMENTS.has(selected.modelId) ? selected : undefined;
+		if (!retired) return;
+		const successorId = MODEL_RETIREMENTS.get(retired.modelId)!;
+		const successor = ctx.modelRegistry.find(CODEX_PROVIDER_ID, successorId);
+		if (!successor) {
+			console.error("void-code: cannot migrate retired model " + retired.modelId + " to unavailable successor " + successorId);
+			return;
+		}
+		try {
+			if (!await pi.setModel(successor)) {
+				console.error("void-code: cannot activate successor " + successorId + "; check subscription access");
+			}
+		} catch (error) {
+			console.error("void-code: cannot persist retired model migration to " + successorId + ": " + (error instanceof Error ? error.message : String(error)));
+		}
+	});
 }
 
 function registerVoidCodex(
@@ -550,10 +584,10 @@ function loadBootstrap(): Bootstrap | undefined {
 }
 
 function codexName(id: string): string {
-	if (id === "gpt-5.6-sol") return "GPT-5.6 Sol via Void relay";
-	if (id === "gpt-5.6-luna") return "GPT-5.6 Luna via Void relay";
+	if (id === "gpt-6-sol") return "GPT-6 Sol via Void relay";
+	if (id === "gpt-6-luna") return "GPT-6 Luna via Void relay";
 	if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";
-	return "GPT-5.6 Terra via Void relay";
+	return id + " via Void relay";
 }
 
 function codexModel(id: string, name: string): Model<any> {

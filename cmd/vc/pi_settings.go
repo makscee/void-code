@@ -60,31 +60,42 @@ func piSettingsPath() string {
 // (CODEX_PROVIDER_ID / CODEX_MODEL_ID).
 const (
 	piDefaultProvider = "void-codex"
-	piDefaultModel    = "gpt-5.6-terra"
+	piDefaultModel    = "gpt-6-sol"
 )
 
-// ensurePiDefaultModel seeds defaultModel (and defaultProvider alongside it,
-// when the user has not picked one) into Pi's settings.json. A legacy managed
-// DeepSeek selection is the one retired choice: its provider and model move to
-// the OpenAI default together inside this single atomic settings writer.
-//
-// Other existing model/provider choices are user-owned and leave the file
-// untouched. Neither does vc invent a pair no provider can serve: a user who
-// chose some other provider and no model gets nothing. Only vc's own provider,
-// or a file that names no provider at all, gets the model seeded.
+// piModelRetirements is the reusable, explicit migration table for VC-owned Pi
+// selections. Add a row when a managed model is retired, keep the successor in
+// piVoidCodexModels, and cover the row in the upgrade smoke. Historical session
+// entries remain history; the managed extension appends a successor selection.
+var piModelRetirements = map[string]string{
+	"gpt-5.6-sol":   "gpt-6-sol",
+	"gpt-5.6-terra": "gpt-6-sol",
+	"gpt-5.6-luna":  "gpt-6-luna",
+}
+
+// ensurePiDefaultModel seeds the managed default and migrates an explicitly
+// retired VC-owned selection. A legacy managed DeepSeek selection moves to the
+// OpenAI default. Other provider/model pairs are user-owned and remain intact.
 func ensurePiDefaultModel() error {
 	return updatePiSettings(func(settings map[string]any) bool {
-		if provider, _ := settings["defaultProvider"].(string); provider == "void-deepseek" {
+		provider, _ := settings["defaultProvider"].(string)
+		provider = strings.TrimSpace(provider)
+		if provider == "void-deepseek" {
 			settings["defaultProvider"] = piDefaultProvider
 			settings["defaultModel"] = piDefaultModel
 			return true
 		}
+		if provider == piDefaultProvider {
+			if model, _ := settings["defaultModel"].(string); piModelRetirements[strings.TrimSpace(model)] != "" {
+				settings["defaultModel"] = piModelRetirements[strings.TrimSpace(model)]
+				return true
+			}
+		}
 		if isNonEmptyJSONString(settings["defaultModel"]) {
 			return false
 		}
-		provider, chosen := settings["defaultProvider"].(string)
-		chosen = chosen && strings.TrimSpace(provider) != ""
-		if chosen && strings.TrimSpace(provider) != piDefaultProvider {
+		chosen := provider != ""
+		if chosen && provider != piDefaultProvider {
 			return false
 		}
 		settings["defaultModel"] = piDefaultModel

@@ -10,11 +10,11 @@ import (
 	"testing"
 )
 
-// The pair vc writes into Pi's settings so a fresh user lands on Terra instead
-// of whatever provider relay happens to register first.
+// The pair vc writes into Pi's settings so a fresh user lands on GPT-6 Sol
+// instead of whatever provider relay happens to register first.
 const (
 	wantPiDefaultProvider = "void-codex"
-	wantPiDefaultModel    = "gpt-5.6-terra"
+	wantPiDefaultModel    = "gpt-6-sol"
 )
 
 // piSettingsSandbox isolates both seams that can resolve to a real home:
@@ -165,15 +165,14 @@ func TestEnsurePiDefaultModelMigratesLegacyDeepSeekSelection(t *testing.T) {
 	}
 }
 
-// Current Codex choices and third-party choices are user-owned and remain byte-identical;
-// only the explicitly retired void-deepseek provider is eligible for migration.
+// Current Codex choices and third-party choices are user-owned and remain byte-identical.
 func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
 	}{
-		{name: "another void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna"}`},
-		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"claude-opus-5"}`},
+		{name: "current void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna"}`},
+		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"gpt-5.6-luna"}`},
 		{name: "model without provider", body: `{"defaultModel":"gpt-5.6-luna","theme":"nord"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -190,6 +189,37 @@ func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing
 			}
 			if string(after) != tc.body {
 				t.Errorf("file rewritten\n got: %s\nwant: %s", after, tc.body)
+			}
+		})
+	}
+}
+
+func TestEnsurePiDefaultModelMigratesEveryRetiredManagedSelectionIdempotently(t *testing.T) {
+	for retired, successor := range piModelRetirements {
+		t.Run(retired, func(t *testing.T) {
+			dir := piSettingsSandbox(t)
+			path := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"`+retired+`","theme":"nord"}`, 0600)
+
+			if err := ensurePiDefaultModel(); err != nil {
+				t.Fatal(err)
+			}
+			first, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := readPiSettings(t, path)
+			if got["defaultModel"] != successor || got["theme"] != "nord" {
+				t.Fatalf("migrated settings = %#v, want model %q and preserved theme", got, successor)
+			}
+			if err := ensurePiDefaultModel(); err != nil {
+				t.Fatal(err)
+			}
+			second, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(first, second) {
+				t.Fatalf("repeated migration rewrote settings\nfirst: %s\nsecond: %s", first, second)
 			}
 		})
 	}

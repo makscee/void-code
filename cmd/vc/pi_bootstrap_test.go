@@ -44,7 +44,7 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 		t.Fatalf("bootstrap metadata = %#v", got)
 	}
 	wantIDs := []string{"chatgpt-granted", "chatgpt-other"}
-	wantModels := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"}
+	wantModels := []string{"gpt-6-sol", "gpt-6-luna", "gpt-6-astra"}
 	if len(got.Providers) != len(wantIDs) {
 		t.Fatalf("providers = %#v, want only the two OpenAI grants", got.Providers)
 	}

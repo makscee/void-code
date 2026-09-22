@@ -63,7 +63,7 @@ for (const scenario of [
     requests++;
     assert.equal(url, 'https://relay.invalid/codex/responses');
     const body = JSON.parse(options.body);
-    assert.equal(body.model, 'gpt-5.6-terra');
+    assert.equal(body.model, 'gpt-6-sol');
     assert.equal(body.tools[0].name, 'read');
     assert.ok(body.input.length > 0);
     assert.equal(body.max_output_tokens, undefined);

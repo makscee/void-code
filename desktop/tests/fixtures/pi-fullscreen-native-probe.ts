@@ -113,7 +113,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   process.env.VC_BOOTSTRAP_EXECUTABLE = process.execPath;
   childProcess.execFileSync = ((file: string, args: string[]) => {
     assert.equal(file, process.execPath); assert.deepEqual(args, ['pi-bootstrap']);
-    return JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] });
+    return JSON.stringify({ version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-6-sol'] }] });
   }) as typeof execFileSync;
   try {
     syncBuiltinESMExports();

@@ -7,14 +7,20 @@ import (
 
 // The embedded transport keeps every OpenAI model while registering no retired provider.
 func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
-	if piDefaultProvider != "void-codex" || piDefaultModel != "gpt-5.6-terra" {
-		t.Fatalf("fresh-user default = %s/%s, want void-codex/gpt-5.6-terra", piDefaultProvider, piDefaultModel)
+	if piDefaultProvider != "void-codex" || piDefaultModel != "gpt-6-sol" {
+		t.Fatalf("fresh-user default = %s/%s, want void-codex/gpt-6-sol", piDefaultProvider, piDefaultModel)
 	}
 
 	for _, want := range []string{
 		`if (provider.kind === "codex")`,
+		`"gpt-6-sol"`,
+		`"gpt-6-luna"`,
 		`"gpt-6-astra"`,
 		`if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";`,
+		`const MODEL_RETIREMENTS = new Map<string, string>`,
+		`pi.on("session_start"`,
+		`await pi.setModel(successor)`,
+		`cannot persist retired model migration to`,
 	} {
 		if !strings.Contains(piVoidCodexExtensionSource, want) {
 			t.Errorf("the managed Pi extension is missing Astra contract %q", want)
@@ -23,9 +29,34 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 	for _, forbidden := range []string{
 		`pi.registerProvider(DEEPSEEK_PROVIDER_ID`,
 		`pi.registerProvider("void-deepseek"`,
+		`return "GPT-5.6 Sol via Void relay"`,
+		`return "GPT-5.6 Luna via Void relay"`,
 	} {
 		if strings.Contains(piVoidCodexExtensionSource, forbidden) {
 			t.Errorf("managed Pi extension still registers the retired provider through %q", forbidden)
+		}
+	}
+}
+
+func TestPiModelRetirementPolicyMatchesGoSettingsAndFreshCatalog(t *testing.T) {
+	for retired, successor := range piModelRetirements {
+		row := `["` + retired + `", "` + successor + `"]`
+		if !strings.Contains(piVoidCodexExtensionSource, row) {
+			t.Errorf("managed session retirement table missing %s", row)
+		}
+		for _, model := range piVoidCodexModels {
+			if model == retired {
+				t.Errorf("fresh catalog still publishes retired model %q", retired)
+			}
+		}
+	}
+	for _, current := range []string{"gpt-6-sol", "gpt-6-luna"} {
+		found := false
+		for _, model := range piVoidCodexModels {
+			found = found || model == current
+		}
+		if !found {
+			t.Errorf("fresh catalog missing %q", current)
 		}
 	}
 }

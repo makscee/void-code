@@ -80,7 +80,7 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(agentDir, "settings.json"), []byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-terra"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(agentDir, "settings.json"), []byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-6-sol"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	extension := filepath.Join(work, "void-code.ts")
@@ -93,7 +93,7 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 		"relayUrl":  upstream.URL,
 		"authToken": "local-only",
 		"providers": []map[string]any{
-			{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-5.6-terra"}},
+			{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-6-sol"}},
 			{"kind": "deepseek", "relayProviderId": "deepseek-local", "models": []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"}},
 		},
 	})
@@ -144,8 +144,8 @@ func TestPiLegacyDeepSeekResumeFallsBackToOpenAIDefault(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("legacy session did not complete on the OpenAI fallback: %v\nupstream calls: %#v\nPi output:\n%s", runErr, observed, output)
 	}
-	if len(observed) != 1 || observed[0].provider != "codex-local" || observed[0].path != "/codex/responses" || observed[0].model != "gpt-5.6-terra" {
-		t.Fatalf("fallback upstream calls = %#v, want one gpt-5.6-terra call through codex-local /codex/responses", observed)
+	if len(observed) != 1 || observed[0].provider != "codex-local" || observed[0].path != "/codex/responses" || observed[0].model != "gpt-6-sol" {
+		t.Fatalf("fallback upstream calls = %#v, want one gpt-6-sol call through codex-local /codex/responses", observed)
 	}
 	if !strings.Contains(string(output), "OPENAI_FALLBACK_OK") {
 		t.Fatalf("OpenAI fallback response did not reach the resumed session:\n%s", output)

@@ -1,4 +1,4 @@
-// rails:pin-on-coverage post-fix release-gap coverage: PR #50 already restored Astra, so no red-first implementation exists; removing Astra from either the local bootstrap catalog or the real embedded extension makes this resumed-session RPC smoke fail before any relay or model call
+// Real pinned-Pi upgrade smoke: a persisted retired model is reconciled by the managed extension on ordinary session startup, without /model or a relay call.
 package main
 
 import (
@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
+func TestPiRetiredModelResumeMigratesAndPublishesFreshCatalogSmoke(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the trusted bootstrap stub is a POSIX shell script; use the neighboring Windows RPC probe on win32")
 	}
@@ -38,7 +38,7 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const bootstrapJSON = `{"version":1,"relayUrl":"https://relay.invalid","authToken":"local-only","providers":[{"kind":"codex","relayProviderId":"codex-local","models":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna","gpt-6-astra"]},{"kind":"deepseek","relayProviderId":"deepseek-local","models":["deepseek/deepseek-v4-pro","deepseek/deepseek-v4-flash"]}]}`
+	const bootstrapJSON = `{"version":1,"relayUrl":"https://relay.invalid","authToken":"local-only","providers":[{"kind":"codex","relayProviderId":"codex-local","models":["gpt-6-sol","gpt-6-luna","gpt-6-astra"]}]}`
 	bootstrap := filepath.Join(work, "bootstrap.sh")
 	if err := os.WriteFile(bootstrap, []byte("#!/bin/sh\n[ \"$1\" = \"pi-bootstrap\" ] || exit 1\nprintf '%s' '"+bootstrapJSON+"'\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 	lines := []any{
 		map[string]any{"type": "session", "version": 3, "id": "11111111-1111-4111-8111-111111111111", "timestamp": "2026-09-08T00:00:00.000Z", "cwd": work},
 		map[string]any{"type": "message", "id": "message-1", "parentId": nil, "timestamp": "2026-09-08T00:00:01.000Z", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "persisted message"}}, "timestamp": int64(1788825601000)}},
-		map[string]any{"type": "model_change", "id": "model-1", "parentId": "message-1", "timestamp": "2026-09-08T00:00:02.000Z", "provider": "void-codex", "modelId": "gpt-6-astra"},
+		map[string]any{"type": "model_change", "id": "model-1", "parentId": "message-1", "timestamp": "2026-09-08T00:00:02.000Z", "provider": "void-codex", "modelId": "gpt-5.6-luna"},
 	}
 	var persisted bytes.Buffer
 	for _, line := range lines {
@@ -141,8 +141,8 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 	if err := json.Unmarshal(responses["state"]["data"], &state); err != nil {
 		t.Fatal(err)
 	}
-	if state.Model == nil || state.Model.Provider != "void-codex" || state.Model.ID != "gpt-6-astra" {
-		t.Fatalf("resumed model = %#v, want exact void-codex/gpt-6-astra (never unknown or null)", state.Model)
+	if state.Model == nil || state.Model.Provider != "void-codex" || state.Model.ID != "gpt-6-luna" {
+		t.Fatalf("resumed model = %#v, want automatic void-codex/gpt-6-luna successor (never unknown or null)", state.Model)
 	}
 	if state.MessageCount != 1 {
 		t.Fatalf("resumed message count = %d, want the persisted message", state.MessageCount)
@@ -169,10 +169,9 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 		}
 	}
 	want := []string{
+		"void-codex/gpt-6-sol",
+		"void-codex/gpt-6-luna",
 		"void-codex/gpt-6-astra",
-		"void-codex/gpt-5.6-sol",
-		"void-codex/gpt-5.6-terra",
-		"void-codex/gpt-5.6-luna",
 	}
 	var missing []string
 	for _, model := range want {
@@ -183,6 +182,28 @@ func TestPiAstraResumeRestoresProviderAndModelsSmoke(t *testing.T) {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		t.Fatalf("available Void models missing %s; got %s", strings.Join(missing, ", "), mustJSON(seen))
+	}
+	for model := range seen {
+		if strings.Contains(model, "gpt-5.6-") {
+			t.Fatalf("retired model remains in fresh catalog: %s", model)
+		}
+	}
+	// Reconcile the already-migrated session a second time. EOF shuts RPC down
+	// after startup; no command or /model is involved.
+	second := exec.CommandContext(ctx, prerequisites.node, prerequisites.piEntry,
+		"-e", extension, "--offline", "--mode", "rpc", "--session", session)
+	second.Dir = work
+	second.Env = command.Env
+	second.Stdin = strings.NewReader("")
+	if output, err := second.CombinedOutput(); err != nil {
+		t.Fatalf("second reconciliation failed: %v; output=%s", err, output)
+	}
+	migrated, err := os.ReadFile(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(migrated), `"modelId":"gpt-6-luna"`) != 1 {
+		t.Fatalf("repeated reconciliation did not leave exactly one successor model_change: %s", migrated)
 	}
 }
 
