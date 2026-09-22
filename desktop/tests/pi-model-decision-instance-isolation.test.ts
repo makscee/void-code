@@ -8,6 +8,7 @@ import {
   deferred,
   HttpFixture,
   managed,
+  undici,
   models,
   NS,
   pinRig,
@@ -54,7 +55,7 @@ function transport(label: string, host = 'fixture.invalid'): Transport {
   };
 }
 
-type Phase = 'managed-loaded' | 'A-session-started' | 'A-readback-requested' | 'A-applied' | 'B-session-started' | 'B-readback-requested' | 'B-denied' | 'A-stream-requested' | 'A-stream';
+type Phase = 'managed-loaded' | 'fetch-owner-bound' | 'A-session-started' | 'A-readback-requested' | 'A-applied' | 'B-session-started' | 'B-readback-requested' | 'B-denied' | 'A-stream-requested' | 'A-stream';
 const maxPhaseEntries = 32;
 class PhaseDiagnostics {
   private readonly entries: Phase[] = [];
@@ -83,6 +84,8 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
   activeRigs.push(rig);
   mark('A-session-started');
   await readbackStarted;
+  expect(http.requests.at(-1)).toMatchObject({ method: 'GET', path: new URL(value.modelDecision.readbackUrl).pathname });
+  expect(http.pending.at(-1)?.request).toMatchObject({ method: 'GET', path: new URL(value.modelDecision.readbackUrl).pathname });
   mark('A-readback-requested');
   http.enqueue({
     method: 'GET',
@@ -107,6 +110,9 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
     // still route to this fixture instead of being rejected by the global owner.
     const dispatcherContention = new HttpFixture();
     activeHttp.push(http, dispatcherContention);
+    expect(globalThis.fetch).toBe(undici.fetch);
+    expect(globalThis.Headers).toBe(undici.Headers);
+    diagnostics.mark('fetch-owner-bound');
     let reported = false;
     const report = (reason: 'timeout' | 'failure'): void => { if (!reported) { reported = true; diagnostics.report(reason, http); } };
     const watchdog = setTimeout(() => report('timeout'), 9_000);
