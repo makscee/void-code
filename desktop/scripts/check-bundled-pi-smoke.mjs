@@ -11,7 +11,7 @@
 //     and friends -- eagerly, before an extension asks for anything. With no node_modules on disk
 //     that kills EVERY extension, including the transport extension vc installs, and in the app it
 //     shows up as "VC cannot see a provider". So the assertion is not that the extension loaded but
-//     what follows from it: provider void-codex is registered and its models are listed.
+//     what follows from it: after V2 authority, provider void-codex is available with its managed models.
 //  2. In bundle mode getPackageDir() is computed from process.execPath. If PI_PACKAGE_DIR does not
 //     arrive, Pi does NOT fail -- it reads somebody else's package.json or none at all, and becomes
 //     version 0.0.0 with somebody else's app name and settings directory.
@@ -80,7 +80,7 @@ function rpcDiagnostics(error, stdout, stderr, secrets) {
   return detail.join('\n');
 }
 
-async function runRpcTurn({ entry, packageDir, cwd, extension, uiExtension, env, model, reply, secrets }) {
+async function runRpcTurn({ entry, packageDir, cwd, extension, uiExtension, env, models, model, reply, secrets }) {
   const child = spawn(process.execPath, [
     entry, '--mode', 'rpc', '-e', extension, '-e', uiExtension, '--offline', '--no-session',
   ], {
@@ -215,9 +215,12 @@ async function runRpcTurn({ entry, packageDir, cwd, extension, uiExtension, env,
     while (Date.now() < deadline) {
       const data = await command('get_available_models');
       available = Array.isArray(data?.models) ? data.models : [];
-      if (available.some((candidate) => candidate?.provider === 'void-codex' && candidate?.id === model)) break;
+      const missing = models.filter((expected) => !available.some((candidate) => candidate?.provider === 'void-codex' && candidate?.id === expected));
+      if (missing.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    const missing = models.filter((expected) => !available.some((candidate) => candidate?.provider === 'void-codex' && candidate?.id === expected));
+    if (missing.length > 0) throw new Error(`V2 authority did not publish all void-codex models within ${RPC_READINESS_TIMEOUT_MS}ms: ${missing.join(', ')}`);
     const selected = available.find((candidate) => candidate?.provider === 'void-codex' && candidate?.id === model);
     if (!selected) throw new Error(`V2 authority did not publish void-codex/${model} within ${RPC_READINESS_TIMEOUT_MS}ms`);
 
@@ -414,7 +417,7 @@ async function main() {
       const onInstalled = await runRpcTurn({
         entry: path.join(installed, 'dist/cli.js'), packageDir: installed, cwd: work, extension, uiExtension,
         env: { ...piSmokeRunEnv({ target, home, packageDir: installed }), ...turnEnv },
-        model: models[0], reply, secrets: [authToken, relayUrl],
+        models, model: models[0], reply, secrets: [authToken, relayUrl],
       });
       if (onInstalled.failed !== undefined) {
         die('holding a conversation on the installed tree, before any bundling', `  This is what macOS ships: Pi installed, its Responses helpers reached through\n  import.meta.resolve. A failure here is not about the bundle at all.\n${onInstalled.failed.split('\n').map((line) => `    ${line}`).join('\n')}`);
@@ -430,21 +433,7 @@ async function main() {
       const entry = path.join(piRoot, bundle.entry);
       const packageDir = path.join(piRoot, bundle.packageDir);
 
-      // 1. The provider the app connects a model through.
-      const listed = run(entry, packageDir, ['-e', extension, '-e', uiExtension, '--offline', '--list-models'], { VC_BOOTSTRAP_EXECUTABLE: stub.output, VC_SMOKE_BOOTSTRAP_JSON: bootstrapAnswer, VC_DESKTOP_SESSION: '1' });
-      if (listed.failed !== undefined) {
-        die('running the bundle with the real extension', `  The entry point did not survive --list-models. Output:\n${listed.failed.split('\n').slice(0, 12).map((line) => `    ${line}`).join('\n')}`);
-      }
-      // No regular expressions: a row of the model table starts with the provider name and then the
-      // model id. Look for that pair rather than a substring anywhere in the output -- otherwise an
-      // error message that happens to name the provider would pass.
-      const rows = listed.split('\n').map((line) => line.trim().split(/\s+/));
-      const missing = models.filter((model) => !rows.some(([provider, id]) => provider === 'void-codex' && id === model));
-      if (missing.length > 0) {
-        die('the real extension registering its provider', `  void-codex was not registered: models ${missing.join(', ')} are not listed.\n  In the app this looks like "VC cannot see a provider" and like nothing else.\n\n  The usual cause: Pi stopped entering bundle mode by file name (isBunBinary), so the loader\n  went back to aliases built with require.resolve -- and node_modules is gone.\n  Look at config.js, the line about "$bunfs" / "~BUN" / "%7EBUN".`);
-      }
-
-      // 2. The other silent failure of the same mode: the package directory is not found.
+      // 1. The other silent failure of the same mode: the package directory is not found.
       const version = run(entry, packageDir, ['--version'], {});
       if (version.failed !== undefined) die('running the bundle', `  --version did not survive:\n${version.failed.split('\n').slice(0, 8).map((line) => `    ${line}`).join('\n')}`);
       const printed = version.trim();
@@ -455,13 +444,12 @@ async function main() {
         die('the bundle matching the pin', `  The entry point reports ${printed}; resource-pins.json pins ${pins.pi.version}.`);
       }
 
-      // 3. The turn itself, which is the whole point and was the thing nobody checked. Registration and
-      // the version are still asserted above, because they name a different failure: "no provider at
-      // all" and "a provider that cannot answer" send a reader to different places.
+      // 2. The turn itself, including post-authority model readiness, which is the whole point and was
+      // the thing nobody checked.
       const spoken = await runRpcTurn({
         entry, packageDir, cwd: work, extension, uiExtension,
         env: { ...piSmokeRunEnv({ target, home, packageDir }), ...turnEnv },
-        model: models[0], reply, secrets: [authToken, relayUrl],
+        models, model: models[0], reply, secrets: [authToken, relayUrl],
       });
       if (spoken.failed !== undefined) {
         die('holding a conversation on the bundled runtime', `  The bundle must let the real V2 extension publish authority, select its model, and answer through one Pi RPC child.\n${spoken.failed.split('\n').map((line) => `    ${line}`).join('\n')}`);
