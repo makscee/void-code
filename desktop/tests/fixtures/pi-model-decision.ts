@@ -191,6 +191,13 @@ export function observedHeaders(headers: Headers): Record<string, { has: boolean
 }
 
 interface Dispatcher { close(): Promise<void>; destroy(): Promise<void> }
+interface FixtureGlobalState {
+  previous: Dispatcher;
+  previousFetch: typeof globalThis.fetch;
+  previousHeaders: typeof globalThis.Headers;
+}
+const fixtureGlobalState = new WeakMap<Dispatcher, FixtureGlobalState>();
+const closedFixtureDispatchers = new WeakSet<Dispatcher>();
 interface Undici {
   fetch: typeof fetch; Headers: typeof Headers;
   Agent: new (options: { connect: (options: { hostname: string }, callback: (error: Error | null, socket: Duplex | null) => void) => void; connections: number; pipelining: number; maxHeaderSize: number }) => Dispatcher;
@@ -233,10 +240,17 @@ export class HttpFixture {
   readonly replies: HttpReply[] = [];
   readonly dispatcher: Dispatcher;
   private previous: Dispatcher;
+  private readonly installedFetch: typeof globalThis.fetch;
+  private readonly installedHeaders: typeof globalThis.Headers;
   private restoreReader: () => void;
+  private closed = false;
   private waiters: (() => void)[] = [];
   constructor() {
     this.previous = undici.getGlobalDispatcher();
+    const previousFetch = globalThis.fetch;
+    const previousHeaders = globalThis.Headers;
+    this.installedFetch = previousFetch;
+    this.installedHeaders = previousHeaders;
     const previousRead = ReadableStreamDefaultReader.prototype.read;
     const trace = this.trace;
     const observedRead: typeof previousRead = function (this: ReadableStreamDefaultReader<unknown>) {
@@ -260,6 +274,7 @@ export class HttpFixture {
       });
       queueMicrotask(() => done(null, socket));
     } });
+    fixtureGlobalState.set(this.dispatcher, { previous: this.previous, previousFetch, previousHeaders });
     undici.setGlobalDispatcher(this.dispatcher);
   }
   enqueue(reply: HttpReply): void { this.replies.push(reply); this.flush(); }
@@ -286,7 +301,34 @@ export class HttpFixture {
   }
   get posts(): number { return this.requests.filter(r => r.method === 'POST').length; }
   get gets(): number { return this.requests.filter(r => r.method === 'GET').length; }
-  async close(): Promise<void> { this.restoreReader(); undici.setGlobalDispatcher(this.previous); await this.dispatcher.destroy(); }
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.restoreReader();
+      // A fixture may be torn down after another fixture has claimed the globals.
+      // Only the current owner may restore them; otherwise an old teardown would
+      // close over and replace the newer fixture's dispatcher/fetch path.
+      if (undici.getGlobalDispatcher() === this.dispatcher) {
+        let restore = this.previous;
+        let restoreFetch = this.installedFetch;
+        let restoreHeaders = this.installedHeaders;
+        while (closedFixtureDispatchers.has(restore)) {
+          const state = fixtureGlobalState.get(restore);
+          if (!state) break;
+          restore = state.previous;
+          restoreFetch = state.previousFetch;
+          restoreHeaders = state.previousHeaders;
+        }
+        undici.setGlobalDispatcher(restore);
+        if (globalThis.fetch === this.installedFetch) globalThis.fetch = restoreFetch;
+        if (globalThis.Headers === this.installedHeaders) globalThis.Headers = restoreHeaders;
+      }
+    } finally {
+      closedFixtureDispatchers.add(this.dispatcher);
+      await this.dispatcher.destroy();
+    }
+  }
 }
 export async function configurePinFetch(): Promise<void> {
   const m = await importPin('dist/core/http-dispatcher.js');
