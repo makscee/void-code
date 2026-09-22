@@ -78,19 +78,11 @@ var piModelRetirements = map[string]string{
 // OpenAI default. Other provider/model pairs are user-owned and remain intact.
 func ensurePiDefaultModel() error {
 	return updatePiSettings(func(settings map[string]any) bool {
-		provider, _ := settings["defaultProvider"].(string)
-		provider = strings.TrimSpace(provider)
-		if provider == "void-deepseek" {
-			settings["defaultProvider"] = piDefaultProvider
-			settings["defaultModel"] = piDefaultModel
+		if migrateRetiredPiSelection(settings) {
 			return true
 		}
-		if provider == piDefaultProvider {
-			if model, _ := settings["defaultModel"].(string); piModelRetirements[strings.TrimSpace(model)] != "" {
-				settings["defaultModel"] = piModelRetirements[strings.TrimSpace(model)]
-				return true
-			}
-		}
+		provider, _ := settings["defaultProvider"].(string)
+		provider = strings.TrimSpace(provider)
 		if isNonEmptyJSONString(settings["defaultModel"]) {
 			return false
 		}
@@ -104,6 +96,31 @@ func ensurePiDefaultModel() error {
 		}
 		return true
 	})
+}
+
+func migrateRetiredPiSelection(settings map[string]any) bool {
+	provider, _ := settings["defaultProvider"].(string)
+	provider = strings.TrimSpace(provider)
+	if provider == "void-deepseek" {
+		settings["defaultProvider"] = piDefaultProvider
+		settings["defaultModel"] = piDefaultModel
+		return true
+	}
+	model, _ := settings["defaultModel"].(string)
+	if provider == piDefaultProvider && piModelRetirements[strings.TrimSpace(model)] != "" {
+		settings["defaultModel"] = piModelRetirements[strings.TrimSpace(model)]
+		return true
+	}
+	return false
+}
+
+// ensurePiProjectModelMigration updates only an existing project override with
+// an exact VC-owned retired pair. It never creates or seeds project settings.
+func ensurePiProjectModelMigration(cwd string) error {
+	if strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	return updateExistingPiSettings(filepath.Join(cwd, ".pi", "settings.json"), migrateRetiredPiSelection)
 }
 
 // ensurePiDesktopUIDefaults seeds the presentation defaults used by the desktop
@@ -153,12 +170,26 @@ func updatePiSettings(mutate func(map[string]any) bool) error {
 	if path == "" {
 		return errors.New("cannot resolve Pi configuration directory")
 	}
+	return updatePiSettingsPath(path, false, mutate)
+}
+
+func updateExistingPiSettings(path string, mutate func(map[string]any) bool) error {
+	return updatePiSettingsPath(path, true, mutate)
+}
+
+func updatePiSettingsPath(path string, requireExisting bool, mutate func(map[string]any) bool) error {
 	release, err := lockPiSettings(path)
 	if err != nil {
 		return err
 	}
 	defer release()
-
+	if requireExisting {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("inspect Pi settings: %w", err)
+		}
+	}
 	settings, mode, err := loadPiSettingsMap(path)
 	if err != nil {
 		return err

@@ -134,6 +134,11 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if err := ensurePiDefaultModel(); err != nil {
 		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi default model was not seeded: %v", err))
 	}
+	if cwd, cwdErr := os.Getwd(); cwdErr != nil {
+		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi project model was not reconciled: %v", cwdErr))
+	} else if err := ensurePiProjectModelMigration(cwd); err != nil {
+		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi project model was not reconciled: %v", err))
+	}
 	caPath, err := deps.resolveCA(cfg)
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("relay CA unavailable: %w", err)

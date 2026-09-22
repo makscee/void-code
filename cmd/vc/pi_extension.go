@@ -95,9 +95,16 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 async function migrateRetiredModel(pi: ExtensionAPI, ctx: any): Promise<void> {
 	const branch = ctx.sessionManager?.getBranch?.();
 	if (!branch) return;
-	const selected = [...branch].reverse().find((entry) => entry.type === "model_change") as
-		| { provider: string; modelId: string }
-		| undefined;
+	// Match Pi's own effective branch-selection projection: both explicit
+	// model_change entries and later assistant messages select a model.
+	let selected: { provider: string; modelId: string } | undefined;
+	for (const entry of branch) {
+		if (entry?.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
+			selected = { provider: entry.provider, modelId: entry.modelId };
+		} else if (entry?.type === "message" && entry.message?.role === "assistant" && typeof entry.message.provider === "string" && typeof entry.message.model === "string") {
+			selected = { provider: entry.message.provider, modelId: entry.message.model };
+		}
+	}
 	const retired = selected?.provider === CODEX_PROVIDER_ID && MODEL_RETIREMENTS.has(selected.modelId) ? selected : undefined;
 	if (!retired) return;
 	const successorId = MODEL_RETIREMENTS.get(retired.modelId)!;
@@ -106,12 +113,30 @@ async function migrateRetiredModel(pi: ExtensionAPI, ctx: any): Promise<void> {
 		console.error("void-code: cannot migrate retired model " + retired.modelId + " to unavailable successor " + successorId);
 		return;
 	}
+	const executable = process.env.VC_BOOTSTRAP_EXECUTABLE;
+	if (!executable || !path.isAbsolute(executable)) {
+		console.error("void-code: cannot safely migrate retired model: trusted vc executable unavailable");
+		return;
+	}
+	let defaultsSnapshot: string;
+	try {
+		defaultsSnapshot = execFileSync(executable, ["pi-model-default-snapshot"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
+	} catch (error) {
+		console.error("void-code: cannot safely migrate retired model defaults: " + (error instanceof Error ? error.message : String(error)));
+		return;
+	}
 	try {
 		if (!await pi.setModel(successor)) {
 			console.error("void-code: cannot activate successor " + successorId + "; check subscription access");
 		}
 	} catch (error) {
 		console.error("void-code: cannot persist retired model migration to " + successorId + ": " + (error instanceof Error ? error.message : String(error)));
+	} finally {
+		try {
+			execFileSync(executable, ["pi-model-default-restore", successorId], { input: defaultsSnapshot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 15000 });
+		} catch (error) {
+			console.error("void-code: cannot restore unrelated Pi defaults after session migration: " + (error instanceof Error ? error.message : String(error)));
+		}
 	}
 }
 

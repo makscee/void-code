@@ -69,6 +69,7 @@ var (
 var welcomeGateSkippingSubCommands = map[string]bool{
 	"login": true, "logout": true, "status": true, "update": true,
 	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
+	"pi-model-default-snapshot": true, "pi-model-default-restore": true,
 	"desktop-session": true, "access-request": true,
 }
 
@@ -403,6 +404,11 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	// hand-broken settings.json must still let Pi start.
 	if modelErr := ensurePiDefaultModel(); modelErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: Pi default model was not seeded: %v\n", modelErr)
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr != nil {
+		fmt.Fprintf(os.Stderr, "vc: warning: Pi project model was not reconciled: %v\n", cwdErr)
+	} else if modelErr := ensurePiProjectModelMigration(cwd); modelErr != nil {
+		fmt.Fprintf(os.Stderr, "vc: warning: Pi project model was not reconciled: %v\n", modelErr)
 	}
 	caPath, err := resolveCA(cfg)
 	if err != nil {

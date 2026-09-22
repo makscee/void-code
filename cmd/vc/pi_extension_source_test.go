@@ -19,7 +19,10 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 		`if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";`,
 		`const MODEL_RETIREMENTS = new Map<string, string>`,
 		`pi.on("session_start"`,
+		`entry.message?.role === "assistant"`,
 		`await pi.setModel(successor)`,
+		`pi-model-default-snapshot`,
+		`pi-model-default-restore`,
 		`cannot persist retired model migration to`,
 	} {
 		if !strings.Contains(piVoidCodexExtensionSource, want) {
