@@ -45,7 +45,7 @@ beforeAll(async () => {
 function transport(label: string, host = 'fixture.invalid'): Transport {
   return {
     ...structuredClone(bootstrap),
-    relayUrl: `http://${host}/relay-${label}`,
+    relayUrl: `http://${host}`,
     authToken: `opaque-bearer-${label}`,
     providers: [{ ...bootstrap.providers[0], relayProviderId: `opaque-provider-${label}` }],
     modelDecision: {
@@ -163,7 +163,7 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
 
     http.enqueue({
       method: 'POST',
-      urlPath: `${new URL(aValue.relayUrl).pathname}/codex/responses`,
+      urlPath: '/codex/responses',
       headers: [['content-type', 'text/event-stream']],
       body: completedSSE,
     });
@@ -174,7 +174,7 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
     );
     for await (const event of events) { void event; }
     const result = await events.result();
-    const request = http.requests.find(item => item.method === 'POST' && item.path === `${new URL(aValue.relayUrl).pathname}/codex/responses`);
+    const request = http.requests.find(item => item.method === 'POST' && item.path === '/codex/responses');
     expect(result.stopReason, result.errorMessage).toBe('stop');
     expect(request?.wire).toContain(`authorization: Bearer ${aValue.authToken}`);
     expect(request?.wire).toContain(`x-void-provider: ${aValue.providers[0].relayProviderId}`);
