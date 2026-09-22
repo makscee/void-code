@@ -251,8 +251,10 @@ export class HttpFixture {
   readonly replies: HttpReply[] = [];
   readonly dispatcher: Dispatcher;
   private previous: Dispatcher;
-  private readonly installedFetch: typeof globalThis.fetch;
-  private readonly installedHeaders: typeof globalThis.Headers;
+  private readonly previousFetch: typeof globalThis.fetch;
+  private readonly previousHeaders: typeof globalThis.Headers;
+  private readonly ownedFetch: typeof globalThis.fetch;
+  private readonly ownedHeaders: typeof globalThis.Headers;
   private restoreReader: () => void;
   private closed = false;
   private waiters: (() => void)[] = [];
@@ -263,8 +265,10 @@ export class HttpFixture {
     this.previous = undici.getGlobalDispatcher();
     const previousFetch = globalThis.fetch;
     const previousHeaders = globalThis.Headers;
-    this.installedFetch = previousFetch;
-    this.installedHeaders = previousHeaders;
+    this.previousFetch = previousFetch;
+    this.previousHeaders = previousHeaders;
+    this.ownedFetch = undici.fetch;
+    this.ownedHeaders = undici.Headers;
     const previousRead = ReadableStreamDefaultReader.prototype.read;
     const trace = this.trace;
     const observedRead: typeof previousRead = function (this: ReadableStreamDefaultReader<unknown>) {
@@ -281,6 +285,12 @@ export class HttpFixture {
     } });
     fixtureGlobalState.set(this.dispatcher, { previous: this.previous, previousFetch, previousHeaders });
     undici.setGlobalDispatcher(this.dispatcher);
+    // Managed Pi is loaded dynamically and resolves the ambient fetch/Headers
+    // bindings at call time. Keep those bindings paired with this fixture's
+    // pinned dispatcher; never substitute a production transport.
+    globalThis.fetch = this.ownedFetch;
+    globalThis.Headers = this.ownedHeaders;
+    this.markSymbol('fetch-owner');
   }
   private markSymbol(symbol: string): void { if (this.symbolicTrace.length < HttpFixture.maxSymbolicEntries) this.symbolicTrace.push(symbol); }
   private accept(request: RequestRecord, socket: FixtureSocket): void {
@@ -332,8 +342,8 @@ export class HttpFixture {
       // close over and replace the newer fixture's dispatcher/fetch path.
       if (undici.getGlobalDispatcher() === this.dispatcher) {
         let restore = this.previous;
-        let restoreFetch = this.installedFetch;
-        let restoreHeaders = this.installedHeaders;
+        let restoreFetch = this.previousFetch;
+        let restoreHeaders = this.previousHeaders;
         while (closedFixtureDispatchers.has(restore)) {
           const state = fixtureGlobalState.get(restore);
           if (!state) break;
@@ -342,8 +352,8 @@ export class HttpFixture {
           restoreHeaders = state.previousHeaders;
         }
         undici.setGlobalDispatcher(restore);
-        if (globalThis.fetch === this.installedFetch) globalThis.fetch = restoreFetch;
-        if (globalThis.Headers === this.installedHeaders) globalThis.Headers = restoreHeaders;
+        if (globalThis.fetch === this.ownedFetch) globalThis.fetch = restoreFetch;
+        if (globalThis.Headers === this.ownedHeaders) globalThis.Headers = restoreHeaders;
       }
     } finally {
       const owners = fixtureHosts.get(this.host);
