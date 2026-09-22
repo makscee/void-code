@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { actualReference, agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
+import { actualReference, agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, realSessionManager, rig, widgetUI, type Rig, type LifecycleHandler, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -415,15 +415,19 @@ it.each([['cli', 'raw'], ['desktop', 'raw'], ['cli', 'actual-proxy'], ['desktop'
   const spawn = vi.fn(() => child);
   const module = await extension(env, spawn);
   const handlers = new Map<string, LifecycleHandler[]>();
-  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
+  const sessionManager = realSessionManager() as { appendCustomEntry(type: string, data: unknown): string };
+  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn(), appendEntry: (type: string, data: unknown) => sessionManager.appendCustomEntry(type, data) };
   const reference = referenceKind === 'raw' ? r.tui : actualReference(() => r.tui);
   const ui = await widgetUI(r, reference, true); const { setWidget } = ui;
-  const ctx = { mode: 'tui', hasUI: true, ui };
+  const ctx = { mode: 'tui', hasUI: true, sessionManager, ui };
   await module.default(pi); // Deliberately no second argument: only node subprocess IO is substituted.
-  expect(pi.registerProvider).toHaveBeenCalled();
   expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
   try {
     for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+    const controller = module.getModelDecisionController(pi);
+    await controller.requestReadback();
+    await controller.whenIdle();
+    expect(controller.snapshot().authorityStatus).toBe('active');
     expect(setWidget).toHaveBeenCalled();
     r.drag(); await expectSelectionSilent(r); expect.soft(spawn).not.toHaveBeenCalled(); r.terminal.input('\x03'); await flush();
     expect(spawn).toHaveBeenCalledWith('/usr/bin/osascript', expect.any(Array), expect.objectContaining({ stdio: ['pipe', 'ignore', 'pipe'] }));
@@ -442,13 +446,19 @@ it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecy
   const env = mode === 'desktop' ? { ...localEnv, VC_DESKTOP_CHAT_ID: '12345678-1234-4234-8234-123456789abc', SSH_CONNECTION: 'inherited' } : localEnv;
   const module = await extension(env);
   const handlers = new Map<string, LifecycleHandler[]>();
-  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
+  const sessionManager = realSessionManager() as { appendCustomEntry(type: string, data: unknown): string };
+  const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn(), appendEntry: (type: string, data: unknown) => sessionManager.appendCustomEntry(type, data) };
   const ui = await widgetUI(r);
-  const ctx = { mode: 'tui', hasUI: true, ui };
+  const ctx = { mode: 'tui', hasUI: true, sessionManager, ui };
   await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: r.write } });
-  expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.6-terra' })]) }));
+  expect(pi.registerProvider).not.toHaveBeenCalled();
   expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
   for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
+  const controller = module.getModelDecisionController(pi);
+  await controller.requestReadback();
+  await controller.whenIdle();
+  expect(controller.snapshot().authorityStatus).toBe('active');
+  expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.6-terra' })]) }));
   r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();
   expect(r.write.mock.calls.map(([text]) => text)).toEqual(['Привет 世界 😀\nстрока два']);
   expect(ui.setEditorComponent).not.toHaveBeenCalled();
