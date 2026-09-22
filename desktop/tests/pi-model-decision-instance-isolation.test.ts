@@ -41,20 +41,30 @@ beforeAll(async () => {
   await configurePinFetch();
 }, 60_000);
 
-function transport(label: string): Transport {
+function transport(label: string, host = 'fixture.invalid'): Transport {
   return {
     ...structuredClone(bootstrap),
-    relayUrl: `http://fixture.invalid/relay-${label}`,
+    relayUrl: `http://${host}/relay-${label}`,
     authToken: `opaque-bearer-${label}`,
     providers: [{ ...bootstrap.providers[0], relayProviderId: `opaque-provider-${label}` }],
     modelDecision: {
       ...bootstrap.modelDecision,
-      readbackUrl: `http://fixture.invalid/readback-${label}`,
+      readbackUrl: `http://${host}/readback-${label}`,
     },
   };
 }
 
-async function openInstance(product: Product, http: HttpFixture, value: Transport): Promise<Rig> {
+type Phase = 'managed-loaded' | 'A-session-started' | 'A-readback-requested' | 'A-applied' | 'B-session-started' | 'B-readback-requested' | 'B-denied' | 'A-stream-requested' | 'A-stream';
+const maxPhaseEntries = 32;
+class PhaseDiagnostics {
+  private readonly entries: Phase[] = [];
+  mark(phase: Phase): void { if (this.entries.length < maxPhaseEntries) this.entries.push(phase); }
+  report(reason: 'timeout' | 'failure', http: HttpFixture): void {
+    console.error(`[instance-isolation ${reason}]`, JSON.stringify({ phases: this.entries, http: http.diagnostics() }));
+  }
+}
+
+async function openInstance(product: Product, http: HttpFixture, value: Transport, mark: (phase: Phase) => void): Promise<Rig> {
   const readbackStarted = http.nextRequest();
   const applied = deferred<void>();
   const rig = await pinRig(async pi => {
@@ -71,7 +81,9 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
     });
   });
   activeRigs.push(rig);
+  mark('A-session-started');
   await readbackStarted;
+  mark('A-readback-requested');
   http.enqueue({
     method: 'GET',
     urlPath: new URL(value.modelDecision.readbackUrl).pathname,
@@ -79,6 +91,7 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
     body: canonical(decision('11')),
   });
   await applied.promise;
+  mark('A-applied');
   const controller = product.getModelDecisionController(rig.pi);
   await controller.whenIdle();
   expect(controller.snapshot().authorityStatus).toBe('active');
@@ -88,12 +101,21 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
 
 describe.sequential('managed stream authority is isolated per Pi instance', () => {
   it('keeps A transport and permission after the same module initializes B', async () => {
-    const product = await managed();
-    const http = new HttpFixture();
-    activeHttp.push(http);
-    const aValue = transport('a');
-    const bValue = transport('b');
-    const a = await openInstance(product, http, aValue);
+    const diagnostics = new PhaseDiagnostics();
+    const http = new HttpFixture('instance-isolation.invalid');
+    // Keep another fixture's dispatcher active: the instance-specific host must
+    // still route to this fixture instead of being rejected by the global owner.
+    const dispatcherContention = new HttpFixture();
+    activeHttp.push(http, dispatcherContention);
+    let reported = false;
+    const report = (reason: 'timeout' | 'failure'): void => { if (!reported) { reported = true; diagnostics.report(reason, http); } };
+    const watchdog = setTimeout(() => report('timeout'), 9_000);
+    try {
+      const product = await managed();
+      diagnostics.mark('managed-loaded');
+      const aValue = transport('a', http.host);
+      const bValue = transport('b', http.host);
+      const a = await openInstance(product, http, aValue, phase => diagnostics.mark(phase));
     const aController = product.getModelDecisionController(a.pi);
     const aRegistration = a.runtime.getRegisteredProviderConfig(provider);
     expect(aRegistration?.streamSimple).toBeDefined();
@@ -114,10 +136,13 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
       });
     });
     activeRigs.push(b);
+    diagnostics.mark('B-session-started');
     await bStarted;
+    diagnostics.mark('B-readback-requested');
     http.enqueue({ method: 'GET', urlPath: new URL(bValue.modelDecision.readbackUrl).pathname, status: 503, headers: [], body: 'fixture-b-closed' });
     const bController = product.getModelDecisionController(b.pi);
     expect(bController.isSelectable(provider, models[0].id)).toBe(false);
+    diagnostics.mark('B-denied');
     expect(aController.isSelectable(provider, models[0].id)).toBe(true);
 
     http.enqueue({
@@ -126,6 +151,7 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
       headers: [['content-type', 'text/event-stream']],
       body: completedSSE,
     });
+    diagnostics.mark('A-stream-requested');
     const events = aRegistration!.streamSimple!(
       { ...models[0], baseUrl: aValue.relayUrl, provider },
       { messages: [], systemPrompt: 'fixture' },
@@ -140,5 +166,12 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
     expect(request?.wire).not.toContain(bValue.providers[0].relayProviderId);
     expect(aController.isSelectable(provider, models[0].id)).toBe(true);
     expect(bController.isSelectable(provider, models[0].id)).toBe(false);
+    diagnostics.mark('A-stream');
+    } catch (error) {
+      report('failure');
+      throw error;
+    } finally {
+      clearTimeout(watchdog);
+    }
   });
 });
