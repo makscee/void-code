@@ -34,6 +34,7 @@ interface Bootstrap {
 	version: number;
 	relayUrl: string;
 	authToken: string;
+	preferredModel?: string;
 	providers: BootstrapProvider[];
 }
 let activeBootstrap: Bootstrap | undefined;
@@ -73,7 +74,11 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 		if (provider.kind === "codex") {
 			hasCodexGrant = true;
 			const allowed = new Set([CODEX_MODEL_ID, "gpt-6-luna", "gpt-6-astra"]);
-			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
+			const modelIds = provider.models.filter((id) => allowed.has(id));
+			if (bootstrap.preferredModel && allowed.has(bootstrap.preferredModel) && modelIds.includes(bootstrap.preferredModel)) {
+				modelIds.sort((left, right) => left === bootstrap.preferredModel ? -1 : right === bootstrap.preferredModel ? 1 : 0);
+			}
+			const models = modelIds.map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
 			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
 			managedSearchAvailable = true;

@@ -12,10 +12,12 @@ import (
 )
 
 type piBootstrap struct {
-	Version   int                   `json:"version"`
-	RelayURL  string                `json:"relayUrl"`
-	AuthToken string                `json:"authToken"`
-	Providers []piBootstrapProvider `json:"providers"`
+	Version         int                   `json:"version"`
+	RelayURL        string                `json:"relayUrl"`
+	AuthToken       string                `json:"authToken"`
+	PreferredModel  string                `json:"preferredModel,omitempty"`
+	Providers       []piBootstrapProvider `json:"providers"`
+	SettingsWarning string                `json:"-"`
 }
 type piBootstrapProvider struct {
 	Kind            string   `json:"kind"`
@@ -27,6 +29,9 @@ var piBootstrapCmd = &cobra.Command{Use: "pi-bootstrap", Short: "Return transien
 	bootstrap, err := currentPiBootstrap()
 	if err != nil {
 		return err
+	}
+	if bootstrap.SettingsWarning != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "vc: warning: Pi default model was not reconciled: %s\n", bootstrap.SettingsWarning)
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(bootstrap)
 }}
@@ -45,11 +50,16 @@ func currentPiBootstrap() (piBootstrap, error) {
 	if err != nil {
 		return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
 	}
+	preferredModel, settingsErr := reconcilePiBootstrapRetiredDefault()
 	out := piBootstrap{
-		Version:   1,
-		RelayURL:  fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost),
-		AuthToken: token,
-		Providers: make([]piBootstrapProvider, 0),
+		Version:        1,
+		RelayURL:       fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost),
+		AuthToken:      token,
+		PreferredModel: preferredModel,
+		Providers:      make([]piBootstrapProvider, 0),
+	}
+	if settingsErr != nil {
+		out.SettingsWarning = settingsErr.Error()
 	}
 	for _, info := range infos {
 		if strings.EqualFold(strings.TrimSpace(info.Type), "openai-codex-oauth") {
@@ -57,4 +67,26 @@ func currentPiBootstrap() (piBootstrap, error) {
 		}
 	}
 	return out, nil
+}
+
+// A directly loaded managed extension invokes only pi-bootstrap; its parent Pi
+// has already cached settings before this process can update them. Return the
+// exact successor as a one-startup ordering hint so Pi cannot fall back to Sol
+// while the locked writer persists the same migration for later launches.
+func reconcilePiBootstrapRetiredDefault() (string, error) {
+	var successor string
+	err := updatePiSettings(func(settings map[string]any) bool {
+		provider, _ := settings["defaultProvider"].(string)
+		model, _ := settings["defaultModel"].(string)
+		if strings.TrimSpace(provider) != piDefaultProvider {
+			return false
+		}
+		successor = piModelRetirements[strings.TrimSpace(model)]
+		if successor == "" {
+			return false
+		}
+		settings["defaultModel"] = successor
+		return true
+	})
+	return successor, err
 }

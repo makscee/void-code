@@ -66,6 +66,33 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	}
 }
 
+func TestCurrentPiBootstrapMigratesRetiredDefaultAndReturnsStartupHint(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	path := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna","theme":"nord"}`, 0600)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{
+			{"id": "chatgpt-granted", "name": "ChatGPT", "type": "openai-codex-oauth"},
+		}})
+	}))
+	defer server.Close()
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	if err := auth.Save("protected-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PreferredModel != "gpt-6-luna" {
+		t.Fatalf("preferred model = %q, want gpt-6-luna", got.PreferredModel)
+	}
+	settings := readPiSettings(t, path)
+	if settings["defaultModel"] != "gpt-6-luna" || settings["theme"] != "nord" {
+		t.Fatalf("migrated settings = %#v", settings)
+	}
+}
+
 // A retired-only catalog must still bootstrap so the extension can install its local OpenAI tombstone.
 func TestCurrentPiBootstrapReturnsEmptyProvidersForRetiredDeepSeekOnlyCatalog(t *testing.T) {
 	home := t.TempDir()

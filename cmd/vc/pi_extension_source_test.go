@@ -20,6 +20,7 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 		`const MODEL_RETIREMENTS = new Map<string, string>`,
 		`pi.on("session_start"`,
 		`entry.message?.role === "assistant"`,
+		`bootstrap.preferredModel`,
 		`await pi.setModel(successor)`,
 		`pi-model-default-snapshot`,
 		`pi-model-default-restore`,
