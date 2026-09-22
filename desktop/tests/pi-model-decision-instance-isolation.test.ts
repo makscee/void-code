@@ -82,6 +82,8 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
     });
   });
   activeRigs.push(rig);
+  const controller = product.getModelDecisionController(rig.pi);
+  void controller.requestReadback();
   mark('A-session-started');
   await readbackStarted;
   expect(http.requests.at(-1)).toMatchObject({ method: 'GET', path: new URL(value.modelDecision.readbackUrl).pathname });
@@ -95,7 +97,6 @@ async function openInstance(product: Product, http: HttpFixture, value: Transpor
   });
   await applied.promise;
   mark('A-applied');
-  const controller = product.getModelDecisionController(rig.pi);
   await controller.whenIdle();
   expect(controller.snapshot().authorityStatus).toBe('active');
   expect(controller.snapshot().appliedEffects.status).toBe('applied');
@@ -142,11 +143,12 @@ describe.sequential('managed stream authority is isolated per Pi instance', () =
       });
     });
     activeRigs.push(b);
+    const bController = product.getModelDecisionController(b.pi);
+    void bController.requestReadback();
     diagnostics.mark('B-session-started');
     await bStarted;
     diagnostics.mark('B-readback-requested');
     http.enqueue({ method: 'GET', urlPath: new URL(bValue.modelDecision.readbackUrl).pathname, status: 503, headers: [], body: 'fixture-b-closed' });
-    const bController = product.getModelDecisionController(b.pi);
     expect(bController.isSelectable(provider, models[0].id)).toBe(false);
     diagnostics.mark('B-denied');
     expect(aController.isSelectable(provider, models[0].id)).toBe(true);
