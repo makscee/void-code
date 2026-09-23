@@ -317,6 +317,13 @@ var walletGateCases = []walletGateCase{
 	// if something does, there is no daily charge to be behind on.
 	{name: "no tariff, todayPaid false, zero balance: silent", body: meBody(wallet("0", "null", "false", "null"))},
 	{name: "no tariff: silent", body: meBody(wallet("0.25", "null", "null", "null"))},
+	// An inconsistent payload — balance and fundedDays both real zeros, with
+	// no tariff — still enforces nothing: no tariff means no decision at all,
+	// whatever todayPaid and fundedDays say. fundedDays:0 (not null) matters
+	// here — a low-balance message built from a real day count would show up
+	// in the output the moment the "no tariff" guard is skipped.
+	{name: "no tariff, todayPaid false, zero balance, zero days: silent", body: meBody(wallet("0", "null", "false", "0"))},
+	{name: "no tariff, todayPaid null, fundedDays null, zero balance: silent", body: meBody(wallet("0", "null", "null", "null"))},
 	// null is not false.
 	{name: "tariff, todayPaid null, balance under the rate: not refused", body: meBody(wallet("1", tariffT1, "null", "9"))},
 	// A wallet the client cannot read neither blocks nor warns.
