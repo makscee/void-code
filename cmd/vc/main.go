@@ -400,15 +400,15 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	if _, webErr := reconcileManagedWebSearch(true); webErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
 	}
-	// A seeded default is a convenience, never a precondition: an unreadable or
-	// hand-broken settings.json must still let Pi start.
+	// Retirement is one effective global/project policy shared with desktop and
+	// direct bootstrap. A seeded default remains a convenience, never a launch
+	// precondition: unreadable settings produce visible warnings and Pi starts.
+	cwd, cwdErr := os.Getwd()
+	for _, warning := range reconcilePiRetiredDefaults(cwd, cwdErr).Warnings {
+		fmt.Fprintf(os.Stderr, "vc: warning: %s\n", warning)
+	}
 	if modelErr := ensurePiDefaultModel(); modelErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: Pi default model was not seeded: %v\n", modelErr)
-	}
-	if cwd, cwdErr := os.Getwd(); cwdErr != nil {
-		fmt.Fprintf(os.Stderr, "vc: warning: Pi project model was not reconciled: %v\n", cwdErr)
-	} else if modelErr := ensurePiProjectModelMigration(cwd); modelErr != nil {
-		fmt.Fprintf(os.Stderr, "vc: warning: Pi project model was not reconciled: %v\n", modelErr)
 	}
 	caPath, err := resolveCA(cfg)
 	if err != nil {

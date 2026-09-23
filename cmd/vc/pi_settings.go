@@ -73,6 +73,82 @@ var piModelRetirements = map[string]string{
 	"gpt-5.6-luna":  "gpt-6-luna",
 }
 
+type piModelSelection struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+type piRetirementReconciliation struct {
+	StartupSelection *piModelSelection
+	Warnings         []string
+}
+
+// reconcilePiRetiredDefaults is the shared pre-resolution retirement policy
+// for terminal, desktop, and direct managed-extension starts. Both scopes are
+// loaded and migrated; an exact retired project pair takes precedence over an
+// exact retired global pair. The returned provider-bound selection lets a
+// directly loaded extension repair Pi's already-cached choice for this launch.
+func reconcilePiRetiredDefaults(cwd string, cwdErr error) piRetirementReconciliation {
+	var globalSuccessor string
+	globalPath := piSettingsPath()
+	globalErr := updatePiSettings(func(settings map[string]any) bool {
+		globalSuccessor = retiredPiSelectionSuccessor(settings)
+		if globalSuccessor == "" {
+			return false
+		}
+		settings["defaultModel"] = globalSuccessor
+		return true
+	})
+	var warnings []string
+	if globalErr != nil {
+		warnings = append(warnings, fmt.Sprintf("Pi global default model was not reconciled (%s): %v", globalPath, globalErr))
+	}
+
+	var projectSuccessor string
+	var projectOwnsSelection bool
+	if cwdErr != nil {
+		warnings = append(warnings, fmt.Sprintf("Pi project default model was not reconciled: resolve current directory: %v", cwdErr))
+	} else if strings.TrimSpace(cwd) != "" {
+		projectPath := filepath.Join(cwd, ".pi", "settings.json")
+		projectErr := updateExistingPiSettings(projectPath, func(settings map[string]any) bool {
+			projectProvider, _ := settings["defaultProvider"].(string)
+			projectModel, _ := settings["defaultModel"].(string)
+			projectOwnsSelection = strings.TrimSpace(projectProvider) != "" && strings.TrimSpace(projectModel) != ""
+			projectSuccessor = retiredPiSelectionSuccessor(settings)
+			if projectSuccessor == "" {
+				return false
+			}
+			settings["defaultModel"] = projectSuccessor
+			return true
+		})
+		if projectErr != nil {
+			warnings = append(warnings, fmt.Sprintf("Pi project default model was not reconciled (%s): %v", projectPath, projectErr))
+		}
+	}
+
+	successor := globalSuccessor
+	if projectOwnsSelection {
+		// A complete project pair is Pi's effective choice. A retired managed
+		// pair contributes its successor; canonical or foreign pairs suppress a
+		// startup override from a lower-precedence global retirement.
+		successor = projectSuccessor
+	}
+	result := piRetirementReconciliation{Warnings: warnings}
+	if successor != "" {
+		result.StartupSelection = &piModelSelection{Provider: piDefaultProvider, Model: successor}
+	}
+	return result
+}
+
+func retiredPiSelectionSuccessor(settings map[string]any) string {
+	provider, _ := settings["defaultProvider"].(string)
+	model, _ := settings["defaultModel"].(string)
+	if strings.TrimSpace(provider) != piDefaultProvider {
+		return ""
+	}
+	return piModelRetirements[strings.TrimSpace(model)]
+}
+
 // ensurePiDefaultModel seeds the managed default and migrates an explicitly
 // retired VC-owned selection. A legacy managed DeepSeek selection moves to the
 // OpenAI default. Other provider/model pairs are user-owned and remain intact.

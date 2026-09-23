@@ -40,7 +40,7 @@ func TestPiBootstrapRetiredDefaultSelectsLunaBeforeFallbackSmoke(t *testing.T) {
 		t.Fatalf("unexpected go cache paths: %q", goEnvOutput)
 	}
 	agentDir := piSettingsSandbox(t)
-	settingsPath := writePiSettings(t, agentDir, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna","theme":"nord"}`, 0600)
+	settingsPath := writePiSettings(t, agentDir, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-sol","theme":"global"}`, 0600)
 	if err := auth.Save("protected-token"); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +57,13 @@ func TestPiBootstrapRetiredDefaultSelectsLunaBeforeFallbackSmoke(t *testing.T) {
 	defer server.Close()
 
 	work := t.TempDir()
+	projectPath := filepath.Join(work, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectPath, []byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna","theme":"project"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	extension := filepath.Join(work, "void-code.ts")
 	if err := os.WriteFile(extension, []byte(piVoidCodexExtensionSource), 0600); err != nil {
 		t.Fatal(err)
@@ -69,12 +76,7 @@ func TestPiBootstrapRetiredDefaultSelectsLunaBeforeFallbackSmoke(t *testing.T) {
 		t.Fatalf("build production vc helper: %v; output=%s", err, output)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, prerequisites.node, prerequisites.piEntry,
-		"-e", extension, "--offline", "--mode", "rpc", "--no-session")
-	command.Dir = work
-	command.Env = []string{
+	piEnv := []string{
 		"PATH=/usr/bin:/bin",
 		"HOME=" + os.Getenv("HOME"),
 		"USERPROFILE=" + os.Getenv("USERPROFILE"),
@@ -83,7 +85,55 @@ func TestPiBootstrapRetiredDefaultSelectsLunaBeforeFallbackSmoke(t *testing.T) {
 		"VC_AUTH_HOST=" + server.URL,
 		"VC_RELAY_HOST=https://relay.invalid",
 		"VC_BOOTSTRAP_EXECUTABLE=" + vc,
+		// A second authenticated provider must not intercept the exact managed
+		// successor selected by the pre-resolution retirement policy.
+		"ANTHROPIC_API_KEY=authenticated-other-provider",
 	}
+	state, stderr := runPinnedBootstrapState(t, prerequisites, work, extension, piEnv)
+	if state.Model == nil || state.Model.Provider != "void-codex" || state.Model.ID != "gpt-6-luna" {
+		t.Fatalf("direct managed startup model = %#v, want void-codex/gpt-6-luna; stderr=%s", state.Model, stderr)
+	}
+	settings := readPiSettings(t, settingsPath)
+	if settings["defaultModel"] != "gpt-6-sol" || settings["theme"] != "global" {
+		t.Fatalf("persisted global bootstrap migration = %#v", settings)
+	}
+	projectSettings := readPiSettings(t, projectPath)
+	if projectSettings["defaultModel"] != "gpt-6-luna" || projectSettings["theme"] != "project" {
+		t.Fatalf("persisted project bootstrap migration = %#v", projectSettings)
+	}
+
+	// The bootstrap child succeeds even when reconciliation cannot. Its stderr
+	// is captured for JSON framing, so the structured warning must be emitted by
+	// the production extension on Pi's own visible stderr.
+	const malformed = `{"defaultProvider":"void-codex",`
+	if err := os.WriteFile(settingsPath, []byte(malformed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, warningStderr := runPinnedBootstrapState(t, prerequisites, work, extension, piEnv)
+	if !strings.Contains(warningStderr, "void-code: warning: Pi global default model was not reconciled") || !strings.Contains(warningStderr, "parse Pi settings") {
+		t.Fatalf("production Pi stderr hid reconciliation warning: %s", warningStderr)
+	}
+	data, err := os.ReadFile(settingsPath)
+	if err != nil || string(data) != malformed {
+		t.Fatalf("malformed settings changed: data=%q err=%v", data, err)
+	}
+}
+
+type pinnedBootstrapState struct {
+	Model *struct {
+		Provider string `json:"provider"`
+		ID       string `json:"id"`
+	} `json:"model"`
+}
+
+func runPinnedBootstrapState(t *testing.T, prerequisites pinnedPiPrerequisites, work, extension string, env []string) (pinnedBootstrapState, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, prerequisites.node, prerequisites.piEntry,
+		"-e", extension, "--offline", "--mode", "rpc", "--no-session")
+	command.Dir = work
+	command.Env = env
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -127,20 +177,9 @@ func TestPiBootstrapRetiredDefaultSelectsLunaBeforeFallbackSmoke(t *testing.T) {
 	if err := command.Wait(); err != nil {
 		t.Fatalf("pinned Pi failed: %v; stderr=%s", err, stderr.String())
 	}
-	var state struct {
-		Model *struct {
-			Provider string `json:"provider"`
-			ID       string `json:"id"`
-		} `json:"model"`
-	}
+	var state pinnedBootstrapState
 	if err := json.Unmarshal(response["data"], &state); err != nil {
 		t.Fatal(err)
 	}
-	if state.Model == nil || state.Model.Provider != "void-codex" || state.Model.ID != "gpt-6-luna" {
-		t.Fatalf("direct managed startup model = %#v, want void-codex/gpt-6-luna; stderr=%s", state.Model, stderr.String())
-	}
-	settings := readPiSettings(t, settingsPath)
-	if settings["defaultModel"] != "gpt-6-luna" || settings["theme"] != "nord" {
-		t.Fatalf("persisted bootstrap migration = %#v", settings)
-	}
+	return state, stderr.String()
 }

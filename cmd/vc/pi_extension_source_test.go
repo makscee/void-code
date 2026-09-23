@@ -20,8 +20,10 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 		`const MODEL_RETIREMENTS = new Map<string, string>`,
 		`pi.on("session_start"`,
 		`entry.message?.role === "assistant"`,
-		`bootstrap.preferredModel`,
+		`activeBootstrap?.startupSelection`,
+		`startupSelection?.provider === CODEX_PROVIDER_ID`,
 		`await pi.setModel(successor)`,
+		`for (const warning of value.warnings ?? []) console.error`,
 		`pi-model-default-snapshot`,
 		`pi-model-default-restore`,
 		`cannot persist retired model migration to`,
@@ -35,6 +37,8 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 		`pi.registerProvider("void-deepseek"`,
 		`return "GPT-5.6 Sol via Void relay"`,
 		`return "GPT-5.6 Luna via Void relay"`,
+		`modelIds.sort(`,
+		`preferredModel`,
 	} {
 		if strings.Contains(piVoidCodexExtensionSource, forbidden) {
 			t.Errorf("managed Pi extension still registers the retired provider through %q", forbidden)

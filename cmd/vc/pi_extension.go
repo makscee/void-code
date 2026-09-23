@@ -30,14 +30,20 @@ interface BootstrapProvider {
 	relayProviderId: string;
 	models: string[];
 }
+interface BootstrapSelection {
+	provider: string;
+	model: string;
+}
 interface Bootstrap {
 	version: number;
 	relayUrl: string;
 	authToken: string;
-	preferredModel?: string;
+	startupSelection?: BootstrapSelection;
+	warnings?: string[];
 	providers: BootstrapProvider[];
 }
 let activeBootstrap: Bootstrap | undefined;
+let startupSelectionPending = true;
 const MANAGED_WEB_SEARCH_INSTRUCTION = "For current or externally verifiable facts, use web_search. Use multiple queries for research, inspect primary sources with fetch_content, and cite links. Use get_search_content to revisit stored results.";
 
 interface ClipboardIOOptions {
@@ -75,9 +81,6 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 			hasCodexGrant = true;
 			const allowed = new Set([CODEX_MODEL_ID, "gpt-6-luna", "gpt-6-astra"]);
 			const modelIds = provider.models.filter((id) => allowed.has(id));
-			if (bootstrap.preferredModel && allowed.has(bootstrap.preferredModel) && modelIds.includes(bootstrap.preferredModel)) {
-				modelIds.sort((left, right) => left === bootstrap.preferredModel ? -1 : right === bootstrap.preferredModel ? 1 : 0);
-			}
 			const models = modelIds.map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
 			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
@@ -98,24 +101,34 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 // the active branch and append a normal model_change to the explicit successor.
 // The latest entry is then current, so repeated reconciliation is a no-op.
 async function migrateRetiredModel(pi: ExtensionAPI, ctx: any): Promise<void> {
-	const branch = ctx.sessionManager?.getBranch?.();
-	if (!branch) return;
+	const branch = ctx.sessionManager?.getBranch?.() ?? [];
 	// Match Pi's own effective branch-selection projection: both explicit
 	// model_change entries and later assistant messages select a model.
 	let selected: { provider: string; modelId: string } | undefined;
+	let hasConversationHistory = false;
 	for (const entry of branch) {
 		if (entry?.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
 			selected = { provider: entry.provider, modelId: entry.modelId };
-		} else if (entry?.type === "message" && entry.message?.role === "assistant" && typeof entry.message.provider === "string" && typeof entry.message.model === "string") {
-			selected = { provider: entry.message.provider, modelId: entry.message.model };
+		} else if (entry?.type === "message") {
+			hasConversationHistory = true;
+			if (entry.message?.role === "assistant" && typeof entry.message.provider === "string" && typeof entry.message.model === "string") {
+				selected = { provider: entry.message.provider, modelId: entry.message.model };
+			}
 		}
 	}
 	const retired = selected?.provider === CODEX_PROVIDER_ID && MODEL_RETIREMENTS.has(selected.modelId) ? selected : undefined;
-	if (!retired) return;
-	const successorId = MODEL_RETIREMENTS.get(retired.modelId)!;
-	const successor = ctx.modelRegistry.find(CODEX_PROVIDER_ID, successorId);
+	let targetId = retired ? MODEL_RETIREMENTS.get(retired.modelId) : undefined;
+	if (!retired && !hasConversationHistory && startupSelectionPending) {
+		const startupSelection = activeBootstrap?.startupSelection;
+		if (startupSelection?.provider === CODEX_PROVIDER_ID && typeof startupSelection.model === "string") {
+			targetId = startupSelection.model;
+		}
+	}
+	startupSelectionPending = false;
+	if (!targetId) return;
+	const successor = ctx.modelRegistry.find(CODEX_PROVIDER_ID, targetId);
 	if (!successor) {
-		console.error("void-code: cannot migrate retired model " + retired.modelId + " to unavailable successor " + successorId);
+		console.error("void-code: cannot migrate retired model to unavailable successor " + targetId);
 		return;
 	}
 	const executable = process.env.VC_BOOTSTRAP_EXECUTABLE;
@@ -132,13 +145,13 @@ async function migrateRetiredModel(pi: ExtensionAPI, ctx: any): Promise<void> {
 	}
 	try {
 		if (!await pi.setModel(successor)) {
-			console.error("void-code: cannot activate successor " + successorId + "; check subscription access");
+			console.error("void-code: cannot activate successor " + targetId + "; check subscription access");
 		}
 	} catch (error) {
-		console.error("void-code: cannot persist retired model migration to " + successorId + ": " + (error instanceof Error ? error.message : String(error)));
+		console.error("void-code: cannot persist retired model migration to " + targetId + ": " + (error instanceof Error ? error.message : String(error)));
 	} finally {
 		try {
-			execFileSync(executable, ["pi-model-default-restore", successorId], { input: defaultsSnapshot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 15000 });
+			execFileSync(executable, ["pi-model-default-restore", targetId], { input: defaultsSnapshot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 15000 });
 		} catch (error) {
 			console.error("void-code: cannot restore unrelated Pi defaults after session migration: " + (error instanceof Error ? error.message : String(error)));
 		}
@@ -604,6 +617,8 @@ function loadBootstrap(): Bootstrap | undefined {
 		const raw = execFileSync(executable, ["pi-bootstrap"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
 		const value = JSON.parse(raw) as Bootstrap;
 		if (value.version !== 1 || !value.relayUrl || !value.authToken || !Array.isArray(value.providers)) throw new Error("invalid bootstrap response");
+		if (value.warnings !== undefined && (!Array.isArray(value.warnings) || value.warnings.some((warning) => typeof warning !== "string"))) throw new Error("invalid bootstrap warnings");
+		for (const warning of value.warnings ?? []) console.error("void-code: warning: " + warning);
 		return value;
 	} catch (error) {
 		console.error("void-code: managed Pi provider unavailable; run vc login, then vc (" + (error instanceof Error ? error.message : String(error)) + ")");

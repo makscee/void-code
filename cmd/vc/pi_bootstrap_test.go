@@ -66,7 +66,7 @@ func TestCurrentPiBootstrapIgnoresDeepSeekGrant(t *testing.T) {
 	}
 }
 
-func TestCurrentPiBootstrapMigratesRetiredDefaultAndReturnsStartupHint(t *testing.T) {
+func TestCurrentPiBootstrapMigratesRetiredDefaultAndReturnsProviderBoundStartupSelection(t *testing.T) {
 	dir := piSettingsSandbox(t)
 	path := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna","theme":"nord"}`, 0600)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -84,12 +84,76 @@ func TestCurrentPiBootstrapMigratesRetiredDefaultAndReturnsStartupHint(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.PreferredModel != "gpt-6-luna" {
-		t.Fatalf("preferred model = %q, want gpt-6-luna", got.PreferredModel)
+	if got.StartupSelection == nil || got.StartupSelection.Provider != "void-codex" || got.StartupSelection.Model != "gpt-6-luna" {
+		t.Fatalf("startup selection = %#v, want void-codex/gpt-6-luna", got.StartupSelection)
 	}
 	settings := readPiSettings(t, path)
 	if settings["defaultModel"] != "gpt-6-luna" || settings["theme"] != "nord" {
 		t.Fatalf("migrated settings = %#v", settings)
+	}
+}
+
+func TestCurrentPiBootstrapProjectRetirementOverridesGlobalBeforeResolution(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	globalPath := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-sol","theme":"global"}`, 0600)
+	project := t.TempDir()
+	projectPath := filepath.Join(project, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectPath, []byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna","theme":"project"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{{"id": "chatgpt-granted", "type": "openai-codex-oauth"}}})
+	}))
+	defer server.Close()
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	if err := auth.Save("protected-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StartupSelection == nil || got.StartupSelection.Provider != "void-codex" || got.StartupSelection.Model != "gpt-6-luna" {
+		t.Fatalf("project-precedence startup selection = %#v, want void-codex/gpt-6-luna", got.StartupSelection)
+	}
+	if global := readPiSettings(t, globalPath); global["defaultModel"] != "gpt-6-sol" || global["theme"] != "global" {
+		t.Fatalf("global migration = %#v", global)
+	}
+	if local := readPiSettings(t, projectPath); local["defaultModel"] != "gpt-6-luna" || local["theme"] != "project" {
+		t.Fatalf("project migration = %#v", local)
+	}
+}
+
+func TestCurrentPiBootstrapReturnsStructuredActionableSettingsWarnings(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	path := writePiSettings(t, dir, `{"defaultProvider":"void-codex",`, 0600)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": []map[string]string{{"id": "chatgpt-granted", "type": "openai-codex-oauth"}}})
+	}))
+	defer server.Close()
+	t.Setenv("VC_AUTH_HOST", server.URL)
+	if err := auth.Save("protected-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := currentPiBootstrap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Warnings) != 1 || !strings.Contains(got.Warnings[0], "global") || !strings.Contains(got.Warnings[0], path) && !strings.Contains(got.Warnings[0], "parse Pi settings") {
+		t.Fatalf("warnings = %#v, want actionable global parse warning", got.Warnings)
 	}
 }
 

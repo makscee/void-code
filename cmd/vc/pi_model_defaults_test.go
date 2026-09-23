@@ -52,6 +52,32 @@ func TestEnsurePiProjectModelMigrationIsScopedAndDoesNotSeed(t *testing.T) {
 	}
 }
 
+func TestReconcilePiRetiredDefaultsCanonicalProjectSuppressesGlobalOverride(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	globalPath := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-sol","theme":"global"}`, 0600)
+	project := t.TempDir()
+	projectPath := filepath.Join(project, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	const projectBody = `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna","theme":"project"}`
+	if err := os.WriteFile(projectPath, []byte(projectBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := reconcilePiRetiredDefaults(project, nil)
+	if result.StartupSelection != nil || len(result.Warnings) != 0 {
+		t.Fatalf("reconciliation = %#v, want canonical project precedence without override", result)
+	}
+	if got := readPiSettings(t, globalPath); got["defaultModel"] != "gpt-6-sol" || got["theme"] != "global" {
+		t.Fatalf("global settings = %#v", got)
+	}
+	data, err := os.ReadFile(projectPath)
+	if err != nil || string(data) != projectBody {
+		t.Fatalf("canonical project settings changed: data=%q err=%v", data, err)
+	}
+}
+
 func TestRestorePiModelDefaultsPreservesForeignAndNormalizesRetiredSnapshots(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
