@@ -91,7 +91,7 @@ func TestFetchMe_AccessNotGrantedReturnsNoIdentity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusPaymentRequired)
-		_, _ = w.Write([]byte(`{"error":"budget_exceeded","userId":"u-1","subject_id":"u-1","email":"person@example.test","pct":12.5,"resetAt":"2026-09-01T00:00:00Z","balanceUsd":3.5}`))
+		_, _ = w.Write([]byte(`{"error":"budget_exceeded","userId":"u-1","subject_id":"u-1","email":"person@example.test","pct":12.5,"resetAt":"2026-09-01T00:00:00Z","balanceUsd":3.5,"wallet":{"balanceUsd":3.5,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":true,"fundedDays":1}}`))
 	}))
 	defer srv.Close()
 
@@ -102,8 +102,11 @@ func TestFetchMe_AccessNotGrantedReturnsNoIdentity(t *testing.T) {
 	if res.UserID != "" || res.Email != "" {
 		t.Errorf("MeResult = %+v, want zero identity — the server refused the request, it did not confirm who is asking", res)
 	}
-	if res.Pct != nil || res.ResetAt != "" || res.BalanceUsd != nil {
-		t.Errorf("MeResult = %+v, want zero budget fields — nothing in a refusal payload is a verified budget", res)
+	// Compared whole rather than field by field, so the rule covers whatever
+	// MeResult carries — the retired budget fields while they exist, the wallet
+	// now — without naming any of them.
+	if res != (MeResult{}) {
+		t.Errorf("MeResult = %+v, want the zero value — nothing in a refusal payload is a verified budget or wallet", res)
 	}
 }
 

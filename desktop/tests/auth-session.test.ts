@@ -36,14 +36,17 @@ const EXPECTED_LOGIN_EVENTS: LoginEvent[] = [
 ];
 
 describe('readAuthStatus', () => {
-  it('parses a signed-in status', async () => {
+  // pct/resetAt are retired (spec 2026-09-23-client-wallet-days: the client shows money and days,
+  // never a percentage). A vc that still prints them — an older build, a stale bundle — must not get
+  // a percentage past this boundary, where any future screen would be free to render it.
+  it('parses a signed-in status and drops the retired budget percentage', async () => {
     const child = new FakeChild();
     const promise = readAuthStatus('/private/vc', fixedSpawner(child));
     child.stdout.emit('data', '{"authState":"signed_in","identity":"artem","pct":12.5,"resetAt":"2026-09-01T00:00:00.000Z"}\n');
     child.end(0);
     await expect(promise).resolves.toEqual({
       ok: true,
-      status: { authState: 'signed_in', identity: 'artem', pct: 12.5, resetAt: '2026-09-01T00:00:00.000Z' },
+      status: { authState: 'signed_in', identity: 'artem' },
     });
   });
 

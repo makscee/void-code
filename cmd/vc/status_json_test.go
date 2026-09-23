@@ -42,16 +42,18 @@ import (
 //     — the stable value a GUI branches on.
 //     - "identity": present only when authState is "signed_in" (email if
 //     the server returned one, else the user id).
-//     - "pct": present only when authState is "signed_in" and the server
-//     returned a budget percentage.
-//     - "resetAt": present only when authState is "signed_in" and the
-//     server returned a reset date.
+//     - "wallet": present only when authState is "signed_in" and the server
+//     returned one — the server's own object, mirrored (spec
+//     2026-09-23-client-wallet-days).
 //     - "error": present only when authState is "invalid_credential",
 //     holding why verification failed.
 //
+// "pct" and "resetAt" were part of this contract until 2026-09-23 and are
+// retired: the client reports no percentages, whatever the server sends.
+//
 // A field absent from the object (not merely empty/zero) is what these
 // tests check for the states that don't carry it — a struct that always
-// serialises pct/resetAt/error as zero values would pass a check that only
+// serialises wallet/error as zero values would pass a check that only
 // looked at "not truthy".
 
 func decodeSingleJSONObject(t *testing.T, out []byte) map[string]any {
@@ -108,7 +110,7 @@ func TestStatusJSONReportsSignedOutWithNoCredential(t *testing.T) {
 	if obj["authState"] != "signed_out" {
 		t.Errorf("authState = %v, want signed_out", obj["authState"])
 	}
-	for _, field := range []string{"identity", "pct", "resetAt", "error"} {
+	for _, field := range []string{"identity", "pct", "resetAt", "wallet", "error"} {
 		if _, present := obj[field]; present {
 			t.Errorf("signed_out output carries %q = %v, want absent", field, obj[field])
 		}
@@ -152,7 +154,7 @@ func TestStatusJSONReportsInvalidCredentialWhenVerificationFails(t *testing.T) {
 	if strings.Contains(buf.String(), "stale-token") {
 		t.Error("status leaked the credential value")
 	}
-	for _, field := range []string{"identity", "pct", "resetAt"} {
+	for _, field := range []string{"identity", "pct", "resetAt", "wallet"} {
 		if _, present := obj[field]; present {
 			t.Errorf("invalid_credential output carries %q = %v, want absent", field, obj[field])
 		}
@@ -161,14 +163,15 @@ func TestStatusJSONReportsInvalidCredentialWhenVerificationFails(t *testing.T) {
 
 // The signed-in case is the one the desktop actually renders a chat for. The
 // identity must be branchable on its own, distinct in shape from the plain
-// "logged in as X" prose a human reads.
-func TestStatusJSONReportsSignedInWithIdentityAndBudget(t *testing.T) {
+// "logged in as X" prose a human reads. The server here still sends the
+// retired pct/resetAt beside the wallet: the wallet goes through, they do not.
+func TestStatusJSONReportsSignedInWithIdentityAndWallet(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"userId":"u-1","email":"person@example.test","pct":42.5,"resetAt":"2026-09-01T00:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"userId":"u-1","email":"person@example.test","pct":42.5,"resetAt":"2026-09-01T00:00:00Z","wallet":{"balanceUsd":18,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":true,"fundedDays":9}}`))
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
@@ -192,11 +195,20 @@ func TestStatusJSONReportsSignedInWithIdentityAndBudget(t *testing.T) {
 	if obj["identity"] != "person@example.test" {
 		t.Errorf("identity = %v, want person@example.test", obj["identity"])
 	}
-	if pct, ok := obj["pct"].(float64); !ok || pct != 42.5 {
-		t.Errorf("pct = %v, want 42.5", obj["pct"])
+	got, ok := obj["wallet"].(map[string]any)
+	if !ok {
+		t.Fatalf("wallet = %#v, want an object", obj["wallet"])
 	}
-	if obj["resetAt"] != "2026-09-01T00:00:00Z" {
-		t.Errorf("resetAt = %v, want 2026-09-01T00:00:00Z", obj["resetAt"])
+	if got["balanceUsd"] != 18.0 || got["todayPaid"] != true || got["fundedDays"] != 9.0 {
+		t.Errorf("wallet = %v, want balanceUsd 18, todayPaid true, fundedDays 9", got)
+	}
+	if tariff, _ := got["tariff"].(map[string]any); tariff == nil || tariff["tier"] != "t1" {
+		t.Errorf("wallet.tariff = %v, want tier t1", got["tariff"])
+	}
+	for _, retired := range []string{"pct", "resetAt"} {
+		if _, present := obj[retired]; present {
+			t.Errorf("signed_in output carries retired %q = %v, want absent", retired, obj[retired])
+		}
 	}
 	if _, present := obj["error"]; present {
 		t.Errorf("signed_in output carries error = %v, want absent", obj["error"])
@@ -206,18 +218,17 @@ func TestStatusJSONReportsSignedInWithIdentityAndBudget(t *testing.T) {
 	}
 }
 
-// A server that omits budget data (older void-auth, no budget configured)
-// must not fabricate pct/resetAt — status.go's own logic never blocks on
-// nil budget fields, and the JSON contract must preserve that: a caller
-// that always emits pct:0 would tell the desktop "0% used" instead of "no
-// budget information available".
-func TestStatusJSONOmitsBudgetFieldsWhenServerOmitsThem(t *testing.T) {
+// A server that sends no wallet (older deployments, which may still send
+// the retired pct/resetAt) must not get one fabricated: a caller that always
+// emits a zero wallet would tell the desktop "$0.00" instead of "no wallet
+// information available" — and pct must not come back through the side door.
+func TestStatusJSONOmitsWalletWhenServerOmitsIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"userId":"u-1"}`))
+		_, _ = w.Write([]byte(`{"userId":"u-1","pct":42.5,"resetAt":"2026-09-01T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
@@ -239,9 +250,9 @@ func TestStatusJSONOmitsBudgetFieldsWhenServerOmitsThem(t *testing.T) {
 	if obj["identity"] != "u-1" {
 		t.Errorf("identity = %v, want u-1 (no email returned, fall back to user id)", obj["identity"])
 	}
-	for _, field := range []string{"pct", "resetAt"} {
+	for _, field := range []string{"wallet", "pct", "resetAt"} {
 		if _, present := obj[field]; present {
-			t.Errorf("output carries %q = %v when server sent none, want absent", field, obj[field])
+			t.Errorf("output carries %q = %v when server sent no wallet, want absent", field, obj[field])
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -191,20 +192,71 @@ func TestCachedFetchMeTransientFailureWithoutHistoryIsNeutral(t *testing.T) {
 	}
 }
 
+// A stale cache entry hands consumers the last known identity and nothing
+// else. The entry is filled from a real answer carrying every non-identity
+// field any client version has read from /v1/vc/me — the retired pct budget,
+// the void-auth era balance, the wallet — and compared whole, so the rule does
+// not depend on which of those MeResult happens to model.
 func TestCachedFetchMeConsumersDoNotUseStaleBudgetOrBalance(t *testing.T) {
 	withTempHome(t)
-	pct, balance := 90.0, 12.0
+	var broken atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{not-json`))
+		if broken.Load() {
+			_, _ = w.Write([]byte(`{not-json`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"userId":"user-last","pct":90,"resetAt":"2026-10-01T00:00:00Z","balanceUsd":12,"wallet":{"balanceUsd":12,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":true,"fundedDays":6}}`))
 	}))
 	defer srv.Close()
-	writeMeCache(srv.URL, "cache-key", auth.MeResult{
-		UserID: "user-last", Pct: &pct, BalanceUsd: &balance,
-	}, time.Now().Add(-authCacheTTL-time.Second))
+	if _, err := cachedFetchMe(srv.URL, "cache-key", srv.Client()); err != nil {
+		t.Fatal(err)
+	}
+	ageMeCacheEntry(t, srv.URL, "cache-key")
+	broken.Store(true)
 
+	state, err := cachedFetchMeState(srv.URL, "cache-key", srv.Client())
+	if err == nil {
+		t.Fatal("a failed refresh over a stale entry reported success")
+	}
+	if !state.Stale || state.Me != (auth.MeResult{UserID: "user-last"}) {
+		t.Fatalf("stale cache handed consumers %+v (stale=%v), want the last known identity and nothing else", state.Me, state.Stale)
+	}
 	me, err := cachedFetchMe(srv.URL, "cache-key", srv.Client())
-	if err == nil || me.Pct != nil || me.BalanceUsd != nil {
+	if err == nil || me != (auth.MeResult{}) {
 		t.Fatal("auth gate/statusline consumers treated stale non-identity fields as fresh")
+	}
+}
+
+// ageMeCacheEntry moves a written "me" cache entry past its freshness window
+// without touching anything else in it.
+func ageMeCacheEntry(t *testing.T, authHost, token string) {
+	t.Helper()
+	path, err := authCachePath("me", authHost, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no cache entry to age: %v", err)
+	}
+	var record map[string]json.RawMessage
+	if err = json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	past, err := json.Marshal(time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := record["freshExpiresAt"]; !ok {
+		t.Fatalf("cache entry has no freshExpiresAt: %s", data)
+	}
+	record["freshExpiresAt"] = past
+	aged, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, aged, 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

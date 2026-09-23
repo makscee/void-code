@@ -39,7 +39,7 @@ import (
 // Contract for the state, checked below:
 //   - authState is "access_not_granted";
 //   - "error" carries a human-readable reason, and does not advise a new sign-in;
-//   - "identity", "pct", "resetAt" are ABSENT — the refusal arrives before the
+//   - "identity", "pct", "resetAt", "wallet" are ABSENT — the refusal arrives before the
 //     server names anyone, so there is nobody to name;
 //   - only this one server answer produces it.
 
@@ -54,7 +54,7 @@ func TestStatusJSONReportsAccessNotGrantedWhenServerRefusesAccess(t *testing.T) 
 		w.WriteHeader(http.StatusPaymentRequired)
 		// The real Relay payload, identity included: some deployments echo the
 		// subject back with the refusal.
-		_, _ = w.Write([]byte(`{"error":"budget_exceeded","subject_id":"u-1","email":"person@example.test","pct":12.5,"resetAt":"2026-09-01T00:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"error":"budget_exceeded","subject_id":"u-1","email":"person@example.test","pct":12.5,"resetAt":"2026-09-01T00:00:00Z","wallet":{"balanceUsd":1,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":false,"fundedDays":0}}`))
 	}))
 	defer srv.Close()
 	t.Setenv("VC_AUTH_HOST", srv.URL)
@@ -90,7 +90,7 @@ func TestStatusJSONReportsAccessNotGrantedWhenServerRefusesAccess(t *testing.T) 
 	// The server refused before it vouched for anyone. Echoing the subject out
 	// of the refusal body would show the desktop a name nobody confirmed —
 	// and would make an unauthorised session look half-authorised.
-	for _, field := range []string{"identity", "pct", "resetAt"} {
+	for _, field := range []string{"identity", "pct", "resetAt", "wallet"} {
 		if _, present := obj[field]; present {
 			t.Errorf("access_not_granted output carries %q = %v, want absent — nothing in a refusal is confirmed state", field, obj[field])
 		}

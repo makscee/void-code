@@ -1,12 +1,12 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/makscee/void-code/internal/auth"
 )
 
-// TestMeResultToState_CarriesBalance verifies that BalanceUsd flows through.
 func TestStaleMeResultToStateUsesTruthfulIdentityCopy(t *testing.T) {
 	tests := []struct {
 		name string
@@ -22,18 +22,24 @@ func TestStaleMeResultToStateUsesTruthfulIdentityCopy(t *testing.T) {
 			if !state.LoggedIn || !state.IdentityUnverified || state.Identity != tc.want {
 				t.Fatal("transient state did not preserve truthful verification status")
 			}
-			if state.BalanceUsd != nil {
-				t.Fatal("stale response must not present stale balance as current")
+			// "No stale money on screen" is asserted on what the screen
+			// renders, for a MeResult that really carries a wallet, in
+			// TestWelcomeStaleStateShowsNoWallet (wallet_client_test.go).
+			if view, banner := welcomeScreens(state); strings.Contains(view+banner, "$") {
+				t.Fatalf("stale response presents money as current:\n%s\n%s", view, banner)
 			}
 		})
 	}
 }
 
+// The wallet a verified /v1/vc/me answer carries reaches the welcome screen.
+// Built from a real answer rather than a literal MeResult, so the test holds
+// whatever shape the wallet takes inside the client.
 func TestMeResultToState_CarriesBalance(t *testing.T) {
-	bal := 9.99
-	st := meResultToState(auth.MeResult{Email: "a@b.com", BalanceUsd: &bal})
-	if st.BalanceUsd == nil || *st.BalanceUsd != 9.99 {
-		t.Errorf("meResultToState dropped BalanceUsd: %+v", st.BalanceUsd)
+	st := meResultToState(fetchMeFrom(t, `{"email":"a@b.com","wallet":{"balanceUsd":9.99,"tariff":null,"todayPaid":null,"fundedDays":null}}`))
+	view, banner := welcomeScreens(st)
+	if !strings.Contains(view, "$9.99") || !strings.Contains(banner, "$9.99") {
+		t.Errorf("meResultToState dropped the wallet balance:\n%s\n%s", view, banner)
 	}
 }
 
