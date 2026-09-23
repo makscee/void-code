@@ -44,6 +44,8 @@ interface Bootstrap {
 }
 let activeBootstrap: Bootstrap | undefined;
 let startupSelectionPending = true;
+const SESSION_RESUME_FLAGS = new Set(["--continue", "-c", "--resume", "-r", "--session", "--session-id", "--fork"]);
+const startsFreshProcessSession = !process.argv.slice(2).some((arg) => SESSION_RESUME_FLAGS.has(arg.split("=", 1)[0]));
 const MANAGED_WEB_SEARCH_INSTRUCTION = "For current or externally verifiable facts, use web_search. Use multiple queries for research, inspect primary sources with fetch_content, and cite links. Use get_search_content to revisit stored results.";
 
 interface ClipboardIOOptions {
@@ -105,20 +107,21 @@ async function migrateRetiredModel(pi: ExtensionAPI, ctx: any): Promise<void> {
 	// Match Pi's own effective branch-selection projection: both explicit
 	// model_change entries and later assistant messages select a model.
 	let selected: { provider: string; modelId: string } | undefined;
-	let hasConversationHistory = false;
 	for (const entry of branch) {
 		if (entry?.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
 			selected = { provider: entry.provider, modelId: entry.modelId };
-		} else if (entry?.type === "message") {
-			hasConversationHistory = true;
-			if (entry.message?.role === "assistant" && typeof entry.message.provider === "string" && typeof entry.message.model === "string") {
-				selected = { provider: entry.message.provider, modelId: entry.message.model };
-			}
+		} else if (entry?.type === "message" && entry.message?.role === "assistant" && typeof entry.message.provider === "string" && typeof entry.message.model === "string") {
+			selected = { provider: entry.message.provider, modelId: entry.message.model };
 		}
 	}
 	const retired = selected?.provider === CODEX_PROVIDER_ID && MODEL_RETIREMENTS.has(selected.modelId) ? selected : undefined;
 	let targetId = retired ? MODEL_RETIREMENTS.get(retired.modelId) : undefined;
-	if (!retired && !hasConversationHistory && startupSelectionPending) {
+	// Pi appends its resolver fallback as the first model_change of every new
+	// process session before session_start. Override that synthetic choice on a
+	// fresh launch, but preserve a non-retired selection in an explicitly loaded
+	// session. A loaded user-only session has no selection and still needs the
+	// migrated settings default.
+	if (!retired && (!selected || startsFreshProcessSession) && startupSelectionPending) {
 		const startupSelection = activeBootstrap?.startupSelection;
 		if (startupSelection?.provider === CODEX_PROVIDER_ID && typeof startupSelection.model === "string") {
 			targetId = startupSelection.model;

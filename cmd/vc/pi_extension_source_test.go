@@ -22,6 +22,8 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 		`entry.message?.role === "assistant"`,
 		`activeBootstrap?.startupSelection`,
 		`startupSelection?.provider === CODEX_PROVIDER_ID`,
+		`(!selected || startsFreshProcessSession)`,
+		`"--session-id"`,
 		`await pi.setModel(successor)`,
 		`for (const warning of value.warnings ?? []) console.error`,
 		`pi-model-default-snapshot`,
