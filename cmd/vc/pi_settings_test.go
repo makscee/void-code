@@ -14,7 +14,7 @@ import (
 // of whatever provider relay happens to register first.
 const (
 	wantPiDefaultProvider = "void-codex"
-	wantPiDefaultModel    = "gpt-5.6-terra"
+	wantPiDefaultModel    = "gpt-6-sol"
 )
 
 // piSettingsSandbox isolates both seams that can resolve to a real home:
@@ -172,7 +172,7 @@ func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing
 		name string
 		body string
 	}{
-		{name: "another void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-luna"}`},
+		{name: "another void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna"}`},
 		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"claude-opus-5"}`},
 		{name: "model without provider", body: `{"defaultModel":"gpt-5.6-luna","theme":"nord"}`},
 	} {
@@ -200,7 +200,7 @@ func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing
 // the missing half is added and everything else stays put.
 //
 // This test used to make that point with defaultProvider "void-deepseek" and
-// required gpt-5.6-terra to be appended next to it — a pair no provider serves,
+// required the managed default to be appended next to it — a pair no provider serves,
 // because the extension's deepseek branch filters that model out
 // (pi_extension.go:59). The rule the test was written for is intact; the one
 // case it stated the rule with was the case where the rule does not hold. The

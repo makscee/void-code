@@ -446,7 +446,7 @@ it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecy
   const ui = await widgetUI(r);
   const ctx = { mode: 'tui', hasUI: true, ui };
   await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: r.write } });
-  expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.6-terra' })]) }));
+  expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-6-sol' })]) }));
   expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
   for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
   r.drag(); await expectSelectionSilent(r); r.terminal.input('\x03'); await flush();

@@ -10,7 +10,7 @@ const CONFIG_PATH = getWebSearchConfigPath();
 const SEARCH_TIMEOUT_MS = 60_000;
 
 const AUTH_MODEL_CANDIDATES = [
-	{ provider: "void-codex", models: ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"] },
+	{ provider: "void-codex", models: ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"] },
 	{ provider: "openai-codex", models: ["gpt-5.4", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2", "gpt-5.2-codex"] },
 	{ provider: "openai", models: ["gpt-5.4", "gpt-5.2", "gpt-4.1-mini", "gpt-4o"] },
 ] as const;

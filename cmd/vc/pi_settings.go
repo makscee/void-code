@@ -60,7 +60,7 @@ func piSettingsPath() string {
 // (CODEX_PROVIDER_ID / CODEX_MODEL_ID).
 const (
 	piDefaultProvider = "void-codex"
-	piDefaultModel    = "gpt-5.6-terra"
+	piDefaultModel    = "gpt-6-sol"
 )
 
 // ensurePiDefaultModel seeds defaultModel (and defaultProvider alongside it,

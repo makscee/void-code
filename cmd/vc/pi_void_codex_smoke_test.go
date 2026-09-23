@@ -34,10 +34,10 @@ import (
 
 // The models the extension is willing to publish for the codex provider (pi_extension.go filters
 // whatever the bootstrap offers against this set).
-var voidCodexSmokeModels = []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra"}
+var voidCodexSmokeModels = []string{"gpt-6-sol", "gpt-6-luna", "gpt-6-astra"}
 
 const voidCodexSmokeBootstrap = `{"version":1,"relayUrl":"https://relay.invalid","authToken":"smoke",` +
-	`"providers":[{"kind":"codex","relayProviderId":"smoke-provider","models":["gpt-5.6-terra","gpt-5.6-sol","gpt-5.6-luna","gpt-6-astra"]}]}`
+	`"providers":[{"kind":"codex","relayProviderId":"smoke-provider","models":["gpt-6-sol","gpt-6-luna","gpt-6-astra"]}]}`
 
 func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -86,6 +86,11 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 				rows[fields[0]] = map[string]bool{}
 			}
 			rows[fields[0]][fields[1]] = true
+		}
+	}
+	for _, retired := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if rows["void-codex"][retired] {
+			t.Fatalf("pinned Pi still lists retired model %s:\n%s", retired, listed)
 		}
 	}
 	var missing []string

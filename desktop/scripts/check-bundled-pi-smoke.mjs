@@ -114,7 +114,7 @@ async function main() {
     // execFileSync(VC_BOOTSTRAP_EXECUTABLE, ['pi-bootstrap']). Hand it an answer: what this needs is a
     // registered provider, not a live relay. One stub for every platform -- see piSmokeBootstrapPlan
     // for why the shell script it replaced could not be one.
-    const models = ['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
+    const models = ['gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra'];
     // The relay is a real local process now, not an unreachable name. Registering a provider turned
     // out to prove nothing about holding a conversation: the extension resolves
     // `@earendil-works/pi-ai/compat` on disk and loads a file beside it, and it does that while
