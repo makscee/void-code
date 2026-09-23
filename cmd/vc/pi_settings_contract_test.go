@@ -174,7 +174,7 @@ func assertCreatedFilePrivate(t *testing.T, path, subject string) {
 // built FROM the Go constants, so changing either side alone breaks it.
 //
 // Breaking it on purpose is the check that it means anything: flip
-// piDefaultModel to "gpt-6-luna" and the CODEX_MODEL_ID assertion must fail.
+// piDefaultModel to "gpt-5.6-luna" and the CODEX_MODEL_ID assertion must fail.
 func TestPiDefaultPairIsWiredIntoTheExtensionThatMustAcceptIt(t *testing.T) {
 	t.Run("extension declares the same pair", func(t *testing.T) {
 		for _, want := range []string{

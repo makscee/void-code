@@ -88,6 +88,11 @@ func TestPiVoidCodexExtensionSmoke(t *testing.T) {
 			rows[fields[0]][fields[1]] = true
 		}
 	}
+	for _, retired := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if rows["void-codex"][retired] {
+			t.Fatalf("pinned Pi still lists retired model %s:\n%s", retired, listed)
+		}
+	}
 	var missing []string
 	for _, model := range voidCodexSmokeModels {
 		if !rows["void-codex"][model] {

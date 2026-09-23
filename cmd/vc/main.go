@@ -69,7 +69,6 @@ var (
 var welcomeGateSkippingSubCommands = map[string]bool{
 	"login": true, "logout": true, "status": true, "update": true,
 	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
-	"pi-model-default-snapshot": true, "pi-model-default-restore": true,
 	"desktop-session": true, "access-request": true,
 }
 
@@ -400,13 +399,8 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	if _, webErr := reconcileManagedWebSearch(true); webErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
 	}
-	// Retirement is one effective global/project policy shared with desktop and
-	// direct bootstrap. A seeded default remains a convenience, never a launch
-	// precondition: unreadable settings produce visible warnings and Pi starts.
-	cwd, cwdErr := os.Getwd()
-	for _, warning := range reconcilePiRetiredDefaults(cwd, cwdErr).Warnings {
-		fmt.Fprintf(os.Stderr, "vc: warning: %s\n", warning)
-	}
+	// A seeded default is a convenience, never a precondition: an unreadable or
+	// hand-broken settings.json must still let Pi start.
 	if modelErr := ensurePiDefaultModel(); modelErr != nil {
 		fmt.Fprintf(os.Stderr, "vc: warning: Pi default model was not seeded: %v\n", modelErr)
 	}

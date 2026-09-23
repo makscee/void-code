@@ -63,107 +63,28 @@ const (
 	piDefaultModel    = "gpt-6-sol"
 )
 
-// piModelRetirements is the reusable, explicit migration table for VC-owned Pi
-// selections. Add a row when a managed model is retired, keep the successor in
-// piVoidCodexModels, and cover the row in the upgrade smoke. Historical session
-// entries remain history; the managed extension appends a successor selection.
-var piModelRetirements = map[string]string{
-	"gpt-5.6-sol":   "gpt-6-sol",
-	"gpt-5.6-terra": "gpt-6-sol",
-	"gpt-5.6-luna":  "gpt-6-luna",
-}
-
-type piModelSelection struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-}
-
-type piRetirementReconciliation struct {
-	StartupSelection *piModelSelection
-	Warnings         []string
-}
-
-// reconcilePiRetiredDefaults is the shared pre-resolution retirement policy
-// for terminal, desktop, and direct managed-extension starts. Both scopes are
-// loaded and migrated; an exact retired project pair takes precedence over an
-// exact retired global pair. The returned provider-bound selection lets a
-// directly loaded extension repair Pi's already-cached choice for this launch.
-func reconcilePiRetiredDefaults(cwd string, cwdErr error) piRetirementReconciliation {
-	var globalSuccessor string
-	globalPath := piSettingsPath()
-	globalErr := updatePiSettings(func(settings map[string]any) bool {
-		globalSuccessor = retiredPiSelectionSuccessor(settings)
-		if globalSuccessor == "" {
-			return false
-		}
-		settings["defaultModel"] = globalSuccessor
-		return true
-	})
-	var warnings []string
-	if globalErr != nil {
-		warnings = append(warnings, fmt.Sprintf("Pi global default model was not reconciled (%s): %v", globalPath, globalErr))
-	}
-
-	var projectSuccessor string
-	var projectOwnsSelection bool
-	if cwdErr != nil {
-		warnings = append(warnings, fmt.Sprintf("Pi project default model was not reconciled: resolve current directory: %v", cwdErr))
-	} else if strings.TrimSpace(cwd) != "" {
-		projectPath := filepath.Join(cwd, ".pi", "settings.json")
-		projectErr := updateExistingPiSettings(projectPath, func(settings map[string]any) bool {
-			projectProvider, _ := settings["defaultProvider"].(string)
-			projectModel, _ := settings["defaultModel"].(string)
-			projectOwnsSelection = strings.TrimSpace(projectProvider) != "" && strings.TrimSpace(projectModel) != ""
-			projectSuccessor = retiredPiSelectionSuccessor(settings)
-			if projectSuccessor == "" {
-				return false
-			}
-			settings["defaultModel"] = projectSuccessor
-			return true
-		})
-		if projectErr != nil {
-			warnings = append(warnings, fmt.Sprintf("Pi project default model was not reconciled (%s): %v", projectPath, projectErr))
-		}
-	}
-
-	successor := globalSuccessor
-	if projectOwnsSelection {
-		// A complete project pair is Pi's effective choice. A retired managed
-		// pair contributes its successor; canonical or foreign pairs suppress a
-		// startup override from a lower-precedence global retirement.
-		successor = projectSuccessor
-	}
-	result := piRetirementReconciliation{Warnings: warnings}
-	if successor != "" {
-		result.StartupSelection = &piModelSelection{Provider: piDefaultProvider, Model: successor}
-	}
-	return result
-}
-
-func retiredPiSelectionSuccessor(settings map[string]any) string {
-	provider, _ := settings["defaultProvider"].(string)
-	model, _ := settings["defaultModel"].(string)
-	if strings.TrimSpace(provider) != piDefaultProvider {
-		return ""
-	}
-	return piModelRetirements[strings.TrimSpace(model)]
-}
-
-// ensurePiDefaultModel seeds the managed default and migrates an explicitly
-// retired VC-owned selection. A legacy managed DeepSeek selection moves to the
-// OpenAI default. Other provider/model pairs are user-owned and remain intact.
+// ensurePiDefaultModel seeds defaultModel (and defaultProvider alongside it,
+// when the user has not picked one) into Pi's settings.json. A legacy managed
+// DeepSeek selection is the one retired choice: its provider and model move to
+// the OpenAI default together inside this single atomic settings writer.
+//
+// Other existing model/provider choices are user-owned and leave the file
+// untouched. Neither does vc invent a pair no provider can serve: a user who
+// chose some other provider and no model gets nothing. Only vc's own provider,
+// or a file that names no provider at all, gets the model seeded.
 func ensurePiDefaultModel() error {
 	return updatePiSettings(func(settings map[string]any) bool {
-		if migrateRetiredPiSelection(settings) {
+		if provider, _ := settings["defaultProvider"].(string); provider == "void-deepseek" {
+			settings["defaultProvider"] = piDefaultProvider
+			settings["defaultModel"] = piDefaultModel
 			return true
 		}
-		provider, _ := settings["defaultProvider"].(string)
-		provider = strings.TrimSpace(provider)
 		if isNonEmptyJSONString(settings["defaultModel"]) {
 			return false
 		}
-		chosen := provider != ""
-		if chosen && provider != piDefaultProvider {
+		provider, chosen := settings["defaultProvider"].(string)
+		chosen = chosen && strings.TrimSpace(provider) != ""
+		if chosen && strings.TrimSpace(provider) != piDefaultProvider {
 			return false
 		}
 		settings["defaultModel"] = piDefaultModel
@@ -172,31 +93,6 @@ func ensurePiDefaultModel() error {
 		}
 		return true
 	})
-}
-
-func migrateRetiredPiSelection(settings map[string]any) bool {
-	provider, _ := settings["defaultProvider"].(string)
-	provider = strings.TrimSpace(provider)
-	if provider == "void-deepseek" {
-		settings["defaultProvider"] = piDefaultProvider
-		settings["defaultModel"] = piDefaultModel
-		return true
-	}
-	model, _ := settings["defaultModel"].(string)
-	if provider == piDefaultProvider && piModelRetirements[strings.TrimSpace(model)] != "" {
-		settings["defaultModel"] = piModelRetirements[strings.TrimSpace(model)]
-		return true
-	}
-	return false
-}
-
-// ensurePiProjectModelMigration updates only an existing project override with
-// an exact VC-owned retired pair. It never creates or seeds project settings.
-func ensurePiProjectModelMigration(cwd string) error {
-	if strings.TrimSpace(cwd) == "" {
-		return nil
-	}
-	return updateExistingPiSettings(filepath.Join(cwd, ".pi", "settings.json"), migrateRetiredPiSelection)
 }
 
 // ensurePiDesktopUIDefaults seeds the presentation defaults used by the desktop
@@ -246,26 +142,12 @@ func updatePiSettings(mutate func(map[string]any) bool) error {
 	if path == "" {
 		return errors.New("cannot resolve Pi configuration directory")
 	}
-	return updatePiSettingsPath(path, false, mutate)
-}
-
-func updateExistingPiSettings(path string, mutate func(map[string]any) bool) error {
-	return updatePiSettingsPath(path, true, mutate)
-}
-
-func updatePiSettingsPath(path string, requireExisting bool, mutate func(map[string]any) bool) error {
 	release, err := lockPiSettings(path)
 	if err != nil {
 		return err
 	}
 	defer release()
-	if requireExisting {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return nil
-		} else if err != nil {
-			return fmt.Errorf("inspect Pi settings: %w", err)
-		}
-	}
+
 	settings, mode, err := loadPiSettingsMap(path)
 	if err != nil {
 		return err

@@ -125,13 +125,12 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 			}
 		}
 	}
-	// The same shared global/project retirement policy and seed runSpawn uses.
-	// Both sit behind admission so a refused token cannot change settings, and
-	// both remain warnings so malformed or read-only settings cannot block Pi.
-	cwd, cwdErr := os.Getwd()
-	for _, warning := range reconcilePiRetiredDefaults(cwd, cwdErr).Warnings {
-		warnings = append(warnings, "vc: warning: "+warning)
-	}
+	// The same seed runSpawn does, in the same place and on the same terms —
+	// the desktop app never goes through runSpawn, so without this line the
+	// default model reaches only the people who open a terminal. It sits behind
+	// the access check on purpose: a token that was refused must not leave a
+	// mark in anyone's Pi settings. Unlike everything else here, its failure is
+	// a warning: an unreadable settings.json is not worth the user's session.
 	if err := ensurePiDefaultModel(); err != nil {
 		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi default model was not seeded: %v", err))
 	}

@@ -10,8 +10,8 @@ import (
 	"testing"
 )
 
-// The pair vc writes into Pi's settings so a fresh user lands on GPT-6 Sol
-// instead of whatever provider relay happens to register first.
+// The pair vc writes into Pi's settings so a fresh user lands on Terra instead
+// of whatever provider relay happens to register first.
 const (
 	wantPiDefaultProvider = "void-codex"
 	wantPiDefaultModel    = "gpt-6-sol"
@@ -165,14 +165,15 @@ func TestEnsurePiDefaultModelMigratesLegacyDeepSeekSelection(t *testing.T) {
 	}
 }
 
-// Current Codex choices and third-party choices are user-owned and remain byte-identical.
+// Current Codex choices and third-party choices are user-owned and remain byte-identical;
+// only the explicitly retired void-deepseek provider is eligible for migration.
 func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
 	}{
-		{name: "current void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna"}`},
-		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"gpt-5.6-luna"}`},
+		{name: "another void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna"}`},
+		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"claude-opus-5"}`},
 		{name: "model without provider", body: `{"defaultModel":"gpt-5.6-luna","theme":"nord"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,43 +195,12 @@ func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing
 	}
 }
 
-func TestEnsurePiDefaultModelMigratesEveryRetiredManagedSelectionIdempotently(t *testing.T) {
-	for retired, successor := range piModelRetirements {
-		t.Run(retired, func(t *testing.T) {
-			dir := piSettingsSandbox(t)
-			path := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"`+retired+`","theme":"nord"}`, 0600)
-
-			if err := ensurePiDefaultModel(); err != nil {
-				t.Fatal(err)
-			}
-			first, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := readPiSettings(t, path)
-			if got["defaultModel"] != successor || got["theme"] != "nord" {
-				t.Fatalf("migrated settings = %#v, want model %q and preserved theme", got, successor)
-			}
-			if err := ensurePiDefaultModel(); err != nil {
-				t.Fatal(err)
-			}
-			second, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(first, second) {
-				t.Fatalf("repeated migration rewrote settings\nfirst: %s\nsecond: %s", first, second)
-			}
-		})
-	}
-}
-
 // Acceptance criterion 4 of the default-model spec, as corrected by criterion 9
 // of the single-owner spec: with a provider already chosen and no model, only
 // the missing half is added and everything else stays put.
 //
 // This test used to make that point with defaultProvider "void-deepseek" and
-// required gpt-5.6-terra to be appended next to it — a pair no provider serves,
+// required the managed default to be appended next to it — a pair no provider serves,
 // because the extension's deepseek branch filters that model out
 // (pi_extension.go:59). The rule the test was written for is intact; the one
 // case it stated the rule with was the case where the rule does not hold. The

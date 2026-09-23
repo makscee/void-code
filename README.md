@@ -31,8 +31,6 @@ vc update             # self-update
 
 `vc` accepts no Pi launch arguments; Pi's native UI controls models and permissions after the session opens. `desktop-session` is the hardened private Pi runtime seam used by the desktop product and accepts only session lifecycle flags after `--`.
 
-Operators retiring a managed Pi model must follow the reusable [model retirement and migration procedure](docs/pi-model-retirement.md).
-
 ## Environment overrides
 
 | Variable | Default | Purpose |

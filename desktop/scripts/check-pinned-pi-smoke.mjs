@@ -5,8 +5,7 @@ import { assertNamedTestExists } from './pinned-pi-smoke-lib.mjs';
 const NAMES = [
   'TestPiVoidCodexExtensionSmoke',
   'TestPiVoidCodexNoGrantTombstoneSmoke',
-  'TestPiBootstrapRetiredDefaultSelectsLunaBeforeFallbackSmoke',
-  'TestPiRetiredModelResumeMigratesAndPublishesFreshCatalogSmoke',
+  'TestPiManualGPT6SelectionSmoke',
   'TestPiVoidCodeUIExtensionSmoke',
 ];
 const FILTER = `^(${NAMES.join('|')})$`;
