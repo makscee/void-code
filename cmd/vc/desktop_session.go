@@ -99,9 +99,12 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
 	}
-	if reached && me.Pct != nil {
-		if decision := budgetGate(me.Pct, nil); decision.Block {
+	var warnings []string
+	if reached {
+		if decision := walletGate(me.Wallet); decision.Block {
 			return desktopSessionPlan{}, fmt.Errorf("%s", decision.Message)
+		} else if decision.Warn {
+			warnings = append(warnings, decision.Message)
 		}
 	}
 	extensionPath, err := deps.reconcilePi()
@@ -114,7 +117,6 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if _, err := deps.reconcileSearch(true); err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("managed Pi web search unavailable: %w", err)
 	}
-	var warnings []string
 	if deps.reconcileUI != nil {
 		uiPath, uiErr := deps.reconcileUI()
 		if uiErr != nil {

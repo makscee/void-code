@@ -270,9 +270,9 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 		identity = me.UserID
 	}
 	return welcome.AuthState{
-		LoggedIn:   true,
-		Identity:   identity,
-		BalanceUsd: me.BalanceUsd, // nil when VCD-55 not yet deployed → degrade safely
+		LoggedIn: true,
+		Identity: identity,
+		Balance:  formatWallet(me.Wallet), // "" when the server sent no wallet → nothing shown
 	}
 }
 
@@ -348,7 +348,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	cfg := config.OSResolve()
 	token, _, _ := auth.Load()
 
-	// Admission is always live: cached identity and budget are only display hints,
+	// Admission is always live: cached identity and wallet are only display hints,
 	// never permission to start a paid session. The question is the access check
 	// — who the token belongs to and whether they are let in — so it goes to the
 	// access-check host, the same one the desktop session gate asks.
@@ -360,8 +360,8 @@ func runSpawn(_ *cobra.Command, args []string) error {
 		exitProcess(1)
 		return err
 	}
-	if reached && me.Pct != nil {
-		if d := budgetGate(me.Pct, nil); d.Block {
+	if reached {
+		if d := walletGate(me.Wallet); d.Block {
 			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
 			exitProcess(1)
 			return errors.New(d.Message)
@@ -557,42 +557,6 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 		out = append(out, "VC_PROVIDER=plain")
 	}
 	return out
-}
-
-// subscriptionDecision is the pure outcome of a spawn-gate check.
-// VCD-65: subscriptionGate removed; this struct is kept because budgetGate returns it.
-type subscriptionDecision struct {
-	Block   bool   // true → do NOT spawn; print Message; exit non-zero
-	Warn    bool   // true → spawn, but show Message as a soft banner warning
-	Message string // user-facing copy (lipgloss styling applied by caller)
-}
-
-// budgetGate maps budget pct + budget_usd to a spawn decision (VCD-49).
-//
-//	pct == nil   → no budget / server absent → clean (degrade-safe)
-//	pct < 80     → clean
-//	80 <= pct < 100 → warn (spawn, show message)
-//	pct >= 100   → hard block
-//
-// budgetUsd is used to format the block message; may be nil (falls back to generic copy).
-func budgetGate(pct *float64, budgetUsd *float64) subscriptionDecision {
-	if pct == nil {
-		return subscriptionDecision{}
-	}
-	p := *pct
-	switch {
-	case p >= 100:
-		// Operator constraint (2026-05-30): user-facing copy — percentages only, no dollar values.
-		_ = budgetUsd // dollar amount intentionally not shown to user
-		return subscriptionDecision{Block: true, Message: "Monthly budget reached — message @makscee on Telegram to top up."}
-	case p >= 80:
-		return subscriptionDecision{
-			Warn:    true,
-			Message: fmt.Sprintf("Budget at %.0f%% — top up via @makscee on Telegram before you hit the cap.", p),
-		}
-	default:
-		return subscriptionDecision{}
-	}
 }
 
 // authGate validates the session token before spawning Pi.

@@ -15,7 +15,9 @@ type AuthState struct {
 	Identity           string
 	IdentityUnverified bool
 	UpdateNudge        string
-	BalanceUsd         *float64
+	// Balance is the wallet as the caller renders it for a person
+	// ("$18.00 · T1 · ~9 days left"); empty when there is none to show.
+	Balance string
 }
 
 type RunResult int
@@ -53,11 +55,11 @@ func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (R
 	return m.result, nil
 }
 
-func FormatBalance(v *float64) string {
-	if v == nil {
+func balanceDisplay(balance string) string {
+	if balance == "" {
 		return "—"
 	}
-	return fmt.Sprintf("$%.2f left", *v)
+	return balance
 }
 func PlainBannerForTest(state AuthState) string { return plainBanner(state) }
 
@@ -152,7 +154,7 @@ func (m model) View() string {
 		return sb.String()
 	}
 	if m.LoggedIn {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified)+" · "+FormatBalance(m.BalanceUsd))) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified)+" · "+balanceDisplay(m.Balance))) + "\n")
 	} else {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.WarnStyle.Render("Not logged in")) + "\n")
 	}
@@ -182,7 +184,7 @@ func plainBanner(state AuthState) string {
 		} else {
 			sb.WriteString("  Logged in as " + state.Identity + "\n")
 		}
-		sb.WriteString("  " + FormatBalance(state.BalanceUsd) + "\n")
+		sb.WriteString("  " + balanceDisplay(state.Balance) + "\n")
 	} else {
 		sb.WriteString("  Not logged in\n")
 	}

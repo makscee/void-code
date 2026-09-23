@@ -24,16 +24,13 @@ export type AuthState = (typeof AUTH_STATES)[number];
 // budget figure or reset date attached to a refusal therefore comes from the same service that just
 // said no, and nobody vouched for it. That rule is enforced here, at the process boundary, and not
 // left to the renderer: a future vc build (or a proxy that helpfully merges fields into the reply)
-// must not be able to put an unverified account fact on a screen. pct is the sharp one — a copied
-// `"pct":0` reads on screen as "0% of your budget used", a confident claim about an account the
-// server refused to discuss. Such a status carries exactly one fact out of this module: its state.
+// must not be able to put an unverified account fact on a screen. Such a status carries exactly one
+// fact out of this module: its state.
 const REFUSAL_STATES: readonly AuthState[] = ['access_not_granted'];
 
 export interface AuthStatus {
   authState: AuthState;
   identity?: string;
-  pct?: number;
-  resetAt?: string;
   reason?: string;
 }
 export type StatusResult =
@@ -86,9 +83,9 @@ export function readAuthStatus(vcPath: string, spawn: AuthSpawner): Promise<Stat
       // reach, and the fallback word 'unknown_error' would be worse than silence here: it reports
       // a fault where the system is working exactly as configured.
       if (!REFUSAL_STATES.includes(parsed.authState)) {
+        // pct/resetAt are retired (spec 2026-09-23-client-wallet-days): the client shows money and
+        // days, never a percentage, so an older vc that still prints them gets nothing past here.
         if (typeof parsed.identity === 'string') status.identity = parsed.identity;
-        if (typeof parsed.pct === 'number') status.pct = parsed.pct;
-        if (typeof parsed.resetAt === 'string') status.resetAt = parsed.resetAt;
         if (typeof parsed.error === 'string') status.reason = KNOWN_STATUS_ERRORS[parsed.error] ?? UNKNOWN_STATUS_ERROR;
       }
       resolve({ ok: true, status });

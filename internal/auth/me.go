@@ -8,25 +8,41 @@ import (
 	"time"
 )
 
-// MeResult holds the identity + budget state returned by GET /v1/vc/me.
+// MeResult holds the identity + wallet state returned by GET /v1/vc/me.
 // VCD-65: SubDaysLeft removed — subscriptionGate no longer exists; the server
 // still returns subDaysLeft (sentinel 36500) for old client back-compat but the
-// new client ignores it. budgetGate is the sole client-side gate.
+// new client ignores it.
+//
+// The VCD-49 budget (pct/resetAt) and the VCD-55 top-level balanceUsd are no
+// longer read: the client shows money and days, never a percentage (spec
+// 2026-09-23-client-wallet-days). MeResult stays comparable — pointers only,
+// no slices or maps — so callers can check it against its zero value.
 type MeResult struct {
 	UserID string
 	Email  string
 
-	// VCD-49 budget fields — nil when the server does not return budget data
-	// (older void-auth or budget not configured). Never block on nil values.
-	// Contract (2026-05-30): server returns only { pct, reset_at } — dollar fields
-	// (UsedUsd, BudgetUsd, RemainingUsd) are NOT exposed to vc for privacy.
-	Pct     *float64 // used/budget*100; nil when budget=0 (no cap) or no budget set
-	ResetAt string   // ISO-8601 first day of next calendar month, UTC
+	// Wallet is nil when the server sent no usable wallet: absent, null, or
+	// any field of the wrong type. Never block on a nil wallet.
+	Wallet *Wallet
+}
 
-	// VCD-55: prepaid wallet balance (USD remaining, 2-decimal). nil when the
-	// server does not return it (older void-auth / VCD-55 not yet deployed) →
-	// callers degrade gracefully (no balance shown).
-	BalanceUsd *float64
+// Wallet is the prepaid balance and the tariff that draws on it, as Relay
+// reports it under "wallet" on /v1/vc/me.
+type Wallet struct {
+	BalanceUsd float64
+	Tariff     *Tariff // nil: no tariff assigned
+	// TodayPaid is a pointer on purpose: false (today's charge has not been
+	// taken) and nil (no tariff, nothing to charge) lead to different launch
+	// decisions and must not collapse into one zero value.
+	TodayPaid  *bool
+	FundedDays *int // days the balance covers after today; nil: no tariff
+}
+
+// Tariff is the plan a wallet is charged by.
+type Tariff struct {
+	Tier            string // as sent by the server ("t1"); display formatting is the printer's
+	MonthlyPriceUsd float64
+	DailyRateUsd    float64
 }
 
 // FetchMe calls GET <authHost>/v1/vc/me with the supplied bearer token.
@@ -71,9 +87,9 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		SubjectID string `json:"subject_id"`
 		Email     string `json:"email"`
 		// subDaysLeft intentionally ignored — VCD-65: sentinel from server, no gate.
-		Pct        *float64 `json:"pct"`
-		ResetAt    string   `json:"resetAt"`
-		BalanceUsd *float64 `json:"balanceUsd"`
+		// Kept raw so that a wallet the client cannot read costs the wallet,
+		// not the sign-in: see parseWallet.
+		Wallet json.RawMessage `json:"wallet"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
@@ -98,10 +114,57 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		return MeResult{}, fmt.Errorf("decoding vc/me response: missing identity")
 	}
 	return MeResult{
-		UserID:     identity,
-		Email:      email,
-		Pct:        r.Pct,
-		ResetAt:    r.ResetAt,
-		BalanceUsd: r.BalanceUsd,
+		UserID: identity,
+		Email:  email,
+		Wallet: parseWallet(r.Wallet),
 	}, nil
+}
+
+// parseWallet reads the "wallet" object strictly and all-or-nothing: a value
+// of the wrong type anywhere in it ("18" for a number, "false" for a bool, a
+// string for the tariff) yields nil rather than a half-read wallet, because a
+// guessed field could refuse a launch or print a wrong balance. Unknown keys
+// are ignored — the wallet will grow before every client is updated.
+func parseWallet(raw json.RawMessage) *Wallet {
+	if len(raw) == 0 {
+		return nil
+	}
+	var w struct {
+		BalanceUsd *float64        `json:"balanceUsd"`
+		Tariff     json.RawMessage `json:"tariff"`
+		TodayPaid  *bool           `json:"todayPaid"`
+		FundedDays *int            `json:"fundedDays"`
+	}
+	// null decodes into the zero struct without error and is then rejected
+	// for its missing balance, like any other wallet without one.
+	if err := json.Unmarshal(raw, &w); err != nil || w.BalanceUsd == nil {
+		return nil
+	}
+	tariff, ok := parseTariff(w.Tariff)
+	if !ok {
+		return nil
+	}
+	return &Wallet{
+		BalanceUsd: *w.BalanceUsd,
+		Tariff:     tariff,
+		TodayPaid:  w.TodayPaid,
+		FundedDays: w.FundedDays,
+	}
+}
+
+// parseTariff returns (nil, true) for an absent or null tariff and
+// (nil, false) for one that is present but unreadable.
+func parseTariff(raw json.RawMessage) (*Tariff, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, true
+	}
+	var t struct {
+		Tier            *string  `json:"tier"`
+		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
+		DailyRateUsd    *float64 `json:"dailyRateUsd"`
+	}
+	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" || t.MonthlyPriceUsd == nil || t.DailyRateUsd == nil {
+		return nil, false
+	}
+	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: *t.MonthlyPriceUsd, DailyRateUsd: *t.DailyRateUsd}, true
 }
