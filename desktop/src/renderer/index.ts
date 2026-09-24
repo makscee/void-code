@@ -250,6 +250,10 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     currentRecovery = 'NONE';
     signinOnStartFailure = false;
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
+    // A started chat re-reads the status, so the header's wallet line shows this launch's balance
+    // rather than the one read when the window opened. Not awaited: the chat's output is wired
+    // below and must not wait on a second vc run.
+    void recheckAuthStatus();
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
     offExit = window.voidTerminal.onExit(tab.id, async () => {
@@ -382,9 +386,10 @@ signinStartButton.addEventListener('click', () => {
   renderAuthScreens();
   void startSignIn();
 });
-// Access is granted elsewhere, on someone else's clock, while this app reads status exactly twice:
-// at startup and after a login resolves. Once a person is parked on that screen nothing would ever
-// look again, so re-reading status is the only honest action left — and it must stay a status read:
+// Access is granted elsewhere, on someone else's clock, while this app reads status only at startup,
+// after a login resolves, and when a chat starts or ends. Once a person is parked on that screen
+// nothing would ever look again, so re-reading status is the only honest action left — and it must
+// stay a status read:
 // a sign-in from here succeeds and returns them to the very same screen. One read per press, with
 // the button held disabled for the duration so a second press cannot stack a second read on top.
 signinNoAccessRecheckButton.addEventListener('click', () => {

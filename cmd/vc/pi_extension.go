@@ -679,12 +679,15 @@ function streamVoidCodex(
 	return stream;
 }
 
-// What Pi shows the person when Relay answers non-2xx. Relay's refusals — the wallet's 402
-// wallet_daily_charge_required, the percentage cap, a 503 — carry a sentence written for a person in
-// error.message, and that sentence is shown as is: no status line, no JSON. Anything else (not JSON,
-// no error object, an empty or non-string message) keeps the raw text, so nothing is lost for
-// debugging.
+// What Pi shows the person when Relay answers non-2xx. Only Relay's 402 — the wallet's
+// wallet_daily_charge_required, the percentage cap — is shown as the sentence it carries in
+// error.message: no status line, no JSON. Every other status keeps the raw text even when its body
+// has an error.message, because Relay passes upstream answers through with their status, and Pi's
+// auto-retry reads this text: the "HTTP 5xx" prefix is what makes an upstream 5xx retryable. A 402
+// that is not JSON, or lacks a non-empty string error.message, keeps the raw text too.
 function relayFailureMessage(status: number, text: string): string {
+	const raw = "Void relay Codex request failed: HTTP " + status + ": " + text;
+	if (status !== 402) return raw;
 	try {
 		const parsed: unknown = JSON.parse(text);
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -695,7 +698,7 @@ function relayFailureMessage(status: number, text: string): string {
 			}
 		}
 	} catch {}
-	return "Void relay Codex request failed: HTTP " + status + ": " + text;
+	return raw;
 }
 
 function promptCacheKey(sessionId?: string): string | undefined {
