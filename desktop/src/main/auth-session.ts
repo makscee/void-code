@@ -47,6 +47,9 @@ export interface AuthStatus {
   identity?: string;
   reason?: string;
   wallet?: Wallet;
+  // The wallet line exactly as vc formats it (`$18.00 · T1 · ~9 days left`, or a bare balance);
+  // absent when there is no wallet. The display rules live in vc, once, and are never re-made here.
+  walletText?: string;
   // What vc hands Pi about the wallet at launch (a low balance, a day Relay will refuse); absent
   // when there is nothing to say.
   launchNotice?: string;
@@ -133,12 +136,14 @@ export function readAuthStatus(vcPath: string, spawn: AuthSpawner): Promise<Stat
         // days, never a percentage, so an older vc that still prints them gets nothing past here.
         if (typeof parsed.identity === 'string') status.identity = parsed.identity;
         if (typeof parsed.error === 'string') status.reason = KNOWN_STATUS_ERRORS[parsed.error] ?? UNKNOWN_STATUS_ERROR;
-        // The wallet and the notice are account facts: they leave this module only with a signed-in
-        // status, the one state in which vc heard the server vouch for them. Each is checked on its
-        // own — a wallet this module cannot read does not take the notice with it.
+        // The wallet, its line and the notice are account facts: they leave this module only with a
+        // signed-in status, the one state in which vc heard the server vouch for them. Each is
+        // checked on its own — a wallet this module cannot read does not take the line or the notice
+        // with it.
         if (parsed.authState === 'signed_in') {
           const wallet = readWallet(parsed.wallet);
           if (wallet !== undefined) status.wallet = wallet;
+          if (typeof parsed.walletText === 'string' && parsed.walletText !== '') status.walletText = parsed.walletText;
           if (typeof parsed.launchNotice === 'string' && parsed.launchNotice !== '') status.launchNotice = parsed.launchNotice;
         }
       }

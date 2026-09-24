@@ -5,7 +5,7 @@ import { appVersionLabel } from './app-version';
 import { wireProductTerminalClipboard } from './clipboard-shortcuts';
 import { detectRendererPlatform } from './platform';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
-import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, walletLineFor, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import { installFileDropHandlers } from './file-drop';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
@@ -50,6 +50,7 @@ const signinCodeStatusElement = document.querySelector<HTMLElement>('#signin-cod
 const signinLinkElement = document.querySelector<HTMLElement>('#signin-link')!;
 const signinLinkOpenButton = document.querySelector<HTMLButtonElement>('#signin-link-open')!;
 const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
+const walletLineElement = document.querySelector<HTMLElement>('#wallet-line')!;
 const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
 const signinStatusElement = document.querySelector<HTMLElement>('#signin-status')!;
 
@@ -122,8 +123,12 @@ function renderAuthScreens(): void {
 // Arriving on the refusal screen reads the state of the request; it does not file one. That is
 // why the two are separate acts down to argv — a screen that filed on sight would put a row in
 // the queue every time a window was left open on it.
+// The wallet line is vc's own sentence, set as text; walletLineFor decides whether there is one.
 function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
   authScreen = screenForStatus(result.ok ? result.status : null);
+  const walletLine = walletLineFor(result.ok ? result.status : null);
+  walletLineElement.textContent = walletLine ?? '';
+  walletLineElement.hidden = walletLine === null;
   if (authScreen !== 'access_not_granted') accessRequest = null;
   renderAuthScreens();
   if (authScreen === 'access_not_granted') void loadAccessRequest(false);

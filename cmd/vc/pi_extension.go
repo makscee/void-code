@@ -514,16 +514,30 @@ function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: Clipb
 // vc decides at launch, from the wallet its own /v1/vc/me reported, whether the person needs a word
 // about money (low balance, or a day Relay will refuse), and hands it over as VC_LAUNCH_NOTICE. It is
 // shown here, not printed by vc: Pi's fullscreen mode clears whatever was on the terminal before it.
-// Once per launch — a later session in the same Pi would show a notice about a wallet that may have
-// changed since.
+//
+// Docked above the editor as a widget, not notify()'d into the transcript: a reopened chat
+// (--session <file>) appends its whole history after session_start, which would push a transcript
+// warning off screen. It stays until the first prompt — by then it has been read — and the first
+// before_agent_start takes it down.
+//
+// Only on session_start with reason "startup": the notice belongs to the launch. Pi runs this factory
+// again for /new, /resume, fork and /reload, with VC_LAUNCH_NOTICE still in the environment, and a
+// later session would show a notice about a wallet that may have changed since.
+const LAUNCH_NOTICE_WIDGET_KEY = "void-code-launch-notice";
+
 function registerLaunchNotice(pi: ExtensionAPI): void {
 	const notice = process.env.VC_LAUNCH_NOTICE;
 	if (!notice) return;
-	let shown = false;
-	pi.on("session_start", async (_event, ctx) => {
-		if (shown || !ctx.hasUI) return;
-		shown = true;
-		ctx.ui.notify(notice, "warning");
+	let docked = false;
+	pi.on("session_start", async (event, ctx) => {
+		if (event.reason !== "startup" || !ctx.hasUI) return;
+		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, [ctx.ui.theme.fg("warning", notice)], { placement: "aboveEditor" });
+		docked = true;
+	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!docked) return;
+		docked = false;
+		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, undefined);
 	});
 }
 
@@ -642,7 +656,7 @@ function streamVoidCodex(
 			});
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			if (!response.ok) {
-				throw new Error("Void relay Codex request failed: HTTP " + response.status + ": " + (await response.text()));
+				throw new Error(relayFailureMessage(response.status, await response.text()));
 			}
 			if (!response.body) throw new Error("Void relay Codex response had no body");
 
@@ -663,6 +677,25 @@ function streamVoidCodex(
 	})();
 
 	return stream;
+}
+
+// What Pi shows the person when Relay answers non-2xx. Relay's refusals — the wallet's 402
+// wallet_daily_charge_required, the percentage cap, a 503 — carry a sentence written for a person in
+// error.message, and that sentence is shown as is: no status line, no JSON. Anything else (not JSON,
+// no error object, an empty or non-string message) keeps the raw text, so nothing is lost for
+// debugging.
+function relayFailureMessage(status: number, text: string): string {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const error = (parsed as { error?: unknown }).error;
+			if (error && typeof error === "object" && !Array.isArray(error)) {
+				const message = (error as { message?: unknown }).message;
+				if (typeof message === "string" && message.trim() !== "") return message;
+			}
+		}
+	} catch {}
+	return "Void relay Codex request failed: HTTP " + status + ": " + text;
 }
 
 function promptCacheKey(sessionId?: string): string | undefined {

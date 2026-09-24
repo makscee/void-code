@@ -58,6 +58,14 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 	if me.Wallet != nil {
 		obj["wallet"] = walletJSONFor(me.Wallet)
 	}
+	// The wallet line already written, for the desktop to show as is: exactly
+	// what formatWallet renders — the words `vc status` prints after
+	// "balance:" — or null when there is no wallet. The display rules live
+	// here, in Go, once; the desktop never re-implements them.
+	obj["walletText"] = nil
+	if text := formatWallet(me.Wallet); text != "" {
+		obj["walletText"] = text
+	}
 	// The same notice a launch hands to Pi, for the desktop to show: a string,
 	// or null when the wallet has nothing to say. Only a signed-in answer
 	// carries one — a refusal names no wallet to warn about.
