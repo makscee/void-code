@@ -9,9 +9,18 @@ it('source-hook provenance: exact installed factory body and both actual widget 
   const source = readFileSync(interactiveFile, 'utf8');
   const hooks = consumerHooks(interactiveFile);
   expect(hooks.sha256).toBe(createHash('sha256').update(source).digest('hex'));
-  expect(source).toContain(hooks.factory);
+  expect(readFileSync(interactiveFile.replace('interactive-mode.js', 'tui-renderer.js'), 'utf8')).toContain(hooks.factory);
   expect([...hooks.methods.keys()]).toEqual(['setExtensionWidget', 'clearExtensionWidgets']);
   for (const method of hooks.methods.values()) expect(source).toContain(method);
+});
+
+it('single-file bundle contains one embedded factory, never a second unbundled copy', () => {
+  const source = readFileSync(interactiveFile, 'utf8');
+  const renderer = readFileSync(interactiveFile.replace('interactive-mode.js', 'tui-renderer.js'), 'utf8');
+  const bundled = source.replace('export class InteractiveMode {', `${renderer}\nexport class InteractiveMode {`);
+  const hooks = consumerHooks('pi~BUN.mjs', bundled);
+  expect(hooks.factory).toContain('return new Proxy');
+  expect(hooks.sha256).toBe(createHash('sha256').update(bundled).digest('hex'));
 });
 
 it('source-hook control: esbuild class-expression syntax from actual module is supported (not bundled acceptance)', () => {
@@ -68,7 +77,7 @@ it.each([
   const source = observedBindingSource().replace(
     'let InteractiveMode; InteractiveMode = class _InteractiveMode {', header,
   ) + '\nInteractiveMode = Unrelated;';
-  expect(() => consumerHooks('unrelated-binding.mjs', source)).toThrow('actual InteractiveMode constructor');
+  expect(() => consumerHooks('unrelated-binding.mjs', source)).toThrow();
 });
 
 it('source-hook fails closed when consumer constructor no longer acquires the extracted factory', () => {

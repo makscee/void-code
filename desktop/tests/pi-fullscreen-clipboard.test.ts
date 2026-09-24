@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { actualReference, agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
+import { actualReference, agentMetadata, deferred, extension, flush, install, interactiveFile, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -25,7 +25,7 @@ function guardLiveMethod<T extends object, K extends keyof T & string>(owner: T,
 
 it('fixture control: VERSION exposed to managed code matches actual pinned config export', async () => {
   const config = await import(/* @vite-ignore */ pathToFileURL(`${agentMetadata.getPackageDir()}/dist/config.js`).href);
-  expect(agentMetadata.VERSION).toBe('0.84.1');
+  expect(agentMetadata.VERSION).toBe('0.87.1');
   expect(agentMetadata.VERSION).toBe(config.VERSION);
 });
 
@@ -45,6 +45,55 @@ it('fixture control: guarded live methods still allow genuine Pi mouse extractio
 });
 
 describe('real Pi fullscreen selection -> managed native clipboard', () => {
+  it('0.87 Ctrl+X selected-copy when copy-on-select is off stays within bounds, queue and abort', async () => {
+    const r = await make();
+    const pending = deferred(); r.write.mockReturnValueOnce(pending.promise);
+    const dispose = install(await extension(), r);
+    const ui = r.tui as typeof r.tui & { setCopyOnSelect(value: boolean): void; copyTextToClipboard(text: string): Promise<boolean> };
+    ui.setCopyOnSelect(false);
+    const nativeCopy = vi.spyOn(ui, 'copyTextToClipboard');
+    const interactive = await import(/* @vite-ignore */ pathToFileURL(interactiveFile).href);
+    const lastMessage = vi.fn(() => 'last assistant message');
+    const receiver = { ui, session: { getLastAssistantText: lastMessage }, showError: vi.fn(), showStatus: vi.fn() };
+    const ctrlX = () => interactive.InteractiveMode.prototype.handleCopyCommand.call(receiver, { preferSelection: true, flashConfirmation: true });
+    r.drag(); await expectSelectionSilent(r);
+    await ctrlX(); await flush();
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(['Привет 世界 😀\nстрока два']);
+    expect(lastMessage).not.toHaveBeenCalled();
+    expect(nativeCopy).not.toHaveBeenCalled();
+    const selection = r.tui.getActiveSelectionText;
+    r.tui.getActiveSelectionText = () => 'OVERSIZE-' + 'я'.repeat(4 * 1024 * 1024);
+    r.drag();
+    expect(r.tui.getSelectionBounds()).toBeDefined();
+    expect(ui.getCopyOnSelect()).toBe(false);
+    await ctrlX(); await flush();
+    expect(lastMessage).not.toHaveBeenCalled();
+    expect(r.write).toHaveBeenCalledTimes(1);
+    expect(r.notify).toHaveBeenCalledWith('Clipboard selection is too large or unsupported.', 'warning');
+    r.tui.getActiveSelectionText = selection;
+    r.drag();
+    await ctrlX(); await flush();
+    expect(r.write).toHaveBeenCalledTimes(1); // queued, not concurrent
+    const signal = r.write.mock.calls[0][1];
+    dispose(); expect(signal.aborted).toBe(true);
+    pending.resolve(); await flush();
+    expect(r.write).toHaveBeenCalledTimes(1); // pending copy was discarded
+    expect(r.flash).not.toHaveBeenCalledWith('Copied!');
+    expect(nativeCopy).not.toHaveBeenCalled();
+  });
+
+  it('0.87 Ctrl+X with copy-on-select on retains the old last-message path', async () => {
+    const r = await make(); install(await extension(), r);
+    const ui = r.tui as typeof r.tui & { setCopyOnSelect(value: boolean): void };
+    ui.setCopyOnSelect(true);
+    const interactive = await import(/* @vite-ignore */ pathToFileURL(interactiveFile).href);
+    const error = vi.fn(); const lastMessage = vi.fn(() => '');
+    r.drag(); await expectSelectionSilent(r);
+    await interactive.InteractiveMode.prototype.handleCopyCommand.call({ ui, session: { getLastAssistantText: lastMessage }, showError: error }, { preferSelection: true, flashConfirmation: true });
+    expect(lastMessage).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith('No agent messages to copy yet.');
+    expect(r.write).not.toHaveBeenCalled();
+  });
   it('fixture control: exported pinned Pi renders and extracts Unicode via mouse SGR, without xterm selection', async () => {
     const r = await make();
     expect(r.terminal.output.join('')).toContain('Привет');
@@ -196,10 +245,8 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     const invalid = `PRIVATE-OVERSIZED-${'я'.repeat(4 * 1024 * 1024)}`;
     const r = await make(['semantic selection']); const active = deferred();
     let extracted = 'slow';
-    r.tui.copySelectionToClipboard = function () {
-      this.terminal.write(`\x1b]52;c;${Buffer.from(extracted).toString('base64')}\x07`);
-      this.flash('Copied!');
-    };
+    // 0.87.1 exposes the snapshot directly; no OSC52 shim is involved.
+    r.tui.getActiveSelectionText = () => extracted;
     r.write.mockReturnValueOnce(active.promise);
     install(await extension(), r);
     const copy = async (text: string): Promise<void> => {
@@ -364,7 +411,7 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     install(module, control); control.drag(); await expectSelectionSilent(control); control.terminal.input('\x03'); await flush(); expect(control.write).toHaveBeenCalledTimes(1);
     const original = r.tui.copySelectionToClipboard;
     if (kind === 'shape') r.tui.copySelectionToClipboard = undefined;
-    expect(() => install(module, r, { piVersion: kind === 'version' ? '0.85.0' : '0.84.1' })).not.toThrow();
+    expect(() => install(module, r, { piVersion: kind === 'version' ? '0.88.0' : '0.87.1' })).not.toThrow();
     expect(r.notify).toHaveBeenCalled();
     if (kind === 'shape') r.tui.copySelectionToClipboard = original;
     r.drag(); await flush();
@@ -445,7 +492,7 @@ it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecy
   const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
   const ui = await widgetUI(r);
   const ctx = { mode: 'tui', hasUI: true, ui };
-  await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: r.write } });
+  await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.87.1', writeText: r.write } });
   expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-6-sol' })]) }));
   expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
   for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);

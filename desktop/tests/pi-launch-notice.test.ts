@@ -30,7 +30,7 @@ import {
 // Technique: the embedded source is evaluated against stub Pi packages
 // (tests/fixtures/managed-extension-stubbed.ts); ctx.ui.setWidget is modelled as Pi's widget map,
 // and a docked widget is rendered to the lines a person reads. What this cannot prove: that the
-// real Pi 0.84.1 draws the widget above its editor in fullscreen — that needs the pinned runtime
+// real Pi 0.87.1 draws the widget above its editor in fullscreen — that needs the pinned runtime
 // and a terminal.
 
 const LOW_NOTICE = 'Balance low — 1 day left. Message @makscee on Telegram to top up.';
@@ -46,7 +46,7 @@ function runFactory(factory: ExtensionFactory, env: Record<string, string>): Run
     on(name, handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
     registerProvider: vi.fn(),
   };
-  factory(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: vi.fn() } });
+  factory(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.87.1', writeText: vi.fn() } });
   return {
     // Every handler for the event, in registration order, with the same context — as Pi's runner does.
     async emit(name, event, ctx) {

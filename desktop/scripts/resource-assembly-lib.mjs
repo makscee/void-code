@@ -218,9 +218,9 @@ const PI_BUNDLE_ASSETS = [
 // createRequire at <bundle dir>/native/... Only the target platform's module is staged -- the
 // darwin ones have no business in a Windows build.
 const PI_BUNDLE_NATIVE = {
-  'win32-x64': [['@earendil-works/pi-tui/native/win32/prebuilds/win32-x64/win32-console-mode.node', 'native/win32/prebuilds/win32-x64/win32-console-mode.node']],
-  'darwin-arm64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-arm64/darwin-modifiers.node', 'native/darwin/prebuilds/darwin-arm64/darwin-modifiers.node']],
-  'darwin-x64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-x64/darwin-modifiers.node', 'native/darwin/prebuilds/darwin-x64/darwin-modifiers.node']],
+  'win32-x64': [['@earendil-works/pi-tui/native/win32/prebuilds/win32-x64/win32-platform.node', 'native/win32/prebuilds/win32-x64/win32-platform.node']],
+  'darwin-arm64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-arm64/darwin-platform.node', 'native/darwin/prebuilds/darwin-arm64/darwin-platform.node']],
+  'darwin-x64': [['@earendil-works/pi-tui/native/darwin/prebuilds/darwin-x64/darwin-platform.node', 'native/darwin/prebuilds/darwin-x64/darwin-platform.node']],
 };
 
 /**

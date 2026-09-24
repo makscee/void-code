@@ -13,7 +13,7 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
@@ -103,9 +103,9 @@ function registerVoidCodex(
 }
 
 // Pi does not expose fullscreen selection text to extensions. This adapter is deliberately
-// version-bound to 0.84.1 and delegates extraction to TuiAltScreen.copySelectionToClipboard on a
-// synchronous disposable receiver and terminal sink. The live ProcessTerminal and flash function
-// are never replaced. Shape guards make a future Pi change fail passive instead of taking authority.
+// The 0.84 adapter extracts the OSC52 output on a disposable receiver. Pi 0.87
+// exposes getActiveSelectionText(): use that snapshot without emitting OSC52.
+// Neither path replaces the live terminal. Unknown Pi versions fail passive.
 interface FullscreenClipboardOwner {
 	target: object;
 	dispose: () => void;
@@ -187,7 +187,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	const reference = tui as object;
 	const previous = fullscreenClipboardReferences.get(reference);
 	const authority = clipboardAuthority(options.platform, options.env);
-	if (!authority || options.piVersion !== "0.84.1") {
+	if (!authority || (options.piVersion !== "0.84.1" && options.piVersion !== "0.87.1")) {
 		const owner = previous ?? fullscreenClipboardOwners.get(reference);
 		owner?.dispose();
 		if (previous && fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
@@ -225,12 +225,16 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	}
 
 	const originalCopy = tui.copySelectionToClipboard;
+	const nativeTextCopy = options.piVersion === "0.87.1";
+	if (nativeTextCopy && (typeof tui.getActiveSelectionText !== "function" || typeof tui.copyActiveSelectionToClipboard !== "function")) return failPassive();
+	const originalActiveCopy = tui.copyActiveSelectionToClipboard;
 	const originalSelectionMouse = tui.handleSelectionMouseEvent;
 	const originalViewportInput = tui.handleViewportInput;
 	const originalSetFocus = tui.setFocus;
 	const originalShowOverlay = tui.showOverlay;
 	const inheritedHooks: Array<[string, any]> = [
-		["copySelectionToClipboard", originalCopy], ["handleSelectionMouseEvent", originalSelectionMouse],
+		["copySelectionToClipboard", originalCopy], ...(nativeTextCopy ? [["copyActiveSelectionToClipboard", originalActiveCopy] as [string, any]] : []),
+		["handleSelectionMouseEvent", originalSelectionMouse],
 		["handleViewportInput", originalViewportInput], ["setFocus", originalSetFocus], ["showOverlay", originalShowOverlay],
 	].filter(([key]) => !Object.prototype.hasOwnProperty.call(tui, key));
 	let disposed = false;
@@ -280,6 +284,13 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 			return;
 		}
 		if (!tui.getSelectionBounds()) return;
+		if (nativeTextCopy) {
+			// 0.87 exposes the exact selected text. Do not invoke its async
+			// clipboard callback: it can flash before our queued native write.
+			const text = tui.getActiveSelectionText();
+			if (typeof text === "string") admit(text);
+			return;
+		}
 		const terminal = tui.terminal;
 		const originalWrite = terminal.write;
 		const originalFlash = tui.flash;
@@ -303,6 +314,13 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		if (extracted !== undefined) admit(extracted);
 	};
 	tui.copySelectionToClipboard = managedCopy;
+	// 0.87's Ctrl+X prefers the selected transcript only when copy-on-select
+	// is disabled. That path calls this method directly, not the mouse copier.
+	// Keep the pre-existing Ctrl+X last-assistant-message path untouched.
+	const managedActiveCopy = function (this: any): void {
+		managedCopy.call(tui);
+	};
+	if (nativeTextCopy) tui.copyActiveSelectionToClipboard = managedActiveCopy;
 	const managedSelectionMouse = function (this: any, event: any): any {
 		if (!retainOwnership()) return originalSelectionMouse.call(this, event);
 		if (!event?.release && (event?.button & 35) === 0) {
@@ -370,6 +388,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		active?.abort();
 		removeInputListener();
 		if (tui.copySelectionToClipboard === managedCopy) tui.copySelectionToClipboard = originalCopy;
+		if (nativeTextCopy && tui.copyActiveSelectionToClipboard === managedActiveCopy) tui.copyActiveSelectionToClipboard = originalActiveCopy;
 		if (tui.handleSelectionMouseEvent === managedSelectionMouse) tui.handleSelectionMouseEvent = originalSelectionMouse;
 		if (tui.handleViewportInput === managedViewportInput) tui.handleViewportInput = originalViewportInput;
 		if (tui.setFocus === managedSetFocus) tui.setFocus = originalSetFocus;
@@ -786,12 +805,17 @@ function normalizeUsage(output: AssistantMessage) {
 
 async function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): Promise<Record<string, unknown>> {
 	const { convertResponsesMessages, convertResponsesTools } = await openAIResponsesShared();
+	// agent-core >=0.86 sends only a transcript. Normalize the legacy shorthand if
+	// present, then replay system deltas rather than reading obsolete top-level fields.
+	const transcript = normalizeContext(context);
+	const instructions = getCurrentSystemPrompt(transcript.messages);
+	const tools = getCurrentTools(transcript.messages);
 	const body: Record<string, unknown> = {
 		model: model.id,
 		store: false,
 		stream: true,
-		instructions: context.systemPrompt || "You are a helpful assistant.",
-		input: convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false }),
+		instructions: instructions || "You are a helpful assistant.",
+		input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false }),
 		text: { verbosity: (options as any)?.textVerbosity || "low" },
 		include: ["reasoning.encrypted_content"],
 		prompt_cache_key: promptCacheKey(options?.sessionId),
@@ -800,7 +824,7 @@ async function buildCodexBody(model: Model<any>, context: Context, options?: Sim
 	};
 	if ((options as any)?.temperature !== undefined) body.temperature = (options as any).temperature;
 	if ((options as any)?.serviceTier !== undefined) body.service_tier = (options as any).serviceTier;
-	if (context.tools && context.tools.length > 0) body.tools = convertResponsesTools(context.tools, { strict: null });
+	if (tools.length > 0) body.tools = convertResponsesTools(tools, { strict: null });
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 	if (reasoningEffort !== undefined) {

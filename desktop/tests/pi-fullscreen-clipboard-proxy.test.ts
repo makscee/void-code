@@ -15,7 +15,7 @@ it.each([
   { label: 'SSH client', env: { ...localEnv, SSH_CLIENT: 'fixture' } },
   { label: 'SSH tty', env: { ...localEnv, SSH_TTY: '/fixture/tty' } },
   { label: 'Linux', platform: 'linux' },
-  { label: 'wrong version', piVersion: '0.85.0' },
+  { label: 'wrong version', piVersion: '0.88.0' },
 ])('guard boundary: $label never probes or transiently owns a fresh TUI', async ({ label, ...options }) => {
   const r = await make(); const module = await extension();
   const mutations: Array<[string, PropertyKey]> = [];
@@ -97,7 +97,7 @@ it.each([
 });
 
 it.each([
-  { label: 'non-VC', env: {}, piVersion: '0.84.1' },
+  { label: 'non-VC', env: {}, piVersion: '0.87.1' },
   { label: 'wrong version', env: localEnv, piVersion: '0.85.1' },
 ])('retirement alias boundary: $label raw reinstall retires the same actual-proxy owner', async ({ env, piVersion }) => {
   const r = await make(); const module = await extension();
@@ -192,7 +192,7 @@ describe.each(['raw', 'actual-proxy'] as const)('%s paired semantic boundary', (
     const handlers = new Map<string, LifecycleHandler>();
     const module = await extension();
     await module.default({ on: (name, handler) => handlers.set(name, handler), registerProvider: vi.fn() }, {
-      clipboardIO: { platform: 'darwin', env: localEnv, piVersion: '0.84.1', writeText: r.write },
+      clipboardIO: { platform: 'darwin', env: localEnv, piVersion: '0.87.1', writeText: r.write },
     });
     const ctx = { mode: 'tui', hasUI: true, ui };
     for (let cycle = 0; cycle < 2; cycle++) {

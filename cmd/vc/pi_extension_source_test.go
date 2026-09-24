@@ -85,11 +85,13 @@ func TestPiVoidCodexExtensionSourceSendsSessionCacheKeyAndAttributionHeader(t *t
 
 func TestPiVoidCodexExtensionSourceMatchesNativeCodexRequestShape(t *testing.T) {
 	required := []string{
-		`instructions: context.systemPrompt || "You are a helpful assistant."`,
-		`input: convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false })`,
+		`instructions: instructions || "You are a helpful assistant."`,
+		`getCurrentSystemPrompt(transcript.messages)`,
+		`getCurrentTools(transcript.messages)`,
+		`input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false })`,
 		`text: { verbosity: (options as any)?.textVerbosity || "low" }`,
 		`prompt_cache_key: promptCacheKey(options?.sessionId)`,
-		`body.tools = convertResponsesTools(context.tools, { strict: null })`,
+		`body.tools = convertResponsesTools(tools, { strict: null })`,
 		`body.reasoning = { effort, summary: (options as any)?.reasoningSummary ?? "auto" }`,
 	}
 	for _, want := range required {
