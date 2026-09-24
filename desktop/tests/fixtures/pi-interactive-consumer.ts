@@ -8,11 +8,7 @@ import ts from 'typescript';
 
 export function consumerHooks(file: string, suppliedSource?: string, extraMethods: readonly string[] = []) {
   const source = suppliedSource ?? readFileSync(file, 'utf8');
-  const rendererFile = /createInteractiveTuiReference/.test(source) && /class\s+\w*InteractiveMode/.test(source)
-    ? path.resolve('runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/tui-renderer.js') : file;
-  const rendererSource = rendererFile === file ? source : readFileSync(rendererFile, 'utf8');
   const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  const rendererTree = ts.createSourceFile(rendererFile, rendererSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const factories: ts.FunctionDeclaration[] = [];
   const methods = new Map<string, string>();
   let boundByConsumer = false;
@@ -35,20 +31,26 @@ export function consumerHooks(file: string, suppliedSource?: string, extraMethod
     ts.forEachChild(node, visit);
   }
   visit(tree);
-  if (rendererFile !== file) {
-    // In 0.87 the same reference factory moved to tui-renderer.js; never
-    // substitute a fixture for the actual installed runtime source.
+  let factoryTree = tree;
+  if (factories.length === 0 && /createInteractiveTuiReference/.test(source) && /class\s+\w*InteractiveMode/.test(source)) {
+    // Unbundled 0.87 moved the factory into its sibling module. A single-file
+    // bundle already contains that same function: never count the source tree
+    // and a separately installed copy together (especially on Windows).
+    const rendererFile = suppliedSource === undefined
+      ? path.join(path.dirname(file), 'tui-renderer.js')
+      : path.resolve('runtime/pi/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/tui-renderer.js');
+    const rendererTree = ts.createSourceFile(rendererFile, readFileSync(rendererFile, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     function visitRenderer(node: ts.Node) {
       if (ts.isFunctionDeclaration(node) && /^createInteractiveTuiReference\d*$/.test(node.name?.text ?? '')) factories.push(node);
       ts.forEachChild(node, visitRenderer);
     }
     visitRenderer(rendererTree);
+    factoryTree = rendererTree;
   }
   assert.equal(factories.length, 1, 'consumer must contain one actual reference factory');
   assert.ok(boundByConsumer, 'actual InteractiveMode constructor must acquire this factory over this.renderer');
   const declaration = factories[0];
   assert.ok(declaration.body);
-  const factoryTree = rendererFile === file ? tree : rendererTree;
   const factory = `function ${declaration.name!.text}(${declaration.parameters.map((p) => p.getText(factoryTree)).join(',')}) ${declaration.body.getText(factoryTree)}`;
   return { file, sha256: createHash('sha256').update(source).digest('hex'), factory, name: declaration.name!.text, methods };
 }

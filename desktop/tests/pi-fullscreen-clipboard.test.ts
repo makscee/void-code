@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { actualReference, agentMetadata, deferred, extension, flush, install, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
+import { actualReference, agentMetadata, deferred, extension, flush, install, interactiveFile, localEnv, oscCopies, realPi, rig, widgetUI, type Rig, type LifecycleHandler, expectSelectionSilent } from './fixtures/pi-fullscreen-clipboard';
 
 beforeEach(() => vi.useFakeTimers());
 const rigs: Rig[] = [];
@@ -45,6 +45,55 @@ it('fixture control: guarded live methods still allow genuine Pi mouse extractio
 });
 
 describe('real Pi fullscreen selection -> managed native clipboard', () => {
+  it('0.87 Ctrl+X selected-copy when copy-on-select is off stays within bounds, queue and abort', async () => {
+    const r = await make();
+    const pending = deferred(); r.write.mockReturnValueOnce(pending.promise);
+    const dispose = install(await extension(), r);
+    const ui = r.tui as typeof r.tui & { setCopyOnSelect(value: boolean): void; copyTextToClipboard(text: string): Promise<boolean> };
+    ui.setCopyOnSelect(false);
+    const nativeCopy = vi.spyOn(ui, 'copyTextToClipboard');
+    const interactive = await import(/* @vite-ignore */ pathToFileURL(interactiveFile).href);
+    const lastMessage = vi.fn(() => 'last assistant message');
+    const receiver = { ui, session: { getLastAssistantText: lastMessage }, showError: vi.fn(), showStatus: vi.fn() };
+    const ctrlX = () => interactive.InteractiveMode.prototype.handleCopyCommand.call(receiver, { preferSelection: true, flashConfirmation: true });
+    r.drag(); await expectSelectionSilent(r);
+    await ctrlX(); await flush();
+    expect(r.write.mock.calls.map(([text]) => text)).toEqual(['Привет 世界 😀\nстрока два']);
+    expect(lastMessage).not.toHaveBeenCalled();
+    expect(nativeCopy).not.toHaveBeenCalled();
+    const selection = r.tui.getActiveSelectionText;
+    r.tui.getActiveSelectionText = () => 'OVERSIZE-' + 'я'.repeat(4 * 1024 * 1024);
+    r.drag();
+    expect(r.tui.getSelectionBounds()).toBeDefined();
+    expect(ui.getCopyOnSelect()).toBe(false);
+    await ctrlX(); await flush();
+    expect(lastMessage).not.toHaveBeenCalled();
+    expect(r.write).toHaveBeenCalledTimes(1);
+    expect(r.notify).toHaveBeenCalledWith('Clipboard selection is too large or unsupported.', 'warning');
+    r.tui.getActiveSelectionText = selection;
+    r.drag();
+    await ctrlX(); await flush();
+    expect(r.write).toHaveBeenCalledTimes(1); // queued, not concurrent
+    const signal = r.write.mock.calls[0][1];
+    dispose(); expect(signal.aborted).toBe(true);
+    pending.resolve(); await flush();
+    expect(r.write).toHaveBeenCalledTimes(1); // pending copy was discarded
+    expect(r.flash).not.toHaveBeenCalledWith('Copied!');
+    expect(nativeCopy).not.toHaveBeenCalled();
+  });
+
+  it('0.87 Ctrl+X with copy-on-select on retains the old last-message path', async () => {
+    const r = await make(); install(await extension(), r);
+    const ui = r.tui as typeof r.tui & { setCopyOnSelect(value: boolean): void };
+    ui.setCopyOnSelect(true);
+    const interactive = await import(/* @vite-ignore */ pathToFileURL(interactiveFile).href);
+    const error = vi.fn(); const lastMessage = vi.fn(() => '');
+    r.drag(); await expectSelectionSilent(r);
+    await interactive.InteractiveMode.prototype.handleCopyCommand.call({ ui, session: { getLastAssistantText: lastMessage }, showError: error }, { preferSelection: true, flashConfirmation: true });
+    expect(lastMessage).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith('No agent messages to copy yet.');
+    expect(r.write).not.toHaveBeenCalled();
+  });
   it('fixture control: exported pinned Pi renders and extracts Unicode via mouse SGR, without xterm selection', async () => {
     const r = await make();
     expect(r.terminal.output.join('')).toContain('Привет');

@@ -226,13 +226,15 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 
 	const originalCopy = tui.copySelectionToClipboard;
 	const nativeTextCopy = options.piVersion === "0.87.1";
-	if (nativeTextCopy && typeof tui.getActiveSelectionText !== "function") return failPassive();
+	if (nativeTextCopy && (typeof tui.getActiveSelectionText !== "function" || typeof tui.copyActiveSelectionToClipboard !== "function")) return failPassive();
+	const originalActiveCopy = tui.copyActiveSelectionToClipboard;
 	const originalSelectionMouse = tui.handleSelectionMouseEvent;
 	const originalViewportInput = tui.handleViewportInput;
 	const originalSetFocus = tui.setFocus;
 	const originalShowOverlay = tui.showOverlay;
 	const inheritedHooks: Array<[string, any]> = [
-		["copySelectionToClipboard", originalCopy], ["handleSelectionMouseEvent", originalSelectionMouse],
+		["copySelectionToClipboard", originalCopy], ...(nativeTextCopy ? [["copyActiveSelectionToClipboard", originalActiveCopy] as [string, any]] : []),
+		["handleSelectionMouseEvent", originalSelectionMouse],
 		["handleViewportInput", originalViewportInput], ["setFocus", originalSetFocus], ["showOverlay", originalShowOverlay],
 	].filter(([key]) => !Object.prototype.hasOwnProperty.call(tui, key));
 	let disposed = false;
@@ -312,6 +314,13 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		if (extracted !== undefined) admit(extracted);
 	};
 	tui.copySelectionToClipboard = managedCopy;
+	// 0.87's Ctrl+X prefers the selected transcript only when copy-on-select
+	// is disabled. That path calls this method directly, not the mouse copier.
+	// Keep the pre-existing Ctrl+X last-assistant-message path untouched.
+	const managedActiveCopy = function (this: any): void {
+		managedCopy.call(tui);
+	};
+	if (nativeTextCopy) tui.copyActiveSelectionToClipboard = managedActiveCopy;
 	const managedSelectionMouse = function (this: any, event: any): any {
 		if (!retainOwnership()) return originalSelectionMouse.call(this, event);
 		if (!event?.release && (event?.button & 35) === 0) {
@@ -379,6 +388,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 		active?.abort();
 		removeInputListener();
 		if (tui.copySelectionToClipboard === managedCopy) tui.copySelectionToClipboard = originalCopy;
+		if (nativeTextCopy && tui.copyActiveSelectionToClipboard === managedActiveCopy) tui.copyActiveSelectionToClipboard = originalActiveCopy;
 		if (tui.handleSelectionMouseEvent === managedSelectionMouse) tui.handleSelectionMouseEvent = originalSelectionMouse;
 		if (tui.handleViewportInput === managedViewportInput) tui.handleViewportInput = originalViewportInput;
 		if (tui.setFocus === managedSetFocus) tui.setFocus = originalSetFocus;

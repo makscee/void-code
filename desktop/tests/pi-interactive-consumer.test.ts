@@ -14,6 +14,15 @@ it('source-hook provenance: exact installed factory body and both actual widget 
   for (const method of hooks.methods.values()) expect(source).toContain(method);
 });
 
+it('single-file bundle contains one embedded factory, never a second unbundled copy', () => {
+  const source = readFileSync(interactiveFile, 'utf8');
+  const renderer = readFileSync(interactiveFile.replace('interactive-mode.js', 'tui-renderer.js'), 'utf8');
+  const bundled = source.replace('export class InteractiveMode {', `${renderer}\nexport class InteractiveMode {`);
+  const hooks = consumerHooks('pi~BUN.mjs', bundled);
+  expect(hooks.factory).toContain('return new Proxy');
+  expect(hooks.sha256).toBe(createHash('sha256').update(bundled).digest('hex'));
+});
+
 it('source-hook control: esbuild class-expression syntax from actual module is supported (not bundled acceptance)', () => {
   const source = readFileSync(interactiveFile, 'utf8');
   const transformed = transformSync(source, { format: 'cjs', target: 'node22' }).code;
