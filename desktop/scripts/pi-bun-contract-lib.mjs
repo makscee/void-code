@@ -156,9 +156,16 @@ export function assertPiBunContract({ config, loader }) {
     refuse(`isBunBinary no longer tests for the ${MARK} marker`, `The bundle is named pi${MARK}.mjs precisely so this test matches it. Pi may move the markers\naround -- an array, a loop, a reformat -- but it has to still look for ${MARK}.`);
   }
   const loaderSource = stripComments(loader);
-  const branches = branchesSelectedBy(loaderSource, 'isBunBinary');
+  // 0.87.1 combines the Bun path with SEA and bundled Node into a single
+  // selector. Require that selector to actually depend on the URL-derived flag.
+  const embedded = new RegExp(DECLARED('usesEmbeddedModules')).exec(loaderSource);
+  const selector = embedded ? 'usesEmbeddedModules' : 'isBunBinary';
+  if (embedded && !/\bisBunBinary\b/.test(embedded[1])) {
+    refuse('embedded module selector no longer depends on isBunBinary', 'The bundle file name must still select its virtual modules.');
+  }
+  const branches = branchesSelectedBy(loaderSource, selector);
   if (branches.length === 0) {
-    refuse('the extension loader no longer branches on isBunBinary', 'The flag is worth nothing unless it still steers the loader.');
+    refuse('the extension loader no longer branches on ' + selector, 'The flag is worth nothing unless it still steers the loader.');
   }
   if (!branches.some((branch) => branch.includes('virtualModules'))) {
     refuse('the extension loader\'s bun branch no longer uses the bundled modules', 'It has to keep resolving extensions through virtualModules rather than getAliases(), whose\nrequire.resolve calls need a node_modules that a bundled runtime does not have.');

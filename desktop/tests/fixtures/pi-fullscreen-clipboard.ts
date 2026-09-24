@@ -62,7 +62,7 @@ export type LifecycleHandler = (event: { reason: string }, ctx: {
 }) => unknown;
 export type Spawn = (file: string, args: string[], options: SpawnOptions) => EventEmitter & Pick<ChildProcess, 'stdin' | 'stderr'> & { kill(signal?: NodeJS.Signals | number): unknown };
 export async function realPi(): Promise<PiView> {
-  expect(JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version).toBe('0.84.1');
+  expect(JSON.parse(readFileSync(path.join(agentDir, 'package.json'), 'utf8')).version).toBe('0.87.1');
   return import(/* @vite-ignore */ pathToFileURL(require.resolve('@earendil-works/pi-tui')).href);
 }
 export function embeddedSource(): string {

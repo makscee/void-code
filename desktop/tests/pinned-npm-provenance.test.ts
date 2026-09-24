@@ -184,8 +184,8 @@ describe('resource assembly restores Pi with the pinned npm', () => {
   });
 
   it('leaves the Pi tree pin untouched: the invocation is wrong, the pin is not', () => {
-    expect(pins.pi.treeSha256).toBe('23c70701cca3e33a2d9139e784487d2f6e3b9dffb8cf87dd45a98c16348c04cc');
-    expect(pins.pi.version).toBe('0.84.1');
-    expect(pins.pi.packageLockSha256).toBe('213e7be737db598b7649792d539a697769e728d52889cec3a9447908674df314');
+    expect(pins.pi.treeSha256).toBe('b9f688d961f994bd7d5a2176b54b2ef79860c7efc7d88cb85a9e7084c44ffeca');
+    expect(pins.pi.version).toBe('0.87.1');
+    expect(pins.pi.packageLockSha256).toBe('e521bd4589a09ce27e43da5a09ae06146cbe596d64d5a6e5f7a783eda12e068b');
   });
 });

@@ -25,7 +25,7 @@ function guardLiveMethod<T extends object, K extends keyof T & string>(owner: T,
 
 it('fixture control: VERSION exposed to managed code matches actual pinned config export', async () => {
   const config = await import(/* @vite-ignore */ pathToFileURL(`${agentMetadata.getPackageDir()}/dist/config.js`).href);
-  expect(agentMetadata.VERSION).toBe('0.84.1');
+  expect(agentMetadata.VERSION).toBe('0.87.1');
   expect(agentMetadata.VERSION).toBe(config.VERSION);
 });
 

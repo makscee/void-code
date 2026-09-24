@@ -13,7 +13,7 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
@@ -786,12 +786,17 @@ function normalizeUsage(output: AssistantMessage) {
 
 async function buildCodexBody(model: Model<any>, context: Context, options?: SimpleStreamOptions): Promise<Record<string, unknown>> {
 	const { convertResponsesMessages, convertResponsesTools } = await openAIResponsesShared();
+	// agent-core >=0.86 sends only a transcript. Normalize the legacy shorthand if
+	// present, then replay system deltas rather than reading obsolete top-level fields.
+	const transcript = normalizeContext(context);
+	const instructions = getCurrentSystemPrompt(transcript.messages);
+	const tools = getCurrentTools(transcript.messages);
 	const body: Record<string, unknown> = {
 		model: model.id,
 		store: false,
 		stream: true,
-		instructions: context.systemPrompt || "You are a helpful assistant.",
-		input: convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false }),
+		instructions: instructions || "You are a helpful assistant.",
+		input: convertResponsesMessages(model, transcript, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: false }),
 		text: { verbosity: (options as any)?.textVerbosity || "low" },
 		include: ["reasoning.encrypted_content"],
 		prompt_cache_key: promptCacheKey(options?.sessionId),
@@ -800,7 +805,7 @@ async function buildCodexBody(model: Model<any>, context: Context, options?: Sim
 	};
 	if ((options as any)?.temperature !== undefined) body.temperature = (options as any).temperature;
 	if ((options as any)?.serviceTier !== undefined) body.service_tier = (options as any).serviceTier;
-	if (context.tools && context.tools.length > 0) body.tools = convertResponsesTools(context.tools, { strict: null });
+	if (tools.length > 0) body.tools = convertResponsesTools(tools, { strict: null });
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 	if (reasoningEffort !== undefined) {

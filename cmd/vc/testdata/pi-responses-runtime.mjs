@@ -1,6 +1,7 @@
 // Offline regression of the complete managed provider, not a resolver mock or model listing.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,6 +14,7 @@ assert.ok(aiModules, 'test requires the runtime pi-ai dependency');
 const compatPath = path.join(aiModules, '@earendil-works/pi-ai/dist/compat.js');
 const compat = await import(pathToFileURL(compatPath));
 const aiRoot = path.dirname(path.dirname(compatPath));
+const { normalizeContext } = await import(pathToFileURL(path.join(aiRoot, 'dist/index.js')));
 const vendorRoot = path.join(work, 'bundled runtime #1');
 mkdirSync(path.join(vendorRoot, 'vendor'), { recursive: true });
 symlinkSync(path.dirname(compatPath), path.join(vendorRoot, 'vendor/pi-ai'), 'dir');
@@ -64,10 +66,11 @@ for (const scenario of [
     assert.equal(url, 'https://relay.invalid/codex/responses');
     const body = JSON.parse(options.body);
     assert.equal(body.model, 'gpt-6-sol');
-    assert.equal(body.tools[0].name, 'read');
+    assert.equal(body.instructions, 'You are the VC GPT-6 Sol coding assistant. Use bash to inspect this isolated fixture.');
+    assert.equal(body.tools[0].name, 'bash');
     assert.ok(body.input.length > 0);
     assert.equal(body.max_output_tokens, undefined);
-    const item = { type: 'function_call', id: 'fc_probe', call_id: 'call_probe', name: 'read', arguments: '{"path":"fixture.md"}' };
+    const item = { type: 'function_call', id: 'fc_probe', call_id: 'call_probe', name: 'bash', arguments: '{"command":"printf vc-0871-safe"}' };
     const events = [
       { type: 'response.created', response: { id: 'resp_probe' } },
       { type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '' } },
@@ -84,11 +87,16 @@ for (const scenario of [
     const provider = providers.get('void-codex');
     assert.ok(provider, 'provider must register');
     const model = { ...provider.models[0], provider: 'void-codex', api: provider.api };
-    const stream = provider.streamSimple(model, {
-      systemPrompt: 'Offline regression',
-      messages: [{ role: 'user', content: 'Read fixture.md', timestamp: 1 }],
-      tools: [{ name: 'read', description: 'Read a fixture', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }],
+    // The installed 0.87.1 pi-ai adapter (as called by agent-core) strips
+    // top-level shorthand before handing the transcript to this provider.
+    const context = normalizeContext({
+      systemPrompt: 'You are the VC GPT-6 Sol coding assistant. Use bash to inspect this isolated fixture.',
+      messages: [{ role: 'user', content: 'Run the harmless printf probe', timestamp: 1 }],
+      tools: [{ name: 'bash', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }],
     });
+    assert.equal(context.systemPrompt, undefined);
+    assert.equal(context.tools, undefined);
+    const stream = provider.streamSimple(model, context);
     const events = [];
     for await (const event of stream) events.push(event.type);
     const result = await stream.result();
@@ -101,8 +109,9 @@ for (const scenario of [
       assert.equal(result.stopReason, 'toolUse', result.errorMessage);
       assert.equal(requests, 1);
       assert.ok(events.includes('toolcall_end'));
-      assert.deepEqual(result.content[0].arguments, { path: 'fixture.md' });
-      assert.equal(result.content[0].name, 'read');
+      assert.deepEqual(result.content[0].arguments, { command: 'printf vc-0871-safe' });
+      assert.equal(result.content[0].name, 'bash');
+      assert.equal(execFileSync('/bin/sh', ['-c', result.content[0].arguments.command], { cwd: work, encoding: 'utf8' }), 'vc-0871-safe');
       assert.equal(result.usage.totalTokens, 12);
     }
     console.log(JSON.stringify({ scenario: scenario.name, pass: true, requests }));
