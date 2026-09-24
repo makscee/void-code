@@ -1,4 +1,4 @@
-// Regression witnesses for Pi 0.84.1 renderer replacement and viewport-listener ordering.
+// Regression witnesses for Pi 0.87.1 renderer replacement and viewport-listener ordering.
 // Production clipboard IO is injected; renderer, parser, widget, and editor behavior are pinned Pi.
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -105,7 +105,7 @@ it('renderer switch: the persistent actual widget retires old hooks and equips t
   mode.widgetContainerBelow = below;
   mode.themeController = { rebindTui: vi.fn() };
   mode.extensionTerminalInputSubscriptions = new Set();
-  mode.settingsManager = { getShowTerminalProgress: () => false };
+  mode.settingsManager = { getShowTerminalProgress: () => false, getFullscreenCopyOnSelect: () => true };
   mode.session = { isStreaming: false, isCompacting: false };
   mode.mountInteractiveTui = (tui, components) => prototype.mountInteractiveTui.call(mode, tui, components);
   mode.renderWidgets = () => prototype.renderWidgets.call(mode);
@@ -130,7 +130,7 @@ it('renderer switch: the persistent actual widget retires old hooks and equips t
   const widgetFactories = vi.fn();
   const module = await extension();
   await module.default({ on: (name, handler) => handlers.set(name, handler), registerProvider: vi.fn() }, {
-    clipboardIO: { platform: 'darwin', env: localEnv, piVersion: '0.84.1', writeText: r.write },
+    clipboardIO: { platform: 'darwin', env: localEnv, piVersion: '0.87.1', writeText: r.write },
   });
   const ctx = {
     mode: 'tui',

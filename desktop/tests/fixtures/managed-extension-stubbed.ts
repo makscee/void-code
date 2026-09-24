@@ -10,7 +10,7 @@ import { expect, vi } from 'vitest';
 // that use it run on a machine without `npm run setup`.
 //
 // Most stubs are inert. Three do a little more, because the suites read through them:
-//  - `ctx.ui.setWidget` is modelled the way Pi 0.84.1's interactive mode keeps widgets (a map from
+//  - `ctx.ui.setWidget` is modelled the way Pi 0.87.1's interactive mode keeps widgets (a map from
 //    key to content; `undefined` removes the key), and renderWidget turns a widget into the lines a
 //    person reads — a string[] as is, a component factory by calling it and rendering it;
 //  - @earendil-works/pi-ai's createAssistantMessageEventStream records what the provider pushes, so
@@ -147,9 +147,16 @@ export function loadManagedExtension({ env, fetch, responsesHelpers }: LoadOptio
       case 'url':
         return nodeUrl;
       case '@earendil-works/pi-coding-agent':
-        return { VERSION: '0.84.1', getPackageDir: () => '/nonexistent/pi' };
+        return { VERSION: '0.87.1', getPackageDir: () => '/nonexistent/pi' };
       case '@earendil-works/pi-ai':
-        return { clampThinkingLevel: (_model: unknown, level: string) => level, createAssistantMessageEventStream: recordingStream };
+        return {
+          clampThinkingLevel: (_model: unknown, level: string) => level, createAssistantMessageEventStream: recordingStream,
+          normalizeContext: (context: any) => ({ messages: context.systemPrompt || context.tools?.length
+            ? [{ role: 'system', content: context.systemPrompt ?? '', toolsAdded: context.tools ?? [] }, ...context.messages]
+            : context.messages }),
+          getCurrentSystemPrompt: (messages: any[]) => messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n'),
+          getCurrentTools: (messages: any[]) => messages.flatMap(m => m.toolsAdded ?? []),
+        };
       case '@earendil-works/pi-tui':
         return {
           isKeyRelease: () => false, matchesKey: () => false,

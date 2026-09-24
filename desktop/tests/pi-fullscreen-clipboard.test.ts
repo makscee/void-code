@@ -196,10 +196,8 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     const invalid = `PRIVATE-OVERSIZED-${'я'.repeat(4 * 1024 * 1024)}`;
     const r = await make(['semantic selection']); const active = deferred();
     let extracted = 'slow';
-    r.tui.copySelectionToClipboard = function () {
-      this.terminal.write(`\x1b]52;c;${Buffer.from(extracted).toString('base64')}\x07`);
-      this.flash('Copied!');
-    };
+    // 0.87.1 exposes the snapshot directly; no OSC52 shim is involved.
+    r.tui.getActiveSelectionText = () => extracted;
     r.write.mockReturnValueOnce(active.promise);
     install(await extension(), r);
     const copy = async (text: string): Promise<void> => {
@@ -364,7 +362,7 @@ describe('real Pi fullscreen selection -> managed native clipboard', () => {
     install(module, control); control.drag(); await expectSelectionSilent(control); control.terminal.input('\x03'); await flush(); expect(control.write).toHaveBeenCalledTimes(1);
     const original = r.tui.copySelectionToClipboard;
     if (kind === 'shape') r.tui.copySelectionToClipboard = undefined;
-    expect(() => install(module, r, { piVersion: kind === 'version' ? '0.85.0' : '0.84.1' })).not.toThrow();
+    expect(() => install(module, r, { piVersion: kind === 'version' ? '0.88.0' : '0.87.1' })).not.toThrow();
     expect(r.notify).toHaveBeenCalled();
     if (kind === 'shape') r.tui.copySelectionToClipboard = original;
     r.drag(); await flush();
@@ -445,7 +443,7 @@ it.each(['cli', 'desktop'])('R7: real default factory %s installs through lifecy
   const pi = { on: (name: string, handler: LifecycleHandler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]), registerProvider: vi.fn() };
   const ui = await widgetUI(r);
   const ctx = { mode: 'tui', hasUI: true, ui };
-  await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.84.1', writeText: r.write } });
+  await module.default(pi, { clipboardIO: { platform: 'darwin', env, piVersion: '0.87.1', writeText: r.write } });
   expect(pi.registerProvider).toHaveBeenCalledWith('void-codex', expect.objectContaining({ models: expect.arrayContaining([expect.objectContaining({ id: 'gpt-6-sol' })]) }));
   expect(handlers.has('session_start'), 'R7: default managed extension never registers fullscreen clipboard lifecycle').toBe(true);
   for (const handler of handlers.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);

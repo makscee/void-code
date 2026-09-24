@@ -40,6 +40,7 @@ export interface TuiView {
   renderNow(): void;
   flash(text: string, duration?: number): void;
   getSelectionBounds(): { start: { row: number; col: number; scrollView: ScrollView }; end: { row: number; col: number; scrollView: ScrollView } } | undefined;
+  getActiveSelectionText(): string | undefined;
   copySelectionToClipboard: (() => void) | undefined;
   showOverlay(component: ComponentView): { hide(): void };
 }
@@ -111,7 +112,7 @@ export async function extension(env = localEnv, spawn?: Spawn, agentExports: Rec
 }
 export function install(module: ExtensionModule, rig: Rig, overrides: Partial<ClipboardOptions> = {}): () => void {
   expect(module.installFullscreenClipboard, 'R1: managed transport lacks semantic fullscreen native clipboard adapter').toBeTypeOf('function');
-  const dispose = module.installFullscreenClipboard!(rig.tui, { platform: 'darwin', env: localEnv, piVersion: '0.84.1', writeText: rig.write, notify: rig.notify, ...overrides });
+  const dispose = module.installFullscreenClipboard!(rig.tui, { platform: 'darwin', env: localEnv, piVersion: agentMetadata.VERSION, writeText: rig.write, notify: rig.notify, ...overrides });
   rig.disposers.push(dispose);
   return dispose;
 }
@@ -159,7 +160,7 @@ export async function rig(lines = ['Привет 世界 😀', 'строка д�
     close() { disposers.reverse().forEach((dispose) => dispose()); tui.stop({ preserveScreen: true }); },
   };
 }
-// Pi 0.84.1 InteractiveMode.setExtensionWidget: dispose in BOTH placements before
+// Pi 0.87.1 InteractiveMode.setExtensionWidget: dispose in BOTH placements before
 // invoking a replacement factory; store its result so clearing a probe tears it down.
 export async function widgetUI(r: Rig, reference = r.tui, actualConsumer = false) {
   const pi = await realPi();

@@ -103,9 +103,9 @@ function registerVoidCodex(
 }
 
 // Pi does not expose fullscreen selection text to extensions. This adapter is deliberately
-// version-bound to 0.84.1 and delegates extraction to TuiAltScreen.copySelectionToClipboard on a
-// synchronous disposable receiver and terminal sink. The live ProcessTerminal and flash function
-// are never replaced. Shape guards make a future Pi change fail passive instead of taking authority.
+// The 0.84 adapter extracts the OSC52 output on a disposable receiver. Pi 0.87
+// exposes getActiveSelectionText(): use that snapshot without emitting OSC52.
+// Neither path replaces the live terminal. Unknown Pi versions fail passive.
 interface FullscreenClipboardOwner {
 	target: object;
 	dispose: () => void;
@@ -187,7 +187,7 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	const reference = tui as object;
 	const previous = fullscreenClipboardReferences.get(reference);
 	const authority = clipboardAuthority(options.platform, options.env);
-	if (!authority || options.piVersion !== "0.84.1") {
+	if (!authority || (options.piVersion !== "0.84.1" && options.piVersion !== "0.87.1")) {
 		const owner = previous ?? fullscreenClipboardOwners.get(reference);
 		owner?.dispose();
 		if (previous && fullscreenClipboardReferences.get(reference) === previous) fullscreenClipboardReferences.delete(reference);
@@ -225,6 +225,8 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 	}
 
 	const originalCopy = tui.copySelectionToClipboard;
+	const nativeTextCopy = options.piVersion === "0.87.1";
+	if (nativeTextCopy && typeof tui.getActiveSelectionText !== "function") return failPassive();
 	const originalSelectionMouse = tui.handleSelectionMouseEvent;
 	const originalViewportInput = tui.handleViewportInput;
 	const originalSetFocus = tui.setFocus;
@@ -280,6 +282,13 @@ export function installFullscreenClipboard(tui: any, options: FullscreenClipboar
 			return;
 		}
 		if (!tui.getSelectionBounds()) return;
+		if (nativeTextCopy) {
+			// 0.87 exposes the exact selected text. Do not invoke its async
+			// clipboard callback: it can flash before our queued native write.
+			const text = tui.getActiveSelectionText();
+			if (typeof text === "string") admit(text);
+			return;
+		}
 		const terminal = tui.terminal;
 		const originalWrite = terminal.write;
 		const originalFlash = tui.flash;

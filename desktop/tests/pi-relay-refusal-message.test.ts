@@ -43,7 +43,7 @@ import {
 // Technique: the embedded source runs against stub Pi packages
 // (tests/fixtures/managed-extension-stubbed.ts); the provider it registers is driven through its
 // own streamSimple with a stubbed fetch that answers with a real Response, and the error event it
-// pushes is read back. What this cannot prove: how Pi 0.84.1 lays the message out on screen, or that
+// pushes is read back. What this cannot prove: how Pi 0.87.1 lays the message out on screen, or that
 // AgentSession's retry loop runs end to end — the classifier is called, the session is not.
 
 const WALLET_DAY_MESSAGE = 'Balance is not enough for today — message @makscee on Telegram to top up.';
@@ -72,7 +72,7 @@ async function refusedTurn(answer: Answer): Promise<{ error: TurnError; requests
   const factory = loadManagedExtension({ env: { PI_PACKAGE_DIR: STUB_PI_PACKAGE_DIR }, fetch, responsesHelpers });
   const providers = new Map<string, ProviderConfig>();
   const pi: FakePi = { on: vi.fn(), registerProvider: (id, config) => { providers.set(id, config); } };
-  factory(pi, { clipboardIO: { platform: 'darwin', env: {}, piVersion: '0.84.1', writeText: vi.fn() } });
+  factory(pi, { clipboardIO: { platform: 'darwin', env: {}, piVersion: '0.87.1', writeText: vi.fn() } });
   const provider = providers.get('void-codex');
   expect(provider, `the managed void-codex provider did not register for the granted ${defaultCodexModel()}`).toBeDefined();
   const model = { ...provider!.models[0], provider: 'void-codex', api: provider!.api };

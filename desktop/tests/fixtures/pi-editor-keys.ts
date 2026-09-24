@@ -60,7 +60,7 @@ export async function editorRig(consumerFile = interactiveFile) {
   // Read the actual app definitions without loading config.js / user settings.
   const source = readFileSync(path.join(agentDir, 'dist/core/keybindings.js'), 'utf8');
   const definition = source.slice(source.indexOf('export const KEYBINDINGS ='), source.indexOf('const KEYBINDING_NAME_MIGRATIONS'));
-  const definitions = new Function('TUI_KEYBINDINGS', 'process', definition.replace('export const', 'const') + '; return KEYBINDINGS;')(tuiModule.TUI_KEYBINDINGS, { platform: 'darwin' });
+  const definitions = new Function('TUI_KEYBINDINGS', 'process', 'windowsKeybindings', definition.replace('export const', 'const') + '; return KEYBINDINGS;')(tuiModule.TUI_KEYBINDINGS, { platform: 'darwin' }, false);
   const kb = new tuiModule.KeybindingsManager(definitions);
   const theme = { borderColor: (s: string) => s, selectList: { selectedPrefix: (s: string) => s, selectedText: (s: string) => s, description: (s: string) => s, scrollInfo: (s: string) => s, noMatch: (s: string) => s } };
   const reference = referenceFactory<TuiView>(consumerFile)(() => r.tui);
@@ -90,7 +90,7 @@ export async function editorRig(consumerFile = interactiveFile) {
 export type EditorRig = Awaited<ReturnType<typeof editorRig>>;
 export function attach(module: KeysModule, r: EditorRig, overrides: Partial<PiEditorKeysOptions> = {}) {
   expect(module.installPiEditorKeys, 'K5: Go managed source must export typed installPiEditorKeys seam').toBeTypeOf('function');
-  const dispose = module.installPiEditorKeys!(r.reference, { platform: 'darwin', env: localEnv, piVersion: '0.84.1', ctx: r.ctx, ...overrides });
+  const dispose = module.installPiEditorKeys!(r.reference, { platform: 'darwin', env: localEnv, piVersion: '0.87.1', ctx: r.ctx, ...overrides });
   r.disposers.push(dispose); return dispose;
 }
 export async function startDefault(module: KeysModule, r: EditorRig) {
