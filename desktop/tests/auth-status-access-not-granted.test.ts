@@ -81,14 +81,27 @@ describe('readAuthStatus lets the fourth auth state through — the credential w
     // believe. Fed a payload carrying one (a future vc build, a proxy that helpfully merges
     // fields), the current field-by-field copy would pass it straight through to a screen.
     const result = await statusFor(
-      '{"authState":"access_not_granted","error":"access has not been granted to this account yet — an operator has to grant it","identity":"someone@example.com","pct":0,"resetAt":"2026-09-01T00:00:00.000Z"}\n',
+      '{"authState":"access_not_granted","error":"access has not been granted to this account yet — an operator has to grant it","identity":"someone@example.com","pct":0,"resetAt":"2026-09-01T00:00:00.000Z",' +
+        '"wallet":{"balanceUsd":0,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":false,"fundedDays":0},' +
+        '"walletText":"$0.00 · T1 · ~0 days left",' +
+        '"launchNotice":"Balance is not enough for today — message @makscee on Telegram to top up."}\n',
     );
     expect(result.ok, 'status was rejected outright, so the fields cannot be checked yet').toBe(true);
-    const status = result.ok ? result.status : undefined;
+    const status = (result.ok ? result.status : undefined) as Record<string, unknown> | undefined;
     expect(status?.identity, 'a refusal carried an identity nobody verified into the UI').toBeUndefined();
     // pct: 0 is the sharper half — copied through, it reads on screen as "0% of your budget
     // used", a confident claim about an account the server refused to talk about.
     expect(status?.pct, 'a refusal carried a budget figure into the UI').toBeUndefined();
     expect(status?.resetAt).toBeUndefined();
+    // The wallet and the launch notice pass this module for signed-in states only (spec
+    // 2026-09-23-client-wallet-days, amendment after void-code#76 §3). On a refusal they are the
+    // same unverified account facts as the identity: "$0.00 · T1 · ~0 days left" on a screen for
+    // someone who has no access at all.
+    expect(status?.wallet, 'a refusal carried a wallet into the UI').toBeUndefined();
+    expect(status?.launchNotice, 'a refusal carried a launch notice into the UI').toBeUndefined();
+    // Nor the line vc formats from that wallet (second panel on #76, G3): the signed-in screen shows
+    // walletText, and a refusal must not hand it one.
+    expect(status?.walletText, 'a refusal carried a wallet line into the UI').toBeUndefined();
+    expect(Object.keys(status ?? {}), 'a refusal carries exactly one fact out of this module: its state').toEqual(['authState']);
   });
 });

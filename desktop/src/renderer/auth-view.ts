@@ -20,6 +20,18 @@ export function screenForStatus(status: AuthStatus | null): AuthScreen {
   return 'signed_out';
 }
 
+// The wallet line on the signed-in screen: the line vc wrote (walletText), as is, or null for
+// nothing. Only a signed-in status vouches for the account, so every other state — an unrecognised
+// word included — shows no money. The line is never composed here from the wallet object: the
+// display rules (a debt as -$3.00, cents floored, days never below 0) live in vc, once. Nor is it
+// ever the launch notice — that warning stays inside Pi, docked above its editor.
+export function walletLineFor(status: AuthStatus | null): string | null {
+  const authState: string | undefined = status?.authState;
+  if (authState !== 'signed_in') return null;
+  const text: unknown = status?.walletText;
+  return typeof text === 'string' && text !== '' ? text : null;
+}
+
 // Whether the shared Sign in button belongs on a given screen. Lives here, next to the mapper that
 // produces the screens, so the rule is testable without a DOM and so a fifth screen has exactly one
 // place to declare its answer — inline in the renderer, the default for anything new would silently

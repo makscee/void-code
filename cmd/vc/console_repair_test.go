@@ -31,7 +31,7 @@ func captureRepairStdout(t *testing.T, fn func() error) (string, error) {
 	out, _ := io.ReadAll(r)
 	return string(out), runErr
 }
-func TestStatusVerifiesSubscriptionAndShowsBudget(t *testing.T) {
+func TestStatusVerifiesSubscriptionAndShowsBalance(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -39,7 +39,7 @@ func TestStatusVerifiesSubscriptionAndShowsBudget(t *testing.T) {
 		if r.URL.Path != "/v1/vc/me" || r.Header.Get("Authorization") != "Bearer good" {
 			t.Fatalf("unexpected verification request %s %q", r.URL.Path, r.Header.Get("Authorization"))
 		}
-		_, _ = io.WriteString(w, `{"userId":"u-1","email":"user@example.test","pct":27.4,"resetAt":"2026-06-01T00:00:00Z"}`)
+		_, _ = io.WriteString(w, `{"userId":"u-1","email":"user@example.test","pct":27.4,"resetAt":"2026-06-01T00:00:00Z","wallet":{"balanceUsd":18,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":true,"fundedDays":9}}`)
 	}))
 	defer server.Close()
 	t.Setenv("VC_ACCESS_CHECK_HOST", server.URL)
@@ -50,9 +50,16 @@ func TestStatusVerifiesSubscriptionAndShowsBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"runtime:", "Pi", "logged in as user@example.test", "27% used", "resets Jun 1"} {
+	out = plainText(out)
+	for _, want := range []string{"runtime:", "Pi", "logged in as user@example.test", "balance: $18.00 · T1 · ~9 days left"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status missing %q: %s", want, out)
+		}
+	}
+	// The retired budget line: a percentage and a reset date, both gone.
+	for _, gone := range []string{"27%", "% used", "resets", "budget:"} {
+		if strings.Contains(out, gone) {
+			t.Fatalf("status still shows %q: %s", gone, out)
 		}
 	}
 }

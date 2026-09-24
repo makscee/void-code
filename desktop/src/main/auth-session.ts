@@ -24,17 +24,35 @@ export type AuthState = (typeof AUTH_STATES)[number];
 // budget figure or reset date attached to a refusal therefore comes from the same service that just
 // said no, and nobody vouched for it. That rule is enforced here, at the process boundary, and not
 // left to the renderer: a future vc build (or a proxy that helpfully merges fields into the reply)
-// must not be able to put an unverified account fact on a screen. pct is the sharp one — a copied
-// `"pct":0` reads on screen as "0% of your budget used", a confident claim about an account the
-// server refused to discuss. Such a status carries exactly one fact out of this module: its state.
+// must not be able to put an unverified account fact on a screen. Such a status carries exactly one
+// fact out of this module: its state.
 const REFUSAL_STATES: readonly AuthState[] = ['access_not_granted'];
+
+// The wallet as `vc status --json` mirrors it from the server (spec 2026-09-23-client-wallet-days):
+// dollars for display, the tariff that draws on them, and whether today's charge has been taken.
+export interface WalletTariff {
+  tier: string;
+  monthlyPriceUsd: number;
+  dailyRateUsd: number;
+}
+export interface Wallet {
+  balanceUsd: number;
+  tariff: WalletTariff | null;
+  todayPaid: boolean | null;
+  fundedDays: number | null;
+}
 
 export interface AuthStatus {
   authState: AuthState;
   identity?: string;
-  pct?: number;
-  resetAt?: string;
   reason?: string;
+  wallet?: Wallet;
+  // The wallet line exactly as vc formats it (`$18.00 · T1 · ~9 days left`, or a bare balance);
+  // absent when there is no wallet. The display rules live in vc, once, and are never re-made here.
+  walletText?: string;
+  // What vc hands Pi about the wallet at launch (a low balance, a day Relay will refuse); absent
+  // when there is nothing to say.
+  launchNotice?: string;
 }
 export type StatusResult =
   | { ok: true; status: AuthStatus }
@@ -55,6 +73,34 @@ function isAuthState(value: unknown): value is AuthState {
 }
 function isValidStatusShape(value: unknown): value is { authState: AuthState } & Record<string, unknown> {
   return isPlainObject(value) && isAuthState(value.authState);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+function isBooleanOrNull(value: unknown): value is boolean | null {
+  return value === null || typeof value === 'boolean';
+}
+function isIntegerOrNull(value: unknown): value is number | null {
+  return value === null || Number.isInteger(value);
+}
+
+// The same shape rules as vc's own parser (internal/auth/me.go parseWallet), all or nothing: one
+// field of the wrong type drops the whole wallet, because a half-read wallet could show a wrong
+// balance. Only the known fields are copied — a percentage riding along inside the wallet stops
+// here. An absent tariff, todayPaid or fundedDays reads as null, as it does in vc.
+function readWallet(value: unknown): Wallet | undefined {
+  if (!isPlainObject(value) || !isFiniteNumber(value.balanceUsd)) return undefined;
+  let tariff: WalletTariff | null = null;
+  if (value.tariff !== undefined && value.tariff !== null) {
+    const raw = value.tariff;
+    if (!isPlainObject(raw) || typeof raw.tier !== 'string' || raw.tier === '' || !isFiniteNumber(raw.monthlyPriceUsd) || !isFiniteNumber(raw.dailyRateUsd)) return undefined;
+    tariff = { tier: raw.tier, monthlyPriceUsd: raw.monthlyPriceUsd, dailyRateUsd: raw.dailyRateUsd };
+  }
+  const todayPaid = value.todayPaid ?? null;
+  const fundedDays = value.fundedDays ?? null;
+  if (!isBooleanOrNull(todayPaid) || !isIntegerOrNull(fundedDays)) return undefined;
+  return { balanceUsd: value.balanceUsd, tariff, todayPaid, fundedDays };
 }
 
 export type LoginEvent =
@@ -86,10 +132,20 @@ export function readAuthStatus(vcPath: string, spawn: AuthSpawner): Promise<Stat
       // reach, and the fallback word 'unknown_error' would be worse than silence here: it reports
       // a fault where the system is working exactly as configured.
       if (!REFUSAL_STATES.includes(parsed.authState)) {
+        // pct/resetAt are retired (spec 2026-09-23-client-wallet-days): the client shows money and
+        // days, never a percentage, so an older vc that still prints them gets nothing past here.
         if (typeof parsed.identity === 'string') status.identity = parsed.identity;
-        if (typeof parsed.pct === 'number') status.pct = parsed.pct;
-        if (typeof parsed.resetAt === 'string') status.resetAt = parsed.resetAt;
         if (typeof parsed.error === 'string') status.reason = KNOWN_STATUS_ERRORS[parsed.error] ?? UNKNOWN_STATUS_ERROR;
+        // The wallet, its line and the notice are account facts: they leave this module only with a
+        // signed-in status, the one state in which vc heard the server vouch for them. Each is
+        // checked on its own — a wallet this module cannot read does not take the line or the notice
+        // with it.
+        if (parsed.authState === 'signed_in') {
+          const wallet = readWallet(parsed.wallet);
+          if (wallet !== undefined) status.wallet = wallet;
+          if (typeof parsed.walletText === 'string' && parsed.walletText !== '') status.walletText = parsed.walletText;
+          if (typeof parsed.launchNotice === 'string' && parsed.launchNotice !== '') status.launchNotice = parsed.launchNotice;
+        }
       }
       resolve({ ok: true, status });
     });

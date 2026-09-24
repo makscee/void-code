@@ -58,6 +58,7 @@ interface ClipboardExtensionOptions {
 
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
+	registerLaunchNotice(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
@@ -510,6 +511,36 @@ function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: Clipb
 	});
 }
 
+// vc decides at launch, from the wallet its own /v1/vc/me reported, whether the person needs a word
+// about money (low balance, or a day Relay will refuse), and hands it over as VC_LAUNCH_NOTICE. It is
+// shown here, not printed by vc: Pi's fullscreen mode clears whatever was on the terminal before it.
+//
+// Docked above the editor as a widget, not notify()'d into the transcript: a reopened chat
+// (--session <file>) appends its whole history after session_start, which would push a transcript
+// warning off screen. It stays until the first prompt — by then it has been read — and the first
+// before_agent_start takes it down.
+//
+// Only on session_start with reason "startup": the notice belongs to the launch. Pi runs this factory
+// again for /new, /resume, fork and /reload, with VC_LAUNCH_NOTICE still in the environment, and a
+// later session would show a notice about a wallet that may have changed since.
+const LAUNCH_NOTICE_WIDGET_KEY = "void-code-launch-notice";
+
+function registerLaunchNotice(pi: ExtensionAPI): void {
+	const notice = process.env.VC_LAUNCH_NOTICE;
+	if (!notice) return;
+	let docked = false;
+	pi.on("session_start", async (event, ctx) => {
+		if (event.reason !== "startup" || !ctx.hasUI) return;
+		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, [ctx.ui.theme.fg("warning", notice)], { placement: "aboveEditor" });
+		docked = true;
+	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!docked) return;
+		docked = false;
+		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, undefined);
+	});
+}
+
 function registerDesktopLifecycle(pi: ExtensionAPI): void {
 	const statusPath = process.env.VC_DESKTOP_STATUS_PATH;
 	const chatId = process.env.VC_DESKTOP_CHAT_ID;
@@ -625,7 +656,7 @@ function streamVoidCodex(
 			});
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			if (!response.ok) {
-				throw new Error("Void relay Codex request failed: HTTP " + response.status + ": " + (await response.text()));
+				throw new Error(relayFailureMessage(response.status, await response.text()));
 			}
 			if (!response.body) throw new Error("Void relay Codex response had no body");
 
@@ -646,6 +677,28 @@ function streamVoidCodex(
 	})();
 
 	return stream;
+}
+
+// What Pi shows the person when Relay answers non-2xx. Only Relay's 402 — the wallet's
+// wallet_daily_charge_required, the percentage cap — is shown as the sentence it carries in
+// error.message: no status line, no JSON. Every other status keeps the raw text even when its body
+// has an error.message, because Relay passes upstream answers through with their status, and Pi's
+// auto-retry reads this text: the "HTTP 5xx" prefix is what makes an upstream 5xx retryable. A 402
+// that is not JSON, or lacks a non-empty string error.message, keeps the raw text too.
+function relayFailureMessage(status: number, text: string): string {
+	const raw = "Void relay Codex request failed: HTTP " + status + ": " + text;
+	if (status !== 402) return raw;
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const error = (parsed as { error?: unknown }).error;
+			if (error && typeof error === "object" && !Array.isArray(error)) {
+				const message = (error as { message?: unknown }).message;
+				if (typeof message === "string" && message.trim() !== "") return message;
+			}
+		}
+	} catch {}
+	return raw;
 }
 
 function promptCacheKey(sessionId?: string): string | undefined {

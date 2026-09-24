@@ -15,7 +15,9 @@ type AuthState struct {
 	Identity           string
 	IdentityUnverified bool
 	UpdateNudge        string
-	BalanceUsd         *float64
+	// Balance is the wallet as the caller renders it for a person
+	// ("$18.00 · T1 · ~9 days left"); empty when there is none to show.
+	Balance string
 }
 
 type RunResult int
@@ -34,7 +36,21 @@ type Callbacks struct{}
 
 func Run(state AuthState, cb Callbacks) (RunResult, error) { return RunWithOptions(state, cb) }
 func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
-	p := tea.NewProgram(newModel(state), opts...)
+	return RunWithUpdates(state, cb, nil, opts...)
+}
+
+// BalanceMsg puts a balance on a screen that is already up, rendered the way
+// AuthState.Balance is. The screen never waits on the network, so a wallet
+// that arrives a round trip after the first frame comes as this message.
+type BalanceMsg string
+
+// RunWithUpdates runs the screen like RunWithOptions and also runs updates in
+// the background from the first frame on; the message it returns (a
+// BalanceMsg) updates the screen that is up. A nil updates is RunWithOptions.
+func RunWithUpdates(state AuthState, cb Callbacks, updates tea.Cmd, opts ...tea.ProgramOption) (RunResult, error) {
+	start := newModel(state)
+	start.updates = updates
+	p := tea.NewProgram(start, opts...)
 	out, err := p.Run()
 	if err != nil {
 		fmt.Print(plainBanner(state))
@@ -53,11 +69,11 @@ func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (R
 	return m.result, nil
 }
 
-func FormatBalance(v *float64) string {
-	if v == nil {
+func balanceDisplay(balance string) string {
+	if balance == "" {
 		return "—"
 	}
-	return fmt.Sprintf("$%.2f left", *v)
+	return balance
 }
 func PlainBannerForTest(state AuthState) string { return plainBanner(state) }
 
@@ -79,6 +95,7 @@ type model struct {
 	view             viewState
 	result           RunResult
 	chosen, quitting bool
+	updates          tea.Cmd // started with the first frame; see RunWithUpdates
 }
 
 func menuItemsFor(state AuthState) []menuItem {
@@ -88,7 +105,7 @@ func menuItemsFor(state AuthState) []menuItem {
 	return []menuItem{{"Start", SpawnPi}, {"Top up", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
 }
 func newModel(state AuthState) model            { return model{AuthState: state, items: menuItemsFor(state)} }
-func (m model) Init() tea.Cmd                   { return nil }
+func (m model) Init() tea.Cmd                   { return m.updates }
 func NewMenuModelForTest(state AuthState) model { return newModel(state) }
 func (m model) Cursor() int                     { return m.cursor }
 func (m model) ItemCount() int                  { return len(m.items) }
@@ -101,6 +118,10 @@ func (m model) MoveCursor(d int) model {
 }
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if balance, isBalance := msg.(BalanceMsg); isBalance {
+		m.Balance = string(balance)
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -152,7 +173,7 @@ func (m model) View() string {
 		return sb.String()
 	}
 	if m.LoggedIn {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified)+" · "+FormatBalance(m.BalanceUsd))) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified)+" · "+balanceDisplay(m.Balance))) + "\n")
 	} else {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.WarnStyle.Render("Not logged in")) + "\n")
 	}
@@ -182,7 +203,7 @@ func plainBanner(state AuthState) string {
 		} else {
 			sb.WriteString("  Logged in as " + state.Identity + "\n")
 		}
-		sb.WriteString("  " + FormatBalance(state.BalanceUsd) + "\n")
+		sb.WriteString("  " + balanceDisplay(state.Balance) + "\n")
 	} else {
 		sb.WriteString("  Not logged in\n")
 	}

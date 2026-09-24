@@ -5,7 +5,7 @@ import { appVersionLabel } from './app-version';
 import { wireProductTerminalClipboard } from './clipboard-shortcuts';
 import { detectRendererPlatform } from './platform';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
-import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, walletLineFor, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import { installFileDropHandlers } from './file-drop';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
@@ -50,6 +50,7 @@ const signinCodeStatusElement = document.querySelector<HTMLElement>('#signin-cod
 const signinLinkElement = document.querySelector<HTMLElement>('#signin-link')!;
 const signinLinkOpenButton = document.querySelector<HTMLButtonElement>('#signin-link-open')!;
 const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
+const walletLineElement = document.querySelector<HTMLElement>('#wallet-line')!;
 const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
 const signinStatusElement = document.querySelector<HTMLElement>('#signin-status')!;
 
@@ -122,8 +123,12 @@ function renderAuthScreens(): void {
 // Arriving on the refusal screen reads the state of the request; it does not file one. That is
 // why the two are separate acts down to argv — a screen that filed on sight would put a row in
 // the queue every time a window was left open on it.
+// The wallet line is vc's own sentence, set as text; walletLineFor decides whether there is one.
 function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.auth.status>>): void {
   authScreen = screenForStatus(result.ok ? result.status : null);
+  const walletLine = walletLineFor(result.ok ? result.status : null);
+  walletLineElement.textContent = walletLine ?? '';
+  walletLineElement.hidden = walletLine === null;
   if (authScreen !== 'access_not_granted') accessRequest = null;
   renderAuthScreens();
   if (authScreen === 'access_not_granted') void loadAccessRequest(false);
@@ -245,6 +250,10 @@ async function launch(tab: RendererTabRecord, mode: 'create' | 'resume'): Promis
     currentRecovery = 'NONE';
     signinOnStartFailure = false;
     const started = await window.voidTerminal.start({ sessionId: tab.id, cwd: workspace.path, mode });
+    // A started chat re-reads the status, so the header's wallet line shows this launch's balance
+    // rather than the one read when the window opened. Not awaited: the chat's output is wired
+    // below and must not wait on a second vc run.
+    void recheckAuthStatus();
     if (started.showSharedFilesWarning) announce('These chats share the same folder and can edit the same files. This is not isolation; use another worktree or window when changes may conflict.');
     offOutput = window.voidTerminal.onOutput(tab.id, ({ data }) => terminal.write(data));
     offExit = window.voidTerminal.onExit(tab.id, async () => {
@@ -377,9 +386,10 @@ signinStartButton.addEventListener('click', () => {
   renderAuthScreens();
   void startSignIn();
 });
-// Access is granted elsewhere, on someone else's clock, while this app reads status exactly twice:
-// at startup and after a login resolves. Once a person is parked on that screen nothing would ever
-// look again, so re-reading status is the only honest action left — and it must stay a status read:
+// Access is granted elsewhere, on someone else's clock, while this app reads status only at startup,
+// after a login resolves, and when a chat starts or ends. Once a person is parked on that screen
+// nothing would ever look again, so re-reading status is the only honest action left — and it must
+// stay a status read:
 // a sign-in from here succeeds and returns them to the very same screen. One read per press, with
 // the button held disabled for the duration so a second press cannot stack a second read on top.
 signinNoAccessRecheckButton.addEventListener('click', () => {

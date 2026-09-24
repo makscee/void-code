@@ -51,14 +51,51 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 
 	obj["authState"] = "signed_in"
 	obj["identity"] = identity
-	// pct/resetAt are only set when the server actually returned them — a
-	// zero value here would read as "no budget left" instead of "no budget
-	// information available".
-	if me.Pct != nil {
-		obj["pct"] = *me.Pct
+	// The wallet is only set when the server actually sent a usable one — a
+	// zero wallet here would read as "$0.00" instead of "no wallet information
+	// available". The retired pct/resetAt are never emitted, whatever the
+	// server sends: the client reports no percentages.
+	if me.Wallet != nil {
+		obj["wallet"] = walletJSONFor(me.Wallet)
 	}
-	if me.ResetAt != "" {
-		obj["resetAt"] = me.ResetAt
+	// The wallet line already written, for the desktop to show as is: exactly
+	// what formatWallet renders — the words `vc status` prints after
+	// "balance:" — or null when there is no wallet. The display rules live
+	// here, in Go, once; the desktop never re-implements them.
+	obj["walletText"] = nil
+	if text := formatWallet(me.Wallet); text != "" {
+		obj["walletText"] = text
+	}
+	// The same notice a launch hands to Pi, for the desktop to show: a string,
+	// or null when the wallet has nothing to say. Only a signed-in answer
+	// carries one — a refusal names no wallet to warn about.
+	obj["launchNotice"] = nil
+	if notice := walletLaunchNotice(me.Wallet); notice != "" {
+		obj["launchNotice"] = notice
 	}
 	return json.NewEncoder(out).Encode(obj)
+}
+
+// walletJSON mirrors the server's "wallet" object under the server's names,
+// tier unformatted. No omitempty: todayPaid false and fundedDays 0 are the
+// values that matter most, and null is how "no tariff" reads.
+type walletJSON struct {
+	BalanceUsd float64     `json:"balanceUsd"`
+	Tariff     *tariffJSON `json:"tariff"`
+	TodayPaid  *bool       `json:"todayPaid"`
+	FundedDays *int        `json:"fundedDays"`
+}
+
+type tariffJSON struct {
+	Tier            string  `json:"tier"`
+	MonthlyPriceUsd float64 `json:"monthlyPriceUsd"`
+	DailyRateUsd    float64 `json:"dailyRateUsd"`
+}
+
+func walletJSONFor(w *auth.Wallet) walletJSON {
+	out := walletJSON{BalanceUsd: w.BalanceUsd, TodayPaid: w.TodayPaid, FundedDays: w.FundedDays}
+	if w.Tariff != nil {
+		out.Tariff = &tariffJSON{Tier: w.Tariff.Tier, MonthlyPriceUsd: w.Tariff.MonthlyPriceUsd, DailyRateUsd: w.Tariff.DailyRateUsd}
+	}
+	return out
 }

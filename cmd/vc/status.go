@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
@@ -33,7 +32,7 @@ var valueStyle = lipgloss.NewStyle().Bold(true)
 var errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
 
 // runStatus never treats the presence of a token file as authentication. The
-// subscription endpoint is the authority for identity, budget, and rejection.
+// subscription endpoint is the authority for identity, wallet, and rejection.
 func runStatus(cmd *cobra.Command, _ []string) error {
 	if cmd != nil {
 		if jsonFlag, err := cmd.Flags().GetBool("json"); err == nil && jsonFlag {
@@ -65,27 +64,8 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), valueStyle.Render("logged in as "+identity))
 	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render("~/.void-code/token"))
-	if me.Pct != nil {
-		fmt.Printf("%s %s\n", labelStyle.Render("budget: "), valueStyle.Render(formatBudgetLine(*me.Pct, me.ResetAt)))
+	if balance := formatWallet(me.Wallet); balance != "" {
+		fmt.Printf("%s %s\n", labelStyle.Render("balance:"), valueStyle.Render(balance))
 	}
 	return nil
-}
-
-func formatBudgetLine(pct float64, resetAt string) string {
-	if resetAt == "" {
-		return fmt.Sprintf("%.0f%% used", pct)
-	}
-	return fmt.Sprintf("%.0f%% used — resets %s", pct, fmtResetDate(resetAt))
-}
-func fmtResetDate(resetAt string) string {
-	if t, err := time.Parse(time.RFC3339, resetAt); err == nil {
-		return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
-	}
-	if t, err := time.Parse("2006-01-02", resetAt[:min(10, len(resetAt))]); err == nil {
-		return fmt.Sprintf("%s %d", t.Format("Jan"), t.Day())
-	}
-	if len(resetAt) >= 10 {
-		return resetAt[:10]
-	}
-	return resetAt
 }
