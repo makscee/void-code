@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  loadManagedExtension, STUB_PI_PACKAGE_DIR,
+  defaultCodexModel, loadManagedExtension, STUB_PI_PACKAGE_DIR,
   type FakePi, type ProviderConfig, type RelayFetch, type StreamEvent,
 } from './fixtures/managed-extension-stubbed';
 
@@ -55,7 +55,7 @@ async function refusedTurn(answer: Answer): Promise<{ error: StreamEvent['error'
   const pi: FakePi = { on: vi.fn(), registerProvider: (id, config) => { providers.set(id, config); } };
   factory(pi, { clipboardIO: { platform: 'darwin', env: {}, piVersion: '0.84.1', writeText: vi.fn() } });
   const provider = providers.get('void-codex');
-  expect(provider, 'the managed void-codex provider did not register').toBeDefined();
+  expect(provider, `the managed void-codex provider did not register for the granted ${defaultCodexModel()}`).toBeDefined();
   const model = { ...provider!.models[0], provider: 'void-codex', api: provider!.api };
   const stream = provider!.streamSimple(model, { systemPrompt: 'fixture', messages: [{ role: 'user', content: 'hello', timestamp: 1 }] });
   await stream.ended;

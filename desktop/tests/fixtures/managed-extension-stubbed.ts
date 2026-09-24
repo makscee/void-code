@@ -70,6 +70,17 @@ export function embeddedSource(): string {
   return go.slice(start + marker.length, end);
 }
 
+// The model the embedded source registers void-codex with by default, read from the source rather
+// than written here. The extension drops every granted model it does not allow and skips
+// registration when none is left, so a hardcoded id silently unregisters the provider the moment
+// the source retires it: main's #75 swapped gpt-5.6-terra for gpt-6-sol, and on void-code#76's
+// merge ref every suite driving void-codex through this fixture failed with "did not register".
+export function defaultCodexModel(source: string = embeddedSource()): string {
+  const match = /^const CODEX_MODEL_ID = "([^"]+)";$/m.exec(source);
+  expect(match, 'the embedded source no longer declares CODEX_MODEL_ID').not.toBeNull();
+  return match![1];
+}
+
 const forbidden = (what: string) => (): never => { throw new Error(`managed-extension fixture forbids ${what}`); };
 
 function recordingStream(): RecordedStream & { push(event: StreamEvent): void; end(): void } {
@@ -113,12 +124,13 @@ export interface LoadOptions {
 }
 
 export function loadManagedExtension({ env, fetch, responsesHelpers }: LoadOptions): ExtensionFactory {
-  const code = transformSync(embeddedSource(), {
+  const source = embeddedSource();
+  const code = transformSync(source, {
     loader: 'ts', format: 'cjs', target: 'node22', logLevel: 'silent',
     // `await import(x)` becomes `require(x)`, so the stub loader below answers it too.
     supported: { 'dynamic-import': false },
   }).code;
-  const bootstrap = { version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: ['gpt-5.6-terra'] }] };
+  const bootstrap = { version: 1, relayUrl: 'https://relay.invalid', authToken: 'fixture-only', providers: [{ kind: 'codex', relayProviderId: 'fixture', models: [defaultCodexModel(source)] }] };
   const stubRequire = (id: string): unknown => {
     if (id === RESPONSES_HELPERS_URL && responsesHelpers) return responsesHelpers;
     switch (id) {
