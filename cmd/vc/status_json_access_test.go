@@ -39,8 +39,9 @@ import (
 // Contract for the state, checked below:
 //   - authState is "access_not_granted";
 //   - "error" carries a human-readable reason, and does not advise a new sign-in;
-//   - "identity", "pct", "resetAt", "wallet" are ABSENT — the refusal arrives before the
-//     server names anyone, so there is nobody to name;
+//   - "identity", "pct", "resetAt", "wallet", "launchNotice" are ABSENT — the refusal
+//     arrives before the server names anyone, so there is nobody to name, and no
+//     wallet to warn about;
 //   - only this one server answer produces it.
 
 // The state exists and carries the refusal without inventing an identity.
@@ -90,7 +91,10 @@ func TestStatusJSONReportsAccessNotGrantedWhenServerRefusesAccess(t *testing.T) 
 	// The server refused before it vouched for anyone. Echoing the subject out
 	// of the refusal body would show the desktop a name nobody confirmed —
 	// and would make an unauthorised session look half-authorised.
-	for _, field := range []string{"identity", "pct", "resetAt", "wallet"} {
+	// The body below carries a wallet that, read as a signed-in answer, would
+	// produce the refusal launch notice (unpaid, $1 under a $2 rate) — which is
+	// exactly why launchNotice is on this list.
+	for _, field := range []string{"identity", "pct", "resetAt", "wallet", "launchNotice"} {
 		if _, present := obj[field]; present {
 			t.Errorf("access_not_granted output carries %q = %v, want absent — nothing in a refusal is confirmed state", field, obj[field])
 		}

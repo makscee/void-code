@@ -116,6 +116,105 @@ describe('readAuthStatus', () => {
   });
 });
 
+// The wallet and the launch notice reach the desktop through this boundary — spec
+// 2026-09-23-client-wallet-days, amendment "после панели void-code#76" §3: `vc status --json` carries
+// `wallet` (the server's object, mirrored) and `launchNotice` (a string or null), and the desktop
+// shows the balance, the days and the notice. Before this, readAuthStatus dropped both, so no screen
+// could ever show them.
+//
+// The wallet is validated here with the same shape rules as the Go parser (internal/auth/me.go
+// parseWallet): balanceUsd a number; tariff null or { tier: non-empty string, monthlyPriceUsd:
+// number, dailyRateUsd: number }; todayPaid a boolean or null; fundedDays an integer or null. One
+// field of the wrong type drops the whole wallet — a half-read wallet could show a wrong balance —
+// while the rest of the status stays. Only known fields are copied: an old vc or a proxy that adds
+// `pct` inside the wallet gets no percentage past this module.
+describe('readAuthStatus — wallet and launch notice', () => {
+  const TARIFF_T1 = { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 };
+  const WALLET = { balanceUsd: 18, tariff: TARIFF_T1, todayPaid: true, fundedDays: 9 };
+  const LOW_NOTICE = 'Balance low — 2 days left. Message @makscee on Telegram to top up.';
+  const REFUSAL_NOTICE = 'Balance is not enough for today — message @makscee on Telegram to top up.';
+
+  async function statusOf(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const child = new FakeChild();
+    const promise = readAuthStatus('/private/vc', fixedSpawner(child));
+    child.stdout.emit('data', `${JSON.stringify(payload)}\n`);
+    child.end(0);
+    const result = await promise;
+    expect(result.ok, `a well-formed signed-in status was rejected: ${JSON.stringify(result)}`).toBe(true);
+    return (result.ok ? result.status : {}) as unknown as Record<string, unknown>;
+  }
+  const signedIn = (extra: Record<string, unknown>) => ({ authState: 'signed_in', identity: 'artem', ...extra });
+
+  it('passes the wallet and the notice through, under the names vc printed', async () => {
+    await expect(statusOf(signedIn({ wallet: WALLET, launchNotice: LOW_NOTICE }))).resolves.toStrictEqual({
+      authState: 'signed_in', identity: 'artem', wallet: WALLET, launchNotice: LOW_NOTICE,
+    });
+  });
+
+  // false, 0 and negatives are the values that matter most and the ones a truthiness check loses:
+  // an unpaid day, no funded days, a balance below zero.
+  it('keeps an unpaid day, zero or negative days and a negative balance exactly as sent', async () => {
+    for (const wallet of [
+      { balanceUsd: 1.5, tariff: { tier: 't3', monthlyPriceUsd: 230, dailyRateUsd: 7.67 }, todayPaid: false, fundedDays: 0 },
+      { balanceUsd: -3, tariff: TARIFF_T1, todayPaid: false, fundedDays: -2 },
+    ]) {
+      const status = await statusOf(signedIn({ wallet, launchNotice: REFUSAL_NOTICE }));
+      expect(status.wallet, JSON.stringify(wallet)).toStrictEqual(wallet);
+      expect(status.launchNotice).toBe(REFUSAL_NOTICE);
+    }
+  });
+
+  it('passes a wallet without a tariff, nulls included, and no notice for a null one', async () => {
+    const wallet = { balanceUsd: 18, tariff: null, todayPaid: null, fundedDays: null };
+    const status = await statusOf(signedIn({ wallet, launchNotice: null }));
+    expect(status).toStrictEqual({ authState: 'signed_in', identity: 'artem', wallet });
+  });
+
+  it('copies only the wallet fields it knows — no percentage rides along inside the wallet', async () => {
+    const status = await statusOf(signedIn({
+      wallet: { ...WALLET, pct: 77, resetAt: '2026-10-01T00:00:00Z', tariff: { ...TARIFF_T1, weeklyQuotaUsd: 40 } },
+    }));
+    expect(status.wallet).toStrictEqual(WALLET);
+    expect(JSON.stringify(status)).not.toContain('pct');
+  });
+
+  it.each([
+    ['balanceUsd as a string', { ...WALLET, balanceUsd: '18' }],
+    ['balanceUsd missing', { tariff: TARIFF_T1, todayPaid: true, fundedDays: 9 }],
+    ['balanceUsd null', { ...WALLET, balanceUsd: null }],
+    ['tariff as a string', { ...WALLET, tariff: 't1' }],
+    ['tariff without a tier', { ...WALLET, tariff: { monthlyPriceUsd: 60, dailyRateUsd: 2 } }],
+    ['tariff with an empty tier', { ...WALLET, tariff: { ...TARIFF_T1, tier: '' } }],
+    ['tariff with a numeric tier', { ...WALLET, tariff: { ...TARIFF_T1, tier: 1 } }],
+    ['tariff price as a string', { ...WALLET, tariff: { ...TARIFF_T1, monthlyPriceUsd: '60' } }],
+    ['tariff without a daily rate', { ...WALLET, tariff: { tier: 't1', monthlyPriceUsd: 60 } }],
+    ['todayPaid as a string', { ...WALLET, todayPaid: 'false' }],
+    ['todayPaid as a number', { ...WALLET, todayPaid: 0 }],
+    ['fundedDays as a fraction', { ...WALLET, fundedDays: 1.5 }],
+    ['fundedDays as a string', { ...WALLET, fundedDays: '9' }],
+    ['wallet as an array', [WALLET]],
+    ['wallet as a string', '$18.00'],
+    ['wallet as a number', 18],
+  ])('drops a wallet with %s, and keeps the rest of the status', async (_label, wallet) => {
+    const status = await statusOf(signedIn({ wallet, launchNotice: LOW_NOTICE }));
+    expect(status.wallet, 'a malformed wallet reached the UI').toBeUndefined();
+    expect('wallet' in status, 'a malformed wallet left a key behind').toBe(false);
+    expect(status.identity).toBe('artem');
+    expect(status.launchNotice, 'the notice is independent of the wallet object and must survive its rejection').toBe(LOW_NOTICE);
+  });
+
+  it.each([
+    ['a number', 2],
+    ['a boolean', true],
+    ['an object', { text: LOW_NOTICE }],
+    ['null', null],
+  ])('drops a launchNotice that is %s', async (_label, launchNotice) => {
+    const status = await statusOf(signedIn({ wallet: WALLET, launchNotice }));
+    expect('launchNotice' in status, `launchNotice ${JSON.stringify(launchNotice)} reached the UI`).toBe(false);
+    expect(status.wallet).toStrictEqual(WALLET);
+  });
+});
+
 describe('runLogin', () => {
   it('surfaces the verification URL to the injected opener, not to Electron shell directly', async () => {
     const child = new FakeChild();

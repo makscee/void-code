@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,22 +33,45 @@ import (
 //     `balance: $18.00` (no tariff), nothing without a wallet; --json carries
 //     `wallet` mirroring the server.
 //  3. The welcome screen shows the same text where it showed `$X left`.
-//  4. Launch (terminal and desktop-session): tariff + todayPaid === false +
-//     balanceUsd < tariff.dailyRateUsd → refused with walletBlockMessage.
-//     An unpaid day that the balance still covers is NOT refused: right after
-//     00:00 UTC the daily charge may simply not have run yet (spec, "Поправка
-//     23.09"). Tariff + fundedDays <= 2 (and not refused) → walletLowMessage,
-//     the session still starts. Anything else → silence.
+//  4. Launch (terminal and desktop-session) is NEVER refused over the wallet —
+//     only Relay refuses (402 wallet_daily_charge_required, under its
+//     BUDGET_ENFORCE switch), and Pi shows that refusal itself. The client
+//     computes a launch notice instead (spec, "Поправка 23.09 (после панели
+//     void-code#76)"), tariff required:
+//       - todayPaid === false and balanceUsd < dailyRateUsd → walletBlockMessage
+//         (Relay's own refusal sentence, as advance notice);
+//       - otherwise fundedDays <= 2 → walletLowNotice(fundedDays);
+//       - anything else → no notice.
+//     An unpaid day that the balance still covers is not a refusal: right after
+//     00:00 UTC the daily charge may simply not have run yet.
+//  5. The notice reaches Pi, not the terminal: vc hands it to Pi as
+//     VC_LAUNCH_NOTICE, and the managed extension shows it on session_start
+//     (desktop/tests/pi-launch-notice.test.ts). Pi's fullscreen mode clears
+//     whatever was printed before it, so nothing about money is printed before
+//     Pi starts. A VC_LAUNCH_NOTICE inherited from the parent never reaches Pi.
+//  6. `vc status --json` carries the same notice as `launchNotice`.
+//  7. Display: a negative balance is `-$3.00`, days never go below 0, and the
+//     balance is floored to the cent — never rounded up into money that is
+//     not there.
 //
 // Every test here drives an existing seam (runStatus, runStatusJSON, runSpawn,
-// the desktop-session command, meResultToState) through a real /v1/vc/me body,
-// so this file compiles against HEAD and says nothing about how the wallet is
-// carried inside the client.
+// the desktop-session command, the welcome program) through a real /v1/vc/me
+// body, so this file compiles against HEAD and says nothing about how the
+// wallet is carried inside the client.
 
 const walletBlockMessage = "Balance is not enough for today — message @makscee on Telegram to top up."
 
-func walletLowMessage(days string) string {
-	return "Balance low — " + days + " days left. Message @makscee on Telegram to top up."
+// launchNoticeEnv is how vc hands the launch notice to Pi.
+const launchNoticeEnv = "VC_LAUNCH_NOTICE"
+
+// walletLowNotice is the low-balance notice for n funded days, spelled the way
+// cmd/vc/wallet.go daysLeft spells a day count ("1 day left", "N days left").
+func walletLowNotice(n int) string {
+	days := fmt.Sprintf("%d days left", n)
+	if n == 1 {
+		days = "1 day left"
+	}
+	return "Balance low — " + days + ". Message @makscee on Telegram to top up."
 }
 
 const (
@@ -285,68 +309,104 @@ func TestStatusJSONOmitsWalletFromOldServers(t *testing.T) {
 // ─── launch: shared cases for `vc` and `vc desktop-session` ─────────────────
 
 type walletGateCase struct {
-	name  string
-	body  string
-	block bool
-	// warn lists substrings the launch must print; empty means the launch
-	// must say nothing about money at all.
-	warn []string
+	name string
+	body string
+	// notice is the exact launch notice vc hands to Pi (and reports as
+	// `launchNotice` in `vc status --json`); "" means none at all. No case
+	// refuses the launch: every one of them must start Pi.
+	notice string
 }
 
 var walletGateCases = []walletGateCase{
-	// Refused: the day is unpaid AND the balance cannot pay it.
-	{name: "t1, today unpaid, balance under the rate: refused", body: meBody(wallet("1.5", tariffT1, "false", "0")), block: true},
-	{name: "t3, today unpaid, balance under the rate: refused", body: meBody(wallet("3", tariffT3, "false", "0")), block: true},
-	{name: "t3, today unpaid, a cent under the rate: refused", body: meBody(wallet("7.66", tariffT3, "false", "0")), block: true},
-	{name: "t1, today unpaid, zero balance: refused", body: meBody(wallet("0", tariffT1, "false", "0")), block: true},
-	// Proceed: the day is unpaid but the balance covers it — the charge has
-	// not run yet (just after 00:00 UTC). No refusal; the warning still follows
+	// Unpaid AND the balance cannot pay the day: Relay will refuse the first
+	// request with 402. The client does not refuse — it starts Pi and passes
+	// Relay's sentence along as advance notice. This takes priority over the
+	// low-balance notice (fundedDays is 0 here, which alone would say "low").
+	{name: "t1, today unpaid, balance under the rate: refusal notice, Pi starts", body: meBody(wallet("1.5", tariffT1, "false", "0")), notice: walletBlockMessage},
+	{name: "t3, today unpaid, balance under the rate: refusal notice, Pi starts", body: meBody(wallet("3", tariffT3, "false", "0")), notice: walletBlockMessage},
+	{name: "t3, today unpaid, a cent under the rate: refusal notice, Pi starts", body: meBody(wallet("7.66", tariffT3, "false", "0")), notice: walletBlockMessage},
+	{name: "t1, today unpaid, zero balance: refusal notice, Pi starts", body: meBody(wallet("0", tariffT1, "false", "0")), notice: walletBlockMessage},
+	{name: "t1, today unpaid, negative balance: refusal notice, Pi starts", body: meBody(wallet("-3", tariffT1, "false", "-2")), notice: walletBlockMessage},
+	// The day is unpaid but the balance covers it — the charge has not run yet
+	// (just after 00:00 UTC). No refusal notice; the low notice follows
 	// fundedDays.
-	{name: "today unpaid, balance covers it, 9 days: silent", body: meBody(wallet("18", tariffT1, "false", "9"))},
-	{name: "today unpaid, balance exactly the rate: proceeds, warned", body: meBody(wallet("2", tariffT1, "false", "1")), warn: []string{"Balance low — 1 ", "Message @makscee on Telegram to top up."}},
-	{name: "t3, today unpaid, balance exactly the rate: proceeds", body: meBody(wallet("7.67", tariffT3, "false", "1")), warn: []string{"Balance low — 1 ", "Message @makscee on Telegram to top up."}},
-	{name: "today unpaid, balance covers it, 2 days: proceeds, warned", body: meBody(wallet("4", tariffT1, "false", "2")), warn: []string{walletLowMessage("2")}},
-	// Paid: warned at fundedDays <= 2, silent above.
-	{name: "today paid, 2 days left: warned", body: meBody(wallet("4", tariffT1, "true", "2")), warn: []string{walletLowMessage("2")}},
-	{name: "today paid, 0 days left: warned", body: meBody(wallet("1", tariffT1, "true", "0")), warn: []string{walletLowMessage("0")}},
-	// 1 is inside the band; the singular/plural spelling is not pinned.
-	{name: "today paid, 1 day left: warned", body: meBody(wallet("2", tariffT1, "true", "1")), warn: []string{"Balance low — 1 ", "Message @makscee on Telegram to top up."}},
-	{name: "today paid, 3 days left: silent", body: meBody(wallet("6", tariffT1, "true", "3"))},
-	{name: "today paid, 9 days left: silent", body: meBody(wallet("18", tariffT1, "true", "9"))},
-	// The block needs a tariff; Keys never says todayPaid:false without one, but
-	// if something does, there is no daily charge to be behind on.
-	{name: "no tariff, todayPaid false, zero balance: silent", body: meBody(wallet("0", "null", "false", "null"))},
-	{name: "no tariff: silent", body: meBody(wallet("0.25", "null", "null", "null"))},
+	{name: "today unpaid, balance covers it, 9 days: no notice", body: meBody(wallet("18", tariffT1, "false", "9"))},
+	{name: "today unpaid, balance exactly the rate: low notice, 1 day", body: meBody(wallet("2", tariffT1, "false", "1")), notice: walletLowNotice(1)},
+	{name: "t3, today unpaid, balance exactly the rate: low notice, 1 day", body: meBody(wallet("7.67", tariffT3, "false", "1")), notice: walletLowNotice(1)},
+	{name: "today unpaid, balance covers it, 2 days: low notice", body: meBody(wallet("4", tariffT1, "false", "2")), notice: walletLowNotice(2)},
+	// Paid: low notice at fundedDays <= 2, nothing above.
+	{name: "today paid, 2 days left: low notice", body: meBody(wallet("4", tariffT1, "true", "2")), notice: walletLowNotice(2)},
+	{name: "today paid, 1 day left: low notice", body: meBody(wallet("2", tariffT1, "true", "1")), notice: walletLowNotice(1)},
+	{name: "today paid, 0 days left: low notice", body: meBody(wallet("1", tariffT1, "true", "0")), notice: walletLowNotice(0)},
+	// Days are never shown below zero, in the notice included.
+	{name: "today paid, fundedDays -2: low notice says 0 days", body: meBody(wallet("-3", tariffT1, "true", "-2")), notice: walletLowNotice(0)},
+	{name: "today paid, 3 days left: no notice", body: meBody(wallet("6", tariffT1, "true", "3"))},
+	{name: "today paid, 9 days left: no notice", body: meBody(wallet("18", tariffT1, "true", "9"))},
+	// Every notice needs a tariff; Keys never says todayPaid:false without one,
+	// but if something does, there is no daily charge to be behind on.
+	{name: "no tariff, todayPaid false, zero balance: no notice", body: meBody(wallet("0", "null", "false", "null"))},
+	{name: "no tariff: no notice", body: meBody(wallet("0.25", "null", "null", "null"))},
 	// An inconsistent payload — balance and fundedDays both real zeros, with
-	// no tariff — still enforces nothing: no tariff means no decision at all,
+	// no tariff — still says nothing: no tariff means no notice at all,
 	// whatever todayPaid and fundedDays say. fundedDays:0 (not null) matters
-	// here — a low-balance message built from a real day count would show up
-	// in the output the moment the "no tariff" guard is skipped.
-	{name: "no tariff, todayPaid false, zero balance, zero days: silent", body: meBody(wallet("0", "null", "false", "0"))},
-	{name: "no tariff, todayPaid null, fundedDays null, zero balance: silent", body: meBody(wallet("0", "null", "null", "null"))},
+	// here — a low-balance notice built from a real day count would show up
+	// the moment the "no tariff" guard is skipped.
+	{name: "no tariff, todayPaid false, zero balance, zero days: no notice", body: meBody(wallet("0", "null", "false", "0"))},
+	{name: "no tariff, todayPaid null, fundedDays null, zero balance: no notice", body: meBody(wallet("0", "null", "null", "null"))},
 	// null is not false.
-	{name: "tariff, todayPaid null, balance under the rate: not refused", body: meBody(wallet("1", tariffT1, "null", "9"))},
-	// A wallet the client cannot read neither blocks nor warns.
-	{name: "todayPaid as a string: silent", body: meBody(wallet("1.5", tariffT1, `"false"`, "0"))},
-	// Old servers: pct is ignored — no refusal at the cap, no warning under it.
-	{name: "old server, pct 100: silent", body: meBody(`"pct":100,"resetAt":"2026-10-01T00:00:00Z"`)},
-	{name: "old server, pct 150: silent", body: meBody(`"pct":150,"resetAt":"2026-10-01T00:00:00Z"`)},
-	{name: "old server, pct 85: silent", body: meBody(`"pct":85,"resetAt":"2026-10-01T00:00:00Z"`)},
-	{name: "no wallet at all: silent", body: meBody("")},
+	{name: "tariff, todayPaid null, balance under the rate: no refusal notice", body: meBody(wallet("1", tariffT1, "null", "9"))},
+	// A wallet the client cannot read says nothing.
+	{name: "todayPaid as a string: no notice", body: meBody(wallet("1.5", tariffT1, `"false"`, "0"))},
+	// Old servers: pct is ignored — nothing at the cap, nothing under it.
+	{name: "old server, pct 100: no notice", body: meBody(`"pct":100,"resetAt":"2026-10-01T00:00:00Z"`)},
+	{name: "old server, pct 150: no notice", body: meBody(`"pct":150,"resetAt":"2026-10-01T00:00:00Z"`)},
+	{name: "old server, pct 85: no notice", body: meBody(`"pct":85,"resetAt":"2026-10-01T00:00:00Z"`)},
+	{name: "no wallet at all: no notice", body: meBody("")},
 	// pct next to a healthy wallet is ignored too.
-	{name: "pct 100 beside a paid wallet: silent", body: meBody(`"pct":100,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9"))},
+	{name: "pct 100 beside a paid wallet: no notice", body: meBody(`"pct":100,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9"))},
 }
 
+// staleLaunchNotice is planted in vc's own environment by every launch test.
+// It stands for a notice some earlier vc (or a vc that started this one)
+// computed for another wallet: Pi must never show it.
+const staleLaunchNotice = "stale launch notice inherited from the parent — must not reach Pi"
+
+// assertLaunchSilentAboutMoney checks what vc itself printed before Pi: nothing
+// about money, whatever the wallet says. Pi's fullscreen mode clears the
+// screen, so a line printed here is a line nobody reads.
 func assertLaunchSilentAboutMoney(t *testing.T, stream string) {
 	t.Helper()
 	for _, word := range []string{"Balance", "@makscee", "%", "udget"} {
 		if strings.Contains(stream, word) {
-			t.Errorf("launch output mentions %q, want nothing about money:\n%s", word, stream)
+			t.Errorf("vc printed %q before Pi started — the launch notice belongs inside Pi (VC_LAUNCH_NOTICE), where fullscreen cannot wipe it:\n%s", word, stream)
 		}
 	}
 }
 
-// `vc` from a terminal: runSpawn is the gate before Pi.
+// assertLaunchNoticeEnv checks the one channel the notice may take to Pi:
+// exactly one VC_LAUNCH_NOTICE entry carrying want, or none when want is "".
+// A stale value from vc's own environment must be gone either way.
+func assertLaunchNoticeEnv(t *testing.T, env []string, want string) {
+	t.Helper()
+	var got []string
+	for _, entry := range env {
+		name, value, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, launchNoticeEnv) {
+			got = append(got, value)
+		}
+		if strings.Contains(entry, staleLaunchNotice) {
+			t.Errorf("Pi's environment carries the launch notice vc inherited from its parent: %q", entry)
+		}
+	}
+	switch {
+	case want == "" && len(got) != 0:
+		t.Errorf("%s = %q reaches Pi, want no notice for this wallet", launchNoticeEnv, got)
+	case want != "" && (len(got) != 1 || got[0] != want):
+		t.Errorf("%s in Pi's environment = %q, want exactly [%q]", launchNoticeEnv, got, want)
+	}
+}
+
+// `vc` from a terminal: runSpawn is the last step before Pi.
 func TestTerminalLaunchFollowsWalletRules(t *testing.T) {
 	for _, tc := range walletGateCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -354,11 +414,17 @@ func TestTerminalLaunchFollowsWalletRules(t *testing.T) {
 			t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, "pi-agent"))
 			t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "0")
 			t.Setenv(config.EnvAccessCheckHost, meServer(t, tc.body))
+			t.Setenv(launchNoticeEnv, staleLaunchNotice)
 
 			spawned := false
+			var piEnv []string
 			exitCode := -1
 			savedSpawn, savedExit := spawnHarness, exitProcess
-			spawnHarness = func(context.Context, string, []string, []string) error { spawned = true; return nil }
+			spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
+				spawned = true
+				piEnv = env
+				return nil
+			}
 			exitProcess = func(code int) { exitCode = code }
 			t.Cleanup(func() { spawnHarness, exitProcess = savedSpawn, savedExit })
 
@@ -366,52 +432,32 @@ func TestTerminalLaunchFollowsWalletRules(t *testing.T) {
 			err := runSpawn(nil, nil)
 			stderr := plainText(stopStderr())
 
-			if tc.block {
-				if spawned {
-					t.Fatalf("Pi was started although today is unpaid and the balance cannot pay it; stderr:\n%s", stderr)
-				}
-				if exitCode == 0 || (exitCode == -1 && err == nil) {
-					t.Errorf("refused launch reported success (exit=%d, err=%v)", exitCode, err)
-				}
-				if !strings.Contains(stderr, walletBlockMessage) {
-					t.Errorf("stderr does not carry the refusal %q:\n%s", walletBlockMessage, stderr)
-				}
-				assertNoPercent(t, "launch", stderr)
-				return
-			}
 			if !spawned {
-				t.Fatalf("Pi was not started (exit=%d, err=%v); stderr:\n%s", exitCode, err, stderr)
+				t.Fatalf("Pi was not started (exit=%d, err=%v) — the client never refuses a launch over the wallet, Relay does; stderr:\n%s", exitCode, err, stderr)
 			}
 			if err != nil || exitCode != -1 {
 				t.Errorf("launch failed: exit=%d err=%v", exitCode, err)
 			}
-			if len(tc.warn) == 0 {
-				assertLaunchSilentAboutMoney(t, stderr)
-				return
-			}
-			for _, want := range tc.warn {
-				if !strings.Contains(stderr, want) {
-					t.Errorf("stderr lacks %q:\n%s", want, stderr)
-				}
-			}
-			if strings.Contains(stderr, walletBlockMessage) {
-				t.Errorf("a warned launch printed the refusal text:\n%s", stderr)
-			}
-			assertNoPercent(t, "launch", stderr)
+			assertLaunchNoticeEnv(t, piEnv, tc.notice)
+			assertLaunchSilentAboutMoney(t, stderr)
 		})
 	}
 }
 
-// The desktop app starts Pi through `vc desktop-session`; same rules, and the
-// words go where the app reads them — the command's own error stream for the
-// warning, the command's error for the refusal.
+// The desktop app starts Pi through `vc desktop-session`; same rules. A
+// refused desktop-session exits, and the app then hides the terminal behind
+// "Chat stopped… check your network" — so it must not refuse either, and the
+// notice travels to Pi in the plan's environment, not on the command's error
+// stream (which the app shows in the terminal Pi's fullscreen then clears).
 func TestDesktopSessionFollowsWalletRules(t *testing.T) {
 	for _, tc := range walletGateCases {
 		t.Run(tc.name, func(t *testing.T) {
 			piSettingsSandbox(t)
+			t.Setenv(launchNoticeEnv, staleLaunchNotice)
 			host := meServer(t, tc.body)
 			node, pi := desktopFiles(t)
 			ran := false
+			var plan desktopSessionPlan
 			deps := desktopSessionDeps{
 				loadToken: func() (string, error) { return "token", nil },
 				resolveConfig: func() config.Config {
@@ -422,8 +468,9 @@ func TestDesktopSessionFollowsWalletRules(t *testing.T) {
 				reconcilePi:     func() (string, error) { return "/managed.ts", nil },
 				reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil },
 				now:             time.Now,
-				run: func(context.Context, desktopSessionPlan, io.Reader, io.Writer, io.Writer) error {
+				run: func(_ context.Context, p desktopSessionPlan, _ io.Reader, _ io.Writer, _ io.Writer) error {
 					ran = true
+					plan = p
 					return nil
 				},
 			}
@@ -436,29 +483,80 @@ func TestDesktopSessionFollowsWalletRules(t *testing.T) {
 			err := cmd.Execute()
 			stream := plainText(errOut.String())
 
-			if tc.block {
-				if ran {
-					t.Fatalf("Pi was started although today is unpaid and the balance cannot pay it; stream:\n%s", stream)
-				}
-				if err == nil || !strings.Contains(err.Error(), walletBlockMessage) {
-					t.Fatalf("err = %v, want the refusal %q", err, walletBlockMessage)
-				}
-				assertNoPercent(t, "desktop-session", err.Error())
-				return
-			}
 			if err != nil || !ran {
-				t.Fatalf("desktop session did not start (ran=%v): %v\n%s", ran, err, stream)
+				t.Fatalf("desktop session did not start Pi (ran=%v): %v — the client never refuses a launch over the wallet, Relay does\n%s", ran, err, stream)
 			}
-			if len(tc.warn) == 0 {
-				assertLaunchSilentAboutMoney(t, stream)
-				return
-			}
-			for _, want := range tc.warn {
-				if !strings.Contains(stream, want) {
-					t.Errorf("desktop-session error stream lacks %q:\n%s", want, stream)
+			assertLaunchNoticeEnv(t, plan.env, tc.notice)
+			assertLaunchSilentAboutMoney(t, stream)
+		})
+	}
+}
+
+// The strip itself, at the function both launch paths build Pi's environment
+// with: VC_LAUNCH_NOTICE is vc's to set, like every other VC_* seam, and an
+// inherited one is dropped before vc decides whether to add its own.
+func TestPiSpawnEnvDropsInheritedLaunchNotice(t *testing.T) {
+	env := buildPiSpawnEnv(providerRelay(), []string{"HOME=/home/person", launchNoticeEnv + "=" + staleLaunchNotice}, "https", "relay.test", "secret", "/ca.pem")
+	for _, entry := range env {
+		if name, _, _ := strings.Cut(entry, "="); strings.EqualFold(name, launchNoticeEnv) {
+			t.Fatalf("buildPiSpawnEnv passed an inherited %s through to Pi: %q", launchNoticeEnv, entry)
+		}
+	}
+	if !strings.Contains(strings.Join(env, "\n"), "HOME=/home/person") {
+		t.Fatalf("buildPiSpawnEnv dropped an ordinary variable too; the strip is not specific: %q", env)
+	}
+}
+
+// ─── vc status --json: launchNotice ─────────────────────────────────────────
+
+// The desktop reads its notice from `vc status --json`: the same notice, by the
+// same rules, as a string or null. A refusal notice is still a signed-in
+// status — the account is fine, today is not paid — never an error state.
+func TestStatusJSONCarriesLaunchNotice(t *testing.T) {
+	for _, tc := range walletGateCases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := jsonStatus(t, tc.body) // asserts authState == signed_in
+			got, present := obj["launchNotice"]
+			if tc.notice == "" {
+				if got != nil {
+					t.Errorf("launchNotice = %#v, want null or absent for this wallet", got)
 				}
+			} else if s, ok := got.(string); !ok || s != tc.notice {
+				t.Errorf("launchNotice = %#v (present=%v), want %q", got, present, tc.notice)
 			}
-			assertNoPercent(t, "desktop-session", stream)
+			if _, present := obj["error"]; present {
+				t.Errorf("a signed-in status carries error = %v; a launch notice is not an error", obj["error"])
+			}
+		})
+	}
+}
+
+// ─── display ────────────────────────────────────────────────────────────────
+
+// Money is shown as money: the minus sign goes before the dollar, days never
+// go below zero, and the balance is floored to the cent — rounding up would
+// show a cent that is not there. The last two cases are exact cents that
+// binary floating point stores a hair low (1.15 is 1.1499999…): a naive
+// floor(x*100) would take a real cent away from them.
+func TestStatusBalanceDisplayRules(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "balance: -$3.00 · T1 · ~0 days left"},
+		{"negative balance without a tariff", meBody(wallet("-3", "null", "null", "null")), "balance: -$3.00"},
+		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "balance: $0.50 · T1 · ~0 days left"},
+		{"a fraction of a cent is floored, not rounded up", meBody(wallet("7.666", tariffT3, "true", "0")), "balance: $7.66 · T3 · ~0 days left"},
+		{"99.9 cents of the next dollar are still not a dollar", meBody(wallet("18.999", tariffT1, "true", "9")), "balance: $18.99 · T1 · ~9 days left"},
+		{"exact cents stored low: 1.15", meBody(wallet("1.15", "null", "null", "null")), "balance: $1.15"},
+		{"exact cents stored low: 0.29", meBody(wallet("0.29", "null", "null", "null")), "balance: $0.29"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := humanStatus(t, tc.body)
+			got, ok := statusLine(out, "balance:")
+			if !ok {
+				t.Fatalf("vc status has no balance line:\n%s", out)
+			}
+			if got != tc.want {
+				t.Errorf("balance line = %q, want %q", got, tc.want)
+			}
 		})
 	}
 }
