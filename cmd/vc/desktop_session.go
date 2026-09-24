@@ -99,14 +99,16 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
 	}
-	var warnings []string
+	// The wallet never refuses the session — a refused desktop-session exits,
+	// and the app then shows "Chat stopped… check your network" instead of
+	// Relay's own 402. Nor is its notice a warning on the command's error
+	// stream: the app shows that in the terminal Pi's fullscreen then clears.
+	// It travels to Pi in the plan's environment.
+	notice := ""
 	if reached {
-		if decision := walletGate(me.Wallet); decision.Block {
-			return desktopSessionPlan{}, fmt.Errorf("%s", decision.Message)
-		} else if decision.Warn {
-			warnings = append(warnings, decision.Message)
-		}
+		notice = walletLaunchNotice(me.Wallet)
 	}
+	var warnings []string
 	extensionPath, err := deps.reconcilePi()
 	if err != nil {
 		return desktopSessionPlan{}, fmt.Errorf("managed Pi transport unavailable: %w", err)
@@ -143,6 +145,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	env = setDesktopEnv(env, "PI_SKIP_VERSION_CHECK", "1")
 	env = setDesktopEnv(env, "VC_DESKTOP_SESSION", "1")
+	env = withLaunchNotice(env, notice)
 	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env, warnings: warnings}, nil
 }
 

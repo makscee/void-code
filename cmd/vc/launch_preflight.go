@@ -112,3 +112,21 @@ func (p *launchPreflight) updateIfReady() (string, bool) {
 		return "", false
 	}
 }
+
+// balanceIfReady is the wallet this launch's own /v1/vc/me reported, rendered
+// for the welcome screen, once that answer is in (ready=false before). It is
+// "" when the answer carried no wallet, and when there was no answer to take
+// one from: a refusal or a failed check vouches for no wallet.
+func (p *launchPreflight) balanceIfReady() (balance string, ready bool) {
+	select {
+	case <-p.authDone:
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+		if p.authResult.err != nil || !p.authResult.reached {
+			return "", true
+		}
+		return formatWallet(p.authResult.me.Wallet), true
+	default:
+		return "", false
+	}
+}

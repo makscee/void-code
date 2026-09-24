@@ -58,6 +58,13 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 	if me.Wallet != nil {
 		obj["wallet"] = walletJSONFor(me.Wallet)
 	}
+	// The same notice a launch hands to Pi, for the desktop to show: a string,
+	// or null when the wallet has nothing to say. Only a signed-in answer
+	// carries one — a refusal names no wallet to warn about.
+	obj["launchNotice"] = nil
+	if notice := walletLaunchNotice(me.Wallet); notice != "" {
+		obj["launchNotice"] = notice
+	}
 	return json.NewEncoder(out).Encode(obj)
 }
 

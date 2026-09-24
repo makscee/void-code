@@ -58,6 +58,7 @@ interface ClipboardExtensionOptions {
 
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
+	registerLaunchNotice(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
@@ -507,6 +508,22 @@ function registerFullscreenClipboardLifecycle(pi: ExtensionAPI, injected?: Clipb
 	pi.on("session_shutdown", async () => {
 		dispose?.();
 		dispose = undefined;
+	});
+}
+
+// vc decides at launch, from the wallet its own /v1/vc/me reported, whether the person needs a word
+// about money (low balance, or a day Relay will refuse), and hands it over as VC_LAUNCH_NOTICE. It is
+// shown here, not printed by vc: Pi's fullscreen mode clears whatever was on the terminal before it.
+// Once per launch — a later session in the same Pi would show a notice about a wallet that may have
+// changed since.
+function registerLaunchNotice(pi: ExtensionAPI): void {
+	const notice = process.env.VC_LAUNCH_NOTICE;
+	if (!notice) return;
+	let shown = false;
+	pi.on("session_start", async (_event, ctx) => {
+		if (shown || !ctx.hasUI) return;
+		shown = true;
+		ctx.ui.notify(notice, "warning");
 	});
 }
 

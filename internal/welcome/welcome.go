@@ -36,7 +36,21 @@ type Callbacks struct{}
 
 func Run(state AuthState, cb Callbacks) (RunResult, error) { return RunWithOptions(state, cb) }
 func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
-	p := tea.NewProgram(newModel(state), opts...)
+	return RunWithUpdates(state, cb, nil, opts...)
+}
+
+// BalanceMsg puts a balance on a screen that is already up, rendered the way
+// AuthState.Balance is. The screen never waits on the network, so a wallet
+// that arrives a round trip after the first frame comes as this message.
+type BalanceMsg string
+
+// RunWithUpdates runs the screen like RunWithOptions and also runs updates in
+// the background from the first frame on; the message it returns (a
+// BalanceMsg) updates the screen that is up. A nil updates is RunWithOptions.
+func RunWithUpdates(state AuthState, cb Callbacks, updates tea.Cmd, opts ...tea.ProgramOption) (RunResult, error) {
+	start := newModel(state)
+	start.updates = updates
+	p := tea.NewProgram(start, opts...)
 	out, err := p.Run()
 	if err != nil {
 		fmt.Print(plainBanner(state))
@@ -81,6 +95,7 @@ type model struct {
 	view             viewState
 	result           RunResult
 	chosen, quitting bool
+	updates          tea.Cmd // started with the first frame; see RunWithUpdates
 }
 
 func menuItemsFor(state AuthState) []menuItem {
@@ -90,7 +105,7 @@ func menuItemsFor(state AuthState) []menuItem {
 	return []menuItem{{"Start", SpawnPi}, {"Top up", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
 }
 func newModel(state AuthState) model            { return model{AuthState: state, items: menuItemsFor(state)} }
-func (m model) Init() tea.Cmd                   { return nil }
+func (m model) Init() tea.Cmd                   { return m.updates }
 func NewMenuModelForTest(state AuthState) model { return newModel(state) }
 func (m model) Cursor() int                     { return m.cursor }
 func (m model) ItemCount() int                  { return len(m.items) }
@@ -103,6 +118,10 @@ func (m model) MoveCursor(d int) model {
 }
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if balance, isBalance := msg.(BalanceMsg); isBalance {
+		m.Balance = string(balance)
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil

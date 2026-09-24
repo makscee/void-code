@@ -20,7 +20,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	term "github.com/charmbracelet/x/term"
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
@@ -37,11 +36,6 @@ import (
 	"github.com/makscee/void-code/internal/welcome"
 	"github.com/spf13/cobra"
 )
-
-// warnStyle is used for the subscription expiry hard-block message.
-var warnStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#F59E0B")).
-	Bold(true)
 
 // meCache holds a cached result from FetchMe to avoid repeated auth-host calls.
 var (
@@ -313,7 +307,34 @@ func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.Ru
 	if currentLaunchDiagnostics != nil && currentLaunchDiagnostics.enabled {
 		opts = append(append([]tea.ProgramOption{}, opts...), tea.WithOutput(&firstRenderDiagnosticWriter{out: os.Stdout, diagnostics: currentLaunchDiagnostics}))
 	}
-	return welcome.RunWithOptions(state, cb, opts...)
+	shown, late := welcomeBalance(state, currentLaunchPreflight)
+	return welcome.RunWithUpdates(shown, cb, late, opts...)
+}
+
+// welcomeBalance puts the wallet the launch's own background /v1/vc/me
+// reported on the welcome screen (spec 2026-09-23-client-wallet-days,
+// amendment "после панели void-code#76" §4). main draws the screen in the same
+// millisecond it starts that request, so the answer usually lands while the
+// screen is already up: then the returned command waits for it and hands the
+// wallet to the running screen. An answer already in goes straight onto the
+// state (a return to the menu, a slow terminal).
+func welcomeBalance(state welcome.AuthState, p *launchPreflight) (welcome.AuthState, tea.Cmd) {
+	if p == nil || !state.LoggedIn {
+		return state, nil
+	}
+	if balance, ready := p.balanceIfReady(); ready {
+		if balance != "" {
+			state.Balance = balance
+		}
+		return state, nil
+	}
+	return state, func() tea.Msg {
+		<-p.authDone
+		if arrived, _ := p.balanceIfReady(); arrived != "" {
+			return welcome.BalanceMsg(arrived)
+		}
+		return nil
+	}
 }
 
 type firstRenderDiagnosticWriter struct {
@@ -360,14 +381,11 @@ func runSpawn(_ *cobra.Command, args []string) error {
 		exitProcess(1)
 		return err
 	}
+	// The wallet never stops the launch; what it has to say goes to Pi, which
+	// shows it once the session is up (see walletLaunchNotice).
+	notice := ""
 	if reached {
-		if d := walletGate(me.Wallet); d.Block {
-			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
-			exitProcess(1)
-			return errors.New(d.Message)
-		} else if d.Warn {
-			fmt.Fprintln(os.Stderr, warnStyle.Render(d.Message))
-		}
+		notice = walletLaunchNotice(me.Wallet)
 	}
 	// Resolve launch artifacts after live admission but before constructing a
 	// token-bearing child environment. A bundled runtime starts its already
@@ -418,6 +436,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	if privateNode != "" {
 		env = withBuiltPiPath(env, os.Environ(), privateNode)
 	}
+	env = withLaunchNotice(env, notice)
 	piArgs := buildPiArgs(nil, extPath)
 	if modulePath != "" {
 		piArgs = append([]string{modulePath}, piArgs...)
@@ -525,7 +544,10 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 	out := make([]string, 0, len(base)+6)
 	for _, e := range base {
 		k, _, _ := strings.Cut(e, "=")
-		if strip[k] {
+		// The launch notice is vc's to set, per launch: an inherited one was
+		// computed for some other wallet. Matched without regard to case, as
+		// Windows would read Vc_Launch_Notice as the same variable.
+		if strip[k] || strings.EqualFold(k, piLaunchNoticeEnv) {
 			continue
 		}
 		out = append(out, e)
