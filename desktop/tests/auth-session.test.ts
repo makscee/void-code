@@ -213,6 +213,47 @@ describe('readAuthStatus — wallet and launch notice', () => {
     expect('launchNotice' in status, `launchNotice ${JSON.stringify(launchNotice)} reached the UI`).toBe(false);
     expect(status.wallet).toStrictEqual(WALLET);
   });
+
+  // walletText — second panel on void-code#76, G3: the renderer showed no balance and no days. vc
+  // now prints the line itself (`"walletText": "$18.00 · T1 · ~9 days left"`, the formatWallet string,
+  // or null), so the desktop never re-implements the floor/clamp rules; this module passes it on as
+  // written, a non-empty string only, and — like every account fact — for signed_in only.
+  const WALLET_TEXT = '$18.00 · T1 · ~9 days left';
+
+  it('passes walletText through, verbatim, next to the wallet and the notice', async () => {
+    await expect(statusOf(signedIn({ wallet: WALLET, walletText: WALLET_TEXT, launchNotice: LOW_NOTICE }))).resolves.toStrictEqual({
+      authState: 'signed_in', identity: 'artem', wallet: WALLET, walletText: WALLET_TEXT, launchNotice: LOW_NOTICE,
+    });
+  });
+
+  it.each([
+    ['a bare balance (no tariff)', '$18.00'],
+    ['a debt with days clamped at zero', '-$3.00 · T1 · ~0 days left'],
+    ['one day', '$2.00 · T1 · ~1 day left'],
+  ])('passes %s exactly as vc wrote it', async (_label, walletText) => {
+    const status = await statusOf(signedIn({ wallet: WALLET, walletText }));
+    expect(status.walletText).toBe(walletText);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['null (no wallet)', null],
+    ['a number', 18],
+    ['a boolean', true],
+    ['an object', { text: WALLET_TEXT }],
+    ['an array', [WALLET_TEXT]],
+  ])('drops a walletText that is %s, and keeps the rest of the status', async (_label, walletText) => {
+    const status = await statusOf(signedIn({ wallet: WALLET, walletText, launchNotice: LOW_NOTICE }));
+    expect('walletText' in status, `walletText ${JSON.stringify(walletText)} reached the UI`).toBe(false);
+    expect(status.wallet).toStrictEqual(WALLET);
+    expect(status.launchNotice).toBe(LOW_NOTICE);
+  });
+
+  it.each(['signed_out', 'invalid_credential'])('drops walletText from a %s status — nobody vouched for that account', async (authState) => {
+    const status = await statusOf({ authState, walletText: WALLET_TEXT, wallet: WALLET });
+    expect(status.authState).toBe(authState);
+    expect('walletText' in status, `a ${authState} status carried a wallet line into the UI`).toBe(false);
+  });
 });
 
 describe('runLogin', () => {
