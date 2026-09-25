@@ -14,7 +14,8 @@ import (
 // launch paths cannot drift apart.
 //
 // The client never refuses a launch over the wallet (amendment "после панели
-// void-code#76"): only Relay refuses, with 402 wallet_daily_charge_required
+// void-code#76"): only Relay refuses, with 402 wallet_charge_required (weekly,
+// on Keys' chargeRequired) or wallet_daily_charge_required (an older Keys)
 // under its BUDGET_ENFORCE switch, and Pi shows that refusal itself. A
 // verdict taken here from a snapshot would ignore the switch — and on the
 // desktop it would hide behind "Chat stopped… check your network".
@@ -22,6 +23,10 @@ import (
 // walletRefusalMessage is the same sentence Relay sends with its 402
 // wallet_daily_charge_required.
 const walletRefusalMessage = "Balance is not enough for today — message @makscee on Telegram to top up."
+
+// walletWeekRefusalMessage is the same sentence Relay sends with its 402
+// wallet_charge_required (spec, "Недельное списание (решение 25.09)").
+const walletWeekRefusalMessage = "Balance is not enough for this week — message @makscee on Telegram to top up."
 
 // walletLowDays is the fundedDays at or below which a launch is warned.
 const walletLowDays = 2
@@ -80,22 +85,30 @@ func daysLeft(n int) string {
 // walletLaunchNotice is what a launch tells the person about the wallet, or
 // "" for nothing. It never stops the launch.
 //
-//   - no wallet, or no tariff → nothing (no daily charge to be behind on)
-//   - todayPaid === false and balance < daily rate → Relay's own refusal
-//     sentence, as advance notice of the 402 the first request will get
-//   - otherwise fundedDays <= 2 → the low-balance notice
+//   - no wallet → nothing
+//   - chargeRequired present → it alone decides the refusal: true gives
+//     Relay's weekly sentence, false gives none — whatever todayPaid, the
+//     daily rate and fundedDays say. Relay refuses on the same verdict, so
+//     the notice cannot disagree with the 402 it announces.
+//   - chargeRequired absent (an older Keys) → the daily rule: with a tariff,
+//     todayPaid === false and balance < daily rate → Relay's daily sentence
+//   - no refusal, a tariff and fundedDays <= 2 → the low-balance notice
 //
-// An unpaid day the balance still covers is not a refusal: right after
-// 00:00 UTC the daily charge may simply not have run yet. todayPaid == nil is
-// not false.
+// Under the daily rule an unpaid day the balance still covers is not a
+// refusal: right after 00:00 UTC the daily charge may simply not have run
+// yet. todayPaid == nil is not false, and chargeRequired == nil is not false.
 func walletLaunchNotice(w *auth.Wallet) string {
-	if w == nil || w.Tariff == nil {
+	if w == nil {
 		return ""
 	}
-	if w.TodayPaid != nil && !*w.TodayPaid && w.BalanceUsd < w.Tariff.DailyRateUsd {
+	if w.ChargeRequired != nil {
+		if *w.ChargeRequired {
+			return walletWeekRefusalMessage
+		}
+	} else if w.Tariff != nil && w.TodayPaid != nil && !*w.TodayPaid && w.BalanceUsd < w.Tariff.DailyRateUsd {
 		return walletRefusalMessage
 	}
-	if w.FundedDays != nil && *w.FundedDays <= walletLowDays {
+	if w.Tariff != nil && w.FundedDays != nil && *w.FundedDays <= walletLowDays {
 		return "Balance low — " + daysLeft(*w.FundedDays) + ". Message @makscee on Telegram to top up."
 	}
 	return ""
