@@ -47,6 +47,10 @@ import {
 // AgentSession's retry loop runs end to end — the classifier is called, the session is not.
 
 const WALLET_DAY_MESSAGE = 'Balance is not enough for today — message @makscee on Telegram to top up.';
+// Weekly charging (spec, "Недельное списание (решение 25.09)", part "Relay"): Keys' verdict
+// chargeRequired === true makes Relay answer 402 wallet_charge_required with this sentence. The
+// unwrap keys on the 402, not on error.type, so the new type needs no new branch — pinned below.
+const WALLET_WEEK_MESSAGE = 'Balance is not enough for this week — message @makscee on Telegram to top up.';
 const PCT_CAP_MESSAGE = 'Usage limit reached for this period — message @makscee on Telegram.';
 
 // Pi's Responses helpers, as far as a request that fails before streaming needs them.
@@ -93,6 +97,8 @@ const RELAY_402S: Array<[string, unknown, string]> = [
     { error: { type: 'wallet_daily_charge_required', message: WALLET_DAY_MESSAGE } }, WALLET_DAY_MESSAGE],
   ['the 402 frame, with its top-level "type":"error"',
     { type: 'error', error: { type: 'wallet_daily_charge_required', message: WALLET_DAY_MESSAGE } }, WALLET_DAY_MESSAGE],
+  ['the weekly wallet refusal (402 wallet_charge_required), as Relay frames it',
+    { type: 'error', error: { type: 'wallet_charge_required', message: WALLET_WEEK_MESSAGE } }, WALLET_WEEK_MESSAGE],
   ['the percentage cap (402 budget_exceeded)',
     { error: { type: 'budget_exceeded', message: PCT_CAP_MESSAGE } }, PCT_CAP_MESSAGE],
 ];

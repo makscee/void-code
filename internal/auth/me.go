@@ -36,6 +36,12 @@ type Wallet struct {
 	// decisions and must not collapse into one zero value.
 	TodayPaid  *bool
 	FundedDays *int // days the balance covers after today; nil: no tariff
+	// ChargeRequired is Keys' weekly verdict: a tariff, no paid period, and a
+	// balance short of the week. A pointer like TodayPaid: false ("no charge
+	// required, whatever the daily fields say") and nil ("the server did not
+	// say — an older Keys; the old daily rule applies") must stay apart.
+	ChargeRequired *bool
+	PeriodEndsAt   *string // end of the paid period, as sent; nil: absent or null
 }
 
 // Tariff is the plan a wallet is charged by.
@@ -43,6 +49,7 @@ type Tariff struct {
 	Tier            string // as sent by the server ("t1"); display formatting is the printer's
 	MonthlyPriceUsd float64
 	DailyRateUsd    float64
+	WeeklyPriceUsd  *float64 // nil: an older server that sends no weekly price
 }
 
 // FetchMe calls GET <authHost>/v1/vc/me with the supplied bearer token.
@@ -134,6 +141,10 @@ func parseWallet(raw json.RawMessage) *Wallet {
 		Tariff     json.RawMessage `json:"tariff"`
 		TodayPaid  *bool           `json:"todayPaid"`
 		FundedDays *int            `json:"fundedDays"`
+		// Optional (weekly charging): absent or null reads nil, a wrong
+		// type fails the decode and drops the wallet like any other field.
+		ChargeRequired *bool   `json:"chargeRequired"`
+		PeriodEndsAt   *string `json:"periodEndsAt"`
 	}
 	// null decodes into the zero struct without error and is then rejected
 	// for its missing balance, like any other wallet without one.
@@ -145,10 +156,12 @@ func parseWallet(raw json.RawMessage) *Wallet {
 		return nil
 	}
 	return &Wallet{
-		BalanceUsd: *w.BalanceUsd,
-		Tariff:     tariff,
-		TodayPaid:  w.TodayPaid,
-		FundedDays: w.FundedDays,
+		BalanceUsd:     *w.BalanceUsd,
+		Tariff:         tariff,
+		TodayPaid:      w.TodayPaid,
+		FundedDays:     w.FundedDays,
+		ChargeRequired: w.ChargeRequired,
+		PeriodEndsAt:   w.PeriodEndsAt,
 	}
 }
 
@@ -162,9 +175,10 @@ func parseTariff(raw json.RawMessage) (*Tariff, bool) {
 		Tier            *string  `json:"tier"`
 		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
 		DailyRateUsd    *float64 `json:"dailyRateUsd"`
+		WeeklyPriceUsd  *float64 `json:"weeklyPriceUsd"` // optional; a wrong type fails the decode
 	}
 	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" || t.MonthlyPriceUsd == nil || t.DailyRateUsd == nil {
 		return nil, false
 	}
-	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: *t.MonthlyPriceUsd, DailyRateUsd: *t.DailyRateUsd}, true
+	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: *t.MonthlyPriceUsd, DailyRateUsd: *t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd}, true
 }

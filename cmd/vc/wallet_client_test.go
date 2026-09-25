@@ -409,39 +409,45 @@ func assertLaunchNoticeEnv(t *testing.T, env []string, want string) {
 // `vc` from a terminal: runSpawn is the last step before Pi.
 func TestTerminalLaunchFollowsWalletRules(t *testing.T) {
 	for _, tc := range walletGateCases {
-		t.Run(tc.name, func(t *testing.T) {
-			home, _ := preparePiPathLaunch(t)
-			t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, "pi-agent"))
-			t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "0")
-			t.Setenv(config.EnvAccessCheckHost, meServer(t, tc.body))
-			t.Setenv(launchNoticeEnv, staleLaunchNotice)
-
-			spawned := false
-			var piEnv []string
-			exitCode := -1
-			savedSpawn, savedExit := spawnHarness, exitProcess
-			spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
-				spawned = true
-				piEnv = env
-				return nil
-			}
-			exitProcess = func(code int) { exitCode = code }
-			t.Cleanup(func() { spawnHarness, exitProcess = savedSpawn, savedExit })
-
-			stopStderr := captureProcessStderr(t)
-			err := runSpawn(nil, nil)
-			stderr := plainText(stopStderr())
-
-			if !spawned {
-				t.Fatalf("Pi was not started (exit=%d, err=%v) — the client never refuses a launch over the wallet, Relay does; stderr:\n%s", exitCode, err, stderr)
-			}
-			if err != nil || exitCode != -1 {
-				t.Errorf("launch failed: exit=%d err=%v", exitCode, err)
-			}
-			assertLaunchNoticeEnv(t, piEnv, tc.notice)
-			assertLaunchSilentAboutMoney(t, stderr)
-		})
+		t.Run(tc.name, func(t *testing.T) { assertTerminalLaunch(t, tc) })
 	}
+}
+
+// assertTerminalLaunch runs `vc` from a terminal against tc.body and checks
+// that Pi starts with exactly tc.notice, and that vc printed nothing about
+// money before it.
+func assertTerminalLaunch(t *testing.T, tc walletGateCase) {
+	t.Helper()
+	home, _ := preparePiPathLaunch(t)
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(home, "pi-agent"))
+	t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "0")
+	t.Setenv(config.EnvAccessCheckHost, meServer(t, tc.body))
+	t.Setenv(launchNoticeEnv, staleLaunchNotice)
+
+	spawned := false
+	var piEnv []string
+	exitCode := -1
+	savedSpawn, savedExit := spawnHarness, exitProcess
+	spawnHarness = func(_ context.Context, _ string, _ []string, env []string) error {
+		spawned = true
+		piEnv = env
+		return nil
+	}
+	exitProcess = func(code int) { exitCode = code }
+	t.Cleanup(func() { spawnHarness, exitProcess = savedSpawn, savedExit })
+
+	stopStderr := captureProcessStderr(t)
+	err := runSpawn(nil, nil)
+	stderr := plainText(stopStderr())
+
+	if !spawned {
+		t.Fatalf("Pi was not started (exit=%d, err=%v) — the client never refuses a launch over the wallet, Relay does; stderr:\n%s", exitCode, err, stderr)
+	}
+	if err != nil || exitCode != -1 {
+		t.Errorf("launch failed: exit=%d err=%v", exitCode, err)
+	}
+	assertLaunchNoticeEnv(t, piEnv, tc.notice)
+	assertLaunchSilentAboutMoney(t, stderr)
 }
 
 // The desktop app starts Pi through `vc desktop-session`; same rules. A
@@ -451,45 +457,51 @@ func TestTerminalLaunchFollowsWalletRules(t *testing.T) {
 // stream (which the app shows in the terminal Pi's fullscreen then clears).
 func TestDesktopSessionFollowsWalletRules(t *testing.T) {
 	for _, tc := range walletGateCases {
-		t.Run(tc.name, func(t *testing.T) {
-			piSettingsSandbox(t)
-			t.Setenv(launchNoticeEnv, staleLaunchNotice)
-			host := meServer(t, tc.body)
-			node, pi := desktopFiles(t)
-			ran := false
-			var plan desktopSessionPlan
-			deps := desktopSessionDeps{
-				loadToken: func() (string, error) { return "token", nil },
-				resolveConfig: func() config.Config {
-					return config.Config{AuthHost: "http://auth.invalid", AccessCheckHost: host, RelayScheme: "https", RelayHost: "relay.invalid"}
-				},
-				authGate:        authGate, // the real gate, against the fixture server
-				resolveCA:       func(config.Config) (string, error) { return "/ca.pem", nil },
-				reconcilePi:     func() (string, error) { return "/managed.ts", nil },
-				reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil },
-				now:             time.Now,
-				run: func(_ context.Context, p desktopSessionPlan, _ io.Reader, _ io.Writer, _ io.Writer) error {
-					ran = true
-					plan = p
-					return nil
-				},
-			}
-			cmd := newDesktopSessionCommand(deps)
-			var errOut bytes.Buffer
-			cmd.SetIn(bytes.NewReader(nil))
-			cmd.SetOut(io.Discard)
-			cmd.SetErr(&errOut)
-			cmd.SetArgs([]string{"--node", node, "--pi-entry", pi})
-			err := cmd.Execute()
-			stream := plainText(errOut.String())
-
-			if err != nil || !ran {
-				t.Fatalf("desktop session did not start Pi (ran=%v): %v — the client never refuses a launch over the wallet, Relay does\n%s", ran, err, stream)
-			}
-			assertLaunchNoticeEnv(t, plan.env, tc.notice)
-			assertLaunchSilentAboutMoney(t, stream)
-		})
+		t.Run(tc.name, func(t *testing.T) { assertDesktopSessionLaunch(t, tc) })
 	}
+}
+
+// assertDesktopSessionLaunch runs `vc desktop-session` against tc.body, with
+// the real auth gate, and checks that Pi's plan carries exactly tc.notice and
+// that nothing about money went to the command's error stream.
+func assertDesktopSessionLaunch(t *testing.T, tc walletGateCase) {
+	t.Helper()
+	piSettingsSandbox(t)
+	t.Setenv(launchNoticeEnv, staleLaunchNotice)
+	host := meServer(t, tc.body)
+	node, pi := desktopFiles(t)
+	ran := false
+	var plan desktopSessionPlan
+	deps := desktopSessionDeps{
+		loadToken: func() (string, error) { return "token", nil },
+		resolveConfig: func() config.Config {
+			return config.Config{AuthHost: "http://auth.invalid", AccessCheckHost: host, RelayScheme: "https", RelayHost: "relay.invalid"}
+		},
+		authGate:        authGate, // the real gate, against the fixture server
+		resolveCA:       func(config.Config) (string, error) { return "/ca.pem", nil },
+		reconcilePi:     func() (string, error) { return "/managed.ts", nil },
+		reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil },
+		now:             time.Now,
+		run: func(_ context.Context, p desktopSessionPlan, _ io.Reader, _ io.Writer, _ io.Writer) error {
+			ran = true
+			plan = p
+			return nil
+		},
+	}
+	cmd := newDesktopSessionCommand(deps)
+	var errOut bytes.Buffer
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--node", node, "--pi-entry", pi})
+	err := cmd.Execute()
+	stream := plainText(errOut.String())
+
+	if err != nil || !ran {
+		t.Fatalf("desktop session did not start Pi (ran=%v): %v — the client never refuses a launch over the wallet, Relay does\n%s", ran, err, stream)
+	}
+	assertLaunchNoticeEnv(t, plan.env, tc.notice)
+	assertLaunchSilentAboutMoney(t, stream)
 }
 
 // The strip itself, at the function both launch paths build Pi's environment
@@ -514,20 +526,25 @@ func TestPiSpawnEnvDropsInheritedLaunchNotice(t *testing.T) {
 // status — the account is fine, today is not paid — never an error state.
 func TestStatusJSONCarriesLaunchNotice(t *testing.T) {
 	for _, tc := range walletGateCases {
-		t.Run(tc.name, func(t *testing.T) {
-			obj := jsonStatus(t, tc.body) // asserts authState == signed_in
-			got, present := obj["launchNotice"]
-			if tc.notice == "" {
-				if got != nil {
-					t.Errorf("launchNotice = %#v, want null or absent for this wallet", got)
-				}
-			} else if s, ok := got.(string); !ok || s != tc.notice {
-				t.Errorf("launchNotice = %#v (present=%v), want %q", got, present, tc.notice)
-			}
-			if _, present := obj["error"]; present {
-				t.Errorf("a signed-in status carries error = %v; a launch notice is not an error", obj["error"])
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { assertStatusJSONLaunchNotice(t, tc) })
+	}
+}
+
+// assertStatusJSONLaunchNotice checks `vc status --json` against tc.body: a
+// signed-in status whose launchNotice is exactly tc.notice, or null.
+func assertStatusJSONLaunchNotice(t *testing.T, tc walletGateCase) {
+	t.Helper()
+	obj := jsonStatus(t, tc.body) // asserts authState == signed_in
+	got, present := obj["launchNotice"]
+	if tc.notice == "" {
+		if got != nil {
+			t.Errorf("launchNotice = %#v, want null or absent for this wallet", got)
+		}
+	} else if s, ok := got.(string); !ok || s != tc.notice {
+		t.Errorf("launchNotice = %#v (present=%v), want %q", got, present, tc.notice)
+	}
+	if _, present := obj["error"]; present {
+		t.Errorf("a signed-in status carries error = %v; a launch notice is not an error", obj["error"])
 	}
 }
 
