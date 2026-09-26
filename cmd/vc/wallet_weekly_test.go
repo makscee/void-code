@@ -43,7 +43,7 @@ import (
 
 // walletWeekRefusal is the sentence Relay sends with its 402
 // wallet_charge_required.
-const walletWeekRefusal = "Balance is not enough for this week — message @makscee on Telegram to top up."
+const walletWeekRefusal = "Balance is not enough for this week — top up: https://profile.makscee.ru/vc/pay"
 
 // Tariffs as Keys prices them per week: monthly = weekly × 4 and daily =
 // weekly / 7, both kept for display only.

@@ -131,8 +131,8 @@ describe('readAuthStatus', () => {
 describe('readAuthStatus — wallet and launch notice', () => {
   const TARIFF_T1 = { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 };
   const WALLET = { balanceUsd: 18, tariff: TARIFF_T1, todayPaid: true, fundedDays: 9 };
-  const LOW_NOTICE = 'Balance low — 2 days left. Message @makscee on Telegram to top up.';
-  const REFUSAL_NOTICE = 'Balance is not enough for today — message @makscee on Telegram to top up.';
+  const LOW_NOTICE = 'Balance low — 2 days left. Top up: https://profile.makscee.ru/vc/pay';
+  const REFUSAL_NOTICE = 'Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay';
 
   async function statusOf(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const child = new FakeChild();

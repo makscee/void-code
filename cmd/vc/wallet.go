@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/browser"
 )
 
 // The client shows money and days, never a percentage (spec
@@ -22,11 +23,11 @@ import (
 
 // walletRefusalMessage is the same sentence Relay sends with its 402
 // wallet_daily_charge_required.
-const walletRefusalMessage = "Balance is not enough for today — message @makscee on Telegram to top up."
+const walletRefusalMessage = "Balance is not enough for today — top up: " + browser.PayURL
 
 // walletWeekRefusalMessage is the same sentence Relay sends with its 402
 // wallet_charge_required (spec, "Недельное списание (решение 25.09)").
-const walletWeekRefusalMessage = "Balance is not enough for this week — message @makscee on Telegram to top up."
+const walletWeekRefusalMessage = "Balance is not enough for this week — top up: " + browser.PayURL
 
 // walletLowDays is the fundedDays at or below which a launch is warned.
 const walletLowDays = 2
@@ -109,7 +110,7 @@ func walletLaunchNotice(w *auth.Wallet) string {
 		return walletRefusalMessage
 	}
 	if w.Tariff != nil && w.FundedDays != nil && *w.FundedDays <= walletLowDays {
-		return "Balance low — " + daysLeft(*w.FundedDays) + ". Message @makscee on Telegram to top up."
+		return "Balance low — " + daysLeft(*w.FundedDays) + ". Top up: " + browser.PayURL
 	}
 	return ""
 }

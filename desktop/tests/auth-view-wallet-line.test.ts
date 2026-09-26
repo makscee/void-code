@@ -20,7 +20,7 @@ import { walletLineFor } from '../src/renderer/auth-view';
 
 const WALLET_TEXT = '$18.00 · T1 · ~9 days left';
 const WALLET = { balanceUsd: 18, tariff: { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 }, todayPaid: true, fundedDays: 9 };
-const LOW_NOTICE = 'Balance low — 2 days left. Message @makscee on Telegram to top up.';
+const LOW_NOTICE = 'Balance low — 2 days left. Top up: https://profile.makscee.ru/vc/pay';
 
 // Built as plain objects and cast: the status is what arrives over IPC, and the tests should not
 // depend on how the AuthStatus type spells the field before the implementation lands.

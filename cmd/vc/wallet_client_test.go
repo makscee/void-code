@@ -59,7 +59,7 @@ import (
 // body, so this file compiles against HEAD and says nothing about how the
 // wallet is carried inside the client.
 
-const walletBlockMessage = "Balance is not enough for today — message @makscee on Telegram to top up."
+const walletBlockMessage = "Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay"
 
 // launchNoticeEnv is how vc hands the launch notice to Pi.
 const launchNoticeEnv = "VC_LAUNCH_NOTICE"
@@ -71,7 +71,7 @@ func walletLowNotice(n int) string {
 	if n == 1 {
 		days = "1 day left"
 	}
-	return "Balance low — " + days + ". Message @makscee on Telegram to top up."
+	return "Balance low — " + days + ". Top up: https://profile.makscee.ru/vc/pay"
 }
 
 const (
@@ -376,7 +376,7 @@ const staleLaunchNotice = "stale launch notice inherited from the parent — mus
 // screen, so a line printed here is a line nobody reads.
 func assertLaunchSilentAboutMoney(t *testing.T, stream string) {
 	t.Helper()
-	for _, word := range []string{"Balance", "@makscee", "%", "udget"} {
+	for _, word := range []string{"Balance", "/vc/pay", "@makscee", "%", "udget"} {
 		if strings.Contains(stream, word) {
 			t.Errorf("vc printed %q before Pi started — the launch notice belongs inside Pi (VC_LAUNCH_NOTICE), where fullscreen cannot wipe it:\n%s", word, stream)
 		}
