@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -595,7 +596,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
 	}
 
-	me, err := auth.FetchMe(authHost, token, httpClient)
+	me, err := fetchMeForAdmission(authHost, token, httpClient)
 	if err == nil {
 		return me, true, nil
 	}
@@ -611,6 +612,44 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return auth.MeResult{}, false, err
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
+}
+
+// fetchMeForAdmission is the live /v1/vc/me call behind authGate. A network
+// error, a timeout or a gateway status (502, 503, 504) is a check that never
+// got the auth service's answer, so it is asked once more; any other status
+// (401 and 402 above all) or a body is an answer and is returned as is.
+// Both attempts together stay within authAdmissionBound, whatever the client's
+// own timeout. It never falls back to a cached identity: admission stays live.
+func fetchMeForAdmission(authHost, token string, httpClient *http.Client) (auth.MeResult, error) {
+	deadline := time.Now().Add(authAdmissionBound)
+	for attempt := 1; ; attempt++ {
+		client := *httpClient
+		if remaining := time.Until(deadline); client.Timeout <= 0 || client.Timeout > remaining {
+			client.Timeout = remaining
+		}
+		me, err := auth.FetchMe(authHost, token, &client)
+		if err == nil || attempt == 2 || !admissionRetryable(err) || time.Until(deadline) <= 0 {
+			return me, err
+		}
+	}
+}
+
+// admissionRetryable reports whether a failed /v1/vc/me call got no answer
+// from the auth service itself: a network error or timeout, or a gateway in
+// front of it that could not reach it.
+func admissionRetryable(err error) bool {
+	var transport *url.Error
+	if errors.As(err, &transport) {
+		return true
+	}
+	var status *auth.StatusError
+	if errors.As(err, &status) {
+		switch status.Code {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+	}
+	return false
 }
 
 // resolveCA determines the relay CA path in priority order:
