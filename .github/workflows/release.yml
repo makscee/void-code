@@ -193,9 +193,8 @@ jobs:
             cp desktop/runtime/pi/package.json desktop/runtime/pi/package-lock.json "$work/"
             (cd "$work" && npm ci --os="$goos" --cpu="$npmcpu" --ignore-scripts --no-audit --no-fund)
             test -x "$work/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
-            name="pi-runtime-$PI_VERSION-$goos-$goarch.tar.gz"
             tar -C "$work" --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' \
-              -cf - package.json package-lock.json node_modules | gzip -n -9 > "dist/$name"
+              -cf - package.json package-lock.json node_modules | gzip -n -9 > "dist/pi-runtime-$PI_VERSION-$goos-$goarch.tar.gz"
             rm -rf "$work"
           done
           ls -la dist/pi-runtime-*

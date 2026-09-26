@@ -21,7 +21,7 @@ import { conditionHolds, evaluateExpression, interpolate, truthy, PLAIN_TAG, typ
 // The four things pinned here:
 //
 //   1. Off by default. Under a plain tag the jobs that run are exactly today's
-//      five and the assets published are exactly today's eight. The gate on
+//      five and the assets published are exactly today's nine. The gate on
 //      each desktop job is EVALUATED, not pattern-matched: it must come out
 //      false with nothing set, and it must be capable of coming out true, so
 //      neither `if: success()` nor `if: false` can pass for a gate.
@@ -453,8 +453,12 @@ const settings = optInSettings(releaseText);
 // it publishes nothing and carries no condition, which is why it belongs in
 // the set that runs on an ordinary tag.
 const TODAYS_JOBS = ['build', 'desktop-pinned-pi-smoke', 'publish-auth', 'release', 'test', 'test-windows'];
+// dist/pi-runtime-* joined on 2026-09-26 (makscee/void-board#162): the pinned
+// Pi tree per platform, which vc and install.sh put in place without npm. CLI,
+// not desktop, and published on every tag like the binaries.
 const TODAYS_ASSETS = [
   'dist/SHA256SUMS',
+  'dist/pi-runtime-*',
   'dist/vc-darwin-amd64',
   'dist/vc-darwin-arm64',
   'dist/vc-linux-amd64',
@@ -600,11 +604,11 @@ describe('and does none of it on an ordinary tag', () => {
     expect(verdict.gated ? 'off by default' : verdict.reason).toBe('off by default');
   });
 
-  it('publishes exactly the eight assets it publishes today', () => {
+  it('publishes exactly the nine assets it publishes today', () => {
     expect(publishedAssets(PLAIN_TAG).slice().sort()).toEqual(TODAYS_ASSETS);
   });
 
-  it('signs exactly the eight subjects it signs today', () => {
+  it('signs exactly the nine subjects it signs today', () => {
     expect(provenanceSubjects(PLAIN_TAG).slice().sort()).toEqual(TODAYS_ASSETS);
   });
 
