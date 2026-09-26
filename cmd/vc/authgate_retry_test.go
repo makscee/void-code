@@ -60,8 +60,54 @@ func TestAuthGate_NetworkErrorThenAnswerIsAdmitted(t *testing.T) {
 	}
 }
 
-// A status is an answer: 401 and 402 are verdicts, and a 5xx came from a
-// server that was reached. None of them is asked again.
+// A gateway status (502, 503, 504) means the auth service was not reached, so
+// it is asked once more like a network error, and the answer admits.
+func TestAuthGate_GatewayStatusThenAnswerIsAdmitted(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			withTempHome(t)
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if hits.Add(1) == 1 {
+					w.WriteHeader(status)
+					return
+				}
+				_, _ = w.Write([]byte(admissionMeBody))
+			}))
+			defer srv.Close()
+
+			_, reached, err := authGate("t", srv.URL, &http.Client{Timeout: authProbeTimeout})
+			if err != nil || !reached {
+				t.Fatalf("reached=%v err=%v, want admitted on the retry", reached, err)
+			}
+			if hits.Load() != 2 {
+				t.Fatalf("hits = %d, want 2", hits.Load())
+			}
+		})
+	}
+}
+
+// A gateway status on both tries is still "unavailable", after exactly two.
+func TestAuthGate_GatewayStatusTwiceIsUnavailable(t *testing.T) {
+	withTempHome(t)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	_, reached, err := authGate("t", srv.URL, &http.Client{Timeout: authProbeTimeout})
+	if err == nil || reached || !strings.Contains(err.Error(), "Session verification unavailable") || !strings.Contains(err.Error(), "status 502") {
+		t.Fatalf("reached=%v err=%v, want unavailable with status 502", reached, err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits = %d, want 2", hits.Load())
+	}
+}
+
+// A status that is the auth service's own answer is not asked again: 401 and
+// 402 are verdicts, and a 500 came from the service itself.
 func TestAuthGate_StatusAnswersAreNotRetried(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusInternalServerError} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

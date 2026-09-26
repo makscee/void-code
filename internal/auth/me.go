@@ -52,6 +52,13 @@ type Tariff struct {
 	WeeklyPriceUsd  *float64 // nil: an older server that sends no weekly price
 }
 
+// StatusError is a /v1/vc/me answer with a status FetchMe has no meaning for
+// (not 200, 401 or 402). Callers that treat a gateway error differently from a
+// verdict read Code instead of parsing the message.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("vc/me returned status %d", e.Code) }
+
 // FetchMe calls GET <authHost>/v1/vc/me with the supplied bearer token.
 // Returns the identity + subscription state.
 func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) {
@@ -83,7 +90,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		return MeResult{}, ErrAccessNotGranted
 	}
 	if resp.StatusCode != http.StatusOK {
-		return MeResult{}, fmt.Errorf("vc/me returned status %d", resp.StatusCode)
+		return MeResult{}, &StatusError{Code: resp.StatusCode}
 	}
 
 	var r struct {

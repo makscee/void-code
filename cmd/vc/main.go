@@ -615,8 +615,9 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 }
 
 // fetchMeForAdmission is the live /v1/vc/me call behind authGate. A network
-// error or timeout is a check that never got an answer, so it is asked once
-// more; a status (401, 402, 5xx) or a body is an answer and is returned as is.
+// error, a timeout or a gateway status (502, 503, 504) is a check that never
+// got the auth service's answer, so it is asked once more; any other status
+// (401 and 402 above all) or a body is an answer and is returned as is.
 // Both attempts together stay within authAdmissionBound, whatever the client's
 // own timeout. It never falls back to a cached identity: admission stays live.
 func fetchMeForAdmission(authHost, token string, httpClient *http.Client) (auth.MeResult, error) {
@@ -627,11 +628,28 @@ func fetchMeForAdmission(authHost, token string, httpClient *http.Client) (auth.
 			client.Timeout = remaining
 		}
 		me, err := auth.FetchMe(authHost, token, &client)
-		var transport *url.Error
-		if err == nil || attempt == 2 || !errors.As(err, &transport) || time.Until(deadline) <= 0 {
+		if err == nil || attempt == 2 || !admissionRetryable(err) || time.Until(deadline) <= 0 {
 			return me, err
 		}
 	}
+}
+
+// admissionRetryable reports whether a failed /v1/vc/me call got no answer
+// from the auth service itself: a network error or timeout, or a gateway in
+// front of it that could not reach it.
+func admissionRetryable(err error) bool {
+	var transport *url.Error
+	if errors.As(err, &transport) {
+		return true
+	}
+	var status *auth.StatusError
+	if errors.As(err, &status) {
+		switch status.Code {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+	}
+	return false
 }
 
 // resolveCA determines the relay CA path in priority order:
