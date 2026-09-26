@@ -33,6 +33,10 @@ package installercontract
 // `sleep` is stubbed so the npm retry loop costs nothing.
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -895,6 +899,10 @@ func TestPowerShellInstallerPiPinDryRun(t *testing.T) {
 
 type piPinPSOpts struct {
 	existingVersion string // pre-create a managed Pi at this version ("" = none)
+	// piArchive, when set, is served as the release's Windows Pi archive, and
+	// SHA256SUMS lists piArchiveSum for it (the archive's own hash if nil).
+	piArchive    []byte
+	piArchiveSum []byte
 }
 
 func runPiPinPowerShellInstall(t *testing.T, o piPinPSOpts) piPinResult {
@@ -969,9 +977,27 @@ func runPiPinPowerShellInstall(t *testing.T, o piPinPSOpts) piPinResult {
 			_, _ = w.Write([]byte(winPrimaryBytes))
 		case "/vc/relay-ca.pem":
 			fmt.Fprint(w, "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n")
+		case "/vc/SHA256SUMS":
+			if o.piArchive == nil {
+				http.NotFound(w, r)
+				return
+			}
+			sumOf := o.piArchiveSum
+			if sumOf == nil {
+				sumOf = o.piArchive
+			}
+			sum := sha256.Sum256(sumOf)
+			fmt.Fprintf(w, "%x  %s\n", sum, piArchiveWindows)
+		case "/vc/bin/" + piArchiveWindows:
+			if o.piArchive == nil {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write(o.piArchive)
 		default:
-			// SHA256SUMS included: a missing list is reported and the install
-			// carries on, exactly as in the download suite's default.
+			// SHA256SUMS included when no archive is served: a missing list is
+			// reported and the install carries on, exactly as in the download
+			// suite's default.
 			http.NotFound(w, r)
 		}
 	}))
@@ -1127,5 +1153,99 @@ func TestPowerShellInstallerPiPinBehaviour(t *testing.T) {
 func TestVcPiRuntimePinMatchesDesktop(t *testing.T) {
 	if want := piPinFromDesktop(t); piruntime.PinnedVersion != want {
 		t.Fatalf("internal/piruntime.PinnedVersion = %q, desktop/runtime/pi/package.json pins %q", piruntime.PinnedVersion, want)
+	}
+}
+
+// piArchiveWindows is the release asset install.ps1 fetches before npm (#162).
+var piArchiveWindows = piruntime.ArchiveName("windows", "amd64")
+
+// piWindowsArchive is a Windows-shaped Pi tree at version: npm's pi.cmd shim in
+// node_modules/.bin, no symlinks, as the release builds it.
+func piWindowsArchive(t *testing.T, version string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	pkg := "node_modules/@earendil-works/pi-coding-agent/"
+	for name, body := range map[string]string{
+		"package.json":             `{"dependencies":{}}`,
+		pkg + "package.json":       `{"name":"@earendil-works/pi-coding-agent","version":"` + version + `"}`,
+		pkg + "dist/cli.js":        "#!/usr/bin/env node\n",
+		"node_modules/.bin/pi.cmd": "@ECHO off\r\n",
+	} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// install.ps1 takes Pi from the release archive before npm (#162), refuses an
+// archive whose hash does not match, and never tells people to install Pi
+// globally, where vc no longer looks for it.
+func TestPowerShellInstallerPiFromArchive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs install.ps1 end to end")
+	}
+	pin := piPinFromDesktop(t)
+
+	t.Run("fresh machine: Pi comes from the archive, npm is not asked", func(t *testing.T) {
+		r := runPiPinPowerShellInstall(t, piPinPSOpts{piArchive: piWindowsArchive(t, pin)})
+		if r.code != 0 {
+			t.Fatalf("install.ps1 exited %d\n%s", r.code, r.combined)
+		}
+		if calls := piInstallCalls(r.npmCalls); len(calls) != 0 {
+			t.Errorf("install.ps1 asked npm to install Pi although the archive was there: %v\n%s", calls, r.combined)
+		}
+		if !strings.Contains(r.combined, "installed from the release archive") {
+			t.Errorf("no archive install reported:\n%s", r.combined)
+		}
+		if got := installedPiVersion(t, r.packageJSON); got != pin {
+			t.Errorf("managed runtime holds Pi %q, want %q\n%s", got, pin, r.combined)
+		}
+		if _, err := os.Stat(filepath.Join(r.home, ".void-code", "runtime", "pi", "node_modules", ".bin", "pi.cmd")); err != nil {
+			t.Errorf("pi.cmd not in place: %v", err)
+		}
+		if left, _ := filepath.Glob(filepath.Join(r.home, ".void-code", "runtime", ".pi-*")); len(left) != 0 {
+			t.Errorf("staging left behind: %v", left)
+		}
+	})
+
+	t.Run("tampered archive: refused, npm installs Pi instead", func(t *testing.T) {
+		r := runPiPinPowerShellInstall(t, piPinPSOpts{piArchive: piWindowsArchive(t, pin), piArchiveSum: []byte("something else")})
+		if r.code != 0 {
+			t.Fatalf("install.ps1 exited %d\n%s", r.code, r.combined)
+		}
+		if !strings.Contains(r.combined, "sha256 mismatch for "+piArchiveWindows) {
+			t.Errorf("the mismatch was not reported:\n%s", r.combined)
+		}
+		if strings.Contains(r.combined, "installed from the release archive") {
+			t.Errorf("a tampered archive was installed:\n%s", r.combined)
+		}
+		requirePinnedPiInstall(t, r, pin, "tampered archive falls back to the pinned npm install")
+		requirePiInstallIntoRuntime(t, r, "tampered archive falls back to the managed runtime")
+	})
+}
+
+// Every hint install.ps1 prints for installing Pi by hand names the managed
+// runtime, never `npm install -g`, which puts Pi where vc no longer looks.
+func TestPowerShellInstallerPiHintsNameTheManagedRuntime(t *testing.T) {
+	src := readInstaller(t, "install.ps1")
+	for i, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, "Format-NpmInstallGlobal $PiPackageSpec") && !strings.Contains(line, "WOULD:") {
+			t.Errorf("install.ps1:%d tells people to install Pi globally: %s", i+1, strings.TrimSpace(line))
+		}
+	}
+	if !strings.Contains(src, `"npm.cmd --prefix `+"`"+`"$piRuntimeDir`+"`"+`" install $PiPackageSpec"`) {
+		t.Error("install.ps1 has no hint that installs Pi into the managed runtime")
 	}
 }

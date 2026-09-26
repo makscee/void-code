@@ -767,6 +767,70 @@ function Get-ManagedPiVersion {
     return $null
 }
 
+# The release publishes the pinned Pi tree for Windows, with npm's pi.cmd shim
+# in place (#162), so the managed runtime needs no npm: fetch it from $authHost,
+# check it against the host's SHA256SUMS (strictly: the list and the archive are
+# published together), unpack it beside runtime\pi and swap it in. Any failure
+# leaves runtime\pi as it was and the caller falls back to npm. Like vc.exe, it
+# comes from $authHost only; vc itself also tries the GitHub release when it
+# finds Pi missing on launch. amd64 like vc.exe (see "detecting platform"
+# above), so vc and this installer pick the same archive.
+$PiArchiveName = "pi-runtime-$PiVersion-windows-amd64.tar.gz"
+
+function Install-ManagedPiFromArchive {
+    $tarCmd = Get-Command tar -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $tarCmd) { return $false }
+    $file = New-VCTempPath '.tar.gz'
+    try {
+        Write-Host "==> downloading $PiArchiveName from $authHost" -ForegroundColor Cyan
+        if (-not (Invoke-VCDownload -Uri "$authHost/vc/bin/$PiArchiveName" -OutFile $file)) { return $false }
+        if ((Get-VCSha256Status -FilePath $file -SumsUrl $vcSumsUrl -AssetName $PiArchiveName) -ne 'ok') { return $false }
+
+        $runtimeDir = Split-Path -Parent $piRuntimeDir
+        New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+        $stage = Join-Path $runtimeDir (".pi-stage-" + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        try {
+            & $tarCmd.Source -xzf $file -C $stage
+            $tarExit = $LASTEXITCODE
+            $stagedPkg = Join-Path $stage 'node_modules\@earendil-works\pi-coding-agent\package.json'
+            $stagedVersion = $null
+            try { $stagedVersion = [string]((Get-Content -Raw -LiteralPath $stagedPkg | ConvertFrom-Json).version) } catch { }
+            if ($tarExit -ne 0 -or $stagedVersion -ne $PiVersion -or
+                -not (Test-Path -LiteralPath (Join-Path $stage 'node_modules\.bin\pi.cmd') -PathType Leaf)) {
+                Write-Host "vc: $PiArchiveName did not unpack to Pi $PiVersion" -ForegroundColor Yellow
+                return $false
+            }
+            $backup = $null
+            if (Test-Path -LiteralPath $piRuntimeDir) {
+                $backup = Join-Path $runtimeDir (".pi-backup-" + [Guid]::NewGuid().ToString('N'))
+                Move-Item -LiteralPath $piRuntimeDir -Destination $backup
+            }
+            try {
+                Move-Item -LiteralPath $stage -Destination $piRuntimeDir
+            } catch {
+                if ($backup) { Move-Item -LiteralPath $backup -Destination $piRuntimeDir }
+                throw
+            }
+            if ($backup) { Remove-Item -Recurse -Force -LiteralPath $backup -ErrorAction SilentlyContinue }
+            return (Test-AgentHealthy -Binary 'pi')
+        } catch {
+            Write-Host "vc: could not put $PiArchiveName in place: $($_.Exception.Message)" -ForegroundColor Yellow
+            return $false
+        } finally {
+            if (Test-Path -LiteralPath $stage) { Remove-Item -Recurse -Force -LiteralPath $stage -ErrorAction SilentlyContinue }
+        }
+    } finally {
+        Remove-Item -Force $file -ErrorAction SilentlyContinue
+    }
+}
+
+# The command that puts the pinned Pi where vc looks for it. A global npm install
+# (npm install -g) puts it where vc no longer looks, so it must never be the hint.
+function Format-NpmInstallManagedPi {
+    return "npm.cmd --prefix `"$piRuntimeDir`" install $PiPackageSpec"
+}
+
 function Test-AgentHealthy {
     param([string]$Binary)
     # The managed Pi is usable only at the pinned version; any other is reinstalled.
@@ -794,13 +858,19 @@ function Install-NpmAgent {
         Write-Host "vc: managed Pi is $(Get-ManagedPiVersion), vc pins $PiVersion; reinstalling." -ForegroundColor Yellow
     }
 
+    if ($Binary -eq 'pi' -and (Install-ManagedPiFromArchive)) {
+        Write-Host "vc: Pi $PiVersion installed from the release archive." -ForegroundColor Green
+        return $true
+    }
+
     if ($Binary -eq 'codex' -and (Get-CodexCommandPath)) {
         if (Repair-CodexNativeOptional -NpmCommand $NpmCommand) { return $true }
         Write-Host "vc: codex found, but codex --version did not report codex-cli." -ForegroundColor Yellow
     }
 
     if (-not $NpmCommand) {
-        Write-Host "vc: npm not found — install Node.js first, then run: $(Format-NpmInstallGlobal $Package)" -ForegroundColor Yellow
+        $manualInstall = if ($Binary -eq 'pi') { Format-NpmInstallManagedPi } else { Format-NpmInstallGlobal $Package }
+        Write-Host "vc: npm not found — install Node.js first, then run: $manualInstall" -ForegroundColor Yellow
         return $false
     }
 
@@ -888,7 +958,7 @@ if (-not $vcResolvable) {
 }
 if ($InstallPi -and -not $piInstalled) {
     Write-Host ""
-    Write-Host "  $step. Install Pi: $(Format-NpmInstallGlobal $PiPackageSpec)" -ForegroundColor Yellow
+    Write-Host "  $step. Install Pi: $(Format-NpmInstallManagedPi)" -ForegroundColor Yellow
     $step++
 }
 if ($InstallClaude -and -not $claudeInstalled) {
