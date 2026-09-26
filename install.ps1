@@ -778,7 +778,13 @@ function Get-ManagedPiVersion {
 $PiArchiveName = "pi-runtime-$PiVersion-windows-amd64.tar.gz"
 
 function Install-ManagedPiFromArchive {
-    $tarCmd = Get-Command tar -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Windows' own tar.exe (bsdtar, in every Windows 10 since 1803) first: a GNU
+    # tar from Git's tools reads "C:\..." as a remote host and fails.
+    $tarCmd = $null
+    if ($env:SystemRoot) {
+        $tarCmd = Get-Command (Join-Path $env:SystemRoot 'System32\tar.exe') -CommandType Application -ErrorAction SilentlyContinue
+    }
+    if (-not $tarCmd) { $tarCmd = Get-Command tar -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if (-not $tarCmd) { return $false }
     $file = New-VCTempPath '.tar.gz'
     try {
