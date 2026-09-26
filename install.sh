@@ -759,6 +759,58 @@ ensure_node() {
 NPM_INSTALL_RETRY_ARGS="--maxsockets=1 --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000"
 NPM_NODE_OPTIONS="--dns-result-order=ipv4first"
 
+# The release publishes the pinned Pi tree per platform (#162), so the managed
+# runtime needs no npm: fetch it from $AUTH_HOST, else from the GitHub release
+# mirror, check it against that source's SHA256SUMS (strictly on both: the list
+# and the archive are published together), unpack it beside runtime/pi and swap
+# it in. Any failure leaves runtime/pi as it was and the caller falls back to npm.
+PI_ARCHIVE_NAME="pi-runtime-$PI_VERSION-$OS-$ARCH.tar.gz"
+
+archive_install_managed_pi() {
+  [ -n "$OS" ] && [ "$OS" != unknown ] && [ -n "$ARCH" ] && [ "$ARCH" != unknown ] || return 1
+  command -v tar >/dev/null 2>&1 || return 1
+  _pa_file="$(mktemp)"
+  _pa_ok=0
+  printf '==> downloading %s from %s\n' "$PI_ARCHIVE_NAME" "$AUTH_HOST" >&2
+  if fetch_to_file_retry "$AUTH_HOST/vc/bin/$PI_ARCHIVE_NAME" "$_pa_file" \
+     && sha256_status "$_pa_file" "$PRIMARY_SUMS_URL" "$PI_ARCHIVE_NAME"; then
+    _pa_ok=1
+  elif [ -n "$MIRROR_TAG" ] && tag_is_valid "$MIRROR_TAG"; then
+    _pa_base="https://github.com/$MIRROR_REPO/releases/download/$MIRROR_TAG"
+    printf '==> downloading %s from %s\n' "$PI_ARCHIVE_NAME" "$_pa_base" >&2
+    if fetch_to_file_retry "$_pa_base/$PI_ARCHIVE_NAME" "$_pa_file" \
+       && sha256_status "$_pa_file" "$_pa_base/SHA256SUMS" "$PI_ARCHIVE_NAME"; then
+      _pa_ok=1
+    fi
+  fi
+  if [ "$_pa_ok" != 1 ]; then
+    rm -f "$_pa_file"
+    return 1
+  fi
+  mkdir -p "$VC_DIR/runtime"
+  _pa_stage="$(mktemp -d "$VC_DIR/runtime/.pi-stage.XXXXXX")" || { rm -f "$_pa_file"; return 1; }
+  if ! tar -xzf "$_pa_file" -C "$_pa_stage" \
+     || [ ! -x "$_pa_stage/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" ] \
+     || ! grep -q "\"version\"[[:space:]]*:[[:space:]]*\"$PI_VERSION\"" "$_pa_stage/node_modules/@earendil-works/pi-coding-agent/package.json"; then
+    printf 'vc: %s did not unpack to Pi %s\n' "$PI_ARCHIVE_NAME" "$PI_VERSION" >&2
+    rm -rf "$_pa_stage" "$_pa_file"
+    return 1
+  fi
+  rm -f "$_pa_file"
+  _pa_backup=""
+  if [ -e "$PI_RUNTIME_DIR" ]; then
+    _pa_backup="$VC_DIR/runtime/.pi-backup.$$"
+    mv "$PI_RUNTIME_DIR" "$_pa_backup" || { rm -rf "$_pa_stage"; return 1; }
+  fi
+  if ! mv "$_pa_stage" "$PI_RUNTIME_DIR"; then
+    [ -n "$_pa_backup" ] && mv "$_pa_backup" "$PI_RUNTIME_DIR"
+    rm -rf "$_pa_stage"
+    return 1
+  fi
+  [ -n "$_pa_backup" ] && rm -rf "$_pa_backup"
+  managed_pi_at_pin
+}
+
 npm_install_managed_pi() {
   _attempt=1
   while [ "$_attempt" -le 3 ]; do
@@ -964,6 +1016,11 @@ check_npm_agent() {
 
   if [ "$_bin" = "pi" ] && [ -x "$PI_ENTRY" ]; then
     printf 'vc: managed Pi is %s, vc pins %s; reinstalling.\n' "$(managed_pi_version || true)" "$PI_VERSION" >&2
+  fi
+
+  if [ "$_bin" = "pi" ] && archive_install_managed_pi; then
+    printf 'vc: Pi %s installed from the release archive.\n' "$PI_VERSION" >&2
+    return 0
   fi
 
   if [ "$_bin" = "codex" ] && codex_command >/dev/null 2>&1; then

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/update"
@@ -40,8 +41,12 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 
 	if updated {
 		fmt.Println("vc updated successfully. Run vc again to use the new version.")
+		// The new binary knows which Pi it pins; let it install that one. A
+		// failure is not fatal: vc tries again on launch.
+		_ = ensurePiRuntimeWithNewBinary(os.Stdout)
 	} else {
 		fmt.Println("Already up to date.")
+		_ = ensurePiRuntime(os.Stdout)
 	}
 	return nil
 }
