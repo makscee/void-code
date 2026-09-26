@@ -909,7 +909,8 @@ func runPiPinPowerShellInstall(t *testing.T, o piPinPSOpts) piPinResult {
 	appData := filepath.Join(root, "appdata")
 	programFiles := filepath.Join(root, "programfiles")
 	tmp := filepath.Join(root, "tmp")
-	for _, d := range []string{fakeBin, home, appData, programFiles, tmp} {
+	pathTail := filepath.Join(root, "path-tail")
+	for _, d := range []string{fakeBin, home, appData, programFiles, tmp, pathTail} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -977,8 +978,15 @@ func runPiPinPowerShellInstall(t *testing.T, o piPinPSOpts) piPinResult {
 	// Built from scratch, as in runWindowsInstall. ProgramFiles points at an
 	// empty directory so Resolve-NpmCommand's explicit nodejs\npm.cmd probe
 	// misses and it falls through to `npm` on PATH — the fixture.
+	//
+	// PATH ends in pathTail, an empty directory nothing needs. install.ps1 is a
+	// Windows script and appends to $env:PATH with ';', which on a Unix host
+	// glues its directory onto the last entry and breaks it. With /bin last,
+	// the fake npm lost rm, mkdir and chmod on macOS, where they live only in
+	// /bin; Ubuntu's merged /usr has them in /usr/bin too, which is why CI
+	// stayed green while the fresh-runtime case failed on a Mac.
 	env := []string{
-		"PATH=" + fakeBin + ":" + filepath.Dir(ps) + ":/usr/bin:/bin",
+		"PATH=" + fakeBin + ":" + filepath.Dir(ps) + ":/usr/bin:/bin:" + pathTail,
 		"HOME=" + home,
 		"USERPROFILE=" + home,
 		"APPDATA=" + appData,
