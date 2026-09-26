@@ -83,7 +83,7 @@ func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool
 	if !p.reusable(token, authHost) {
 		return auth.MeResult{}, false, nil, false
 	}
-	remaining := authProbeTimeout - p.deps.now().Sub(p.started)
+	remaining := authAdmissionBound - p.deps.now().Sub(p.started)
 	if remaining > 0 {
 		timer := time.NewTimer(remaining)
 		defer timer.Stop()
