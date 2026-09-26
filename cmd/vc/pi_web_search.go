@@ -16,7 +16,7 @@ const (
 	managedWebSearchBroken         managedWebSearchState = "broken"
 	managedWebSearchPackageName                          = "@void-code/pi-web-access"
 	managedWebSearchMarker                               = "VC-10 managed void-codex seam v1"
-	managedWebSearchPackageVersion                       = "0.13.0-void.2"
+	managedWebSearchPackageVersion                       = "0.13.0-void.3"
 )
 
 var renameManagedWebSearchPath = os.Rename
