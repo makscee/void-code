@@ -69,6 +69,12 @@ if ($WithoutPi) { $InstallPi = $false }
 if ($WithClaude) { $InstallClaude = $true }
 if ($WithCodex) { $InstallCodex = $true }
 
+# The Pi version the vc extension supports. Must equal the pin in
+# desktop/runtime/pi/package.json (installer_pi_pin_test.go enforces it); this
+# script is served standalone, so it carries its own copy.
+$PiVersion = '0.87.1'
+$PiPackageSpec = "@earendil-works/pi-coding-agent@$PiVersion"
+
 $NpmInstallRetryArgs = @('--maxsockets=1', '--fetch-retries=5', '--fetch-retry-mintimeout=20000', '--fetch-retry-maxtimeout=120000', '--fetch-timeout=300000')
 
 function Format-NpmInstallGlobal {
@@ -77,7 +83,7 @@ function Format-NpmInstallGlobal {
 }
 
 if ($env:VC_INSTALL_DRY_RUN -eq '1') {
-    if ($InstallPi) { Write-Output "WOULD: $(Format-NpmInstallGlobal '@earendil-works/pi-coding-agent')" }
+    if ($InstallPi) { Write-Output "WOULD: $(Format-NpmInstallGlobal $PiPackageSpec)" }
     if ($InstallClaude) { Write-Output "WOULD: $(Format-NpmInstallGlobal '@anthropic-ai/claude-code')" }
     if ($InstallCodex) {
         Write-Output "WOULD: $(Format-NpmInstallGlobal '@openai/codex')"
@@ -346,6 +352,7 @@ $binDir = Join-Path $vcDir 'bin'
 # entrypoint; vc resolves and launches the same artifact rather than PATH `pi`.
 $piRuntimeDir = Join-Path $vcDir 'runtime\pi'
 $piEntry = Join-Path $piRuntimeDir 'node_modules\.bin\pi.cmd'
+$piPackageJson = Join-Path $piRuntimeDir 'node_modules\@earendil-works\pi-coding-agent\package.json'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 # 1. Download vc.exe
@@ -750,9 +757,20 @@ function Repair-CodexNativeOptional {
     return $false
 }
 
+# Version of the managed Pi, read from its package.json ($null if absent).
+function Get-ManagedPiVersion {
+    if (-not (Test-Path -LiteralPath $piPackageJson -PathType Leaf)) { return $null }
+    try {
+        $pkg = Get-Content -Raw -LiteralPath $piPackageJson | ConvertFrom-Json
+        if ($pkg.version) { return [string]$pkg.version }
+    } catch { }
+    return $null
+}
+
 function Test-AgentHealthy {
     param([string]$Binary)
-    if ($Binary -eq 'pi') { return (Test-Path -LiteralPath $piEntry -PathType Leaf) }
+    # The managed Pi is usable only at the pinned version; any other is reinstalled.
+    if ($Binary -eq 'pi') { return ((Test-Path -LiteralPath $piEntry -PathType Leaf) -and ((Get-ManagedPiVersion) -eq $PiVersion)) }
     if ($Binary -eq 'codex') { return (Test-CodexHealthy) }
     return ($null -ne (Get-Command $Binary -ErrorAction SilentlyContinue))
 }
@@ -770,6 +788,10 @@ function Install-NpmAgent {
     if (Test-AgentHealthy -Binary $Binary) {
         Write-Host "vc: $Binary already installed" -ForegroundColor Green
         return $true
+    }
+
+    if ($Binary -eq 'pi' -and (Test-Path -LiteralPath $piEntry -PathType Leaf)) {
+        Write-Host "vc: managed Pi is $(Get-ManagedPiVersion), vc pins $PiVersion; reinstalling." -ForegroundColor Yellow
     }
 
     if ($Binary -eq 'codex' -and (Get-CodexCommandPath)) {
@@ -814,7 +836,7 @@ function Install-NpmAgent {
 }
 
 $npmCmd = if ($AnyAgentSelected) { Resolve-NpmCommand } else { $null }
-$piAgentOk = Install-NpmAgent -Binary 'pi' -Package '@earendil-works/pi-coding-agent' -Label 'Pi' -Selected $InstallPi -NpmCommand $npmCmd
+$piAgentOk = Install-NpmAgent -Binary 'pi' -Package $PiPackageSpec -Label 'Pi' -Selected $InstallPi -NpmCommand $npmCmd
 $claudeAgentOk = Install-NpmAgent -Binary 'claude' -Package '@anthropic-ai/claude-code' -Label 'Claude Code' -Selected $InstallClaude -NpmCommand $npmCmd
 $codexAgentOk = Install-NpmAgent -Binary 'codex' -Package '@openai/codex' -Label 'OpenAI Codex' -Selected $InstallCodex -NpmCommand $npmCmd
 
@@ -866,7 +888,7 @@ if (-not $vcResolvable) {
 }
 if ($InstallPi -and -not $piInstalled) {
     Write-Host ""
-    Write-Host "  $step. Install Pi: $(Format-NpmInstallGlobal '@earendil-works/pi-coding-agent')" -ForegroundColor Yellow
+    Write-Host "  $step. Install Pi: $(Format-NpmInstallGlobal $PiPackageSpec)" -ForegroundColor Yellow
     $step++
 }
 if ($InstallClaude -and -not $claudeInstalled) {
