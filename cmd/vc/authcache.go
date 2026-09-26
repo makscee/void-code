@@ -19,8 +19,16 @@ import (
 const (
 	authCacheTTL          = 5 * time.Minute
 	authCacheTransientTTL = 30 * time.Second
-	authProbeTimeout      = 2 * time.Second
+	// authProbeTimeout is one live call to the auth service. A healthy relay
+	// answers /v1/vc/me in well under a second, so this only shows on a slow
+	// network, where 2s turned a momentary stall into a refused launch.
+	authProbeTimeout = 5 * time.Second
 )
+
+// authAdmissionBound caps the whole admission check, retry included: two
+// authProbeTimeout attempts at most, never longer than this in total. A var so
+// tests can shrink it instead of waiting out the real bound.
+var authAdmissionBound = 2 * authProbeTimeout
 
 var errAuthTemporarilyUnavailable = errors.New("identity temporarily unavailable")
 

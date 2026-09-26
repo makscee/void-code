@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -595,7 +596,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
 	}
 
-	me, err := auth.FetchMe(authHost, token, httpClient)
+	me, err := fetchMeForAdmission(authHost, token, httpClient)
 	if err == nil {
 		return me, true, nil
 	}
@@ -611,6 +612,26 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return auth.MeResult{}, false, err
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
+}
+
+// fetchMeForAdmission is the live /v1/vc/me call behind authGate. A network
+// error or timeout is a check that never got an answer, so it is asked once
+// more; a status (401, 402, 5xx) or a body is an answer and is returned as is.
+// Both attempts together stay within authAdmissionBound, whatever the client's
+// own timeout. It never falls back to a cached identity: admission stays live.
+func fetchMeForAdmission(authHost, token string, httpClient *http.Client) (auth.MeResult, error) {
+	deadline := time.Now().Add(authAdmissionBound)
+	for attempt := 1; ; attempt++ {
+		client := *httpClient
+		if remaining := time.Until(deadline); client.Timeout <= 0 || client.Timeout > remaining {
+			client.Timeout = remaining
+		}
+		me, err := auth.FetchMe(authHost, token, &client)
+		var transport *url.Error
+		if err == nil || attempt == 2 || !errors.As(err, &transport) || time.Until(deadline) <= 0 {
+			return me, err
+		}
+	}
 }
 
 // resolveCA determines the relay CA path in priority order:
