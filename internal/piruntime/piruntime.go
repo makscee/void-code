@@ -8,7 +8,8 @@
 // next to the vc binaries, and vc puts it in place itself: download, check the
 // SHA-256 from the release's SHA256SUMS, unpack into a staging folder beside
 // runtime/pi, and swap it in with a rename. On any failure the existing runtime
-// is left exactly as it was.
+// is left exactly as it was. The Windows archives carry npm's .cmd shims in
+// place of bin symlinks, as npm itself lays them out on Windows.
 //
 // npm is never called here, and Pi is never taken from PATH.
 package piruntime
@@ -92,10 +93,13 @@ func treeVersion(root string) string {
 // Current reports whether home holds the managed Pi at PinnedVersion with its
 // entrypoint in place.
 func Current(home string) bool {
-	return treeComplete(Dir(home)) == nil
+	return treeComplete(Dir(home), runtime.GOOS) == nil
 }
 
-func treeComplete(root string) error {
+// treeComplete checks the files vc launches Pi through on goos: the package's
+// cli.js everywhere, and on Windows also npm's node_modules\.bin\pi.cmd shim,
+// which is what vc runs there (internal/pibin).
+func treeComplete(root, goos string) error {
 	if v := treeVersion(root); v != PinnedVersion {
 		if v == "" {
 			return fmt.Errorf("Pi package.json missing")
@@ -109,7 +113,15 @@ func treeComplete(root string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("Pi entrypoint is not a regular file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+	if goos == "windows" {
+		shim, err := os.Lstat(filepath.Join(root, "node_modules", ".bin", "pi.cmd"))
+		if err != nil {
+			return fmt.Errorf("Pi launcher: %w", err)
+		}
+		if !shim.Mode().IsRegular() {
+			return fmt.Errorf("Pi launcher pi.cmd is not a regular file")
+		}
+	} else if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
 		return fmt.Errorf("Pi entrypoint is not executable")
 	}
 	return nil
@@ -234,7 +246,7 @@ func install(home string, archive []byte) error {
 	if err := extract(archive, stage); err != nil {
 		return fmt.Errorf("unpack Pi runtime: %w", err)
 	}
-	if err := treeComplete(stage); err != nil {
+	if err := treeComplete(stage, runtime.GOOS); err != nil {
 		return fmt.Errorf("unpacked Pi runtime is incomplete: %w", err)
 	}
 	backup := ""
@@ -246,14 +258,14 @@ func install(home string, archive []byte) error {
 		if err := os.Remove(b); err != nil {
 			return fmt.Errorf("prepare Pi runtime rollback: %w", err)
 		}
-		if err := os.Rename(dest, b); err != nil {
+		if err := rename(dest, b); err != nil {
 			return fmt.Errorf("move aside the old Pi runtime: %w", err)
 		}
 		backup = b
 	}
-	if err := os.Rename(stage, dest); err != nil {
+	if err := rename(stage, dest); err != nil {
 		if backup != "" {
-			if rbErr := os.Rename(backup, dest); rbErr != nil {
+			if rbErr := rename(backup, dest); rbErr != nil {
 				return fmt.Errorf("put Pi runtime in place: %w (rollback failed: %v)", err, rbErr)
 			}
 		}
@@ -345,4 +357,16 @@ func rooted(link string) bool {
 // local reports whether a relative path stays inside its root.
 func local(rel string) bool {
 	return filepath.IsLocal(rel)
+}
+
+// rename is os.Rename, retried briefly on Windows: an antivirus scanner often
+// holds files it has just seen being written, and a folder rename then fails
+// with "Access is denied" for a moment.
+func rename(from, to string) error {
+	err := os.Rename(from, to)
+	for i := 0; err != nil && runtime.GOOS == "windows" && i < 20; i++ {
+		time.Sleep(150 * time.Millisecond)
+		err = os.Rename(from, to)
+	}
+	return err
 }

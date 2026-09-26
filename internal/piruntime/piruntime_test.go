@@ -21,13 +21,24 @@ type entry struct {
 	mode             int64
 }
 
+// piTree is the archive's shape for this host: a bin symlink on Unix, npm's
+// .cmd shim (and no symlink) on Windows, as the release builds them.
 func piTree(version string) []entry {
+	return piTreeFor(version, runtime.GOOS)
+}
+
+func piTreeFor(version, goos string) []entry {
 	pkg := "node_modules/@earendil-works/pi-coding-agent/"
-	return []entry{
+	tree := []entry{
 		{name: pkg + "package.json", body: fmt.Sprintf(`{"name":"@earendil-works/pi-coding-agent","version":%q}`, version), mode: 0644},
 		{name: pkg + "dist/cli.js", body: "#!/usr/bin/env node\n", mode: 0755},
-		{name: "node_modules/.bin/pi", link: "../@earendil-works/pi-coding-agent/dist/cli.js"},
 	}
+	if goos == "windows" {
+		return append(tree,
+			entry{name: "node_modules/.bin/pi.cmd", body: "@ECHO off\r\n", mode: 0644},
+			entry{name: "node_modules/.bin/pi", body: "#!/bin/sh\n", mode: 0755})
+	}
+	return append(tree, entry{name: "node_modules/.bin/pi", link: "../@earendil-works/pi-coding-agent/dist/cli.js"})
 }
 
 func tarGz(t *testing.T, entries []entry) []byte {
@@ -63,7 +74,7 @@ func tarGz(t *testing.T, entries []entry) []byte {
 func release(t *testing.T, archive []byte, sumOf []byte) (*httptest.Server, *int) {
 	t.Helper()
 	hits := 0
-	name := ArchiveName("darwin", "arm64")
+	name := ArchiveName(runtime.GOOS, runtime.GOARCH)
 	sum := sha256.Sum256(sumOf)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -85,7 +96,7 @@ func source(srv *httptest.Server) Source {
 }
 
 func opts(home string, sources ...Source) Options {
-	return Options{Home: home, Sources: sources, GOOS: "darwin", GOARCH: "arm64"}
+	return Options{Home: home, Sources: sources}
 }
 
 func TestEnsureInstallsIntoAnInstallWithNoRuntime(t *testing.T) {
@@ -104,7 +115,12 @@ func TestEnsureInstallsIntoAnInstallWithNoRuntime(t *testing.T) {
 	if !Current(home) {
 		t.Fatal("runtime not current after install")
 	}
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS == "windows" {
+		// vc launches Pi through this shim on Windows (internal/pibin).
+		if info, err := os.Lstat(filepath.Join(Dir(home), "node_modules", ".bin", "pi.cmd")); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf(".bin/pi.cmd: %v", err)
+		}
+	} else {
 		if target, err := os.Readlink(filepath.Join(Dir(home), "node_modules", ".bin", "pi")); err != nil || !strings.HasSuffix(target, "dist/cli.js") {
 			t.Fatalf(".bin/pi = %q, %v", target, err)
 		}
@@ -228,4 +244,53 @@ func mkdir(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// On Windows vc runs node_modules\.bin\pi.cmd, so a tree without it is not a
+// usable runtime there even when cli.js is in place.
+func TestWindowsTreeNeedsPiCmd(t *testing.T) {
+	withShim := t.TempDir()
+	if err := extract(tarGz(t, piTreeFor(PinnedVersion, "windows")), withShim); err != nil {
+		t.Fatal(err)
+	}
+	if err := treeComplete(withShim, "windows"); err != nil {
+		t.Fatalf("Windows tree with pi.cmd: %v", err)
+	}
+
+	var noShim []entry
+	for _, e := range piTreeFor(PinnedVersion, "windows") {
+		if !strings.HasSuffix(e.name, "pi.cmd") {
+			noShim = append(noShim, e)
+		}
+	}
+	without := t.TempDir()
+	if err := extract(tarGz(t, noShim), without); err != nil {
+		t.Fatal(err)
+	}
+	if err := treeComplete(without, "windows"); err == nil || !strings.Contains(err.Error(), "launcher") {
+		t.Fatalf("Windows tree without pi.cmd: err = %v, want a missing launcher", err)
+	}
+}
+
+// A Windows install whose archive lacks pi.cmd is refused and the runtime is
+// left as it was.
+func TestEnsureRefusesAWindowsArchiveWithoutPiCmd(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the pi.cmd requirement applies to installs on Windows")
+	}
+	home := t.TempDir()
+	var noShim []entry
+	for _, e := range piTree(PinnedVersion) {
+		if !strings.HasSuffix(e.name, "pi.cmd") {
+			noShim = append(noShim, e)
+		}
+	}
+	archive := tarGz(t, noShim)
+	srv, _ := release(t, archive, archive)
+	if installed, err := Ensure(opts(home, source(srv))); err == nil || installed {
+		t.Fatalf("Ensure = %v, %v; want a refusal", installed, err)
+	}
+	if _, err := os.Lstat(Dir(home)); !os.IsNotExist(err) {
+		t.Fatalf("runtime/pi exists after a refused install: %v", err)
+	}
 }

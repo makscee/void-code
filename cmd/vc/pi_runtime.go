@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/pibin"
@@ -49,13 +48,10 @@ func defaultPiRuntimeSources() []piruntime.Source {
 // is missing or at another version. Installs that predate v0.2.48 have no such
 // folder at all, and `vc update` from those versions only swaps the binary.
 //
-// It covers the install.sh channel only. A desktop install carries its own Node
-// and Pi (a runtime/node tree), which this leaves alone. Windows launches Pi
-// through npm's pi.cmd shim, which the archive does not carry yet.
+// It covers the install.sh and install.ps1 channels. A desktop install carries
+// its own Node and Pi (a runtime/node tree), which this leaves alone. On Windows
+// the archive carries npm's pi.cmd shim, which vc launches there.
 func ensurePiRuntime(w io.Writer) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	if _, err := pibin.ResolveNode(); !errors.Is(err, pibin.ErrBundledNodeUnprovisioned) {
 		return nil
 	}
@@ -79,12 +75,8 @@ func ensurePiRuntime(w io.Writer) error {
 }
 
 // ensurePiRuntimeWithNewBinary runs install-pi-runtime in the binary `vc update`
-// just wrote.
-func ensurePiRuntimeWithNewBinary(w io.Writer) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
+// just wrote at exe.
+func ensurePiRuntimeWithNewBinary(exe string, w io.Writer) error {
 	cmd := exec.Command(exe, "install-pi-runtime")
 	cmd.Stdout = w
 	cmd.Stderr = w
