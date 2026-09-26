@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -315,7 +316,7 @@ func extract(archive []byte, root string) error {
 				return closeErr
 			}
 		case tar.TypeSymlink:
-			if filepath.IsAbs(hdr.Linkname) || !local(filepath.Join(filepath.Dir(rel), filepath.FromSlash(hdr.Linkname))) {
+			if rooted(hdr.Linkname) || !local(filepath.Join(filepath.Dir(rel), filepath.FromSlash(hdr.Linkname))) {
 				return fmt.Errorf("symlink %q -> %q leaves the runtime folder", hdr.Name, hdr.Linkname)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -330,6 +331,15 @@ func extract(archive []byte, root string) error {
 			return fmt.Errorf("entry %q has unsupported type %q", hdr.Name, string(hdr.Typeflag))
 		}
 	}
+}
+
+// rooted reports whether a symlink target names a root, a drive or a share
+// rather than a path relative to the link. On Windows "/etc/passwd" is not
+// filepath.IsAbs (it has no drive), but it still points at the drive's root.
+func rooted(link string) bool {
+	p := filepath.FromSlash(link)
+	return path.IsAbs(link) || filepath.IsAbs(p) || filepath.VolumeName(p) != "" ||
+		strings.HasPrefix(p, string(filepath.Separator))
 }
 
 // local reports whether a relative path stays inside its root.

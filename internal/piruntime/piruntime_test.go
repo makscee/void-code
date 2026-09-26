@@ -188,12 +188,21 @@ func TestEnsureRefusesAnArchiveMissingFromTheSums(t *testing.T) {
 }
 
 func TestExtractRefusesEntriesLeavingTheRoot(t *testing.T) {
-	for _, bad := range [][]entry{
+	bads := [][]entry{
 		{{name: "../escape", body: "x", mode: 0644}},
 		{{name: "/abs", body: "x", mode: 0644}},
 		{{name: "node_modules/link", link: "../../outside"}},
 		{{name: "node_modules/link", link: "/etc/passwd"}},
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		bads = append(bads,
+			[]entry{{name: "node_modules/link", link: `\Windows\System32`}},
+			[]entry{{name: "node_modules/link", link: `C:\Windows`}},
+			[]entry{{name: "node_modules/link", link: "C:outside"}},
+			[]entry{{name: "node_modules/link", link: `\\server\share\x`}},
+		)
+	}
+	for _, bad := range bads {
 		root := t.TempDir()
 		if err := extract(tarGz(t, bad), root); err == nil {
 			t.Errorf("extract(%q) succeeded; want refusal", bad[0].name)
