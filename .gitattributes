@@ -12,3 +12,7 @@
 # pin file actually covers; desktop/tests/checkout-stable-pins.test.ts discovers
 # pinned files by digest and fails when a new one is not protected here.
 desktop/runtime/pi/** -text
+
+# vc embeds the web-search fork and pins its bytes by digest
+# (cmd/vc/pi_web_search_version_test.go), so a CRLF checkout must not rewrite them.
+cmd/vc/embed/** -text
