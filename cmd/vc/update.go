@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/update"
@@ -30,6 +31,11 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 	cfg := config.OSResolve()
 	baseURL := cfg.AuthHost + "/vc"
 
+	// Where the new binary lands, read before the update: on Windows the running
+	// vc.exe is renamed to vc.exe.old during the swap, and os.Executable may then
+	// name the old one.
+	exe, exeErr := os.Executable()
+
 	updated, err := update.CheckAndUpdate(update.Options{
 		Current: version.Version,
 		BaseURL: baseURL,
@@ -40,8 +46,14 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 
 	if updated {
 		fmt.Println("vc updated successfully. Run vc again to use the new version.")
+		// The new binary knows which Pi it pins; let it install that one. A
+		// failure is not fatal: vc tries again on launch.
+		if exeErr == nil {
+			_ = ensurePiRuntimeWithNewBinary(exe, os.Stdout)
+		}
 	} else {
 		fmt.Println("Already up to date.")
+		_ = ensurePiRuntime(os.Stdout)
 	}
 	return nil
 }

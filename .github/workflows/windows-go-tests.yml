@@ -68,6 +68,47 @@ jobs:
       # surfaces gets fixed under its own spec, not quietly inside this one.
       - name: Run tests
         run: go test -tags vctestfixture ./...
+      # vc on Windows installs a missing Pi from the release archive and then
+      # launches it through node_modules\.bin\pi.cmd (makscee/void-board#162).
+      # The archive is built from the pinned lockfile as release.yml builds it,
+      # served from a local stand-in for auth.makscee.ru, and installed by vc
+      # into an empty home; then Pi is started through pi.cmd. npm on Windows
+      # writes the .cmd shims itself, so here the shim script finds nothing to
+      # replace; on the Linux release runner it writes the same shims.
+      - name: vc installs the Windows Pi archive and pi.cmd starts it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'pi-archive'
+          $work = Join-Path $root 'work'; $bin = Join-Path $root 'srv\vc\bin'; $home_ = Join-Path $root 'home'
+          New-Item -ItemType Directory -Force -Path $work, $bin, (Join-Path $home_ '.void-code') | Out-Null
+          Copy-Item desktop/runtime/pi/package.json, desktop/runtime/pi/package-lock.json $work
+          Push-Location $work
+          npm ci --os=win32 --cpu=x64 --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          Pop-Location
+          node scripts/pi-runtime-windows-shims.mjs $work (Join-Path (Split-Path (Get-Command node).Source) 'node_modules\npm')
+          if ($LASTEXITCODE -ne 0) { throw 'shim script failed' }
+          $pin = (Get-Content -Raw desktop/runtime/pi/package.json | ConvertFrom-Json).dependencies.'@earendil-works/pi-coding-agent'
+          $name = "pi-runtime-$pin-windows-amd64.tar.gz"
+          # Windows' own bsdtar, as install.ps1 uses: Git's GNU tar reads "D:" as a remote host.
+          & "$env:SystemRoot\System32\tar.exe" -C $work -czf (Join-Path $bin $name) package.json package-lock.json node_modules
+          if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
+          $sum = (Get-FileHash -Algorithm SHA256 (Join-Path $bin $name)).Hash.ToLowerInvariant()
+          Set-Content -NoNewline -Path (Join-Path $root 'srv\vc\SHA256SUMS') -Value "$sum  $name`n"
+          go build -o (Join-Path $root 'vc.exe') ./cmd/vc
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '18799', '--bind', '127.0.0.1', '--directory', (Join-Path $root 'srv') -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 2
+            $env:USERPROFILE = $home_; $env:HOME = $home_; $env:VC_AUTH_HOST = 'http://127.0.0.1:18799'
+            & (Join-Path $root 'vc.exe') install-pi-runtime
+            if ($LASTEXITCODE -ne 0) { throw "vc install-pi-runtime exited $LASTEXITCODE" }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+          $got = & (Join-Path $home_ '.void-code\runtime\pi\node_modules\.bin\pi.cmd') --version
+          Write-Host "pi.cmd --version: $got"
+          if ("$got".Trim() -ne $pin) { throw "pi.cmd --version said '$got', want $pin" }
       - name: Install locked desktop test dependencies
         working-directory: desktop
         run: npm ci

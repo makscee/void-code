@@ -12,6 +12,7 @@ import (
 
 	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
+	"github.com/makscee/void-code/internal/piruntime"
 )
 
 // TestMain points HOME at a throwaway directory for the whole package run and
@@ -47,6 +48,9 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", sandbox)
 	os.Setenv("USERPROFILE", sandbox)
+	// Launch provisions a missing Pi runtime from the release host; no test in
+	// this package may reach it.
+	piRuntimeSources = func() []piruntime.Source { return []piruntime.Source{} }
 
 	code := m.Run()
 
