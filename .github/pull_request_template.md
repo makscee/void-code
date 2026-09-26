@@ -1,4 +1,4 @@
-Closes team-void-m/void-works#
+Closes makscee/void-board#
 
 ## What changed
 
