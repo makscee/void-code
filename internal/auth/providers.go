@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 )
@@ -13,6 +16,30 @@ type ProviderInfo struct {
 	ID   string // stable provider id, sent verbatim as the x-void-provider header
 	Name string // human display label for the menu row
 	Type string // safe provider type from auth, used for compatibility classification
+}
+
+// providerTransportError marks failures from the HTTP transport itself. Keeping
+// this distinction out of response decoding prevents callers from retrying a
+// timeout that happened after an HTTP response was already received.
+type providerTransportError struct {
+	err error
+}
+
+func (e *providerTransportError) Error() string { return e.err.Error() }
+func (e *providerTransportError) Unwrap() error { return e.err }
+
+// IsProviderTransportTimeout reports only a timeout/deadline returned while
+// establishing or receiving the HTTP response, never a response-body error.
+func IsProviderTransportTimeout(err error) bool {
+	var transportErr *providerTransportError
+	if !errors.As(err, &transportErr) {
+		return false
+	}
+	if errors.Is(transportErr.err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(transportErr.err, &netErr) && netErr.Timeout()
 }
 
 // FetchProviders calls GET <authHost>/v1/vc/providers with the bearer token.
@@ -31,7 +58,7 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET vc/providers: %w", err)
+		return nil, fmt.Errorf("GET vc/providers: %w", &providerTransportError{err: err})
 	}
 	defer resp.Body.Close()
 

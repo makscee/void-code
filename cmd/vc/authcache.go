@@ -19,7 +19,8 @@ import (
 const (
 	authCacheTTL          = 5 * time.Minute
 	authCacheTransientTTL = 30 * time.Second
-	authProbeTimeout      = 2 * time.Second
+	authProbeTimeout      = 4 * time.Second
+	maxProviderAttempts   = 2
 )
 
 var errAuthTemporarilyUnavailable = errors.New("identity temporarily unavailable")
@@ -246,15 +247,27 @@ func cachedFetchMe(authHost, token string, httpClient *http.Client) (auth.MeResu
 // Provider grants can change immediately after login, so even a fresh empty
 // cache entry is not authoritative.
 func fetchProvidersLive(authHost, token string, httpClient *http.Client) ([]auth.ProviderInfo, error) {
-	providers, err := auth.FetchProviders(authHost, token, httpClient)
-	if err != nil {
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	for attempt := 0; attempt < maxProviderAttempts; attempt++ {
+		client := *httpClient
+		client.Timeout = authProbeTimeout
+
+		providers, err := auth.FetchProviders(authHost, token, &client)
+		if err == nil {
+			clearAuthCache("providers", authHost, token)
+			return providers, nil
+		}
 		if errors.Is(err, auth.ErrNotLoggedIn) {
 			clearAuthCache("providers", authHost, token)
+			return nil, err
 		}
-		return nil, err
+		if attempt+1 >= maxProviderAttempts || !auth.IsProviderTransportTimeout(err) {
+			return nil, err
+		}
 	}
-	clearAuthCache("providers", authHost, token)
-	return providers, nil
+	return nil, fmt.Errorf("provider discovery failed after %d attempts", maxProviderAttempts)
 }
 
 func authCacheDebugPath(kind, authHost, token string) (string, error) {
