@@ -44,6 +44,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/makscee/void-code/internal/piruntime"
 )
 
 const piPinPackage = "@earendil-works/pi-coding-agent"
@@ -1110,4 +1112,12 @@ func TestPowerShellInstallerPiPinBehaviour(t *testing.T) {
 				got, pin)
 		}
 	})
+}
+
+// vc installs a missing managed Pi itself from the release archive (#162), so
+// its compiled-in pin is a fourth copy that must match the desktop's.
+func TestVcPiRuntimePinMatchesDesktop(t *testing.T) {
+	if want := piPinFromDesktop(t); piruntime.PinnedVersion != want {
+		t.Fatalf("internal/piruntime.PinnedVersion = %q, desktop/runtime/pi/package.json pins %q", piruntime.PinnedVersion, want)
+	}
 }
