@@ -42,7 +42,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -174,10 +173,12 @@ done
 [ -n "$pkg" ] || exit 1
 [ "$PIPIN_NPM_MODE" = fail ] && exit 1
 # A global install (-g, no --prefix) succeeds as real npm's would and touches
-# nothing in the managed runtime. install.sh's check_npm_agent reaches one
-# after a successful managed Pi install (its "A && B || C && D" parses as
-# "((A && B) || C) && D"); rejecting it here would push every run into the
-# failure path for a reason that is the stub's, not the installer's.
+# nothing in the managed runtime. Before this branch, install.sh's
+# check_npm_agent reached one after a successful managed Pi install (its
+# "A && B || C && D" parsed as "((A && B) || C) && D"); install_npm_agent_pkg
+# fixed that. The stub still accepts it so that, should the bug return, the run
+# is judged by requireNoGlobalPiInstall rather than pushed into the failure
+# path for a reason that is the stub's, not the installer's.
 if [ -z "$prefix" ]; then
   for a in "$@"; do
     case "$a" in -g|--global) exit 0 ;; esac
@@ -661,439 +662,168 @@ func TestShellInstallerPiPinPrintedCommands(t *testing.T) {
 	})
 }
 
-// ── install.sh: every Pi npm command site, statically ────────────────────────
+// ── both installers: one version constant, one package spec ──────────────────
 //
 // Two print sites cannot be reached from a test without a terminal or a full
 // download: "Run when ready:" (needs `[ -t 0 ]` and an answer on /dev/tty) and
-// the NEXT STEPS block (skipped under VC_SKIP_DOWNLOAD=1). They are checked on
-// the script text instead, with the installer's own variables expanded, so a
-// pin kept in a variable ($PI_VERSION, $PI_SPEC, …) counts exactly like one
-// written inline.
+// the NEXT STEPS block (skipped under VC_SKIP_DOWNLOAD=1). Instead of parsing
+// the installers to find every npm command, both are held to an invariant on
+// their raw text, every physical line, so a `\`-continued command cannot hide
+// a site:
 //
-// A site is any non-comment line that, once rendered, is an `npm … install`
-// command and either names the Pi package or installs into the managed Pi
-// runtime (…/runtime/pi). Every such line must name the pinned spec and no
-// other spelling of the package. Blind spots, named rather than hidden: a
-// package passed through a function's positional parameter ("$1") cannot be
-// resolved from the text — at a Pi site that reads as "no pin" (red), and in a
-// generic printer that installs somewhere else it is not a Pi site at all.
-func TestShellInstallerPiPinEveryNpmCommandSite(t *testing.T) {
-	pin := piPinFromDesktop(t)
-	src := readInstaller(t, "install.sh")
-	vars := shAssignments(src)
+//  1. the version lives in exactly one constant (PI_VERSION / $PiVersion),
+//     and its value is the desktop pin;
+//  2. the package spec is built in exactly one place (PI_PACKAGE_SPEC /
+//     $PiPackageSpec), from that constant;
+//  3. the package name appears nowhere else, except inside a node_modules
+//     path or on a comment line.
+//
+// A command that installs or prints Pi then has to go through the spec, and
+// the spec carries the pin. Blind spots, named rather than hidden: a package
+// name assembled from pieces ("@earendil-works/" + "pi-coding-agent"), and a
+// here-document line that happens to start with '#'. Strict on purpose: the
+// package name kept in a variable of its own and joined to the version
+// somewhere else is red, even if it would install the pin.
+//
+// install.ps1's reinstall decision (requirement 3) is covered behaviourally
+// only, by TestPowerShellInstallerPiPinBehaviour where pwsh is present.
 
-	type site struct {
-		line     int
-		source   string
-		rendered string
-	}
-	var sites []site
-	for i, raw := range strings.Split(src, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		rendered := shRenderLine(line, vars)
-		if !shNpmInstallRe.MatchString(rendered) {
-			continue
-		}
-		if !strings.Contains(rendered, piPinPackage) && !strings.Contains(rendered, "/runtime/pi") {
-			continue
-		}
-		sites = append(sites, site{i + 1, line, rendered})
-	}
-	if len(sites) == 0 {
-		t.Fatalf("НЕ СМОГ: found no npm install command for Pi in install.sh; the reader no longer recognises how it is written")
-	}
-	for _, s := range sites {
-		problems, pinned := piPinMentionProblems(s.rendered, pin)
-		if len(problems) > 0 || pinned == 0 {
-			t.Errorf("requirement 2 (every Pi npm command names the pin): install.sh:%d does not name %q\n    source:   %s\n    rendered: %s",
-				s.line, piPinSpec(pin), s.source, s.rendered)
-		}
-	}
-}
-
+// Either separator: install.ps1 spells node_modules paths with backslashes.
 var (
-	shNpmInstallRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])npm\s[^|;&]*\binstall\b`)
-	shAssignRe     = regexp.MustCompile(`^(?:export\s+|local\s+|readonly\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
-	shVarRe        = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-=+?]([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+	piPinNameRe        = regexp.MustCompile(`@earendil-works[\\/]pi-coding-agent`)
+	piPinNodeModulesRe = regexp.MustCompile(`node_modules[\\/]+$`)
 )
 
-// shAssignments collects NAME=value assignments from install.sh, first one
-// wins (the top-level defaults come first in the file).
-func shAssignments(src string) map[string]string {
-	vars := map[string]string{}
-	for _, raw := range strings.Split(src, "\n") {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		m := shAssignRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		if _, seen := vars[m[1]]; seen {
-			continue
-		}
-		words := shWords(m[2])
-		if len(words) == 0 {
-			vars[m[1]] = ""
-			continue
-		}
-		vars[m[1]] = words[0].text
-		if words[0].single {
-			vars[m[1]] = "\x00" + words[0].text // literal, never expanded
-		}
-	}
-	return vars
+type piPinTextRules struct {
+	file      string
+	constName string
+	specName  string
+	// constDefs each match a line that defines the version constant; the
+	// first submatch is the value as written.
+	constDefs []*regexp.Regexp
+	// specDef matches the whole line that builds the spec: the package name
+	// followed by the version constant, and nothing else.
+	specDef *regexp.Regexp
 }
 
-func shExpand(s string, vars map[string]string, depth int) string {
-	if depth > 12 {
+const piPinShRef = `(?:\$PI_VERSION|\$\{PI_VERSION\})`
+
+var piPinShellRules = piPinTextRules{
+	file:      "install.sh",
+	constName: "PI_VERSION",
+	specName:  "PI_PACKAGE_SPEC",
+	constDefs: []*regexp.Regexp{
+		// PI_VERSION=0.87.1, "…", '…', "${PI_VERSION:-0.87.1}"; export/readonly/local
+		regexp.MustCompile(`^\s*(?:(?:export|readonly|local)\s+)?PI_VERSION=(\S*)\s*(?:#.*)?$`),
+		// : "${PI_VERSION:=0.87.1}"
+		regexp.MustCompile(`^\s*:\s+["']?\$\{PI_VERSION:?=([^}]*)\}["']?\s*(?:#.*)?$`),
+	},
+	specDef: regexp.MustCompile(`^\s*(?:(?:export|readonly)\s+)?PI_PACKAGE_SPEC=["']?@earendil-works/pi-coding-agent@["']*` +
+		piPinShRef + `["']?\s*(?:#.*)?$`),
+}
+
+const piPinPSRef = `(?:\$(?:script:)?PiVersion\b|\$\{(?:script:)?PiVersion\}|\$\(\s*\$(?:script:)?PiVersion\s*\))`
+
+var piPinPowerShellRules = piPinTextRules{
+	file:      "install.ps1",
+	constName: "$PiVersion",
+	specName:  "$PiPackageSpec",
+	constDefs: []*regexp.Regexp{
+		// $PiVersion = '0.87.1', [string]$script:PiVersion = "0.87.1"
+		regexp.MustCompile(`(?i)^\s*(?:\[string\]\s*)?\$(?:script:|global:)?PiVersion\s*=\s*(\S+)\s*(?:#.*)?$`),
+		// Set-Variable -Name PiVersion -Value '0.87.1' -Option Constant
+		regexp.MustCompile(`(?i)^\s*(?:Set|New)-Variable\s.*-Name\s+['"]?PiVersion['"]?\s.*-Value\s+(['"]?[^'"\s]+['"]?)`),
+	},
+	specDef: regexp.MustCompile(`(?i)^\s*(?:\[string\]\s*)?\$(?:script:|global:)?PiPackageSpec\s*=\s*(?:` +
+		`"@earendil-works/pi-coding-agent@` + piPinPSRef + `"` + // "…@$PiVersion"
+		`|['"]@earendil-works/pi-coding-agent@['"]\s*\+\s*` + piPinPSRef + // '…@' + $PiVersion
+		`|['"]@earendil-works/pi-coding-agent@\{0\}['"]\s*-f\s*` + piPinPSRef + // '…@{0}' -f $PiVersion
+		`)\s*(?:#.*)?$`),
+}
+
+var piPinDefaultRe = regexp.MustCompile(`^\$\{PI_VERSION:?[-=](.*)\}$`)
+
+// piPinUnquote strips one layer of matching quotes, and a shell default
+// expansion around the value: "${PI_VERSION:-0.87.1}" is 0.87.1.
+func piPinUnquote(v string) string {
+	unq := func(s string) string {
+		if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
+			return s[1 : len(s)-1]
+		}
 		return s
 	}
-	return shVarRe.ReplaceAllStringFunc(s, func(ref string) string {
-		m := shVarRe.FindStringSubmatch(ref)
-		name, def := m[1], m[2]
-		if name == "" {
-			name = m[3]
-		}
-		v, ok := vars[name]
-		if !ok {
-			if m[1] != "" && def != "" {
-				return shExpand(def, vars, depth+1)
-			}
-			return ref
-		}
-		if strings.HasPrefix(v, "\x00") {
-			return v[1:]
-		}
-		return shExpand(v, vars, depth+1)
-	})
+	v = unq(v)
+	if m := piPinDefaultRe.FindStringSubmatch(v); m != nil {
+		v = unq(m[1])
+	}
+	return v
 }
 
-type shWord struct {
-	text   string
-	single bool // entirely single-quoted: no expansion
-	op     bool // a redirection or control operator
-}
+func checkPiPinText(t *testing.T, r piPinTextRules) {
+	t.Helper()
+	pin := piPinFromDesktop(t)
+	src := strings.TrimPrefix(readInstaller(t, r.file), "\ufeff")
 
-// shWords splits a line into shell words, well enough for printf lines and
-// assignment values: quotes are honoured, redirections and operators end up as
-// words of their own.
-func shWords(s string) []shWord {
-	var out []shWord
-	i := 0
-	for i < len(s) {
-		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
-			i++
-		}
-		if i >= len(s) {
-			break
-		}
-		if s[i] == '#' {
-			break
-		}
-		if strings.ContainsRune(";&|<>", rune(s[i])) || (s[i] >= '0' && s[i] <= '9' && i+1 < len(s) && s[i+1] == '>') {
-			j := i
-			for j < len(s) && !strings.ContainsRune(" \t'\"", rune(s[j])) {
-				j++
-			}
-			out = append(out, shWord{text: s[i:j], op: true})
-			i = j
+	var constAt, specAt []int
+	constValue := ""
+	for i, line := range strings.Split(src, "\n") {
+		line = strings.TrimRight(line, "\r")
+		n := i + 1
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		var b strings.Builder
-		single := true
-		quotedAny := false
-		for i < len(s) && s[i] != ' ' && s[i] != '\t' && !strings.ContainsRune(";&|<>", rune(s[i])) {
-			switch s[i] {
-			case '\'':
-				j := strings.IndexByte(s[i+1:], '\'')
-				if j < 0 {
-					j = len(s) - i - 1
-				}
-				b.WriteString(s[i+1 : i+1+j])
-				i += j + 2
-				quotedAny = true
-			case '"':
-				j := i + 1
-				for j < len(s) && s[j] != '"' {
-					if s[j] == '\\' {
-						j++
-					}
-					j++
-				}
-				if j > len(s) {
-					j = len(s)
-				}
-				b.WriteString(s[i+1 : j])
-				i = j + 1
-				single = false
-				quotedAny = true
-			default:
-				b.WriteByte(s[i])
-				i++
-				single = false
-			}
-		}
-		out = append(out, shWord{text: b.String(), single: single && quotedAny})
-	}
-	return out
-}
-
-// shRenderLine renders a printf line as it would print (%s filled in order),
-// and any other line with its variables expanded.
-func shRenderLine(line string, vars map[string]string) string {
-	words := shWords(line)
-	if len(words) >= 2 && words[0].text == "printf" {
-		format := words[1].text
-		if !words[1].single {
-			format = shExpand(format, vars, 0)
-		}
-		var args []string
-		for _, w := range words[2:] {
-			if w.op {
+		for _, re := range r.constDefs {
+			if m := re.FindStringSubmatch(line); m != nil {
+				constAt = append(constAt, n)
+				constValue = piPinUnquote(m[1])
 				break
 			}
-			if w.single {
-				args = append(args, w.text)
-			} else {
-				args = append(args, shExpand(w.text, vars, 0))
-			}
 		}
-		var b strings.Builder
-		n := 0
-		for i := 0; i < len(format); i++ {
-			if format[i] == '%' && i+1 < len(format) {
-				switch format[i+1] {
-				case '%':
-					b.WriteByte('%')
-					i++
-					continue
-				case 's', 'd':
-					if n < len(args) {
-						b.WriteString(args[n])
-					}
-					n++
-					i++
-					continue
-				}
-			}
-			b.WriteByte(format[i])
+		isSpec := r.specDef.MatchString(line)
+		if isSpec {
+			specAt = append(specAt, n)
 		}
-		return b.String()
-	}
-	return shExpand(line, vars, 0)
-}
-
-// ── install.ps1 ──────────────────────────────────────────────────────────────
-
-var (
-	psAssignRe = regexp.MustCompile(`^\$(?:script:|global:)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
-	psVarRe    = regexp.MustCompile(`\$\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$(?:script:|global:)?([A-Za-z_][A-Za-z0-9_]*)`)
-	psFuncRe   = regexp.MustCompile(`(?mi)^\s*function\s+([A-Za-z][A-Za-z0-9-]*)\s*\{`)
-	// the managed Pi's own manifest, spelled with either separator
-	psPiManifestRe = regexp.MustCompile(`pi-coding-agent['"]?\s*[\\/,]\s*['"]?package\.json`)
-)
-
-// psAssignments collects `$Name = 'literal'` / `$Name = "string"` assignments,
-// keyed case-insensitively as PowerShell does. Values that are not a plain
-// string literal (Join-Path …, arrays, calls) are kept raw: psClosure still
-// searches them for the pin and the manifest path, psExpand never inlines them.
-func psAssignments(src string) map[string]string {
-	vars := map[string]string{}
-	for _, raw := range strings.Split(src, "\n") {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		m := psAssignRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		name := strings.ToLower(m[1])
-		if _, seen := vars[name]; seen {
-			continue
-		}
-		v := strings.TrimSpace(m[2])
-		switch {
-		case len(v) >= 2 && v[0] == '\'' && strings.LastIndexByte(v, '\'') > 0:
-			vars[name] = "\x00" + v[1:strings.LastIndexByte(v, '\'')]
-		case len(v) >= 2 && v[0] == '"' && strings.LastIndexByte(v, '"') > 0:
-			vars[name] = v[1:strings.LastIndexByte(v, '"')]
-		default:
-			vars[name] = "\x01" + v // an expression: searched, never expanded
-		}
-	}
-	return vars
-}
-
-func psExpand(s string, vars map[string]string, depth int) string {
-	if depth > 12 {
-		return s
-	}
-	return psVarRe.ReplaceAllStringFunc(s, func(ref string) string {
-		m := psVarRe.FindStringSubmatch(ref)
-		name := m[1] + m[2] + m[3]
-		v, ok := vars[strings.ToLower(name)]
-		if !ok || strings.HasPrefix(v, "\x01") {
-			return ref
-		}
-		if strings.HasPrefix(v, "\x00") {
-			return v[1:]
-		}
-		return psExpand(v, vars, depth+1)
-	})
-}
-
-// psFunctions returns every `function Name { … }` body by brace matching.
-func psFunctions(src string) map[string]string {
-	funcs := map[string]string{}
-	for _, loc := range psFuncRe.FindAllStringSubmatchIndex(src, -1) {
-		name := src[loc[2]:loc[3]]
-		open := loc[1] - 1
-		depth := 0
-		end := len(src)
-		for i := open; i < len(src); i++ {
-			if src[i] == '{' {
-				depth++
-			} else if src[i] == '}' {
-				depth--
-				if depth == 0 {
-					end = i + 1
-					break
-				}
-			}
-		}
-		funcs[name] = src[open:end]
-	}
-	return funcs
-}
-
-// psClosure is seed plus the bodies of every function it names and the
-// assignments of every variable it names, transitively.
-func psClosure(seed string, funcs map[string]string, vars map[string]string) string {
-	var b strings.Builder
-	b.WriteString(seed)
-	seenF := map[string]bool{}
-	seenV := map[string]bool{}
-	queue := []string{seed}
-	for len(queue) > 0 {
-		text := queue[0]
-		queue = queue[1:]
-		names := make([]string, 0, len(funcs))
-		for n := range funcs {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, n := range names {
-			if seenF[n] {
+		for _, loc := range piPinNameRe.FindAllStringIndex(line, -1) {
+			if isSpec || piPinNodeModulesRe.MatchString(line[:loc[0]]) {
 				continue
 			}
-			if regexp.MustCompile(`(?i)(^|[^A-Za-z0-9-])` + regexp.QuoteMeta(n) + `($|[^A-Za-z0-9-])`).MatchString(text) {
-				seenF[n] = true
-				b.WriteString("\n" + funcs[n])
-				queue = append(queue, funcs[n])
-			}
-		}
-		for _, m := range psVarRe.FindAllStringSubmatch(text, -1) {
-			n := strings.ToLower(m[1] + m[2] + m[3])
-			v, ok := vars[n]
-			if !ok || seenV[n] {
-				continue
-			}
-			seenV[n] = true
-			v = strings.TrimPrefix(strings.TrimPrefix(v, "\x00"), "\x01")
-			b.WriteString("\n" + v)
-			queue = append(queue, v)
+			t.Errorf("requirement 2 (every Pi command goes through %s): %s:%d names %s outside the spec and outside a node_modules path\n    %s",
+				r.specName, r.file, n, piPinPackage, strings.TrimSpace(line))
 		}
 	}
-	return b.String()
-}
 
-// psIsLiteralAssignment: `$Name = 'text'` or `$Name = "text"` and nothing
-// else. `$ok = Install-NpmAgent -Package '…'` is a call, not a definition.
-func psIsLiteralAssignment(line string) bool {
-	m := psAssignRe.FindStringSubmatch(line)
-	if m == nil {
-		return false
-	}
-	v := strings.TrimSpace(m[2])
-	if len(v) < 2 {
-		return false
-	}
-	q := v[0]
-	if q != '\'' && q != '"' {
-		return false
-	}
-	return strings.IndexByte(v[1:], q) == len(v)-2
-}
-
-// Requirements 1 and 2 for install.ps1: every mention of the Pi package in code
-// — the managed install at the -Package call site, the dry-run WOULD: line, the
-// "install manually" / NEXT STEPS lines — is spelled with the pin, directly or
-// through a variable that resolves to it. Assignments are not mentions (a
-// `$PiPackageName = '@earendil-works/pi-coding-agent'` is fine); their uses are.
-func TestPowerShellInstallerPiPinEveryPackageMention(t *testing.T) {
-	pin := piPinFromDesktop(t)
-	src := readInstaller(t, "install.ps1")
-	vars := psAssignments(src)
-
-	mentions := 0
-	for i, raw := range strings.Split(src, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	switch len(constAt) {
+	case 0:
+		t.Errorf("requirement 1 (the installer carries the pin): %s defines no %s constant; the pinned %s cannot be traced to %s",
+			r.file, r.constName, pin, r.file)
+	case 1:
+		if constValue != pin {
+			t.Errorf("requirement 1 (the installer carries the pin): %s:%d sets %s to %q, desktop/runtime/pi/package.json pins %q",
+				r.file, constAt[0], r.constName, constValue, pin)
 		}
-		if psIsLiteralAssignment(line) {
-			continue
-		}
-		rendered := psExpand(line, vars, 0)
-		problems, pinned := piPinMentionProblems(rendered, pin)
-		mentions += pinned + len(problems)
-		for _, p := range problems {
-			t.Errorf("requirement 1/2 (install.ps1 installs and prints the pinned Pi): install.ps1:%d names %s without %q\n    source:   %s\n    at:       …%s…",
-				i+1, piPinPackage, "@"+pin, line, p)
-		}
+	default:
+		t.Errorf("requirement 1 (one version constant): %s defines %s on lines %v; there must be exactly one",
+			r.file, r.constName, constAt)
 	}
-	if mentions == 0 {
-		t.Fatalf("НЕ СМОГ: install.ps1 no longer names %s anywhere in code; the reader cannot find the Pi install", piPinPackage)
+	switch len(specAt) {
+	case 0:
+		t.Errorf("requirement 2 (one package spec, built from %s): %s has no line building %s as %s@%s; every Pi command must go through it",
+			r.constName, r.file, r.specName, piPinPackage, r.constName)
+	case 1:
+	default:
+		t.Errorf("requirement 2 (one package spec): %s builds %s on lines %v; there must be exactly one",
+			r.file, r.specName, specAt)
 	}
 }
 
-// Requirement 3 for install.ps1: the decision that skips the Pi install as
-// "already installed" must look at the managed Pi's version, not only at
-// whether its entrypoint exists. Read statically: the Pi health path (the body
-// of Test-AgentHealthy and Install-NpmAgent up to its "already installed"
-// message, followed through every function and variable they name) must both
-// read the managed runtime's pi-coding-agent/package.json and involve the pin.
-func TestPowerShellInstallerPiPinHealthComparesVersion(t *testing.T) {
-	pin := piPinFromDesktop(t)
-	src := readInstaller(t, "install.ps1")
-	vars := psAssignments(src)
-	funcs := psFunctions(src)
+// Requirements 1 and 2 for install.sh, on its text.
+func TestShellInstallerPiPinVersionConstantAndSpec(t *testing.T) {
+	checkPiPinText(t, piPinShellRules)
+}
 
-	health, ok := funcs["Test-AgentHealthy"]
-	if !ok {
-		t.Fatalf("НЕ СМОГ: install.ps1 has no function Test-AgentHealthy; the reader cannot find the Pi health decision")
-	}
-	install, ok := funcs["Install-NpmAgent"]
-	if !ok {
-		t.Fatalf("НЕ СМОГ: install.ps1 has no function Install-NpmAgent")
-	}
-	if k := strings.Index(install, "already installed"); k >= 0 {
-		install = install[:k]
-	}
-
-	closure := psExpand(psClosure(health+"\n"+install, funcs, vars), vars, 0)
-	if !psPiManifestRe.MatchString(closure) {
-		t.Errorf("requirement 3 (install.ps1 reinstalls a managed Pi at another version): the \"already installed\" decision never reads the managed runtime's pi-coding-agent\\package.json — a Pi at any version passes as healthy")
-	}
-	if !strings.Contains(closure, pin) {
-		t.Errorf("requirement 3 (install.ps1 reinstalls a managed Pi at another version): the \"already installed\" decision never compares against the pin %q", pin)
-	}
+// Requirements 1 and 2 for install.ps1, on its text.
+func TestPowerShellInstallerPiPinVersionConstantAndSpec(t *testing.T) {
+	checkPiPinText(t, piPinPowerShellRules)
 }
 
 // Requirement 2 for install.ps1, run for real where PowerShell exists: the
