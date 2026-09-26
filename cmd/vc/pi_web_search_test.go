@@ -55,7 +55,7 @@ func TestManagedWebSearchUpgradeSilencesRecoverablePDFWarnings(t *testing.T) {
 	if err := json.Unmarshal(manifest, &installed); err != nil {
 		t.Fatal(err)
 	}
-	if installed.Version != "0.13.0-void.2" {
+	if installed.Version != managedWebSearchPackageVersion {
 		t.Fatalf("managed web-search version=%q, want upgraded PDF warning fix", installed.Version)
 	}
 	source, err := os.ReadFile(filepath.Join(path, "pdf-extract.ts"))
