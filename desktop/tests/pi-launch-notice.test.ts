@@ -33,8 +33,8 @@ import {
 // real Pi 0.87.1 draws the widget above its editor in fullscreen — that needs the pinned runtime
 // and a terminal.
 
-const LOW_NOTICE = 'Balance low — 1 day left. Message @makscee on Telegram to top up.';
-const REFUSAL_NOTICE = 'Balance is not enough for today — message @makscee on Telegram to top up.';
+const LOW_NOTICE = 'Balance low — 1 day left. Top up: https://profile.makscee.ru/vc/pay';
+const REFUSAL_NOTICE = 'Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay';
 
 // One Pi runtime: the factory run against its own handler table, the way Pi's loader runs it for
 // each runtime it creates. The clipboard lifecycle shares session_start; its IO is injected so it

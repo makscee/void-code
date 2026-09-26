@@ -20,6 +20,9 @@ import (
 // ProfileURL is the canonical void-code profile page URL.
 const ProfileURL = "https://profile.makscee.ru/profile"
 
+// PayURL is the vc pay page: every "top up" vc shows sends people here.
+const PayURL = "https://profile.makscee.ru/vc/pay"
+
 // profileHost is the scheme+host of the profile web app, shared with ProfileURL.
 const profileHost = "https://profile.makscee.ru"
 

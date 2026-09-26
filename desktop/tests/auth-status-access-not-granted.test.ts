@@ -84,7 +84,7 @@ describe('readAuthStatus lets the fourth auth state through — the credential w
       '{"authState":"access_not_granted","error":"access has not been granted to this account yet — an operator has to grant it","identity":"someone@example.com","pct":0,"resetAt":"2026-09-01T00:00:00.000Z",' +
         '"wallet":{"balanceUsd":0,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":false,"fundedDays":0},' +
         '"walletText":"$0.00 · T1 · ~0 days left",' +
-        '"launchNotice":"Balance is not enough for today — message @makscee on Telegram to top up."}\n',
+        '"launchNotice":"Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay"}\n',
     );
     expect(result.ok, 'status was rejected outright, so the fields cannot be checked yet').toBe(true);
     const status = (result.ok ? result.status : undefined) as Record<string, unknown> | undefined;

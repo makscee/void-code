@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/clackui"
 	"github.com/makscee/void-code/internal/version"
 )
@@ -168,7 +169,7 @@ func (m model) View() string {
 	sb.WriteString(clackui.RailLine("│", "") + "\n")
 	if m.view == topUpView {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render("Top up your balance")) + "\n")
-		sb.WriteString(clackui.RailLine("│", "  "+clackui.InfoTextStyle.Render("Text @makscee on Telegram to top up your balance.")) + "\n")
+		sb.WriteString(clackui.RailLine("│", "  "+clackui.InfoTextStyle.Render("Pay here: "+browser.PayURL)) + "\n")
 		sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("press any key to go back")) + "\n")
 		return sb.String()
 	}
