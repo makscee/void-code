@@ -169,9 +169,40 @@ jobs:
       - name: Make Unix binaries executable
         run: chmod +x dist/vc-darwin-* dist/vc-linux-*
 
+      # The pinned Pi tree, one archive per platform, so vc and install.sh can
+      # put a missing ~/.void-code/runtime/pi in place without npm (#162). Built
+      # from the same lockfile the desktop assembles from. Per platform because
+      # Pi's esbuild dependency installs only the host's binary; `--os/--cpu`
+      # picks the target's. Windows is left out: vc launches Pi there through
+      # npm's pi.cmd shim, which npm writes only on Windows.
+      #
+      # The tar is reproducible (sorted, fixed owner and mtime, gzip -n), so the
+      # same Pi pin gives the same bytes every release and void-auth's git keeps
+      # one copy of each.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Build Pi runtime archives
+        run: |
+          PI_VERSION="$(node -p 'require("./desktop/runtime/pi/package.json").dependencies["@earendil-works/pi-coding-agent"]')"
+          # <GOOS>/<GOARCH>/<npm cpu>
+          for target in darwin/arm64/arm64 darwin/amd64/x64 linux/amd64/x64 linux/arm64/arm64; do
+            goos="${target%%/*}"; rest="${target#*/}"; goarch="${rest%%/*}"; npmcpu="${rest#*/}"
+            work="$(mktemp -d)"
+            cp desktop/runtime/pi/package.json desktop/runtime/pi/package-lock.json "$work/"
+            (cd "$work" && npm ci --os="$goos" --cpu="$npmcpu" --ignore-scripts --no-audit --no-fund)
+            test -x "$work/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+            name="pi-runtime-$PI_VERSION-$goos-$goarch.tar.gz"
+            tar -C "$work" --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' \
+              -cf - package.json package-lock.json node_modules | gzip -n -9 > "dist/$name"
+            rm -rf "$work"
+          done
+          ls -la dist/pi-runtime-*
+
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum vc-* version.json > SHA256SUMS
+        run: sha256sum vc-* pi-runtime-* version.json > SHA256SUMS
 
       - name: Sign build provenance
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
@@ -183,6 +214,7 @@ jobs:
             dist/vc-linux-arm64
             dist/vc-windows-amd64.exe
             dist/vc-windows-arm64.exe
+            dist/pi-runtime-*
             dist/version.json
             dist/SHA256SUMS
 
@@ -196,6 +228,7 @@ jobs:
             dist/vc-linux-arm64
             dist/vc-windows-amd64.exe
             dist/vc-windows-arm64.exe
+            dist/pi-runtime-*
             dist/version.json
             dist/SHA256SUMS
           generate_release_notes: true
@@ -346,6 +379,16 @@ jobs:
           repository: makscee/void-code
           tag: ${{ github.ref_name }}
           fileName: "vc-*"
+          out-file-path: void-auth/public/vc/bin
+
+      # The Pi runtime archives, beside the binaries: vc and install.sh fetch
+      # them from /vc/bin/ and check them against /vc/SHA256SUMS (#162).
+      - name: Download Pi runtime archives
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: makscee/void-code
+          tag: ${{ github.ref_name }}
+          fileName: "pi-runtime-*"
           out-file-path: void-auth/public/vc/bin
 
       # The checksum list install.sh checks the PRIMARY download against. It has
