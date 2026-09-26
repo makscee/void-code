@@ -197,7 +197,7 @@ func TestEnsureRefusesAnArchiveMissingFromTheSums(t *testing.T) {
 	home := t.TempDir()
 	srv, _ := release(t, nil, nil)
 	o := opts(home, source(srv))
-	o.GOARCH = "amd64"
+	o.GOARCH = "mips64" // an arch the sums never list, whatever the host is
 	if _, err := Ensure(o); err == nil || !strings.Contains(err.Error(), "lists no") {
 		t.Fatalf("err = %v", err)
 	}
