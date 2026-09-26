@@ -145,6 +145,9 @@ func Ensure(opts Options) (bool, error) {
 	if opts.Client == nil {
 		opts.Client = &http.Client{Timeout: 10 * time.Minute}
 	}
+	if len(opts.Sources) == 0 {
+		return false, fmt.Errorf("no source to download Pi from")
+	}
 	name := ArchiveName(opts.GOOS, opts.GOARCH)
 	var errs []error
 	for _, src := range opts.Sources {

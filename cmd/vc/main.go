@@ -63,7 +63,7 @@ var (
 var welcomeGateSkippingSubCommands = map[string]bool{
 	"login": true, "logout": true, "status": true, "update": true,
 	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
-	"desktop-session": true, "access-request": true,
+	"desktop-session": true, "access-request": true, "install-pi-runtime": true,
 }
 
 func main() {
@@ -392,6 +392,10 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	// resolved private Node directly, never through Pi's shebang or pi.cmd. The
 	// legacy install.sh channel has no bundled Node, so it keeps its existing Pi
 	// entrypoint launch and inherited PATH exactly.
+	// Installs from before v0.2.48 have no managed Pi at all, and their `vc
+	// update` only swapped the binary. Put the pinned Pi in place first; on
+	// failure the resolution below reports it missing, as before.
+	_ = ensurePiRuntime(os.Stderr)
 	privateNode, nodeErr := pibin.ResolveNode()
 	launchPath := ""
 	modulePath := ""
