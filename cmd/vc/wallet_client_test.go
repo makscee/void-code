@@ -57,19 +57,16 @@ import (
 // body, so this file compiles against HEAD and says nothing about how the
 // wallet is carried inside the client.
 
-const walletBlockMessage = "Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay"
+const walletBlockMessage = "Баланса не хватает на сегодня — пополнить: https://profile.makscee.ru/vc/pay"
 
 // launchNoticeEnv is how vc hands the launch notice to Pi.
 const launchNoticeEnv = "VC_LAUNCH_NOTICE"
 
-// walletLowNotice is the low-balance notice for n funded days, spelled the way
-// cmd/vc/wallet.go daysLeft spells a day count ("1 day left", "N days left").
+// walletLowNotice is the low-balance notice for n funded days, in Russian with
+// the Russian plural ("осталось 1 день", "2 дня", "0 дней"; void-board#234).
 func walletLowNotice(n int) string {
-	days := fmt.Sprintf("%d days left", n)
-	if n == 1 {
-		days = "1 day left"
-	}
-	return "Balance low — " + days + ". Top up: https://profile.makscee.ru/vc/pay"
+	days := map[int]string{0: "0 дней", 1: "1 день", 2: "2 дня"}[n]
+	return "Баланс на исходе — осталось " + days + ". Пополнить: https://profile.makscee.ru/vc/pay"
 }
 
 const (
@@ -396,9 +393,9 @@ var walletGateCases = []walletGateCase{
 	{name: "limit pct as a string: no notice", body: meBody(`"limit":{"pct":"85"},` + wallet("18", tariffT1, "true", "9"))},
 	// T3 has no higher tier to upgrade to: its warning says when the limit
 	// resets instead of linking the pay page. T1/T2 keep the link.
-	{name: "limit 85 pct on T3: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", tariffT3, "true", "9")), notice: "Weekly limit 85% used — resets in 3 days"},
-	{name: "limit 85 pct on T3 sent as upper case: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"T3"}`, "true", "9")), notice: "Weekly limit 85% used — resets in 3 days"},
-	{name: "limit 85 pct on T3, no reset sent: the share alone", body: meBody(`"limit":{"pct":85},` + wallet("18", tariffT3, "true", "9")), notice: "Weekly limit 85% used"},
+	{name: "limit 85 pct on T3: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", tariffT3, "true", "9")), notice: "Недельный лимит использован на 85%, сброс через 3 дня"},
+	{name: "limit 85 pct on T3 sent as upper case: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"T3"}`, "true", "9")), notice: "Недельный лимит использован на 85%, сброс через 3 дня"},
+	{name: "limit 85 pct on T3, no reset sent: the share alone", body: meBody(`"limit":{"pct":85},` + wallet("18", tariffT3, "true", "9")), notice: "Недельный лимит использован на 85%"},
 	{name: "limit 85 pct on T2: limit notice with the link", body: meBody(limitMember(85) + "," + wallet("18", tariffT2, "true", "9")), notice: limitNotice(85)},
 	{name: "limit 42 pct on T3: no notice", body: meBody(limitMember(42) + "," + wallet("18", tariffT3, "true", "9"))},
 	// A tariff without its prices (void-board#224): no daily rate to check
@@ -413,7 +410,7 @@ func limitMember(pct float64) string {
 }
 
 func limitNotice(pct int) string {
-	return fmt.Sprintf("Weekly limit %d%% used — upgrade: https://profile.makscee.ru/vc/pay", pct)
+	return fmt.Sprintf("Недельный лимит использован на %d%% — перейти на тариф выше: https://profile.makscee.ru/vc/pay", pct)
 }
 
 // staleLaunchNotice is planted in vc's own environment by every launch test.

@@ -38,8 +38,9 @@ func formatLimit(l *auth.Limit, now time.Time) string {
 	return text
 }
 
-// ruResetsIn is resetsIn in Russian, for the status line: `через 3 дня`,
-// `через 5 часов`, `скоро`.
+// ruResetsIn spells the wait until the reset, for the status line and the
+// launch notice: whole days from a day on (`через 3 дня`), whole hours
+// rounded up below that (`через 5 часов`), and `скоро` once it is due.
 func ruResetsIn(d time.Duration) string {
 	switch {
 	case d <= 0:
@@ -63,26 +64,6 @@ func ruPlural(n int, one, few, many string) string {
 	return fmt.Sprintf("%d %s", n, form)
 }
 
-// resetsIn spells the wait until the reset for a launch notice: whole days
-// from a day on, whole hours (rounded up) below that, and "soon" once it is due.
-func resetsIn(d time.Duration) string {
-	switch {
-	case d <= 0:
-		return "soon"
-	case d >= 24*time.Hour:
-		return "in " + plural(int(d/(24*time.Hour)), "day")
-	default:
-		return "in " + plural(int((d+time.Hour-1)/time.Hour), "hour")
-	}
-}
-
-func plural(n int, unit string) string {
-	if n == 1 {
-		return "1 " + unit
-	}
-	return fmt.Sprintf("%d %ss", n, unit)
-}
-
 // formatAccount is the line `vc status` prints after "plan:", the desktop
 // shows as walletText and the welcome screen shows next to the identity: the
 // wallet, then the limit, each only when the server sent it. "" for neither.
@@ -101,20 +82,21 @@ func formatAccount(me auth.MeResult, now time.Time) string {
 const limitTopTier = "t3"
 
 // limitLaunchNotice warns a launch once the limit is limitWarnPct% used:
-// `Weekly limit 85% used — upgrade: <pay page>`, or on the top tier
-// `Weekly limit 85% used — resets in 3 days` (just the share when no reset
-// was sent). A wallet vc cannot read, or no tariff, keeps the link.
+// `Недельный лимит использован на 85% — перейти на тариф выше: <pay page>`,
+// or on the top tier `Недельный лимит использован на 85%, сброс через 3 дня`
+// (just the share when no reset was sent). A wallet vc cannot read, or no
+// tariff, keeps the link. Launch notices are Russian (void-board#234).
 func limitLaunchNotice(me auth.MeResult, now time.Time) string {
 	l := me.Limit
 	if l == nil || limitPct(l) < limitWarnPct {
 		return ""
 	}
-	text := fmt.Sprintf("Weekly limit %d%% used", limitPct(l))
+	text := fmt.Sprintf("Недельный лимит использован на %d%%", limitPct(l))
 	if me.Wallet == nil || me.Wallet.Tariff == nil || !strings.EqualFold(me.Wallet.Tariff.Tier, limitTopTier) {
-		return text + " — upgrade: " + browser.PayURL
+		return text + " — перейти на тариф выше: " + browser.PayURL
 	}
 	if l.ResetAt != nil {
-		text += " — resets " + resetsIn(l.ResetAt.Sub(now))
+		text += ", сброс " + ruResetsIn(l.ResetAt.Sub(now))
 	}
 	return text
 }

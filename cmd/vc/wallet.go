@@ -22,13 +22,13 @@ import (
 // verdict taken here from a snapshot would ignore the switch — and on the
 // desktop it would hide behind "Chat stopped… check your network".
 
-// walletRefusalMessage is the same sentence Relay sends with its 402
-// wallet_daily_charge_required.
-const walletRefusalMessage = "Balance is not enough for today — top up: " + browser.PayURL
+// walletRefusalMessage announces the refusal Relay sends with its 402
+// wallet_daily_charge_required. Launch notices are Russian (void-board#234).
+const walletRefusalMessage = "Баланса не хватает на сегодня — пополнить: " + browser.PayURL
 
-// walletWeekRefusalMessage is the same sentence Relay sends with its 402
+// walletWeekRefusalMessage announces the refusal Relay sends with its 402
 // wallet_charge_required (spec, "Недельное списание (решение 25.09)").
-const walletWeekRefusalMessage = "Balance is not enough for this week — top up: " + browser.PayURL
+const walletWeekRefusalMessage = "Баланса не хватает на эту неделю — пополнить: " + browser.PayURL
 
 // walletLowDays is the fundedDays at or below which a launch is warned.
 const walletLowDays = 2
@@ -102,16 +102,6 @@ func formatRuDate(t, now time.Time) string {
 	return text
 }
 
-// daysLeft spells a day count for a launch notice. Days never go below zero on screen: a negative
-// fundedDays is a balance already behind, which reads as none left.
-func daysLeft(n int) string {
-	n = max(n, 0)
-	if n == 1 {
-		return "1 day left"
-	}
-	return fmt.Sprintf("%d days left", n)
-}
-
 // walletLaunchNotice is what a launch tells the person about the wallet, or
 // "" for nothing. It never stops the launch.
 //
@@ -140,7 +130,9 @@ func walletLaunchNotice(w *auth.Wallet) string {
 		return walletRefusalMessage
 	}
 	if w.Tariff != nil && w.FundedDays != nil && *w.FundedDays <= walletLowDays {
-		return "Balance low — " + daysLeft(*w.FundedDays) + ". Top up: " + browser.PayURL
+		// Days never go below zero on screen: a negative fundedDays is a
+		// balance already behind, which reads as none left.
+		return "Баланс на исходе — осталось " + ruPlural(max(*w.FundedDays, 0), "день", "дня", "дней") + ". Пополнить: " + browser.PayURL
 	}
 	return ""
 }

@@ -63,24 +63,3 @@ func TestWelcomeShowsTheLimit(t *testing.T) {
 		t.Errorf("welcome balance = %q, want %q", got, want)
 	}
 }
-
-func TestResetsIn(t *testing.T) {
-	for _, tc := range []struct {
-		d    time.Duration
-		want string
-	}{
-		{73 * time.Hour, "in 3 days"},
-		{7 * 24 * time.Hour, "in 7 days"},
-		{25 * time.Hour, "in 1 day"},
-		{24 * time.Hour, "in 1 day"},
-		{23*time.Hour + time.Minute, "in 24 hours"},
-		{5 * time.Hour, "in 5 hours"},
-		{30 * time.Minute, "in 1 hour"},
-		{0, "soon"},
-		{-time.Hour, "soon"},
-	} {
-		if got := resetsIn(tc.d); got != tc.want {
-			t.Errorf("resetsIn(%v) = %q, want %q", tc.d, got, tc.want)
-		}
-	}
-}

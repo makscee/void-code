@@ -176,3 +176,36 @@ func TestStatusLineRussian(t *testing.T) {
 		}
 	}
 }
+
+// Launch notices are Russian too (Maks, 09-27): the low balance, both
+// refusals and the weekly limit's warning, with and without the upgrade link.
+func TestLaunchNoticesRussian(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(3 * 24 * time.Hour)
+	yes, no, one, rate, low := true, false, 1, 2.0, 0.5
+	for _, tc := range []struct {
+		me   auth.MeResult
+		want string
+	}{
+		{auth.MeResult{Wallet: &auth.Wallet{Tariff: &auth.Tariff{Tier: "t1"}, FundedDays: &one}},
+			"Баланс на исходе — осталось 1 день. Пополнить: https://profile.makscee.ru/vc/pay"},
+		{auth.MeResult{Wallet: &auth.Wallet{ChargeRequired: &yes}},
+			"Баланса не хватает на эту неделю — пополнить: https://profile.makscee.ru/vc/pay"},
+		{auth.MeResult{Wallet: &auth.Wallet{Tariff: &auth.Tariff{Tier: "t1", DailyRateUsd: &rate}, TodayPaid: &no, BalanceUsd: &low}},
+			"Баланса не хватает на сегодня — пополнить: https://profile.makscee.ru/vc/pay"},
+		{auth.MeResult{Wallet: &auth.Wallet{Tariff: &auth.Tariff{Tier: "t1"}}, Limit: &auth.Limit{Pct: 85, ResetAt: &reset}},
+			"Недельный лимит использован на 85% — перейти на тариф выше: https://profile.makscee.ru/vc/pay"},
+		{auth.MeResult{Wallet: &auth.Wallet{Tariff: &auth.Tariff{Tier: "t3"}}, Limit: &auth.Limit{Pct: 85, ResetAt: &reset}},
+			"Недельный лимит использован на 85%, сброс через 3 дня"},
+	} {
+		got := launchNotice(tc.me, now)
+		if got != tc.want {
+			t.Errorf("launchNotice = %q, want %q", got, tc.want)
+		}
+		for _, english := range []string{"Balance", "top up", "Top up", "limit", "used", "upgrade", "resets", "day"} {
+			if strings.Contains(got, english) {
+				t.Errorf("launch notice %q has the English %q", got, english)
+			}
+		}
+	}
+}
