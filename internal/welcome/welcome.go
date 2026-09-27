@@ -168,9 +168,9 @@ func (m model) View() string {
 	sb.WriteString(clackui.RailLine("┌", "  "+clackui.TitleStyle.Render("void-code")+"  "+clackui.TitleStyle.Render(version.Version)) + "\n")
 	sb.WriteString(clackui.RailLine("│", "") + "\n")
 	if m.view == topUpView {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render("Top up your balance")) + "\n")
-		sb.WriteString(clackui.RailLine("│", "  "+clackui.InfoTextStyle.Render("Pay here: "+browser.PayURL)) + "\n")
-		sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("press any key to go back")) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render("Пополнить баланс")) + "\n")
+		sb.WriteString(clackui.RailLine("│", "  "+clackui.InfoTextStyle.Render("Оплатить здесь: "+browser.PayURL)) + "\n")
+		sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("Нажмите любую клавишу, чтобы вернуться")) + "\n")
 		return sb.String()
 	}
 	if m.LoggedIn {
