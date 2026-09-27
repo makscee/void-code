@@ -121,6 +121,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } finally { childProcess.execFileSync = originalExec; syncBuiltinESMExports(); }
   assert.ok(providers > 0, 'synthetic bootstrap did not register provider');
   assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
+  // The production writer kills PowerShell after 5s. On a fresh windows-latest runner the first
+  // powershell.exe that loads System.Windows.Forms sometimes has not even read stdin by then
+  // (seen: SIGKILL at 5.0-5.3s, then 1.1s for the next launch in the same station). Start it once
+  // here, in this private station and before any timed copy, touching no clipboard, so the four
+  // copies below measure the clipboard path rather than the runner's cold start.
+  if (process.platform === 'win32') {
+    execFileSync(path.win32.join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe'), [
+      '-NoProfile', '-NonInteractive', '-Sta', '-Command',
+      "$ErrorActionPreference='Stop'; [void][Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')",
+    ], { timeout: 20000, stdio: 'ignore', windowsHide: true });
+  }
   // Observe real completion flash, not OSC52. Extraction stays entirely in Pi.
   const originalFlash = tui.flash.bind(tui);
   let succeeded = 0;

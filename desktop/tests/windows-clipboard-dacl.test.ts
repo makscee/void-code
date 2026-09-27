@@ -108,6 +108,8 @@ describe('Windows DACL target transport', () => {
 });
 
 describe('Windows clipboard image storage uses the per-user temp DACL', () => {
+  // The DACL query is one cold Windows PowerShell start: 3-7s on windows-latest, once 13.8s,
+  // so vitest's 10s default failed a correct run. The bound is for the runner, not the product.
   windowsIt('keeps the scoped root, directory, and PNG inside the inherited per-user temp DACL, then removes them', () => {
     const temporaryDirectory = path.resolve(os.tmpdir());
     expect(path.isAbsolute(temporaryDirectory), 'the real per-user temp directory must resolve to an absolute path').toBe(true);
@@ -163,7 +165,7 @@ describe('Windows clipboard image storage uses the per-user temp DACL', () => {
       rmSync(root, { recursive: true, force: true });
       rmSync(userData, { recursive: true, force: true });
     }
-  });
+  }, 60000);
 });
 
 // Windows accepts both spellings of a directory and junction aliases, but path.resolve preserves
