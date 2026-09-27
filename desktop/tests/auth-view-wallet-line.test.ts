@@ -18,8 +18,8 @@ import { walletLineFor } from '../src/renderer/auth-view';
 //
 // The screen half (an element that shows this line) is pinned in tests/wallet-line-screen.test.ts.
 
-const WALLET_TEXT = 'T1 · ~9 days left · limit 42% used, resets in 3 days';
-const WALLET = { balanceUsd: 18, tariff: { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 }, todayPaid: true, fundedDays: 9 };
+const WALLET_TEXT = '2 000 ₽ · T1 · до 4 окт · limit 42% used, resets in 3 days';
+const WALLET = { balanceKopecks: 200000, paidUntil: '2026-10-04T12:00:00Z', tariff: { tier: 't1', weekPriceKopecks: 150000, packPriceKopecks: 500000 }, todayPaid: true, fundedDays: 9 };
 const LOW_NOTICE = 'Balance low — 2 days left. Top up: https://profile.makscee.ru/vc/pay';
 
 // Built as plain objects and cast: the status is what arrives over IPC, and the tests should not

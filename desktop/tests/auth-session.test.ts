@@ -123,14 +123,15 @@ describe('readAuthStatus', () => {
 // could ever show them.
 //
 // The wallet is validated here with the same shape rules as the Go parser (internal/auth/me.go
-// parseWallet): balanceUsd a number; tariff null or { tier: non-empty string, monthlyPriceUsd:
-// number or null, dailyRateUsd: number or null }; todayPaid a boolean or null; fundedDays an integer or null. One
+// parseWallet, as `vc status --json` mirrors it since void-board#234): balanceKopecks an integer or
+// null; paidUntil a string or null; tariff null or { tier: non-empty string, weekPriceKopecks:
+// integer or null, packPriceKopecks: integer or null }; todayPaid a boolean or null; fundedDays an integer or null. One
 // field of the wrong type drops the whole wallet — a half-read wallet could show a wrong balance —
 // while the rest of the status stays. Only known fields are copied: an old vc or a proxy that adds
 // `pct` inside the wallet gets no percentage past this module.
 describe('readAuthStatus — wallet and launch notice', () => {
-  const TARIFF_T1 = { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 };
-  const WALLET = { balanceUsd: 18, tariff: TARIFF_T1, todayPaid: true, fundedDays: 9 };
+  const TARIFF_T1 = { tier: 't1', weekPriceKopecks: 150000, packPriceKopecks: 500000 };
+  const WALLET = { balanceKopecks: 200000, paidUntil: '2026-10-04T12:00:00Z', tariff: TARIFF_T1, todayPaid: true, fundedDays: 9 };
   const LOW_NOTICE = 'Balance low — 2 days left. Top up: https://profile.makscee.ru/vc/pay';
   const REFUSAL_NOTICE = 'Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay';
 
@@ -155,8 +156,8 @@ describe('readAuthStatus — wallet and launch notice', () => {
   // an unpaid day, no funded days, a balance below zero.
   it('keeps an unpaid day, zero or negative days and a negative balance exactly as sent', async () => {
     for (const wallet of [
-      { balanceUsd: 1.5, tariff: { tier: 't3', monthlyPriceUsd: 230, dailyRateUsd: 7.67 }, todayPaid: false, fundedDays: 0 },
-      { balanceUsd: -3, tariff: TARIFF_T1, todayPaid: false, fundedDays: -2 },
+      { balanceKopecks: 0, paidUntil: null, tariff: { tier: 't3', weekPriceKopecks: 600000, packPriceKopecks: 2000000 }, todayPaid: false, fundedDays: 0 },
+      { balanceKopecks: -300, paidUntil: null, tariff: TARIFF_T1, todayPaid: false, fundedDays: -2 },
     ]) {
       const status = await statusOf(signedIn({ wallet, launchNotice: REFUSAL_NOTICE }));
       expect(status.wallet, JSON.stringify(wallet)).toStrictEqual(wallet);
@@ -165,7 +166,7 @@ describe('readAuthStatus — wallet and launch notice', () => {
   });
 
   it('passes a wallet without a tariff, nulls included, and no notice for a null one', async () => {
-    const wallet = { balanceUsd: 18, tariff: null, todayPaid: null, fundedDays: null };
+    const wallet = { balanceKopecks: 200000, paidUntil: null, tariff: null, todayPaid: null, fundedDays: null };
     const status = await statusOf(signedIn({ wallet, launchNotice: null }));
     expect(status).toStrictEqual({ authState: 'signed_in', identity: 'artem', wallet });
   });
@@ -173,33 +174,48 @@ describe('readAuthStatus — wallet and launch notice', () => {
   // void-board#224: a tariff without its prices is still a tariff; absent prices read as null.
   it('passes a tariff without its prices, the missing ones as null', async () => {
     for (const [tariff, want] of [
-      [{ tier: 't1', monthlyPriceUsd: 60 }, { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: null }],
-      [{ tier: 't1' }, { tier: 't1', monthlyPriceUsd: null, dailyRateUsd: null }],
-      [{ tier: 't1', monthlyPriceUsd: null, dailyRateUsd: null }, { tier: 't1', monthlyPriceUsd: null, dailyRateUsd: null }],
+      [{ tier: 't1', weekPriceKopecks: 150000 }, { tier: 't1', weekPriceKopecks: 150000, packPriceKopecks: null }],
+      [{ tier: 't1' }, { tier: 't1', weekPriceKopecks: null, packPriceKopecks: null }],
+      [{ tier: 't1', weekPriceKopecks: null, packPriceKopecks: null }, { tier: 't1', weekPriceKopecks: null, packPriceKopecks: null }],
     ]) {
       const status = await statusOf(signedIn({ wallet: { ...WALLET, tariff } }));
       expect(status.wallet, JSON.stringify(tariff)).toStrictEqual({ ...WALLET, tariff: want });
     }
   });
 
-  it('copies only the wallet fields it knows — no percentage rides along inside the wallet', async () => {
+  it('copies only the wallet fields it knows — no percentage or dollar rides along inside the wallet', async () => {
     const status = await statusOf(signedIn({
-      wallet: { ...WALLET, pct: 77, resetAt: '2026-10-01T00:00:00Z', tariff: { ...TARIFF_T1, weeklyQuotaUsd: 40 } },
+      wallet: { ...WALLET, pct: 77, resetAt: '2026-10-01T00:00:00Z', balanceUsd: 20, tariff: { ...TARIFF_T1, weeklyQuotaUsd: 40, monthlyPriceUsd: 60 } },
     }));
     expect(status.wallet).toStrictEqual(WALLET);
     expect(JSON.stringify(status)).not.toContain('pct');
+    expect(JSON.stringify(status)).not.toMatch(/usd/i);
+  });
+
+  // An older Relay sends no kopecks; vc mirrors its wallet with balanceKopecks null, and an older
+  // vc's dollar-shaped wallet reads the same way here: no balance, never its dollars.
+  it('reads a wallet without kopecks as balanceKopecks null, never its dollars', async () => {
+    for (const wallet of [
+      { balanceKopecks: null, paidUntil: null, tariff: { tier: 't1', weekPriceKopecks: null, packPriceKopecks: null }, todayPaid: true, fundedDays: 9 },
+      { balanceUsd: 18, tariff: { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 }, todayPaid: true, fundedDays: 9 },
+    ]) {
+      const status = await statusOf(signedIn({ wallet }));
+      expect(status.wallet, JSON.stringify(wallet)).toStrictEqual({
+        balanceKopecks: null, paidUntil: null, tariff: { tier: 't1', weekPriceKopecks: null, packPriceKopecks: null }, todayPaid: true, fundedDays: 9,
+      });
+    }
   });
 
   it.each([
-    ['balanceUsd as a string', { ...WALLET, balanceUsd: '18' }],
-    ['balanceUsd missing', { tariff: TARIFF_T1, todayPaid: true, fundedDays: 9 }],
-    ['balanceUsd null', { ...WALLET, balanceUsd: null }],
+    ['balanceKopecks as a string', { ...WALLET, balanceKopecks: '200000' }],
+    ['balanceKopecks as a fraction', { ...WALLET, balanceKopecks: 1.5 }],
+    ['paidUntil as a number', { ...WALLET, paidUntil: 1759579200 }],
     ['tariff as a string', { ...WALLET, tariff: 't1' }],
-    ['tariff without a tier', { ...WALLET, tariff: { monthlyPriceUsd: 60, dailyRateUsd: 2 } }],
+    ['tariff without a tier', { ...WALLET, tariff: { weekPriceKopecks: 150000, packPriceKopecks: 500000 } }],
     ['tariff with an empty tier', { ...WALLET, tariff: { ...TARIFF_T1, tier: '' } }],
     ['tariff with a numeric tier', { ...WALLET, tariff: { ...TARIFF_T1, tier: 1 } }],
-    ['tariff price as a string', { ...WALLET, tariff: { ...TARIFF_T1, monthlyPriceUsd: '60' } }],
-    ['tariff daily rate as a boolean', { ...WALLET, tariff: { ...TARIFF_T1, dailyRateUsd: true } }],
+    ['tariff week price as a string', { ...WALLET, tariff: { ...TARIFF_T1, weekPriceKopecks: '150000' } }],
+    ['tariff pack price as a boolean', { ...WALLET, tariff: { ...TARIFF_T1, packPriceKopecks: true } }],
     ['todayPaid as a string', { ...WALLET, todayPaid: 'false' }],
     ['todayPaid as a number', { ...WALLET, todayPaid: 0 }],
     ['fundedDays as a fraction', { ...WALLET, fundedDays: 1.5 }],
