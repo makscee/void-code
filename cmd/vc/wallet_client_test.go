@@ -364,6 +364,27 @@ var walletGateCases = []walletGateCase{
 	{name: "no wallet at all: no notice", body: meBody("")},
 	// pct next to a healthy wallet is ignored too.
 	{name: "pct 100 beside a paid wallet: no notice", body: meBody(`"pct":100,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9"))},
+	// The weekly limit (void-board#224), under its own "limit": warned from
+	// 80% used, whatever the wallet says, and on its own line after the
+	// wallet's notice when there is one.
+	{name: "limit 42 pct beside a paid wallet: no notice", body: meBody(limitMember(42) + "," + wallet("18", tariffT1, "true", "9"))},
+	{name: "limit 79.9 pct: no notice", body: meBody(limitMember(79.9) + "," + wallet("18", tariffT1, "true", "9"))},
+	{name: "limit 80 pct: limit notice", body: meBody(limitMember(80) + "," + wallet("18", tariffT1, "true", "9")), notice: limitNotice(80)},
+	{name: "limit 85 pct: limit notice", body: meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), notice: limitNotice(85)},
+	{name: "limit 130 pct: limit notice says 100 pct", body: meBody(limitMember(130) + "," + wallet("18", tariffT1, "true", "9")), notice: limitNotice(100)},
+	{name: "limit 85 pct and no wallet: limit notice", body: meBody(limitMember(85)), notice: limitNotice(85)},
+	{name: "limit 85 pct beside a wallet vc cannot read (no dailyRateUsd): limit notice", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"t1","monthlyPriceUsd":60}`, "true", "9")), notice: limitNotice(85)},
+	{name: "limit 85 pct and a low balance: both, the wallet's first", body: meBody(limitMember(85) + "," + wallet("2", tariffT1, "true", "1")), notice: walletLowNotice(1) + "\n" + limitNotice(85)},
+	{name: "limit pct as a string: no notice", body: meBody(`"limit":{"pct":"85"},` + wallet("18", tariffT1, "true", "9"))},
+}
+
+// limitMember is Relay's "limit" member with the reset three days and an hour away.
+func limitMember(pct float64) string {
+	return fmt.Sprintf(`"limit":{"pct":%v,"resetAt":%q}`, pct, time.Now().Add(73*time.Hour).UTC().Format(time.RFC3339))
+}
+
+func limitNotice(pct int) string {
+	return fmt.Sprintf("Weekly limit %d%% used — upgrade: https://profile.makscee.ru/vc/pay", pct)
 }
 
 // staleLaunchNotice is planted in vc's own environment by every launch test.

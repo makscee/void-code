@@ -1,0 +1,83 @@
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/makscee/void-code/internal/auth"
+)
+
+// The weekly limit (void-board#224) on the account line: `vc status` after
+// "balance:", walletText in `vc status --json` (which the desktop shows as
+// is), and the welcome screen — one formatter, the wallet first, then the
+// limit as a share, never money.
+
+func TestStatusShowsTheWeeklyLimit(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"42 beside a wallet", meBody(limitMember(42) + "," + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 42% used, resets in 3 days"},
+		{"85 beside a wallet", meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 85% used, resets in 3 days"},
+		{"a share floored: 79.9 reads 79", meBody(limitMember(79.9) + "," + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 79% used, resets in 3 days"},
+		{"no wallet: the limit alone", meBody(limitMember(42)), "limit 42% used, resets in 3 days"},
+		{"a wallet vc cannot read (no monthlyPriceUsd): the limit alone", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","dailyRateUsd":2}`, "true", "9")), "limit 42% used, resets in 3 days"},
+		{"no reset sent", meBody(`"limit":{"pct":42},` + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 42% used"},
+		{"no limit (older Relay): unchanged", meBody(wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := jsonStatus(t, tc.body)
+			if got, _ := obj["walletText"].(string); got != tc.want {
+				t.Fatalf("walletText = %#v, want %q", obj["walletText"], tc.want)
+			}
+			line, ok := statusLine(humanStatus(t, tc.body), "balance:")
+			if !ok || strings.TrimPrefix(line, "balance: ") != tc.want {
+				t.Errorf("`vc status` balance line = %q, want %q", line, tc.want)
+			}
+			if _, limitPart, ok := strings.Cut(tc.want, "limit "); ok && strings.Contains(limitPart, "$") {
+				t.Errorf("the limit part of %q shows money", tc.want)
+			}
+		})
+	}
+}
+
+func TestStatusJSONCarriesTheLimit(t *testing.T) {
+	obj := jsonStatus(t, meBody(`"limit":{"pct":42.5,"resetAt":"2026-10-01T00:00:00.000Z"}`))
+	limit, ok := obj["limit"].(map[string]any)
+	if !ok || limit["pct"] != 42.5 || limit["resetAt"] != "2026-10-01T00:00:00Z" {
+		t.Fatalf("limit = %#v, want {pct: 42.5, resetAt: 2026-10-01T00:00:00Z}", obj["limit"])
+	}
+	if _, present := obj["wallet"]; present {
+		t.Errorf("wallet = %v; the server sent none", obj["wallet"])
+	}
+	if obj := jsonStatus(t, meBody(wallet("18", tariffT1, "true", "9"))); obj["limit"] != nil {
+		t.Errorf("limit = %#v with no limit sent, want it absent", obj["limit"])
+	}
+}
+
+func TestWelcomeShowsTheLimit(t *testing.T) {
+	reset := time.Now().Add(73 * time.Hour)
+	me := auth.MeResult{UserID: "u-1", Limit: &auth.Limit{Pct: 42, ResetAt: &reset}}
+	if got, want := meResultToState(me).Balance, "limit 42% used, resets in 3 days"; got != want {
+		t.Errorf("welcome balance = %q, want %q", got, want)
+	}
+}
+
+func TestResetsIn(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{73 * time.Hour, "in 3 days"},
+		{7 * 24 * time.Hour, "in 7 days"},
+		{25 * time.Hour, "in 1 day"},
+		{24 * time.Hour, "in 1 day"},
+		{23*time.Hour + time.Minute, "in 24 hours"},
+		{5 * time.Hour, "in 5 hours"},
+		{30 * time.Minute, "in 1 hour"},
+		{0, "soon"},
+		{-time.Hour, "soon"},
+	} {
+		if got := resetsIn(tc.d); got != tc.want {
+			t.Errorf("resetsIn(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}

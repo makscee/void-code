@@ -35,6 +35,7 @@ import {
 
 const LOW_NOTICE = 'Balance low — 1 day left. Top up: https://profile.makscee.ru/vc/pay';
 const REFUSAL_NOTICE = 'Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay';
+const LIMIT_NOTICE = 'Weekly limit 85% used — upgrade: https://profile.makscee.ru/vc/pay';
 
 // One Pi runtime: the factory run against its own handler table, the way Pi's loader runs it for
 // each runtime it creates. The clipboard lifecycle shares session_start; its IO is injected so it
@@ -76,6 +77,7 @@ describe('the launch notice is docked above the editor when Pi starts', () => {
   it.each([
     ['the low-balance notice', LOW_NOTICE],
     ['the refusal notice Relay will enforce', REFUSAL_NOTICE],
+    ['the weekly-limit notice', LIMIT_NOTICE],
   ])('%s is one widget above the editor, reading the notice, and nothing in the transcript', async (_label, notice) => {
     const ui = fakeUI();
     await startRuntime({ VC_LAUNCH_NOTICE: notice }).emit('session_start', { reason: 'startup' }, tui(ui));
@@ -89,6 +91,18 @@ describe('the launch notice is docked above the editor when Pi starts', () => {
     expect(text.split(notice).length - 1, `the notice is drawn more than once: ${text}`).toBe(1);
     // G2: a warning in the transcript scrolls away under a reopened chat's history.
     expect(notifiedAbout(ui, notice), 'the notice went into the scrolling transcript (ctx.ui.notify)').toEqual([]);
+  });
+
+  it('draws a wallet notice and the weekly-limit notice as two lines of one widget', async () => {
+    const ui = fakeUI();
+    await startRuntime({ VC_LAUNCH_NOTICE: `${LOW_NOTICE}\n${LIMIT_NOTICE}` }).emit('session_start', { reason: 'startup' }, tui(ui));
+
+    const widgets = noticeWidgets(ui);
+    expect(widgets).toHaveLength(1);
+    const lines = renderWidget(widgets[0][1].content);
+    expect(lines.some((line) => line.includes(LOW_NOTICE)), `no line reads the wallet notice: ${lines.join(' | ')}`).toBe(true);
+    expect(lines.some((line) => line.includes(LIMIT_NOTICE)), `no line reads the limit notice: ${lines.join(' | ')}`).toBe(true);
+    expect(lines.some((line) => line.includes('\n')), 'a line still carries the newline between the notices').toBe(false);
   });
 
   it('keeps its own widget key — the clipboard widget that shares session_start stays docked', async () => {
