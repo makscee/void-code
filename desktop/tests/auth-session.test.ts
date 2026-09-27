@@ -124,7 +124,7 @@ describe('readAuthStatus', () => {
 //
 // The wallet is validated here with the same shape rules as the Go parser (internal/auth/me.go
 // parseWallet): balanceUsd a number; tariff null or { tier: non-empty string, monthlyPriceUsd:
-// number, dailyRateUsd: number }; todayPaid a boolean or null; fundedDays an integer or null. One
+// number or null, dailyRateUsd: number or null }; todayPaid a boolean or null; fundedDays an integer or null. One
 // field of the wrong type drops the whole wallet — a half-read wallet could show a wrong balance —
 // while the rest of the status stays. Only known fields are copied: an old vc or a proxy that adds
 // `pct` inside the wallet gets no percentage past this module.
@@ -170,6 +170,18 @@ describe('readAuthStatus — wallet and launch notice', () => {
     expect(status).toStrictEqual({ authState: 'signed_in', identity: 'artem', wallet });
   });
 
+  // void-board#224: a tariff without its prices is still a tariff; absent prices read as null.
+  it('passes a tariff without its prices, the missing ones as null', async () => {
+    for (const [tariff, want] of [
+      [{ tier: 't1', monthlyPriceUsd: 60 }, { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: null }],
+      [{ tier: 't1' }, { tier: 't1', monthlyPriceUsd: null, dailyRateUsd: null }],
+      [{ tier: 't1', monthlyPriceUsd: null, dailyRateUsd: null }, { tier: 't1', monthlyPriceUsd: null, dailyRateUsd: null }],
+    ]) {
+      const status = await statusOf(signedIn({ wallet: { ...WALLET, tariff } }));
+      expect(status.wallet, JSON.stringify(tariff)).toStrictEqual({ ...WALLET, tariff: want });
+    }
+  });
+
   it('copies only the wallet fields it knows — no percentage rides along inside the wallet', async () => {
     const status = await statusOf(signedIn({
       wallet: { ...WALLET, pct: 77, resetAt: '2026-10-01T00:00:00Z', tariff: { ...TARIFF_T1, weeklyQuotaUsd: 40 } },
@@ -187,7 +199,7 @@ describe('readAuthStatus — wallet and launch notice', () => {
     ['tariff with an empty tier', { ...WALLET, tariff: { ...TARIFF_T1, tier: '' } }],
     ['tariff with a numeric tier', { ...WALLET, tariff: { ...TARIFF_T1, tier: 1 } }],
     ['tariff price as a string', { ...WALLET, tariff: { ...TARIFF_T1, monthlyPriceUsd: '60' } }],
-    ['tariff without a daily rate', { ...WALLET, tariff: { tier: 't1', monthlyPriceUsd: 60 } }],
+    ['tariff daily rate as a boolean', { ...WALLET, tariff: { ...TARIFF_T1, dailyRateUsd: true } }],
     ['todayPaid as a string', { ...WALLET, todayPaid: 'false' }],
     ['todayPaid as a number', { ...WALLET, todayPaid: 0 }],
     ['fundedDays as a fraction', { ...WALLET, fundedDays: 1.5 }],
@@ -215,10 +227,10 @@ describe('readAuthStatus — wallet and launch notice', () => {
   });
 
   // walletText — second panel on void-code#76, G3: the renderer showed no balance and no days. vc
-  // now prints the line itself (`"walletText": "$18.00 · T1 · ~9 days left"`, the formatWallet string,
-  // or null), so the desktop never re-implements the floor/clamp rules; this module passes it on as
+  // now prints the line itself (`"walletText": "T1 · ~9 days left"`, the formatAccount string, or
+  // null), so the desktop never re-implements its rules; this module passes it on as
   // written, a non-empty string only, and — like every account fact — for signed_in only.
-  const WALLET_TEXT = '$18.00 · T1 · ~9 days left';
+  const WALLET_TEXT = 'T1 · ~9 days left';
 
   it('passes walletText through, verbatim, next to the wallet and the notice', async () => {
     await expect(statusOf(signedIn({ wallet: WALLET, walletText: WALLET_TEXT, launchNotice: LOW_NOTICE }))).resolves.toStrictEqual({
@@ -227,9 +239,9 @@ describe('readAuthStatus — wallet and launch notice', () => {
   });
 
   it.each([
-    ['a bare balance (no tariff)', '$18.00'],
-    ['a debt with days clamped at zero', '-$3.00 · T1 · ~0 days left'],
-    ['one day', '$2.00 · T1 · ~1 day left'],
+    ['the weekly limit alone (no tariff)', 'limit 42% used, resets in 3 days'],
+    ['days clamped at zero, with the limit', 'T1 · ~0 days left · limit 85% used, resets in 3 days'],
+    ['one day', 'T1 · ~1 day left'],
   ])('passes %s exactly as vc wrote it', async (_label, walletText) => {
     const status = await statusOf(signedIn({ wallet: WALLET, walletText }));
     expect(status.walletText).toBe(walletText);

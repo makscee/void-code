@@ -106,7 +106,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	// It travels to Pi in the plan's environment.
 	notice := ""
 	if reached {
-		notice = walletLaunchNotice(me.Wallet)
+		notice = launchNotice(me, time.Now())
 	}
 	var warnings []string
 	extensionPath, err := deps.reconcilePi()

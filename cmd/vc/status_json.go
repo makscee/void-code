@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
@@ -53,24 +54,29 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 	obj["identity"] = identity
 	// The wallet is only set when the server actually sent a usable one — a
 	// zero wallet here would read as "$0.00" instead of "no wallet information
-	// available". The retired pct/resetAt are never emitted, whatever the
-	// server sends: the client reports no percentages.
+	// available". The wallet itself carries no percentages; the weekly limit
+	// below is the one share the client reports.
 	if me.Wallet != nil {
 		obj["wallet"] = walletJSONFor(me.Wallet)
 	}
+	// The weekly limit, as a share only, set like the wallet: only when the
+	// server sent one (void-board#224). Independent of the wallet.
+	if me.Limit != nil {
+		obj["limit"] = limitJSONFor(me.Limit)
+	}
 	// The wallet line already written, for the desktop to show as is: exactly
-	// what formatWallet renders — the words `vc status` prints after
-	// "balance:" — or null when there is no wallet. The display rules live
+	// what formatAccount renders — the words `vc status` prints after
+	// "plan:", wallet and weekly limit — or null when there is neither. The display rules live
 	// here, in Go, once; the desktop never re-implements them.
 	obj["walletText"] = nil
-	if text := formatWallet(me.Wallet); text != "" {
+	if text := formatAccount(me, time.Now()); text != "" {
 		obj["walletText"] = text
 	}
 	// The same notice a launch hands to Pi, for the desktop to show: a string,
-	// or null when the wallet has nothing to say. Only a signed-in answer
+	// or null when the wallet and the limit have nothing to say. Only a signed-in answer
 	// carries one — a refusal names no wallet to warn about.
 	obj["launchNotice"] = nil
-	if notice := walletLaunchNotice(me.Wallet); notice != "" {
+	if notice := launchNotice(me, time.Now()); notice != "" {
 		obj["launchNotice"] = notice
 	}
 	return json.NewEncoder(out).Encode(obj)
@@ -86,16 +92,33 @@ type walletJSON struct {
 	FundedDays *int        `json:"fundedDays"`
 }
 
+// The prices read null when the server sent none (void-board#224).
 type tariffJSON struct {
-	Tier            string  `json:"tier"`
-	MonthlyPriceUsd float64 `json:"monthlyPriceUsd"`
-	DailyRateUsd    float64 `json:"dailyRateUsd"`
+	Tier            string   `json:"tier"`
+	MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
+	DailyRateUsd    *float64 `json:"dailyRateUsd"`
 }
 
 func walletJSONFor(w *auth.Wallet) walletJSON {
 	out := walletJSON{BalanceUsd: w.BalanceUsd, TodayPaid: w.TodayPaid, FundedDays: w.FundedDays}
 	if w.Tariff != nil {
 		out.Tariff = &tariffJSON{Tier: w.Tariff.Tier, MonthlyPriceUsd: w.Tariff.MonthlyPriceUsd, DailyRateUsd: w.Tariff.DailyRateUsd}
+	}
+	return out
+}
+
+// limitJSON is the server's "limit" object as vc read it: pct as sent,
+// resetAt as RFC 3339 or null when absent or unreadable.
+type limitJSON struct {
+	Pct     float64 `json:"pct"`
+	ResetAt *string `json:"resetAt"`
+}
+
+func limitJSONFor(l *auth.Limit) limitJSON {
+	out := limitJSON{Pct: l.Pct}
+	if l.ResetAt != nil {
+		s := l.ResetAt.UTC().Format(time.RFC3339)
+		out.ResetAt = &s
 	}
 	return out
 }

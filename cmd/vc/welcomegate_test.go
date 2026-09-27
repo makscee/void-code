@@ -36,9 +36,9 @@ func TestStaleMeResultToStateUsesTruthfulIdentityCopy(t *testing.T) {
 // Built from a real answer rather than a literal MeResult, so the test holds
 // whatever shape the wallet takes inside the client.
 func TestMeResultToState_CarriesBalance(t *testing.T) {
-	st := meResultToState(fetchMeFrom(t, `{"email":"a@b.com","wallet":{"balanceUsd":9.99,"tariff":null,"todayPaid":null,"fundedDays":null}}`))
+	st := meResultToState(fetchMeFrom(t, `{"email":"a@b.com","wallet":{"balanceUsd":9.99,"tariff":{"tier":"t2","monthlyPriceUsd":120,"dailyRateUsd":4},"todayPaid":true,"fundedDays":4}}`))
 	view, banner := welcomeScreens(st)
-	if !strings.Contains(view, "$9.99") || !strings.Contains(banner, "$9.99") {
+	if !strings.Contains(view, "T2 · ~4 days left") || !strings.Contains(banner, "T2 · ~4 days left") {
 		t.Errorf("meResultToState dropped the wallet balance:\n%s\n%s", view, banner)
 	}
 }

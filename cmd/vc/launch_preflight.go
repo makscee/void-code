@@ -125,7 +125,7 @@ func (p *launchPreflight) balanceIfReady() (balance string, ready bool) {
 		if p.authResult.err != nil || !p.authResult.reached {
 			return "", true
 		}
-		return formatWallet(p.authResult.me.Wallet), true
+		return formatAccount(p.authResult.me, p.deps.now()), true
 	default:
 		return "", false
 	}

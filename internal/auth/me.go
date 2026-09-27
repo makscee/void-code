@@ -13,9 +13,10 @@ import (
 // still returns subDaysLeft (sentinel 36500) for old client back-compat but the
 // new client ignores it.
 //
-// The VCD-49 budget (pct/resetAt) and the VCD-55 top-level balanceUsd are no
-// longer read: the client shows money and days, never a percentage (spec
-// 2026-09-23-client-wallet-days). MeResult stays comparable — pointers only,
+// The VCD-49 budget (top-level pct/resetAt) and the VCD-55 top-level
+// balanceUsd are no longer read: the wallet shows days, never money or a
+// percentage (spec 2026-09-23-client-wallet-days). The one share read is the
+// weekly limit's, under "limit" (void-board#224). MeResult stays comparable — pointers only,
 // no slices or maps — so callers can check it against its zero value.
 type MeResult struct {
 	UserID string
@@ -24,6 +25,18 @@ type MeResult struct {
 	// Wallet is nil when the server sent no usable wallet: absent, null, or
 	// any field of the wrong type. Never block on a nil wallet.
 	Wallet *Wallet
+
+	// Limit is how much of the weekly usage limit is spent, read from its own
+	// top-level "limit" object (void-board#223) and apart from the wallet, so
+	// a wallet the client cannot read never takes the limit with it. nil: an
+	// older Relay that sends none, or one the client cannot read.
+	Limit *Limit
+}
+
+// Limit is the weekly usage limit as a share, never in money.
+type Limit struct {
+	Pct     float64    // percent used, as sent (42 means 42%)
+	ResetAt *time.Time // when the week resets; nil: absent or unreadable
 }
 
 // Wallet is the prepaid balance and the tariff that draws on it, as Relay
@@ -46,9 +59,11 @@ type Wallet struct {
 
 // Tariff is the plan a wallet is charged by.
 type Tariff struct {
-	Tier            string // as sent by the server ("t1"); display formatting is the printer's
-	MonthlyPriceUsd float64
-	DailyRateUsd    float64
+	Tier string // as sent by the server ("t1"); display formatting is the printer's
+	// The prices are optional (void-board#224): a tariff without them still
+	// names its tier and the wallet its days left. nil: absent or null.
+	MonthlyPriceUsd *float64
+	DailyRateUsd    *float64
 	WeeklyPriceUsd  *float64 // nil: an older server that sends no weekly price
 }
 
@@ -104,6 +119,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		// Kept raw so that a wallet the client cannot read costs the wallet,
 		// not the sign-in: see parseWallet.
 		Wallet json.RawMessage `json:"wallet"`
+		Limit  json.RawMessage `json:"limit"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return MeResult{}, fmt.Errorf("decoding vc/me response: %w", err)
@@ -131,7 +147,32 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 		UserID: identity,
 		Email:  email,
 		Wallet: parseWallet(r.Wallet),
+		Limit:  parseLimit(r.Limit),
 	}, nil
+}
+
+// parseLimit reads the "limit" object: a numeric pct or nothing. A resetAt
+// that is missing or not an RFC 3339 time costs only the reset, not the
+// share used — the share is what the person needs to see.
+func parseLimit(raw json.RawMessage) *Limit {
+	if len(raw) == 0 {
+		return nil
+	}
+	var l struct {
+		Pct     *float64        `json:"pct"`
+		ResetAt json.RawMessage `json:"resetAt"`
+	}
+	if err := json.Unmarshal(raw, &l); err != nil || l.Pct == nil {
+		return nil
+	}
+	out := &Limit{Pct: *l.Pct}
+	var resetAt string
+	if json.Unmarshal(l.ResetAt, &resetAt) == nil {
+		if t, err := time.Parse(time.RFC3339, resetAt); err == nil {
+			out.ResetAt = &t
+		}
+	}
+	return out
 }
 
 // parseWallet reads the "wallet" object strictly and all-or-nothing: a value
@@ -180,12 +221,12 @@ func parseTariff(raw json.RawMessage) (*Tariff, bool) {
 	}
 	var t struct {
 		Tier            *string  `json:"tier"`
-		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
+		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"` // optional, like the two below; a wrong type fails the decode
 		DailyRateUsd    *float64 `json:"dailyRateUsd"`
-		WeeklyPriceUsd  *float64 `json:"weeklyPriceUsd"` // optional; a wrong type fails the decode
+		WeeklyPriceUsd  *float64 `json:"weeklyPriceUsd"`
 	}
-	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" || t.MonthlyPriceUsd == nil || t.DailyRateUsd == nil {
+	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" {
 		return nil, false
 	}
-	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: *t.MonthlyPriceUsd, DailyRateUsd: *t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd}, true
+	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: t.MonthlyPriceUsd, DailyRateUsd: t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd}, true
 }

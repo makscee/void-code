@@ -32,7 +32,7 @@ import (
 //     and the old "for today" sentence, unchanged — even when the tariff
 //     already carries weeklyPriceUsd and periodEndsAt is there.
 //  4. A new field of the wrong type drops the whole wallet, as any other
-//     field does: no notice, no balance line.
+//     field does: no notice, no plan line.
 //  5. The wallet line (`~N days left`) is unchanged: still fundedDays, which
 //     Keys now computes weekly. The client does not recount days from the
 //     balance and the weekly price.
@@ -152,26 +152,26 @@ func TestStatusJSONCarriesWeeklyLaunchNotice(t *testing.T) {
 }
 
 // The wallet line does not change with the week: `vc status` and walletText
-// still say `$X · TIER · ~N days left`, N being fundedDays as Keys sent it.
+// still say `TIER · ~N days left`, N being fundedDays as Keys sent it.
 // The days are not recounted from balance / weeklyPriceUsd: $57.50 on T3 is
 // one week by the price, and the line still says the 13 days Keys counted
 // (the rest of the paid period plus that week). A wallet dropped over a
 // malformed new field shows nothing — want "".
 func TestWalletLineUnchangedByWeeklyFields(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"paid period, no charge required", meBody(weekWallet("18", weekTariffT1, "true", "9", "false", periodEnd)), "$18.00 · T1 · ~9 days left"},
-		{"charge required: the balance and 0 days, no refusal in the line", meBody(weekWallet("10", weekTariffT1, "false", "0", "true", "null")), "$10.00 · T1 · ~0 days left"},
-		{"days are fundedDays, not balance over the weekly price", meBody(weekWallet("57.5", weekTariffT3, "true", "13", "false", periodEnd)), "$57.50 · T3 · ~13 days left"},
-		{"one day", meBody(weekWallet("3", weekTariffT1, "true", "1", "false", periodEnd)), "$3.00 · T1 · ~1 day left"},
-		{"a debt, days never below 0", meBody(weekWallet("-3", weekTariffT1, "true", "-2", "false", "null")), "-$3.00 · T1 · ~0 days left"},
-		{"no tariff: the balance alone", meBody(weekWallet("18", "null", "null", "null", "false", "null")), "$18.00"},
-		{"no verdict from an older Keys", meBody(weekWallet("18", weekTariffT1, "true", "9", "", periodEnd)), "$18.00 · T1 · ~9 days left"},
+		{"paid period, no charge required", meBody(weekWallet("18", weekTariffT1, "true", "9", "false", periodEnd)), "T1 · ~9 days left"},
+		{"charge required: the balance and 0 days, no refusal in the line", meBody(weekWallet("10", weekTariffT1, "false", "0", "true", "null")), "T1 · ~0 days left"},
+		{"days are fundedDays, not balance over the weekly price", meBody(weekWallet("57.5", weekTariffT3, "true", "13", "false", periodEnd)), "T3 · ~13 days left"},
+		{"one day", meBody(weekWallet("3", weekTariffT1, "true", "1", "false", periodEnd)), "T1 · ~1 day left"},
+		{"a debt, days never below 0", meBody(weekWallet("-3", weekTariffT1, "true", "-2", "false", "null")), "T1 · ~0 days left"},
+		{"no tariff: no money shown, so no line", meBody(weekWallet("18", "null", "null", "null", "false", "null")), ""},
+		{"no verdict from an older Keys", meBody(weekWallet("18", weekTariffT1, "true", "9", "", periodEnd)), "T1 · ~9 days left"},
 		{"chargeRequired as a string drops the wallet", meBody(weekWallet("18", weekTariffT1, "true", "9", `"false"`, periodEnd)), ""},
 		{"periodEndsAt as a bool drops the wallet", meBody(weekWallet("18", weekTariffT1, "true", "9", "false", "true")), ""},
 		{"weeklyPriceUsd as a bool drops the wallet", meBody(weekWallet("18", `{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2.142857142857143,"weeklyPriceUsd":true}`, "true", "9", "false", periodEnd)), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			line, hasLine := statusLine(humanStatus(t, tc.body), "balance:")
+			line, hasLine := statusLine(humanStatus(t, tc.body), "plan:")
 			got := jsonStatus(t, tc.body)["walletText"]
 			if tc.want == "" {
 				if hasLine {
@@ -182,8 +182,8 @@ func TestWalletLineUnchangedByWeeklyFields(t *testing.T) {
 				}
 				return
 			}
-			if want := "balance: " + tc.want; line != want {
-				t.Errorf("vc status balance line = %q (present=%v), want %q", line, hasLine, want)
+			if want := "plan: " + tc.want; line != want {
+				t.Errorf("vc status plan line = %q (present=%v), want %q", line, hasLine, want)
 			}
 			if s, ok := got.(string); !ok || s != tc.want {
 				t.Errorf("walletText = %#v, want %q", got, tc.want)

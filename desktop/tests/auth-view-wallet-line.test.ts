@@ -11,14 +11,14 @@ import { walletLineFor } from '../src/renderer/auth-view';
 //  - signed in → the line vc wrote (`walletText`, the exact formatWallet string), as is;
 //  - anything else → null. A wallet line is an account fact, and only a signed-in status vouches
 //    for the account;
-//  - never composed here from the wallet object — the display rules (-$3.00, cents floored, days
-//    never below 0) live in Go, once;
+//  - never composed here from the wallet object — the display rules (no money, void-board#224;
+//    days never below 0; the weekly limit's share) live in Go, once;
 //  - never the launch notice: that warning stays inside Pi (docked above its editor), and showing
 //    it here too would tell the person the same thing twice.
 //
 // The screen half (an element that shows this line) is pinned in tests/wallet-line-screen.test.ts.
 
-const WALLET_TEXT = '$18.00 · T1 · ~9 days left';
+const WALLET_TEXT = 'T1 · ~9 days left · limit 42% used, resets in 3 days';
 const WALLET = { balanceUsd: 18, tariff: { tier: 't1', monthlyPriceUsd: 60, dailyRateUsd: 2 }, todayPaid: true, fundedDays: 9 };
 const LOW_NOTICE = 'Balance low — 2 days left. Top up: https://profile.makscee.ru/vc/pay';
 

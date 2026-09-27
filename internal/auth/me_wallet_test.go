@@ -68,7 +68,7 @@ func TestFetchMe_WalletWithTariff(t *testing.T) {
 	if w.Tariff.Tier != "t1" {
 		t.Errorf("Tier = %q, want %q as sent — display formatting belongs to the printer, not the parser", w.Tariff.Tier, "t1")
 	}
-	if w.Tariff.MonthlyPriceUsd != 60 || w.Tariff.DailyRateUsd != 2 {
+	if w.Tariff.MonthlyPriceUsd == nil || *w.Tariff.MonthlyPriceUsd != 60 || w.Tariff.DailyRateUsd == nil || *w.Tariff.DailyRateUsd != 2 {
 		t.Errorf("Tariff = %+v, want monthly 60 / daily 2", *w.Tariff)
 	}
 	if w.TodayPaid == nil || *w.TodayPaid != true {
@@ -98,7 +98,7 @@ func TestFetchMe_WalletTodayUnpaidIsFalseNotNil(t *testing.T) {
 	if res.Wallet.FundedDays == nil || *res.Wallet.FundedDays != 0 {
 		t.Errorf("FundedDays = %v, want 0 (present, not absent)", res.Wallet.FundedDays)
 	}
-	if res.Wallet.Tariff == nil || res.Wallet.Tariff.DailyRateUsd != 7.67 {
+	if res.Wallet.Tariff == nil || res.Wallet.Tariff.DailyRateUsd == nil || *res.Wallet.Tariff.DailyRateUsd != 7.67 {
 		t.Errorf("Tariff = %+v, want t3 at 7.67/day", res.Wallet.Tariff)
 	}
 }

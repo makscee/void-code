@@ -551,7 +551,8 @@ function registerLaunchNotice(pi: ExtensionAPI): void {
 	let docked = false;
 	pi.on("session_start", async (event, ctx) => {
 		if (event.reason !== "startup" || !ctx.hasUI) return;
-		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, [ctx.ui.theme.fg("warning", notice)], { placement: "aboveEditor" });
+		// One line per notice: the wallet's and the weekly limit's can both be set (vc's launchNotice).
+		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, notice.split("\n").map((line) => ctx.ui.theme.fg("warning", line)), { placement: "aboveEditor" });
 		docked = true;
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {

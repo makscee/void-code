@@ -51,7 +51,7 @@ func TestStatusVerifiesSubscriptionAndShowsBalance(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = plainText(out)
-	for _, want := range []string{"runtime:", "Pi", "logged in as user@example.test", "balance: $18.00 · T1 · ~9 days left"} {
+	for _, want := range []string{"runtime:", "Pi", "logged in as user@example.test", "plan:    T1 · ~9 days left"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status missing %q: %s", want, out)
 		}
