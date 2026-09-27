@@ -386,7 +386,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	// shows it once the session is up (see walletLaunchNotice).
 	notice := ""
 	if reached {
-		notice = launchNotice(me)
+		notice = launchNotice(me, time.Now())
 	}
 	// Resolve launch artifacts after live admission but before constructing a
 	// token-bearing child environment. A bundled runtime starts its already

@@ -14,7 +14,7 @@ import (
 // new client ignores it.
 //
 // The VCD-49 budget (top-level pct/resetAt) and the VCD-55 top-level
-// balanceUsd are no longer read: the wallet shows money and days, never a
+// balanceUsd are no longer read: the wallet shows days, never money or a
 // percentage (spec 2026-09-23-client-wallet-days). The one share read is the
 // weekly limit's, under "limit" (void-board#224). MeResult stays comparable — pointers only,
 // no slices or maps — so callers can check it against its zero value.
@@ -59,9 +59,11 @@ type Wallet struct {
 
 // Tariff is the plan a wallet is charged by.
 type Tariff struct {
-	Tier            string // as sent by the server ("t1"); display formatting is the printer's
-	MonthlyPriceUsd float64
-	DailyRateUsd    float64
+	Tier string // as sent by the server ("t1"); display formatting is the printer's
+	// The prices are optional (void-board#224): a tariff without them still
+	// names its tier and the wallet its days left. nil: absent or null.
+	MonthlyPriceUsd *float64
+	DailyRateUsd    *float64
 	WeeklyPriceUsd  *float64 // nil: an older server that sends no weekly price
 }
 
@@ -219,12 +221,12 @@ func parseTariff(raw json.RawMessage) (*Tariff, bool) {
 	}
 	var t struct {
 		Tier            *string  `json:"tier"`
-		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
+		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"` // optional, like the two below; a wrong type fails the decode
 		DailyRateUsd    *float64 `json:"dailyRateUsd"`
-		WeeklyPriceUsd  *float64 `json:"weeklyPriceUsd"` // optional; a wrong type fails the decode
+		WeeklyPriceUsd  *float64 `json:"weeklyPriceUsd"`
 	}
-	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" || t.MonthlyPriceUsd == nil || t.DailyRateUsd == nil {
+	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" {
 		return nil, false
 	}
-	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: *t.MonthlyPriceUsd, DailyRateUsd: *t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd}, true
+	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: t.MonthlyPriceUsd, DailyRateUsd: t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd}, true
 }

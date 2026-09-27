@@ -2,15 +2,14 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
 )
 
-// The client shows money and days, never a percentage (spec
-// 2026-09-23-client-wallet-days, "Клиент"). Everything the wallet makes the
+// The client shows days, never money (void-board#224) and never a percentage
+// of the wallet (spec 2026-09-23-client-wallet-days, "Клиент"). Everything the wallet makes the
 // client say is decided here, so `vc status`, the welcome screen and both
 // launch paths cannot drift apart.
 //
@@ -37,40 +36,19 @@ const walletLowDays = 2
 // Pi's fullscreen mode clears whatever was on the terminal before it.
 const piLaunchNoticeEnv = "VC_LAUNCH_NOTICE"
 
-// formatWallet renders a wallet as `$18.00 · T1 · ~9 days left`, or just the
-// balance when no tariff is assigned (no rate, so no days to count). An absent
-// wallet renders as "" — nothing to show, never a made-up $0.00.
+// formatWallet renders a wallet as `T1 · ~9 days left`: the plan and the days
+// the balance covers, never money (void-board#224: no $ anywhere; the rouble
+// balance comes with void-board#225). No tariff means no rate and no days to
+// count, so nothing to show; an absent wallet renders as "" too.
 func formatWallet(w *auth.Wallet) string {
-	if w == nil {
+	if w == nil || w.Tariff == nil {
 		return ""
 	}
-	parts := []string{formatUSD(w.BalanceUsd)}
-	if w.Tariff != nil {
-		parts = append(parts, strings.ToUpper(w.Tariff.Tier))
-		if w.FundedDays != nil {
-			parts = append(parts, "~"+daysLeft(*w.FundedDays))
-		}
+	parts := []string{strings.ToUpper(w.Tariff.Tier)}
+	if w.FundedDays != nil {
+		parts = append(parts, "~"+daysLeft(*w.FundedDays))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// formatUSD renders dollars as `$18.00`, and a debt as `-$3.00` — the sign
-// before the dollar. The amount is floored to the cent: rounding up would show
-// money that is not there.
-func formatUSD(v float64) string {
-	cents := math.Floor(v * 100)
-	// v*100 can land a hair under the cent v really is — 1.15*100 is
-	// 114.99999999999999 — and flooring that takes a real cent away. The
-	// server sends cents; when the next cent up is exactly v, it is v's cent.
-	if (cents+1)/100 == v {
-		cents++
-	}
-	sign := ""
-	if cents < 0 {
-		sign, cents = "-", -cents
-	}
-	whole := int64(cents)
-	return fmt.Sprintf("%s$%d.%02d", sign, whole/100, whole%100)
 }
 
 // daysLeft spells a day count. Days never go below zero on screen: a negative
@@ -91,8 +69,9 @@ func daysLeft(n int) string {
 //     Relay's weekly sentence, false gives none — whatever todayPaid, the
 //     daily rate and fundedDays say. Relay refuses on the same verdict, so
 //     the notice cannot disagree with the 402 it announces.
-//   - chargeRequired absent (an older Keys) → the daily rule: with a tariff,
-//     todayPaid === false and balance < daily rate → Relay's daily sentence
+//   - chargeRequired absent (an older Keys) → the daily rule: with a tariff
+//     that names its daily rate, todayPaid === false and balance < daily
+//     rate → Relay's daily sentence
 //   - no refusal, a tariff and fundedDays <= 2 → the low-balance notice
 //
 // Under the daily rule an unpaid day the balance still covers is not a
@@ -106,7 +85,7 @@ func walletLaunchNotice(w *auth.Wallet) string {
 		if *w.ChargeRequired {
 			return walletWeekRefusalMessage
 		}
-	} else if w.Tariff != nil && w.TodayPaid != nil && !*w.TodayPaid && w.BalanceUsd < w.Tariff.DailyRateUsd {
+	} else if w.Tariff != nil && w.Tariff.DailyRateUsd != nil && w.TodayPaid != nil && !*w.TodayPaid && w.BalanceUsd < *w.Tariff.DailyRateUsd {
 		return walletRefusalMessage
 	}
 	if w.Tariff != nil && w.FundedDays != nil && *w.FundedDays <= walletLowDays {

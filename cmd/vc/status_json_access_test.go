@@ -94,7 +94,7 @@ func TestStatusJSONReportsAccessNotGrantedWhenServerRefusesAccess(t *testing.T) 
 	// The body below carries a wallet that, read as a signed-in answer, would
 	// produce the refusal launch notice (unpaid, $1 under a $2 rate) — which is
 	// exactly why launchNotice is on this list — and it would format as a
-	// "$1.00 · T1 · ~0 days left" walletText, which is why that is too.
+	// "T1 · ~0 days left" walletText, which is why that is too.
 	for _, field := range []string{"identity", "pct", "resetAt", "wallet", "walletText", "launchNotice"} {
 		if _, present := obj[field]; present {
 			t.Errorf("access_not_granted output carries %q = %v, want absent — nothing in a refusal is confirmed state", field, obj[field])

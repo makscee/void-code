@@ -29,8 +29,8 @@ import (
 //  1. No percentage anywhere: no `budget:` line, no `pct` in --json, no
 //     "Budget at N%" at launch, no launch refused over pct. A server that still
 //     sends pct is ignored.
-//  2. `vc status` prints `balance: $18.00 · T1 · ~9 days left` (tariff) or
-//     `balance: $18.00` (no tariff), nothing without a wallet; --json carries
+//  2. `vc status` prints `balance: T1 · ~9 days left` (tariff), nothing
+//     without a tariff or a wallet (no money shown, void-board#224); --json carries
 //     `wallet` mirroring the server.
 //  3. The welcome screen shows the same text where it showed `$X left`.
 //  4. Launch (terminal and desktop-session) is NEVER refused over the wallet —
@@ -50,9 +50,7 @@ import (
 //     whatever was printed before it, so nothing about money is printed before
 //     Pi starts. A VC_LAUNCH_NOTICE inherited from the parent never reaches Pi.
 //  6. `vc status --json` carries the same notice as `launchNotice`.
-//  7. Display: a negative balance is `-$3.00`, days never go below 0, and the
-//     balance is floored to the cent — never rounded up into money that is
-//     not there.
+//  7. Display: no money at all (void-board#224), and days never go below 0.
 //
 // Every test here drives an existing seam (runStatus, runStatusJSON, runSpawn,
 // the desktop-session command, the welcome program) through a real /v1/vc/me
@@ -146,11 +144,11 @@ func TestStatusShowsBalanceTierAndDays(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
 	}{
-		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "balance: $18.00 · T1 · ~9 days left"},
-		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "balance: $20.50 · T2 · ~5 days left"},
+		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "balance: T1 · ~9 days left"},
+		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "balance: T2 · ~5 days left"},
 		// The server that still sends the retired budget next to the wallet:
 		// the wallet line prints, the percentage does not.
-		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "balance: $18.00 · T1 · ~9 days left"},
+		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "balance: T1 · ~9 days left"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
@@ -169,17 +167,16 @@ func TestStatusShowsBalanceTierAndDays(t *testing.T) {
 	}
 }
 
-// Without a tariff there are no days to count: the balance stands alone.
-func TestStatusShowsBareBalanceWithoutTariff(t *testing.T) {
+// Without a tariff there are no days to count, and the balance is money,
+// which the client never shows (void-board#224): no balance line at all.
+func TestStatusShowsNoLineWithoutTariff(t *testing.T) {
 	out := humanStatus(t, meBody(wallet("18", "null", "null", "null")))
-	got, ok := statusLine(out, "balance:")
-	if !ok {
-		t.Fatalf("vc status has no balance line:\n%s", out)
+	if line, ok := statusLine(out, "balance:"); ok {
+		t.Errorf("vc status prints %q for a wallet with no tariff, want no balance line", line)
 	}
-	if got != "balance: $18.00" {
-		t.Errorf("balance line = %q, want %q", got, "balance: $18.00")
+	if strings.Contains(out, "$") {
+		t.Errorf("vc status shows money:\n%s", out)
 	}
-	assertNoPercent(t, "vc status", out)
 }
 
 // Old servers: no wallet means no balance line — neither from the retired
@@ -373,9 +370,20 @@ var walletGateCases = []walletGateCase{
 	{name: "limit 85 pct: limit notice", body: meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), notice: limitNotice(85)},
 	{name: "limit 130 pct: limit notice says 100 pct", body: meBody(limitMember(130) + "," + wallet("18", tariffT1, "true", "9")), notice: limitNotice(100)},
 	{name: "limit 85 pct and no wallet: limit notice", body: meBody(limitMember(85)), notice: limitNotice(85)},
-	{name: "limit 85 pct beside a wallet vc cannot read (no dailyRateUsd): limit notice", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"t1","monthlyPriceUsd":60}`, "true", "9")), notice: limitNotice(85)},
+	{name: "limit 85 pct beside a tariff without dailyRateUsd: limit notice", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"t1","monthlyPriceUsd":60}`, "true", "9")), notice: limitNotice(85)},
 	{name: "limit 85 pct and a low balance: both, the wallet's first", body: meBody(limitMember(85) + "," + wallet("2", tariffT1, "true", "1")), notice: walletLowNotice(1) + "\n" + limitNotice(85)},
 	{name: "limit pct as a string: no notice", body: meBody(`"limit":{"pct":"85"},` + wallet("18", tariffT1, "true", "9"))},
+	// T3 has no higher tier to upgrade to: its warning says when the limit
+	// resets instead of linking the pay page. T1/T2 keep the link.
+	{name: "limit 85 pct on T3: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", tariffT3, "true", "9")), notice: "Weekly limit 85% used — resets in 3 days"},
+	{name: "limit 85 pct on T3 sent as upper case: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"T3"}`, "true", "9")), notice: "Weekly limit 85% used — resets in 3 days"},
+	{name: "limit 85 pct on T3, no reset sent: the share alone", body: meBody(`"limit":{"pct":85},` + wallet("18", tariffT3, "true", "9")), notice: "Weekly limit 85% used"},
+	{name: "limit 85 pct on T2: limit notice with the link", body: meBody(limitMember(85) + "," + wallet("18", tariffT2, "true", "9")), notice: limitNotice(85)},
+	{name: "limit 42 pct on T3: no notice", body: meBody(limitMember(42) + "," + wallet("18", tariffT3, "true", "9"))},
+	// A tariff without its prices (void-board#224): no daily rate to check
+	// the daily rule against, so no refusal notice; the low-days one stands.
+	{name: "no dailyRateUsd, unpaid, 1 day: low notice, no refusal", body: meBody(wallet("0.5", `{"tier":"t1"}`, "false", "1")), notice: walletLowNotice(1)},
+	{name: "no prices, paid, 9 days: no notice", body: meBody(wallet("18", `{"tier":"t1"}`, "true", "9"))},
 }
 
 // limitMember is Relay's "limit" member with the reset three days and an hour away.
@@ -571,20 +579,15 @@ func assertStatusJSONLaunchNotice(t *testing.T, tc walletGateCase) {
 
 // ─── display ────────────────────────────────────────────────────────────────
 
-// Money is shown as money: the minus sign goes before the dollar, days never
-// go below zero, and the balance is floored to the cent — rounding up would
-// show a cent that is not there. The last two cases are exact cents that
-// binary floating point stores a hair low (1.15 is 1.1499999…): a naive
-// floor(x*100) would take a real cent away from them.
+// No money on screen (void-board#224), whatever the balance: a debt or a
+// fraction of a cent changes nothing in the line, and days never go below
+// zero.
 func TestStatusBalanceDisplayRules(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "balance: -$3.00 · T1 · ~0 days left"},
-		{"negative balance without a tariff", meBody(wallet("-3", "null", "null", "null")), "balance: -$3.00"},
-		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "balance: $0.50 · T1 · ~0 days left"},
-		{"a fraction of a cent is floored, not rounded up", meBody(wallet("7.666", tariffT3, "true", "0")), "balance: $7.66 · T3 · ~0 days left"},
-		{"99.9 cents of the next dollar are still not a dollar", meBody(wallet("18.999", tariffT1, "true", "9")), "balance: $18.99 · T1 · ~9 days left"},
-		{"exact cents stored low: 1.15", meBody(wallet("1.15", "null", "null", "null")), "balance: $1.15"},
-		{"exact cents stored low: 0.29", meBody(wallet("0.29", "null", "null", "null")), "balance: $0.29"},
+		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "balance: T1 · ~0 days left"},
+		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "balance: T1 · ~0 days left"},
+		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "balance: T3 · ~0 days left"},
+		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "balance: T1 · ~9 days left"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
@@ -620,8 +623,8 @@ func welcomeScreens(state welcome.AuthState) (view, banner string) {
 func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		if !strings.Contains(screen, "$18.00 · T1 · ~9 days left") {
-			t.Errorf("welcome %s lacks %q:\n%s", where, "$18.00 · T1 · ~9 days left", screen)
+		if !strings.Contains(screen, "T1 · ~9 days left") {
+			t.Errorf("welcome %s lacks %q:\n%s", where, "T1 · ~9 days left", screen)
 		}
 		if strings.Contains(screen, "$18.00 left") {
 			t.Errorf("welcome %s still shows the old `$X left`:\n%s", where, screen)
@@ -630,13 +633,11 @@ func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 	}
 }
 
-func TestWelcomeShowsBareBalanceWithoutTariff(t *testing.T) {
+// No tariff: nothing to show but money, so the welcome screen shows no wallet.
+func TestWelcomeShowsNoMoneyWithoutTariff(t *testing.T) {
 	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", "null", "null", "null")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		if !strings.Contains(screen, "$18.00") {
-			t.Errorf("welcome %s lacks the balance:\n%s", where, screen)
-		}
-		for _, stale := range []string{"$18.00 left", "days left"} {
+		for _, stale := range []string{"$", "days left"} {
 			if strings.Contains(screen, stale) {
 				t.Errorf("welcome %s shows %q without a tariff:\n%s", where, stale, screen)
 			}

@@ -70,19 +70,34 @@ func formatAccount(me auth.MeResult, now time.Time) string {
 	return strings.Join(parts, " · ")
 }
 
-// limitLaunchNotice warns a launch once the limit is limitWarnPct% used.
-func limitLaunchNotice(l *auth.Limit) string {
+// limitTopTier is the highest tier: nothing to upgrade to, so its warning
+// says when the limit resets instead of linking the pay page.
+const limitTopTier = "t3"
+
+// limitLaunchNotice warns a launch once the limit is limitWarnPct% used:
+// `Weekly limit 85% used — upgrade: <pay page>`, or on the top tier
+// `Weekly limit 85% used — resets in 3 days` (just the share when no reset
+// was sent). A wallet vc cannot read, or no tariff, keeps the link.
+func limitLaunchNotice(me auth.MeResult, now time.Time) string {
+	l := me.Limit
 	if l == nil || limitPct(l) < limitWarnPct {
 		return ""
 	}
-	return fmt.Sprintf("Weekly limit %d%% used — upgrade: %s", limitPct(l), browser.PayURL)
+	text := fmt.Sprintf("Weekly limit %d%% used", limitPct(l))
+	if me.Wallet == nil || me.Wallet.Tariff == nil || !strings.EqualFold(me.Wallet.Tariff.Tier, limitTopTier) {
+		return text + " — upgrade: " + browser.PayURL
+	}
+	if l.ResetAt != nil {
+		text += " — resets " + resetsIn(l.ResetAt.Sub(now))
+	}
+	return text
 }
 
 // launchNotice is everything a launch tells the person: the wallet's notice,
 // then the limit's, one per line, or "" for nothing.
-func launchNotice(me auth.MeResult) string {
+func launchNotice(me auth.MeResult, now time.Time) string {
 	var lines []string
-	for _, line := range []string{walletLaunchNotice(me.Wallet), limitLaunchNotice(me.Limit)} {
+	for _, line := range []string{walletLaunchNotice(me.Wallet), limitLaunchNotice(me, now)} {
 		if line != "" {
 			lines = append(lines, line)
 		}

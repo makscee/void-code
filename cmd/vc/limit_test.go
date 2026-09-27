@@ -15,13 +15,16 @@ import (
 
 func TestStatusShowsTheWeeklyLimit(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"42 beside a wallet", meBody(limitMember(42) + "," + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 42% used, resets in 3 days"},
-		{"85 beside a wallet", meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 85% used, resets in 3 days"},
-		{"a share floored: 79.9 reads 79", meBody(limitMember(79.9) + "," + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 79% used, resets in 3 days"},
+		{"42 beside a wallet", meBody(limitMember(42) + "," + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 42% used, resets in 3 days"},
+		{"85 beside a wallet", meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 85% used, resets in 3 days"},
+		{"a share floored: 79.9 reads 79", meBody(limitMember(79.9) + "," + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 79% used, resets in 3 days"},
 		{"no wallet: the limit alone", meBody(limitMember(42)), "limit 42% used, resets in 3 days"},
-		{"a wallet vc cannot read (no monthlyPriceUsd): the limit alone", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","dailyRateUsd":2}`, "true", "9")), "limit 42% used, resets in 3 days"},
-		{"no reset sent", meBody(`"limit":{"pct":42},` + wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left · limit 42% used"},
-		{"no limit (older Relay): unchanged", meBody(wallet("18", tariffT1, "true", "9")), "$18.00 · T1 · ~9 days left"},
+		{"a tariff without monthlyPriceUsd: what is there", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","dailyRateUsd":2}`, "true", "9")), "T1 · ~9 days left · limit 42% used, resets in 3 days"},
+		{"a tariff without either price: what is there", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1"}`, "true", "9")), "T1 · ~9 days left · limit 42% used, resets in 3 days"},
+		{"a wallet vc cannot read (a price as a string): the limit alone", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","monthlyPriceUsd":"60","dailyRateUsd":2}`, "true", "9")), "limit 42% used, resets in 3 days"},
+		{"no tariff: the limit alone, no money", meBody(limitMember(42) + "," + wallet("18", "null", "null", "null")), "limit 42% used, resets in 3 days"},
+		{"no reset sent", meBody(`"limit":{"pct":42},` + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 42% used"},
+		{"no limit (older Relay): unchanged", meBody(wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			obj := jsonStatus(t, tc.body)
@@ -32,8 +35,8 @@ func TestStatusShowsTheWeeklyLimit(t *testing.T) {
 			if !ok || strings.TrimPrefix(line, "balance: ") != tc.want {
 				t.Errorf("`vc status` balance line = %q, want %q", line, tc.want)
 			}
-			if _, limitPart, ok := strings.Cut(tc.want, "limit "); ok && strings.Contains(limitPart, "$") {
-				t.Errorf("the limit part of %q shows money", tc.want)
+			if strings.Contains(tc.want, "$") {
+				t.Errorf("%q shows money", tc.want)
 			}
 		})
 	}

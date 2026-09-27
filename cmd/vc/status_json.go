@@ -76,7 +76,7 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 	// or null when the wallet and the limit have nothing to say. Only a signed-in answer
 	// carries one — a refusal names no wallet to warn about.
 	obj["launchNotice"] = nil
-	if notice := launchNotice(me); notice != "" {
+	if notice := launchNotice(me, time.Now()); notice != "" {
 		obj["launchNotice"] = notice
 	}
 	return json.NewEncoder(out).Encode(obj)
@@ -92,10 +92,11 @@ type walletJSON struct {
 	FundedDays *int        `json:"fundedDays"`
 }
 
+// The prices read null when the server sent none (void-board#224).
 type tariffJSON struct {
-	Tier            string  `json:"tier"`
-	MonthlyPriceUsd float64 `json:"monthlyPriceUsd"`
-	DailyRateUsd    float64 `json:"dailyRateUsd"`
+	Tier            string   `json:"tier"`
+	MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
+	DailyRateUsd    *float64 `json:"dailyRateUsd"`
 }
 
 func walletJSONFor(w *auth.Wallet) walletJSON {

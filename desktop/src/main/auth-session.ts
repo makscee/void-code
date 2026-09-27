@@ -29,11 +29,13 @@ export type AuthState = (typeof AUTH_STATES)[number];
 const REFUSAL_STATES: readonly AuthState[] = ['access_not_granted'];
 
 // The wallet as `vc status --json` mirrors it from the server (spec 2026-09-23-client-wallet-days):
-// dollars for display, the tariff that draws on them, and whether today's charge has been taken.
+// the balance, the tariff that draws on it, and whether today's charge has been taken. Nothing here
+// is shown: the screen shows walletText, which carries no money (void-board#224). A tariff's prices
+// are null when the server sent none.
 export interface WalletTariff {
   tier: string;
-  monthlyPriceUsd: number;
-  dailyRateUsd: number;
+  monthlyPriceUsd: number | null;
+  dailyRateUsd: number | null;
 }
 export interface Wallet {
   balanceUsd: number;
@@ -47,8 +49,8 @@ export interface AuthStatus {
   identity?: string;
   reason?: string;
   wallet?: Wallet;
-  // The wallet line exactly as vc formats it (`$18.00 · T1 · ~9 days left`, or a bare balance);
-  // absent when there is no wallet. The display rules live in vc, once, and are never re-made here.
+  // The wallet line exactly as vc formats it (`T1 · ~9 days left`, then the weekly limit's share when
+  // Relay sends one); absent when there is neither. The display rules live in vc, once, and are never re-made here.
   walletText?: string;
   // What vc hands Pi about the wallet at launch (a low balance, a day Relay will refuse); absent
   // when there is nothing to say.
@@ -78,6 +80,9 @@ function isValidStatusShape(value: unknown): value is { authState: AuthState } &
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
+function isFiniteNumberOrNull(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
+}
 function isBooleanOrNull(value: unknown): value is boolean | null {
   return value === null || typeof value === 'boolean';
 }
@@ -88,14 +93,17 @@ function isIntegerOrNull(value: unknown): value is number | null {
 // The same shape rules as vc's own parser (internal/auth/me.go parseWallet), all or nothing: one
 // field of the wrong type drops the whole wallet, because a half-read wallet could show a wrong
 // balance. Only the known fields are copied — a percentage riding along inside the wallet stops
-// here. An absent tariff, todayPaid or fundedDays reads as null, as it does in vc.
+// here. An absent tariff, todayPaid, fundedDays or tariff price reads as null, as it does in vc.
 function readWallet(value: unknown): Wallet | undefined {
   if (!isPlainObject(value) || !isFiniteNumber(value.balanceUsd)) return undefined;
   let tariff: WalletTariff | null = null;
   if (value.tariff !== undefined && value.tariff !== null) {
     const raw = value.tariff;
-    if (!isPlainObject(raw) || typeof raw.tier !== 'string' || raw.tier === '' || !isFiniteNumber(raw.monthlyPriceUsd) || !isFiniteNumber(raw.dailyRateUsd)) return undefined;
-    tariff = { tier: raw.tier, monthlyPriceUsd: raw.monthlyPriceUsd, dailyRateUsd: raw.dailyRateUsd };
+    if (!isPlainObject(raw) || typeof raw.tier !== 'string' || raw.tier === '') return undefined;
+    const monthlyPriceUsd = raw.monthlyPriceUsd ?? null;
+    const dailyRateUsd = raw.dailyRateUsd ?? null;
+    if (!isFiniteNumberOrNull(monthlyPriceUsd) || !isFiniteNumberOrNull(dailyRateUsd)) return undefined;
+    tariff = { tier: raw.tier, monthlyPriceUsd, dailyRateUsd };
   }
   const todayPaid = value.todayPaid ?? null;
   const fundedDays = value.fundedDays ?? null;

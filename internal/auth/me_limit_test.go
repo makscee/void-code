@@ -41,18 +41,34 @@ func TestFetchMeReadsTheLimit(t *testing.T) {
 	}
 }
 
-func TestFetchMeLimitSurvivesAWalletItCannotRead(t *testing.T) {
+// A tariff without its prices keeps the wallet (tier and days left), and the
+// limit beside it (void-board#224).
+func TestFetchMeTariffWithoutPrices(t *testing.T) {
 	for _, tariff := range []string{
-		`{"tier":"t1","dailyRateUsd":2}`,     // no monthlyPriceUsd
-		`{"tier":"t1","monthlyPriceUsd":60}`, // no dailyRateUsd
+		`{"tier":"t1","dailyRateUsd":2}`,                           // no monthlyPriceUsd
+		`{"tier":"t1","monthlyPriceUsd":60}`,                       // no dailyRateUsd
+		`{"tier":"t1"}`,                                            // neither
+		`{"tier":"t1","monthlyPriceUsd":null,"dailyRateUsd":null}`, // both null
 	} {
-		me := fetchBody(t, `{"userId":"u-1","limit":{"pct":85,"resetAt":"2026-10-01T00:00:00Z"},"wallet":{"balanceUsd":18,"tariff":`+tariff+`}}`)
-		if me.Wallet != nil {
-			t.Errorf("tariff %s: Wallet = %+v, want nil (unchanged all-or-nothing rule)", tariff, me.Wallet)
+		me := fetchBody(t, `{"userId":"u-1","limit":{"pct":85,"resetAt":"2026-10-01T00:00:00Z"},"wallet":{"balanceUsd":18,"tariff":`+tariff+`,"todayPaid":true,"fundedDays":9}}`)
+		if me.Wallet == nil || me.Wallet.Tariff == nil || me.Wallet.Tariff.Tier != "t1" || me.Wallet.FundedDays == nil || *me.Wallet.FundedDays != 9 {
+			t.Errorf("tariff %s: Wallet = %+v, want tier t1 and 9 days kept", tariff, me.Wallet)
 		}
 		if me.Limit == nil || me.Limit.Pct != 85 {
-			t.Errorf("tariff %s: Limit = %+v, want pct 85 — the limit went with the wallet", tariff, me.Limit)
+			t.Errorf("tariff %s: Limit = %+v, want pct 85", tariff, me.Limit)
 		}
+	}
+}
+
+// A price of the wrong type is still a wallet vc cannot read: it drops the
+// wallet, and the limit stands on its own.
+func TestFetchMeLimitSurvivesAWalletItCannotRead(t *testing.T) {
+	me := fetchBody(t, `{"userId":"u-1","limit":{"pct":85,"resetAt":"2026-10-01T00:00:00Z"},"wallet":{"balanceUsd":18,"tariff":{"tier":"t1","monthlyPriceUsd":"60","dailyRateUsd":2}}}`)
+	if me.Wallet != nil {
+		t.Errorf("Wallet = %+v, want nil (a price of the wrong type)", me.Wallet)
+	}
+	if me.Limit == nil || me.Limit.Pct != 85 {
+		t.Errorf("Limit = %+v, want pct 85 — the limit went with the wallet", me.Limit)
 	}
 }
 
