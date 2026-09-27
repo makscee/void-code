@@ -66,7 +66,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), valueStyle.Render("logged in as "+identity))
 	fmt.Printf("%s %s\n", labelStyle.Render("token:  "), valueStyle.Render("~/.void-code/token"))
 	if balance := formatAccount(me, time.Now()); balance != "" {
-		fmt.Printf("%s %s\n", labelStyle.Render("balance:"), valueStyle.Render(balance))
+		fmt.Printf("%s %s\n", labelStyle.Render("plan:   "), valueStyle.Render(balance))
 	}
 	return nil
 }

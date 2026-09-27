@@ -8,7 +8,7 @@ import (
 // `vc status --json` carries walletText — second panel on void-code#76, G3:
 // the desktop renderer showed no balance and no days at all. The desktop gets
 // the line already written: walletText is exactly what formatWallet renders,
-// the same words `vc status` prints after "balance: " and the welcome screen
+// the same words `vc status` prints after "plan: " and the welcome screen
 // shows, or null when there is no wallet. The display rules (no money at all,
 // void-board#224; days never below 0; nothing without a tariff) therefore live in one
 // place, in Go, and TypeScript never re-implements them.
@@ -37,11 +37,11 @@ func TestStatusJSONCarriesWalletText(t *testing.T) {
 			}
 			// One formatter: the line the desktop gets is the line `vc status`
 			// prints after its label.
-			line, ok := statusLine(humanStatus(t, tc.body), "balance:")
+			line, ok := statusLine(humanStatus(t, tc.body), "plan:")
 			if !ok {
-				t.Fatalf("vc status has no balance line for this wallet")
+				t.Fatalf("vc status has no plan line for this wallet")
 			}
-			if want := strings.TrimPrefix(line, "balance: "); got != want {
+			if want := strings.TrimPrefix(line, "plan: "); got != want {
 				t.Errorf("walletText = %q, but `vc status` says %q — two formatters", got, want)
 			}
 		})

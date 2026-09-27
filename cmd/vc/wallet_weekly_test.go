@@ -32,7 +32,7 @@ import (
 //     and the old "for today" sentence, unchanged — even when the tariff
 //     already carries weeklyPriceUsd and periodEndsAt is there.
 //  4. A new field of the wrong type drops the whole wallet, as any other
-//     field does: no notice, no balance line.
+//     field does: no notice, no plan line.
 //  5. The wallet line (`~N days left`) is unchanged: still fundedDays, which
 //     Keys now computes weekly. The client does not recount days from the
 //     balance and the weekly price.
@@ -171,7 +171,7 @@ func TestWalletLineUnchangedByWeeklyFields(t *testing.T) {
 		{"weeklyPriceUsd as a bool drops the wallet", meBody(weekWallet("18", `{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2.142857142857143,"weeklyPriceUsd":true}`, "true", "9", "false", periodEnd)), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			line, hasLine := statusLine(humanStatus(t, tc.body), "balance:")
+			line, hasLine := statusLine(humanStatus(t, tc.body), "plan:")
 			got := jsonStatus(t, tc.body)["walletText"]
 			if tc.want == "" {
 				if hasLine {
@@ -182,8 +182,8 @@ func TestWalletLineUnchangedByWeeklyFields(t *testing.T) {
 				}
 				return
 			}
-			if want := "balance: " + tc.want; line != want {
-				t.Errorf("vc status balance line = %q (present=%v), want %q", line, hasLine, want)
+			if want := "plan: " + tc.want; line != want {
+				t.Errorf("vc status plan line = %q (present=%v), want %q", line, hasLine, want)
 			}
 			if s, ok := got.(string); !ok || s != tc.want {
 				t.Errorf("walletText = %#v, want %q", got, tc.want)

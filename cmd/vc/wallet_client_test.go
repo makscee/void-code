@@ -29,7 +29,7 @@ import (
 //  1. No percentage anywhere: no `budget:` line, no `pct` in --json, no
 //     "Budget at N%" at launch, no launch refused over pct. A server that still
 //     sends pct is ignored.
-//  2. `vc status` prints `balance: T1 · ~9 days left` (tariff), nothing
+//  2. `vc status` prints `plan: T1 · ~9 days left` (tariff), nothing
 //     without a tariff or a wallet (no money shown, void-board#224); --json carries
 //     `wallet` mirroring the server.
 //  3. The welcome screen shows the same text where it showed `$X left`.
@@ -123,8 +123,10 @@ func humanStatus(t *testing.T, body string) string {
 // statusLine returns the trimmed line that starts with label, if any.
 func statusLine(out, label string) (string, bool) {
 	for _, line := range strings.Split(out, "\n") {
+		// Labels are padded to line up ("plan:    T1"); the value after
+		// the padding comes back after a single space ("plan: T1").
 		if l := strings.TrimSpace(line); strings.HasPrefix(l, label) {
-			return l, true
+			return label + " " + strings.TrimSpace(strings.TrimPrefix(l, label)), true
 		}
 	}
 	return "", false
@@ -144,20 +146,20 @@ func TestStatusShowsBalanceTierAndDays(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
 	}{
-		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "balance: T1 · ~9 days left"},
-		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "balance: T2 · ~5 days left"},
+		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
+		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "plan: T2 · ~5 days left"},
 		// The server that still sends the retired budget next to the wallet:
 		// the wallet line prints, the percentage does not.
-		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "balance: T1 · ~9 days left"},
+		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
-			got, ok := statusLine(out, "balance:")
+			got, ok := statusLine(out, "plan:")
 			if !ok {
-				t.Fatalf("vc status has no balance line:\n%s", out)
+				t.Fatalf("vc status has no plan line:\n%s", out)
 			}
 			if got != tc.want {
-				t.Errorf("balance line = %q, want %q", got, tc.want)
+				t.Errorf("plan line = %q, want %q", got, tc.want)
 			}
 			if _, ok := statusLine(out, "budget:"); ok {
 				t.Errorf("vc status still prints a budget line:\n%s", out)
@@ -168,18 +170,18 @@ func TestStatusShowsBalanceTierAndDays(t *testing.T) {
 }
 
 // Without a tariff there are no days to count, and the balance is money,
-// which the client never shows (void-board#224): no balance line at all.
+// which the client never shows (void-board#224): no plan line at all.
 func TestStatusShowsNoLineWithoutTariff(t *testing.T) {
 	out := humanStatus(t, meBody(wallet("18", "null", "null", "null")))
-	if line, ok := statusLine(out, "balance:"); ok {
-		t.Errorf("vc status prints %q for a wallet with no tariff, want no balance line", line)
+	if line, ok := statusLine(out, "plan:"); ok {
+		t.Errorf("vc status prints %q for a wallet with no tariff, want no plan line", line)
 	}
 	if strings.Contains(out, "$") {
 		t.Errorf("vc status shows money:\n%s", out)
 	}
 }
 
-// Old servers: no wallet means no balance line — neither from the retired
+// Old servers: no wallet means no plan line — neither from the retired
 // pct budget nor from the void-auth era top-level balanceUsd.
 func TestStatusShowsNoMoneyLineWithoutWallet(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
@@ -193,7 +195,7 @@ func TestStatusShowsNoMoneyLineWithoutWallet(t *testing.T) {
 			if !strings.Contains(out, "logged in as person@example.test") {
 				t.Fatalf("status did not sign in:\n%s", out)
 			}
-			for _, label := range []string{"balance:", "budget:"} {
+			for _, label := range []string{"plan:", "balance:", "budget:"} {
 				if line, ok := statusLine(out, label); ok {
 					t.Errorf("no wallet on the wire, yet status prints %q", line)
 				}
@@ -584,19 +586,19 @@ func assertStatusJSONLaunchNotice(t *testing.T, tc walletGateCase) {
 // zero.
 func TestStatusBalanceDisplayRules(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "balance: T1 · ~0 days left"},
-		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "balance: T1 · ~0 days left"},
-		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "balance: T3 · ~0 days left"},
-		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "balance: T1 · ~9 days left"},
+		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "plan: T1 · ~0 days left"},
+		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "plan: T1 · ~0 days left"},
+		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "plan: T3 · ~0 days left"},
+		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
-			got, ok := statusLine(out, "balance:")
+			got, ok := statusLine(out, "plan:")
 			if !ok {
-				t.Fatalf("vc status has no balance line:\n%s", out)
+				t.Fatalf("vc status has no plan line:\n%s", out)
 			}
 			if got != tc.want {
-				t.Errorf("balance line = %q, want %q", got, tc.want)
+				t.Errorf("plan line = %q, want %q", got, tc.want)
 			}
 		})
 	}

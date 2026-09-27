@@ -57,7 +57,7 @@ func plural(n int, unit string) string {
 	return fmt.Sprintf("%d %ss", n, unit)
 }
 
-// formatAccount is the line `vc status` prints after "balance:", the desktop
+// formatAccount is the line `vc status` prints after "plan:", the desktop
 // shows as walletText and the welcome screen shows next to the identity: the
 // wallet, then the limit, each only when the server sent it. "" for neither.
 func formatAccount(me auth.MeResult, now time.Time) string {

@@ -66,7 +66,7 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 	}
 	// The wallet line already written, for the desktop to show as is: exactly
 	// what formatAccount renders — the words `vc status` prints after
-	// "balance:", wallet and weekly limit — or null when there is neither. The display rules live
+	// "plan:", wallet and weekly limit — or null when there is neither. The display rules live
 	// here, in Go, once; the desktop never re-implements them.
 	obj["walletText"] = nil
 	if text := formatAccount(me, time.Now()); text != "" {

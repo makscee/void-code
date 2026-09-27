@@ -9,7 +9,7 @@ import (
 )
 
 // The weekly limit (void-board#224) on the account line: `vc status` after
-// "balance:", walletText in `vc status --json` (which the desktop shows as
+// "plan:", walletText in `vc status --json` (which the desktop shows as
 // is), and the welcome screen — one formatter, the wallet first, then the
 // limit as a share, never money.
 
@@ -31,9 +31,9 @@ func TestStatusShowsTheWeeklyLimit(t *testing.T) {
 			if got, _ := obj["walletText"].(string); got != tc.want {
 				t.Fatalf("walletText = %#v, want %q", obj["walletText"], tc.want)
 			}
-			line, ok := statusLine(humanStatus(t, tc.body), "balance:")
-			if !ok || strings.TrimPrefix(line, "balance: ") != tc.want {
-				t.Errorf("`vc status` balance line = %q, want %q", line, tc.want)
+			line, ok := statusLine(humanStatus(t, tc.body), "plan:")
+			if !ok || strings.TrimPrefix(line, "plan: ") != tc.want {
+				t.Errorf("`vc status` plan line = %q, want %q", line, tc.want)
 			}
 			if strings.Contains(tc.want, "$") {
 				t.Errorf("%q shows money", tc.want)
