@@ -127,18 +127,18 @@ it.each(['darwin', 'win32'])('R3: %s exact 8MiB UTF-8 accepted intact; one byte 
   r.children[1].close(); await recovery;
 });
 
-it.each(['darwin', 'win32'])('R4: %s 4999ms remains alive; 5000ms kills, waits for close and only then admits next write', async (platform) => {
+it.each([['darwin', 5000], ['win32', 15000]] as const)('R4: %s %ims kills (1ms earlier remains alive), waits for close and only then admits next write', async (platform, bound) => {
   const r = await writer(platform);
   let outcome = 'pending'; const a = r.write('slow').then(() => { outcome = 'success'; }, () => { outcome = 'failure'; });
   await flush(); const b = r.write('healthy'); await flush();
   expect(r.spawn).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(4999); expect(r.children[0].kill).not.toHaveBeenCalled(); expect(outcome).toBe('pending');
+  await vi.advanceTimersByTimeAsync(bound - 1); expect(r.children[0].kill).not.toHaveBeenCalled(); expect(outcome).toBe('pending');
   await vi.advanceTimersByTimeAsync(1); expect(r.children[0].kill).toHaveBeenCalled();
   expect(r.spawn).toHaveBeenCalledTimes(1); expect(outcome).not.toBe('success');
   r.children[0].close(); await a; await flush(); expect(outcome).toBe('failure');
   expect(r.spawn).toHaveBeenCalledTimes(2); expect(r.children[1].text()).toBe('healthy');
   r.children[1].close(); await b;
-  await vi.advanceTimersByTimeAsync(5000); expect(r.children[1].kill).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(bound); expect(r.children[1].kill).not.toHaveBeenCalled();
 });
 
 it.each(['spawn', 'spawn-event', 'stdin', 'exit'])('R4/R5: %s failure cannot leak text or leave the following healthy operation blocked', async (failure) => {

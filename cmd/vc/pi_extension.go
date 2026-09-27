@@ -465,7 +465,8 @@ export function createNativeClipboardWriter(options: NativeClipboardWriterOption
 		child.once("exit", (code: number | null) => { if (code !== 0) failed = true; });
 		child.once("close", (code: number | null) => finish(code));
 		item.signal?.addEventListener("abort", abort, { once: true });
-		timer = setTimeout(abort, 5000);
+		// A cold Windows PowerShell start can take well over 5 s (#206), so Windows gets 15 s.
+		timer = setTimeout(abort, options.platform === "win32" ? 15000 : 5000);
 		try {
 			child.stdin.setDefaultEncoding?.("utf8");
 			child.stdin.end(item.text, "utf8");
