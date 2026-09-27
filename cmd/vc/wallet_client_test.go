@@ -241,20 +241,22 @@ func jsonWallet(t *testing.T, obj map[string]any) map[string]any {
 }
 
 // The desktop reads --json; it gets the wallet as the server said it, under
-// the server's names — tier included, unformatted.
+// the server's names — tier included, unformatted — but an older Relay's
+// dollars stay behind (void-board#234): its balance mirrors as null kopecks.
 func TestStatusJSONMirrorsWallet(t *testing.T) {
 	obj := jsonStatus(t, meBody(`"pct":42.5,"resetAt":"2026-10-01T00:00:00Z",`+wallet("18", tariffT1, "true", "9")))
 	w := jsonWallet(t, obj)
-	if w["balanceUsd"] != 18.0 {
-		t.Errorf("wallet.balanceUsd = %v, want 18", w["balanceUsd"])
+	if v, present := w["balanceKopecks"]; !present || v != nil {
+		t.Errorf("wallet.balanceKopecks = %v (present=%v), want null from a dollar-only Relay", v, present)
 	}
 	tariff, ok := w["tariff"].(map[string]any)
 	if !ok {
 		t.Fatalf("wallet.tariff = %#v, want an object", w["tariff"])
 	}
-	if tariff["tier"] != "t1" || tariff["monthlyPriceUsd"] != 60.0 || tariff["dailyRateUsd"] != 2.0 {
-		t.Errorf("wallet.tariff = %v, want {tier:t1 monthlyPriceUsd:60 dailyRateUsd:2}", tariff)
+	if tariff["tier"] != "t1" {
+		t.Errorf("wallet.tariff = %v, want tier t1", tariff)
 	}
+	assertNoDollarField(t, w)
 	if w["todayPaid"] != true {
 		t.Errorf("wallet.todayPaid = %v, want true", w["todayPaid"])
 	}
@@ -273,16 +275,33 @@ func TestStatusJSONKeepsUnpaidDayAndZeroDays(t *testing.T) {
 	if v, present := w["fundedDays"]; !present || v != 0.0 {
 		t.Errorf("wallet.fundedDays = %v (present=%v), want 0", v, present)
 	}
-	if tariff, _ := w["tariff"].(map[string]any); tariff == nil || tariff["dailyRateUsd"] != 7.67 {
-		t.Errorf("wallet.tariff = %v, want t3 at 7.67", w["tariff"])
+	if tariff, _ := w["tariff"].(map[string]any); tariff == nil || tariff["tier"] != "t3" {
+		t.Errorf("wallet.tariff = %v, want t3", w["tariff"])
+	}
+	assertNoDollarField(t, w)
+}
+
+// assertNoDollarField fails on any key, at any depth, that names dollars.
+func assertNoDollarField(t *testing.T, v any) {
+	t.Helper()
+	switch v := v.(type) {
+	case map[string]any:
+		for k, inner := range v {
+			if strings.Contains(strings.ToLower(k), "usd") {
+				t.Errorf("--json carries %q = %v; no dollar leaves vc", k, inner)
+			}
+			assertNoDollarField(t, inner)
+		}
+	case []any:
+		for _, inner := range v {
+			assertNoDollarField(t, inner)
+		}
 	}
 }
 
 func TestStatusJSONWalletWithoutTariff(t *testing.T) {
 	w := jsonWallet(t, jsonStatus(t, meBody(wallet("18", "null", "null", "null"))))
-	if w["balanceUsd"] != 18.0 {
-		t.Errorf("wallet.balanceUsd = %v, want 18", w["balanceUsd"])
-	}
+	assertNoDollarField(t, w)
 	// null or absent — either says "no tariff"; a zero-valued object does not.
 	for _, field := range []string{"tariff", "todayPaid", "fundedDays"} {
 		if w[field] != nil {

@@ -199,8 +199,11 @@ func TestStatusJSONReportsSignedInWithIdentityAndWallet(t *testing.T) {
 	if !ok {
 		t.Fatalf("wallet = %#v, want an object", obj["wallet"])
 	}
-	if got["balanceUsd"] != 18.0 || got["todayPaid"] != true || got["fundedDays"] != 9.0 {
-		t.Errorf("wallet = %v, want balanceUsd 18, todayPaid true, fundedDays 9", got)
+	if got["todayPaid"] != true || got["fundedDays"] != 9.0 {
+		t.Errorf("wallet = %v, want todayPaid true, fundedDays 9", got)
+	}
+	if _, present := got["balanceUsd"]; present {
+		t.Errorf("wallet = %v carries balanceUsd; no dollar leaves vc", got)
 	}
 	if tariff, _ := got["tariff"].(map[string]any); tariff == nil || tariff["tier"] != "t1" {
 		t.Errorf("wallet.tariff = %v, want tier t1", got["tariff"])

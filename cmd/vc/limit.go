@@ -62,7 +62,7 @@ func plural(n int, unit string) string {
 // wallet, then the limit, each only when the server sent it. "" for neither.
 func formatAccount(me auth.MeResult, now time.Time) string {
 	var parts []string
-	for _, part := range []string{formatWallet(me.Wallet), formatLimit(me.Limit, now)} {
+	for _, part := range []string{formatWallet(me.Wallet, now), formatLimit(me.Limit, now)} {
 		if part != "" {
 			parts = append(parts, part)
 		}

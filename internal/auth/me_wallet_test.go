@@ -59,7 +59,7 @@ func TestFetchMe_WalletWithTariff(t *testing.T) {
 	if w == nil {
 		t.Fatal("Wallet = nil, want the wallet the server sent")
 	}
-	if w.BalanceUsd != 18 {
+	if w.BalanceUsd == nil || *w.BalanceUsd != 18 {
 		t.Errorf("BalanceUsd = %v, want 18", w.BalanceUsd)
 	}
 	if w.Tariff == nil {
@@ -114,7 +114,7 @@ func TestFetchMe_WalletWithoutTariff(t *testing.T) {
 	if w == nil {
 		t.Fatal("Wallet = nil, want a tariff-less wallet")
 	}
-	if w.BalanceUsd != 18 {
+	if w.BalanceUsd == nil || *w.BalanceUsd != 18 {
 		t.Errorf("BalanceUsd = %v, want 18", w.BalanceUsd)
 	}
 	if w.Tariff != nil {

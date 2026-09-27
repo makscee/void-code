@@ -64,7 +64,7 @@ func TestFetchMe_WalletWeeklyFields(t *testing.T) {
 		t.Errorf("Tariff.WeeklyPriceUsd = %v, want 15", w.Tariff.WeeklyPriceUsd)
 	}
 	// The contract only grew: the earlier fields read as they did.
-	if w.BalanceUsd != 18 || w.Tariff.Tier != "t1" || w.Tariff.MonthlyPriceUsd == nil || *w.Tariff.MonthlyPriceUsd != 60 || w.Tariff.DailyRateUsd == nil || *w.Tariff.DailyRateUsd != 2.142857142857143 {
+	if w.BalanceUsd == nil || *w.BalanceUsd != 18 || w.Tariff.Tier != "t1" || w.Tariff.MonthlyPriceUsd == nil || *w.Tariff.MonthlyPriceUsd != 60 || w.Tariff.DailyRateUsd == nil || *w.Tariff.DailyRateUsd != 2.142857142857143 {
 		t.Errorf("Wallet = %+v, Tariff = %+v — the earlier fields changed", *w, *w.Tariff)
 	}
 	if w.TodayPaid == nil || !*w.TodayPaid || w.FundedDays == nil || *w.FundedDays != 13 {
@@ -108,7 +108,7 @@ func TestFetchMe_WalletWithoutWeeklyFieldsStillParses(t *testing.T) {
 			if w == nil || w.Tariff == nil {
 				t.Fatalf("Wallet = %+v, want the wallet with its tariff — the new fields are optional", w)
 			}
-			if w.BalanceUsd != 18 || w.Tariff.Tier != "t1" || w.FundedDays == nil || *w.FundedDays != 9 {
+			if w.BalanceUsd == nil || *w.BalanceUsd != 18 || w.Tariff.Tier != "t1" || w.FundedDays == nil || *w.FundedDays != 9 {
 				t.Errorf("Wallet = %+v, want balance 18, t1, 9 days", *w)
 			}
 			has := func(key string) bool { return strings.Contains(wallet, `"`+key+`"`) }
