@@ -103,7 +103,7 @@ func menuItemsFor(state AuthState) []menuItem {
 	if !state.LoggedIn {
 		return []menuItem{{"Login", RunLogin}}
 	}
-	return []menuItem{{"Start", SpawnPi}, {"Top up", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
+	return []menuItem{{"Start", SpawnPi}, {"Пополнить", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
 }
 func newModel(state AuthState) model            { return model{AuthState: state, items: menuItemsFor(state)} }
 func (m model) Init() tea.Cmd                   { return m.updates }
