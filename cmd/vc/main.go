@@ -267,7 +267,7 @@ func meResultToState(me auth.MeResult) welcome.AuthState {
 	return welcome.AuthState{
 		LoggedIn: true,
 		Identity: identity,
-		Balance:  formatWallet(me.Wallet), // "" when the server sent no wallet → nothing shown
+		Balance:  formatAccount(me, time.Now()), // "" when the server sent no wallet or limit → nothing shown
 	}
 }
 
@@ -386,7 +386,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	// shows it once the session is up (see walletLaunchNotice).
 	notice := ""
 	if reached {
-		notice = walletLaunchNotice(me.Wallet)
+		notice = launchNotice(me)
 	}
 	// Resolve launch artifacts after live admission but before constructing a
 	// token-bearing child environment. A bundled runtime starts its already
