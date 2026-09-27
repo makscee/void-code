@@ -17,7 +17,7 @@ type AuthState struct {
 	IdentityUnverified bool
 	UpdateNudge        string
 	// Balance is the wallet as the caller renders it for a person
-	// ("$18.00 · T1 · ~9 days left"); empty when there is none to show.
+	// ("2 000 ₽ · T1 · до 4 окт · лимит использован на 37%, сброс через 3 дня"); empty when there is none to show.
 	Balance string
 }
 

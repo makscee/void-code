@@ -243,10 +243,10 @@ describe('readAuthStatus — wallet and launch notice', () => {
   });
 
   // walletText — second panel on void-code#76, G3: the renderer showed no balance and no days. vc
-  // now prints the line itself (`"walletText": "T1 · ~9 days left"`, the formatAccount string, or
+  // now prints the line itself (`"walletText": "T1 · осталось ~9 дней"`, the formatAccount string, or
   // null), so the desktop never re-implements its rules; this module passes it on as
   // written, a non-empty string only, and — like every account fact — for signed_in only.
-  const WALLET_TEXT = 'T1 · ~9 days left';
+  const WALLET_TEXT = 'T1 · осталось ~9 дней';
 
   it('passes walletText through, verbatim, next to the wallet and the notice', async () => {
     await expect(statusOf(signedIn({ wallet: WALLET, walletText: WALLET_TEXT, launchNotice: LOW_NOTICE }))).resolves.toStrictEqual({
@@ -255,9 +255,9 @@ describe('readAuthStatus — wallet and launch notice', () => {
   });
 
   it.each([
-    ['the weekly limit alone (no tariff)', 'limit 42% used, resets in 3 days'],
-    ['days clamped at zero, with the limit', 'T1 · ~0 days left · limit 85% used, resets in 3 days'],
-    ['one day', 'T1 · ~1 day left'],
+    ['the weekly limit alone (no tariff)', 'лимит использован на 42%, сброс через 3 дня'],
+    ['days clamped at zero, with the limit', 'T1 · осталось ~0 дней · лимит использован на 85%, сброс через 3 дня'],
+    ['one day', 'T1 · осталось ~1 день'],
   ])('passes %s exactly as vc wrote it', async (_label, walletText) => {
     const status = await statusOf(signedIn({ wallet: WALLET, walletText }));
     expect(status.walletText).toBe(walletText);

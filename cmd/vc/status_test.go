@@ -31,7 +31,7 @@ func TestStatusUsesLiveMeNotCachedIdentityOrBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "new@example.test") || !strings.Contains(out, "T1 · ~9 days left") || strings.Contains(out, "old@example.test") || strings.Contains(out, "$") {
+	if !strings.Contains(out, "new@example.test") || !strings.Contains(out, "T1 · осталось ~9 дней") || strings.Contains(out, "old@example.test") || strings.Contains(out, "$") {
 		t.Fatalf("status did not use live response: %s", out)
 	}
 	if strings.Contains(out, "%") {

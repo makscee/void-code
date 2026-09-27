@@ -18,7 +18,7 @@ import { walletLineFor } from '../src/renderer/auth-view';
 //
 // The screen half (an element that shows this line) is pinned in tests/wallet-line-screen.test.ts.
 
-const WALLET_TEXT = '2 000 ₽ · T1 · до 4 окт · limit 42% used, resets in 3 days';
+const WALLET_TEXT = '2 000 ₽ · T1 · до 4 окт · лимит использован на 42%, сброс через 3 дня';
 const WALLET = { balanceKopecks: 200000, paidUntil: '2026-10-04T12:00:00Z', tariff: { tier: 't1', weekPriceKopecks: 150000, packPriceKopecks: 500000 }, todayPaid: true, fundedDays: 9 };
 const LOW_NOTICE = 'Balance low — 2 days left. Top up: https://profile.makscee.ru/vc/pay';
 
@@ -33,8 +33,8 @@ describe('walletLineFor', () => {
 
   it.each([
     ['a bare balance', '$18.00'],
-    ['a debt with days clamped at zero', '-$3.00 · T1 · ~0 days left'],
-    ['one day', '$2.00 · T1 · ~1 day left'],
+    ['a debt with days clamped at zero', '-$3.00 · T1 · осталось ~0 дней'],
+    ['one day', '$2.00 · T1 · осталось ~1 день'],
   ])('passes %s through untouched', (_label, walletText) => {
     expect(walletLineFor(status({ authState: 'signed_in', walletText }))).toBe(walletText);
   });

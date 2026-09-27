@@ -18,10 +18,10 @@ import (
 // with no dollar field. The rules pinned here:
 //
 //  1. The wallet line is `2 000 ₽ · T1 · до 4 окт`, then the weekly limit:
-//     `2 000 ₽ · T1 · до 4 окт · limit 37% used, resets in 3 days`.
+//     `2 000 ₽ · T1 · до 4 окт · лимит использован на 37%, сброс через 3 дня`.
 //  2. The date shows only while it lies ahead; kopecks show only when there
 //     are any (`1 837,12 ₽`).
-//  3. An older Relay without kopecks keeps the #224 line (`T1 · ~9 days left`):
+//  3. An older Relay without kopecks keeps the #224 line (`T1 · осталось ~9 дней`):
 //     no money shown, never $.
 //  4. No dollar leaves vc: not on screen, not in --json.
 
@@ -76,7 +76,7 @@ func TestFormatWalletRoubles(t *testing.T) {
 		{"no paid time", &auth.Wallet{BalanceKopecks: k(50000), Tariff: t1, FundedDays: days(2)}, "500 ₽ · T1"},
 		{"paid time already over", &auth.Wallet{BalanceKopecks: k(50000), PaidUntil: at(2026, 9, 20), Tariff: t1}, "500 ₽ · T1"},
 		{"no tariff: the money alone", &auth.Wallet{BalanceKopecks: k(200000)}, "2 000 ₽"},
-		{"older relay: days, no money", &auth.Wallet{BalanceUsd: f(18), Tariff: t1, FundedDays: days(9)}, "T1 · ~9 days left"},
+		{"older relay: days, no money", &auth.Wallet{BalanceUsd: f(18), Tariff: t1, FundedDays: days(9)}, "T1 · осталось ~9 дней"},
 		{"older relay, no tariff: nothing", &auth.Wallet{BalanceUsd: f(18)}, ""},
 		{"no wallet", nil, ""},
 	} {
@@ -89,7 +89,7 @@ func TestFormatWalletRoubles(t *testing.T) {
 }
 
 // void-relay#28's own body, end to end through `vc status`: the line from the
-// card, `2 000 ₽ · T1 · до 4 окт · limit 37% used, resets in 3 days`.
+// card, `2 000 ₽ · T1 · до 4 окт · лимит использован на 37%, сброс через 3 дня`.
 func TestStatusShowsRoubleWalletAndLimit(t *testing.T) {
 	paid := time.Now().Add(7 * 24 * time.Hour)
 	paid = time.Date(paid.Year(), paid.Month(), paid.Day(), 12, 0, 0, 0, time.Local)
@@ -101,7 +101,7 @@ func TestStatusShowsRoubleWalletAndLimit(t *testing.T) {
 	if paid.Year() != time.Now().Year() {
 		date += fmt.Sprintf(" %d", paid.Year())
 	}
-	want := "plan: 2 000 ₽ · T1 · до " + date + " · limit 37% used, resets in 3 days"
+	want := "plan: 2 000 ₽ · T1 · до " + date + " · лимит использован на 37%, сброс через 3 дня"
 
 	out := humanStatus(t, body)
 	got, ok := statusLine(out, "plan:")
@@ -138,5 +138,41 @@ func TestRoubleWalletLaunchNotice(t *testing.T) {
 	}
 	if got := jsonStatus(t, meBody(rubWallet("200000", "null", rubTariffT1)))["launchNotice"]; got != nil {
 		t.Errorf("launchNotice = %v, want none for a paid, funded wallet", got)
+	}
+}
+
+// The whole status line is Russian (Maks, 09-27): Russian plurals for the
+// days left and the time to the limit's reset, and no English word in it.
+func TestStatusLineRussian(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{{0, "0 дней"}, {1, "1 день"}, {2, "2 дня"}, {4, "4 дня"}, {5, "5 дней"}, {11, "11 дней"}, {12, "12 дней"}, {14, "14 дней"}, {21, "21 день"}, {22, "22 дня"}, {111, "111 дней"}} {
+		if got := ruPlural(tc.n, "день", "дня", "дней"); got != tc.want {
+			t.Errorf("ruPlural(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{{0, "скоро"}, {-time.Minute, "скоро"}, {30 * time.Minute, "через 1 час"}, {3 * time.Hour, "через 3 часа"}, {5 * time.Hour, "через 5 часов"}, {25 * time.Hour, "через 1 день"}, {3 * 24 * time.Hour, "через 3 дня"}} {
+		if got := ruResetsIn(tc.d); got != tc.want {
+			t.Errorf("ruResetsIn(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	reset, paidUntil := now.Add(3*24*time.Hour), now.Add(6*24*time.Hour)
+	kopecks, days := int64(200000), 9
+	for _, me := range []auth.MeResult{
+		{Wallet: &auth.Wallet{BalanceKopecks: &kopecks, PaidUntil: &paidUntil, Tariff: &auth.Tariff{Tier: "t1"}}, Limit: &auth.Limit{Pct: 37, ResetAt: &reset}},
+		{Wallet: &auth.Wallet{Tariff: &auth.Tariff{Tier: "t1"}, FundedDays: &days}, Limit: &auth.Limit{Pct: 85}},
+	} {
+		line := formatAccount(me, now)
+		t.Log(line)
+		for _, english := range []string{"limit", "used", "resets", "days", "left", "soon"} {
+			if strings.Contains(line, english) {
+				t.Errorf("status line %q has the English %q", line, english)
+			}
+		}
 	}
 }

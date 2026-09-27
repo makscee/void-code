@@ -42,7 +42,8 @@ const piLaunchNoticeEnv = "VC_LAUNCH_NOTICE"
 // balance, the plan and the end of the paid time (void-board#234). Each part
 // shows only when the server sent it; the date only while it lies ahead. An
 // older Relay sends no kopecks: its wallet keeps the #224 line, the plan and
-// the days left (`T1 · ~9 days left`), and never shows its dollars. No
+// the days left (`T1 · осталось ~9 дней`), and never shows its dollars. The
+// line is Russian throughout. No
 // tariff and no roubles renders as "", as does an absent wallet.
 func formatWallet(w *auth.Wallet, now time.Time) string {
 	if w == nil {
@@ -61,7 +62,7 @@ func formatWallet(w *auth.Wallet, now time.Time) string {
 			parts = append(parts, "до "+formatRuDate(*w.PaidUntil, now))
 		}
 	case w.Tariff != nil && w.FundedDays != nil:
-		parts = append(parts, "~"+daysLeft(*w.FundedDays))
+		parts = append(parts, "осталось ~"+ruPlural(max(*w.FundedDays, 0), "день", "дня", "дней"))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -101,7 +102,7 @@ func formatRuDate(t, now time.Time) string {
 	return text
 }
 
-// daysLeft spells a day count. Days never go below zero on screen: a negative
+// daysLeft spells a day count for a launch notice. Days never go below zero on screen: a negative
 // fundedDays is a balance already behind, which reads as none left.
 func daysLeft(n int) string {
 	n = max(n, 0)

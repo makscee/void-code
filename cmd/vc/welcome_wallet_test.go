@@ -187,7 +187,7 @@ func TestWelcomeShowsWalletThatArrivesWhileTheScreenIsUp(t *testing.T) {
 	}
 
 	release()
-	if screen, ok := s.waitFor("T1 · ~9 days left", 3*time.Second); !ok {
+	if screen, ok := s.waitFor("T1 · осталось ~9 дней", 3*time.Second); !ok {
 		t.Fatalf("/v1/vc/me answered with a wallet while the welcome screen was up, and the screen never showed it (spec amendment §4: the welcome screen takes the wallet from the launch's background /v1/vc/me):\n%s", screen)
 	}
 }
@@ -197,8 +197,8 @@ func TestWelcomeShowsWalletThatArrivesWhileTheScreenIsUp(t *testing.T) {
 // straight away, in the same words `vc status` uses.
 func TestWelcomeShowsWalletTheLaunchAlreadyFetched(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"tariff", meBody(wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left"},
-		{"negative balance, negative days", meBody(wallet("-3", tariffT1, "false", "-2")), "T1 · ~0 days left"},
+		{"tariff", meBody(wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней"},
+		{"negative balance, negative days", meBody(wallet("-3", tariffT1, "false", "-2")), "T1 · осталось ~0 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state, token, authHost := welcomeLaunch(t, meServer(t, tc.body))
@@ -239,7 +239,7 @@ func TestWelcomeShowsNoMoneyWhenTheLaunchFetchedNoWallet(t *testing.T) {
 			}
 			time.Sleep(200 * time.Millisecond) // room for any late redraw
 			screen = plainText(s.screen.String())
-			for _, word := range []string{"$", "%", "days left"} {
+			for _, word := range []string{"$", "₽", "%", "days left", "осталось"} {
 				if strings.Contains(screen, word) {
 					t.Errorf("the welcome screen shows %q with no verified wallet on the wire:\n%s", word, screen)
 				}

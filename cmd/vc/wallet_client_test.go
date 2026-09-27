@@ -29,7 +29,7 @@ import (
 //  1. No percentage anywhere: no `budget:` line, no `pct` in --json, no
 //     "Budget at N%" at launch, no launch refused over pct. A server that still
 //     sends pct is ignored.
-//  2. `vc status` prints `plan: T1 · ~9 days left` (tariff), nothing
+//  2. `vc status` prints `plan: T1 · осталось ~9 дней` (tariff), nothing
 //     without a tariff or a wallet (no money shown, void-board#224); --json carries
 //     `wallet` mirroring the server.
 //  3. The welcome screen shows the same text where it showed `$X left`.
@@ -146,11 +146,11 @@ func TestStatusShowsBalanceTierAndDays(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
 	}{
-		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
-		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "plan: T2 · ~5 days left"},
+		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "plan: T1 · осталось ~9 дней"},
+		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "plan: T2 · осталось ~5 дней"},
 		// The server that still sends the retired budget next to the wallet:
 		// the wallet line prints, the percentage does not.
-		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
+		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "plan: T1 · осталось ~9 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
@@ -605,10 +605,10 @@ func assertStatusJSONLaunchNotice(t *testing.T, tc walletGateCase) {
 // zero.
 func TestStatusBalanceDisplayRules(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "plan: T1 · ~0 days left"},
-		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "plan: T1 · ~0 days left"},
-		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "plan: T3 · ~0 days left"},
-		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
+		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "plan: T1 · осталось ~0 дней"},
+		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "plan: T1 · осталось ~0 дней"},
+		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "plan: T3 · осталось ~0 дней"},
+		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "plan: T1 · осталось ~9 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
@@ -644,8 +644,8 @@ func welcomeScreens(state welcome.AuthState) (view, banner string) {
 func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		if !strings.Contains(screen, "T1 · ~9 days left") {
-			t.Errorf("welcome %s lacks %q:\n%s", where, "T1 · ~9 days left", screen)
+		if !strings.Contains(screen, "T1 · осталось ~9 дней") {
+			t.Errorf("welcome %s lacks %q:\n%s", where, "T1 · осталось ~9 дней", screen)
 		}
 		if strings.Contains(screen, "$18.00 left") {
 			t.Errorf("welcome %s still shows the old `$X left`:\n%s", where, screen)
@@ -658,7 +658,7 @@ func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 func TestWelcomeShowsNoMoneyWithoutTariff(t *testing.T) {
 	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", "null", "null", "null")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		for _, stale := range []string{"$", "days left"} {
+		for _, stale := range []string{"$", "days left", "осталось"} {
 			if strings.Contains(screen, stale) {
 				t.Errorf("welcome %s shows %q without a tariff:\n%s", where, stale, screen)
 			}
