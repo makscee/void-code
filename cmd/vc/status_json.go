@@ -53,7 +53,7 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 	obj["authState"] = "signed_in"
 	obj["identity"] = identity
 	// The wallet is only set when the server actually sent a usable one — a
-	// zero wallet here would read as "$0.00" instead of "no wallet information
+	// zero wallet here would read as "0 ₽" instead of "no wallet information
 	// available". The wallet itself carries no percentages; the weekly limit
 	// below is the one share the client reports.
 	if me.Wallet != nil {
@@ -83,26 +83,33 @@ func runStatusJSON(cfg config.Config, out io.Writer) error {
 }
 
 // walletJSON mirrors the server's "wallet" object under the server's names,
-// tier unformatted. No omitempty: todayPaid false and fundedDays 0 are the
-// values that matter most, and null is how "no tariff" reads.
+// tier unformatted, money in kopecks only: an older Relay's dollars never
+// leave vc (void-board#224), so its wallet reads balanceKopecks null. No
+// omitempty: todayPaid false and fundedDays 0 are the values that matter
+// most, and null is how "no tariff" and "no paid time" read.
 type walletJSON struct {
-	BalanceUsd float64     `json:"balanceUsd"`
-	Tariff     *tariffJSON `json:"tariff"`
-	TodayPaid  *bool       `json:"todayPaid"`
-	FundedDays *int        `json:"fundedDays"`
+	BalanceKopecks *int64      `json:"balanceKopecks"`
+	PaidUntil      *string     `json:"paidUntil"`
+	Tariff         *tariffJSON `json:"tariff"`
+	TodayPaid      *bool       `json:"todayPaid"`
+	FundedDays     *int        `json:"fundedDays"`
 }
 
 // The prices read null when the server sent none (void-board#224).
 type tariffJSON struct {
-	Tier            string   `json:"tier"`
-	MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"`
-	DailyRateUsd    *float64 `json:"dailyRateUsd"`
+	Tier             string `json:"tier"`
+	WeekPriceKopecks *int64 `json:"weekPriceKopecks"`
+	PackPriceKopecks *int64 `json:"packPriceKopecks"`
 }
 
 func walletJSONFor(w *auth.Wallet) walletJSON {
-	out := walletJSON{BalanceUsd: w.BalanceUsd, TodayPaid: w.TodayPaid, FundedDays: w.FundedDays}
+	out := walletJSON{BalanceKopecks: w.BalanceKopecks, TodayPaid: w.TodayPaid, FundedDays: w.FundedDays}
+	if w.PaidUntil != nil {
+		s := w.PaidUntil.UTC().Format(time.RFC3339)
+		out.PaidUntil = &s
+	}
 	if w.Tariff != nil {
-		out.Tariff = &tariffJSON{Tier: w.Tariff.Tier, MonthlyPriceUsd: w.Tariff.MonthlyPriceUsd, DailyRateUsd: w.Tariff.DailyRateUsd}
+		out.Tariff = &tariffJSON{Tier: w.Tariff.Tier, WeekPriceKopecks: w.Tariff.WeekPriceKopecks, PackPriceKopecks: w.Tariff.PackPriceKopecks}
 	}
 	return out
 }

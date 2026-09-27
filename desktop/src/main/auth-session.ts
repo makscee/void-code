@@ -28,17 +28,19 @@ export type AuthState = (typeof AUTH_STATES)[number];
 // fact out of this module: its state.
 const REFUSAL_STATES: readonly AuthState[] = ['access_not_granted'];
 
-// The wallet as `vc status --json` mirrors it from the server (spec 2026-09-23-client-wallet-days):
-// the balance, the tariff that draws on it, and whether today's charge has been taken. Nothing here
-// is shown: the screen shows walletText, which carries no money (void-board#224). A tariff's prices
-// are null when the server sent none.
+// The wallet as `vc status --json` mirrors it from the server: the rouble balance in kopecks, the
+// end of the paid time, the tariff that draws on it, and whether today's charge has been taken
+// (void-board#234). No dollar field: an older Relay's dollars never leave vc, so its wallet reads
+// balanceKopecks null. Nothing here is shown: the screen shows walletText. A tariff's prices, the
+// balance and paidUntil are null when the server sent none.
 export interface WalletTariff {
   tier: string;
-  monthlyPriceUsd: number | null;
-  dailyRateUsd: number | null;
+  weekPriceKopecks: number | null;
+  packPriceKopecks: number | null;
 }
 export interface Wallet {
-  balanceUsd: number;
+  balanceKopecks: number | null;
+  paidUntil: string | null;
   tariff: WalletTariff | null;
   todayPaid: boolean | null;
   fundedDays: number | null;
@@ -49,7 +51,7 @@ export interface AuthStatus {
   identity?: string;
   reason?: string;
   wallet?: Wallet;
-  // The wallet line exactly as vc formats it (`T1 · ~9 days left`, then the weekly limit's share when
+  // The wallet line exactly as vc formats it (`2 000 ₽ · T1 · до 4 окт`, then the weekly limit's share when
   // Relay sends one); absent when there is neither. The display rules live in vc, once, and are never re-made here.
   walletText?: string;
   // What vc hands Pi about the wallet at launch (a low balance, a day Relay will refuse); absent
@@ -77,11 +79,8 @@ function isValidStatusShape(value: unknown): value is { authState: AuthState } &
   return isPlainObject(value) && isAuthState(value.authState);
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-function isFiniteNumberOrNull(value: unknown): value is number | null {
-  return value === null || isFiniteNumber(value);
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
 }
 function isBooleanOrNull(value: unknown): value is boolean | null {
   return value === null || typeof value === 'boolean';
@@ -92,23 +91,27 @@ function isIntegerOrNull(value: unknown): value is number | null {
 
 // The same shape rules as vc's own parser (internal/auth/me.go parseWallet), all or nothing: one
 // field of the wrong type drops the whole wallet, because a half-read wallet could show a wrong
-// balance. Only the known fields are copied — a percentage riding along inside the wallet stops
-// here. An absent tariff, todayPaid, fundedDays or tariff price reads as null, as it does in vc.
+// balance. Only the known fields are copied — a percentage or a dollar riding along inside the
+// wallet stops here. An absent balance, paidUntil, tariff, todayPaid, fundedDays or tariff price
+// reads as null, as it does in vc.
 function readWallet(value: unknown): Wallet | undefined {
-  if (!isPlainObject(value) || !isFiniteNumber(value.balanceUsd)) return undefined;
+  if (!isPlainObject(value)) return undefined;
   let tariff: WalletTariff | null = null;
   if (value.tariff !== undefined && value.tariff !== null) {
     const raw = value.tariff;
     if (!isPlainObject(raw) || typeof raw.tier !== 'string' || raw.tier === '') return undefined;
-    const monthlyPriceUsd = raw.monthlyPriceUsd ?? null;
-    const dailyRateUsd = raw.dailyRateUsd ?? null;
-    if (!isFiniteNumberOrNull(monthlyPriceUsd) || !isFiniteNumberOrNull(dailyRateUsd)) return undefined;
-    tariff = { tier: raw.tier, monthlyPriceUsd, dailyRateUsd };
+    const weekPriceKopecks = raw.weekPriceKopecks ?? null;
+    const packPriceKopecks = raw.packPriceKopecks ?? null;
+    if (!isIntegerOrNull(weekPriceKopecks) || !isIntegerOrNull(packPriceKopecks)) return undefined;
+    tariff = { tier: raw.tier, weekPriceKopecks, packPriceKopecks };
   }
+  const balanceKopecks = value.balanceKopecks ?? null;
+  const paidUntil = value.paidUntil ?? null;
   const todayPaid = value.todayPaid ?? null;
   const fundedDays = value.fundedDays ?? null;
+  if (!isIntegerOrNull(balanceKopecks) || !isStringOrNull(paidUntil)) return undefined;
   if (!isBooleanOrNull(todayPaid) || !isIntegerOrNull(fundedDays)) return undefined;
-  return { balanceUsd: value.balanceUsd, tariff, todayPaid, fundedDays };
+  return { balanceKopecks, paidUntil, tariff, todayPaid, fundedDays };
 }
 
 export type LoginEvent =

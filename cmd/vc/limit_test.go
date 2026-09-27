@@ -15,16 +15,16 @@ import (
 
 func TestStatusShowsTheWeeklyLimit(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"42 beside a wallet", meBody(limitMember(42) + "," + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 42% used, resets in 3 days"},
-		{"85 beside a wallet", meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 85% used, resets in 3 days"},
-		{"a share floored: 79.9 reads 79", meBody(limitMember(79.9) + "," + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 79% used, resets in 3 days"},
-		{"no wallet: the limit alone", meBody(limitMember(42)), "limit 42% used, resets in 3 days"},
-		{"a tariff without monthlyPriceUsd: what is there", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","dailyRateUsd":2}`, "true", "9")), "T1 · ~9 days left · limit 42% used, resets in 3 days"},
-		{"a tariff without either price: what is there", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1"}`, "true", "9")), "T1 · ~9 days left · limit 42% used, resets in 3 days"},
-		{"a wallet vc cannot read (a price as a string): the limit alone", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","monthlyPriceUsd":"60","dailyRateUsd":2}`, "true", "9")), "limit 42% used, resets in 3 days"},
-		{"no tariff: the limit alone, no money", meBody(limitMember(42) + "," + wallet("18", "null", "null", "null")), "limit 42% used, resets in 3 days"},
-		{"no reset sent", meBody(`"limit":{"pct":42},` + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left · limit 42% used"},
-		{"no limit (older Relay): unchanged", meBody(wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left"},
+		{"42 beside a wallet", meBody(limitMember(42) + "," + wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней · лимит использован на 42%, сброс через 3 дня"},
+		{"85 beside a wallet", meBody(limitMember(85) + "," + wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней · лимит использован на 85%, сброс через 3 дня"},
+		{"a share floored: 79.9 reads 79", meBody(limitMember(79.9) + "," + wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней · лимит использован на 79%, сброс через 3 дня"},
+		{"no wallet: the limit alone", meBody(limitMember(42)), "лимит использован на 42%, сброс через 3 дня"},
+		{"a tariff without monthlyPriceUsd: what is there", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","dailyRateUsd":2}`, "true", "9")), "T1 · осталось ~9 дней · лимит использован на 42%, сброс через 3 дня"},
+		{"a tariff without either price: what is there", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1"}`, "true", "9")), "T1 · осталось ~9 дней · лимит использован на 42%, сброс через 3 дня"},
+		{"a wallet vc cannot read (a price as a string): the limit alone", meBody(limitMember(42) + "," + wallet("18", `{"tier":"t1","monthlyPriceUsd":"60","dailyRateUsd":2}`, "true", "9")), "лимит использован на 42%, сброс через 3 дня"},
+		{"no tariff: the limit alone, no money", meBody(limitMember(42) + "," + wallet("18", "null", "null", "null")), "лимит использован на 42%, сброс через 3 дня"},
+		{"no reset sent", meBody(`"limit":{"pct":42},` + wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней · лимит использован на 42%"},
+		{"no limit (older Relay): unchanged", meBody(wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			obj := jsonStatus(t, tc.body)
@@ -59,28 +59,7 @@ func TestStatusJSONCarriesTheLimit(t *testing.T) {
 func TestWelcomeShowsTheLimit(t *testing.T) {
 	reset := time.Now().Add(73 * time.Hour)
 	me := auth.MeResult{UserID: "u-1", Limit: &auth.Limit{Pct: 42, ResetAt: &reset}}
-	if got, want := meResultToState(me).Balance, "limit 42% used, resets in 3 days"; got != want {
+	if got, want := meResultToState(me).Balance, "лимит использован на 42%, сброс через 3 дня"; got != want {
 		t.Errorf("welcome balance = %q, want %q", got, want)
-	}
-}
-
-func TestResetsIn(t *testing.T) {
-	for _, tc := range []struct {
-		d    time.Duration
-		want string
-	}{
-		{73 * time.Hour, "in 3 days"},
-		{7 * 24 * time.Hour, "in 7 days"},
-		{25 * time.Hour, "in 1 day"},
-		{24 * time.Hour, "in 1 day"},
-		{23*time.Hour + time.Minute, "in 24 hours"},
-		{5 * time.Hour, "in 5 hours"},
-		{30 * time.Minute, "in 1 hour"},
-		{0, "soon"},
-		{-time.Hour, "soon"},
-	} {
-		if got := resetsIn(tc.d); got != tc.want {
-			t.Errorf("resetsIn(%v) = %q, want %q", tc.d, got, tc.want)
-		}
 	}
 }

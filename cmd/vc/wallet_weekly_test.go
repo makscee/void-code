@@ -43,7 +43,7 @@ import (
 
 // walletWeekRefusal is the sentence Relay sends with its 402
 // wallet_charge_required.
-const walletWeekRefusal = "Balance is not enough for this week — top up: https://profile.makscee.ru/vc/pay"
+const walletWeekRefusal = "Баланса не хватает на эту неделю — пополнить: https://profile.makscee.ru/vc/pay"
 
 // Tariffs as Keys prices them per week: monthly = weekly × 4 and daily =
 // weekly / 7, both kept for display only.
@@ -159,13 +159,13 @@ func TestStatusJSONCarriesWeeklyLaunchNotice(t *testing.T) {
 // malformed new field shows nothing — want "".
 func TestWalletLineUnchangedByWeeklyFields(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"paid period, no charge required", meBody(weekWallet("18", weekTariffT1, "true", "9", "false", periodEnd)), "T1 · ~9 days left"},
-		{"charge required: the balance and 0 days, no refusal in the line", meBody(weekWallet("10", weekTariffT1, "false", "0", "true", "null")), "T1 · ~0 days left"},
-		{"days are fundedDays, not balance over the weekly price", meBody(weekWallet("57.5", weekTariffT3, "true", "13", "false", periodEnd)), "T3 · ~13 days left"},
-		{"one day", meBody(weekWallet("3", weekTariffT1, "true", "1", "false", periodEnd)), "T1 · ~1 day left"},
-		{"a debt, days never below 0", meBody(weekWallet("-3", weekTariffT1, "true", "-2", "false", "null")), "T1 · ~0 days left"},
+		{"paid period, no charge required", meBody(weekWallet("18", weekTariffT1, "true", "9", "false", periodEnd)), "T1 · осталось ~9 дней"},
+		{"charge required: the balance and 0 days, no refusal in the line", meBody(weekWallet("10", weekTariffT1, "false", "0", "true", "null")), "T1 · осталось ~0 дней"},
+		{"days are fundedDays, not balance over the weekly price", meBody(weekWallet("57.5", weekTariffT3, "true", "13", "false", periodEnd)), "T3 · осталось ~13 дней"},
+		{"one day", meBody(weekWallet("3", weekTariffT1, "true", "1", "false", periodEnd)), "T1 · осталось ~1 день"},
+		{"a debt, days never below 0", meBody(weekWallet("-3", weekTariffT1, "true", "-2", "false", "null")), "T1 · осталось ~0 дней"},
 		{"no tariff: no money shown, so no line", meBody(weekWallet("18", "null", "null", "null", "false", "null")), ""},
-		{"no verdict from an older Keys", meBody(weekWallet("18", weekTariffT1, "true", "9", "", periodEnd)), "T1 · ~9 days left"},
+		{"no verdict from an older Keys", meBody(weekWallet("18", weekTariffT1, "true", "9", "", periodEnd)), "T1 · осталось ~9 дней"},
 		{"chargeRequired as a string drops the wallet", meBody(weekWallet("18", weekTariffT1, "true", "9", `"false"`, periodEnd)), ""},
 		{"periodEndsAt as a bool drops the wallet", meBody(weekWallet("18", weekTariffT1, "true", "9", "false", "true")), ""},
 		{"weeklyPriceUsd as a bool drops the wallet", meBody(weekWallet("18", `{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2.142857142857143,"weeklyPriceUsd":true}`, "true", "9", "false", periodEnd)), ""},

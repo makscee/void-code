@@ -17,7 +17,7 @@ type AuthState struct {
 	IdentityUnverified bool
 	UpdateNudge        string
 	// Balance is the wallet as the caller renders it for a person
-	// ("$18.00 · T1 · ~9 days left"); empty when there is none to show.
+	// ("2 000 ₽ · T1 · до 4 окт · лимит использован на 37%, сброс через 3 дня"); empty when there is none to show.
 	Balance string
 }
 
@@ -103,7 +103,7 @@ func menuItemsFor(state AuthState) []menuItem {
 	if !state.LoggedIn {
 		return []menuItem{{"Login", RunLogin}}
 	}
-	return []menuItem{{"Start", SpawnPi}, {"Top up", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
+	return []menuItem{{"Start", SpawnPi}, {"Пополнить", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
 }
 func newModel(state AuthState) model            { return model{AuthState: state, items: menuItemsFor(state)} }
 func (m model) Init() tea.Cmd                   { return m.updates }
@@ -168,9 +168,9 @@ func (m model) View() string {
 	sb.WriteString(clackui.RailLine("┌", "  "+clackui.TitleStyle.Render("void-code")+"  "+clackui.TitleStyle.Render(version.Version)) + "\n")
 	sb.WriteString(clackui.RailLine("│", "") + "\n")
 	if m.view == topUpView {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render("Top up your balance")) + "\n")
-		sb.WriteString(clackui.RailLine("│", "  "+clackui.InfoTextStyle.Render("Pay here: "+browser.PayURL)) + "\n")
-		sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("press any key to go back")) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render("Пополнить баланс")) + "\n")
+		sb.WriteString(clackui.RailLine("│", "  "+clackui.InfoTextStyle.Render("Оплатить здесь: "+browser.PayURL)) + "\n")
+		sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("Нажмите любую клавишу, чтобы вернуться")) + "\n")
 		return sb.String()
 	}
 	if m.LoggedIn {

@@ -14,8 +14,8 @@ import (
 // new client ignores it.
 //
 // The VCD-49 budget (top-level pct/resetAt) and the VCD-55 top-level
-// balanceUsd are no longer read: the wallet shows days, never money or a
-// percentage (spec 2026-09-23-client-wallet-days). The one share read is the
+// balanceUsd are no longer read: the wallet shows the rouble balance and the
+// paid-until date (void-board#234), never dollars or a percentage of it. The one share read is the
 // weekly limit's, under "limit" (void-board#224). MeResult stays comparable — pointers only,
 // no slices or maps — so callers can check it against its zero value.
 type MeResult struct {
@@ -41,8 +41,20 @@ type Limit struct {
 
 // Wallet is the prepaid balance and the tariff that draws on it, as Relay
 // reports it under "wallet" on /v1/vc/me.
+//
+// Since void-board#225 Relay sends the money in roubles: balanceKopecks and
+// paidUntil, and no dollar field (void-relay#28). An older Relay sends only
+// balanceUsd. A wallet carries at least one of the two balances.
 type Wallet struct {
-	BalanceUsd float64
+	// BalanceKopecks is the balance in kopecks; nil: an older Relay that
+	// sends only dollars. The only money vc ever shows.
+	BalanceKopecks *int64
+	// PaidUntil is the end of the last booked week; nil: absent, null (no
+	// paid time) or unreadable.
+	PaidUntil *time.Time
+	// BalanceUsd is an older Relay's dollar balance, read only for its daily
+	// rule and never shown (void-board#224: no $ anywhere); nil: not sent.
+	BalanceUsd *float64
 	Tariff     *Tariff // nil: no tariff assigned
 	// TodayPaid is a pointer on purpose: false (today's charge has not been
 	// taken) and nil (no tariff, nothing to charge) lead to different launch
@@ -65,6 +77,10 @@ type Tariff struct {
 	MonthlyPriceUsd *float64
 	DailyRateUsd    *float64
 	WeeklyPriceUsd  *float64 // nil: an older server that sends no weekly price
+	// The rouble prices (void-board#225): a week, and a pack of 4 weeks.
+	// nil: an older Relay that sends none.
+	WeekPriceKopecks *int64
+	PackPriceKopecks *int64
 }
 
 // StatusError is a /v1/vc/me answer with a status FetchMe has no meaning for
@@ -185,10 +201,12 @@ func parseWallet(raw json.RawMessage) *Wallet {
 		return nil
 	}
 	var w struct {
-		BalanceUsd *float64        `json:"balanceUsd"`
-		Tariff     json.RawMessage `json:"tariff"`
-		TodayPaid  *bool           `json:"todayPaid"`
-		FundedDays *int            `json:"fundedDays"`
+		BalanceKopecks *int64          `json:"balanceKopecks"` // a fraction fails the decode
+		PaidUntil      *string         `json:"paidUntil"`
+		BalanceUsd     *float64        `json:"balanceUsd"`
+		Tariff         json.RawMessage `json:"tariff"`
+		TodayPaid      *bool           `json:"todayPaid"`
+		FundedDays     *int            `json:"fundedDays"`
 		// Optional (weekly charging): absent or null reads nil, a wrong
 		// type fails the decode and drops the wallet like any other field.
 		ChargeRequired *bool   `json:"chargeRequired"`
@@ -196,7 +214,7 @@ func parseWallet(raw json.RawMessage) *Wallet {
 	}
 	// null decodes into the zero struct without error and is then rejected
 	// for its missing balance, like any other wallet without one.
-	if err := json.Unmarshal(raw, &w); err != nil || w.BalanceUsd == nil {
+	if err := json.Unmarshal(raw, &w); err != nil || (w.BalanceKopecks == nil && w.BalanceUsd == nil) {
 		return nil
 	}
 	tariff, ok := parseTariff(w.Tariff)
@@ -204,13 +222,28 @@ func parseWallet(raw json.RawMessage) *Wallet {
 		return nil
 	}
 	return &Wallet{
-		BalanceUsd:     *w.BalanceUsd,
+		BalanceKopecks: w.BalanceKopecks,
+		PaidUntil:      parsePaidUntil(w.PaidUntil),
+		BalanceUsd:     w.BalanceUsd,
 		Tariff:         tariff,
 		TodayPaid:      w.TodayPaid,
 		FundedDays:     w.FundedDays,
 		ChargeRequired: w.ChargeRequired,
 		PeriodEndsAt:   w.PeriodEndsAt,
 	}
+}
+
+// parsePaidUntil reads paidUntil as RFC 3339. A string that is not a time
+// costs only the date, like the limit's resetAt: the balance still shows.
+func parsePaidUntil(s *string) *time.Time {
+	if s == nil {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		return nil
+	}
+	return &t
 }
 
 // parseTariff returns (nil, true) for an absent or null tariff and
@@ -224,9 +257,12 @@ func parseTariff(raw json.RawMessage) (*Tariff, bool) {
 		MonthlyPriceUsd *float64 `json:"monthlyPriceUsd"` // optional, like the two below; a wrong type fails the decode
 		DailyRateUsd    *float64 `json:"dailyRateUsd"`
 		WeeklyPriceUsd  *float64 `json:"weeklyPriceUsd"`
+		// Rouble prices (void-board#225), optional; a fraction fails the decode.
+		WeekPriceKopecks *int64 `json:"weekPriceKopecks"`
+		PackPriceKopecks *int64 `json:"packPriceKopecks"`
 	}
 	if err := json.Unmarshal(raw, &t); err != nil || t.Tier == nil || *t.Tier == "" {
 		return nil, false
 	}
-	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: t.MonthlyPriceUsd, DailyRateUsd: t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd}, true
+	return &Tariff{Tier: *t.Tier, MonthlyPriceUsd: t.MonthlyPriceUsd, DailyRateUsd: t.DailyRateUsd, WeeklyPriceUsd: t.WeeklyPriceUsd, WeekPriceKopecks: t.WeekPriceKopecks, PackPriceKopecks: t.PackPriceKopecks}, true
 }

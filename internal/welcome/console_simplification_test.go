@@ -26,9 +26,12 @@ func TestConsoleOffersOnlySubscriptionActionsNotProviderOrHarnessControls(t *tes
 func TestTopUpScreenShowsThePayLink(t *testing.T) {
 	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "member@example.test"})
 	for i := 0; i < m.ItemCount(); i++ {
-		if m.ItemLabel(i) == "Top up" {
+		if m.ItemLabel(i) == "Пополнить" {
 			m = m.SetCursor(i)
 		}
+	}
+	if m.ItemLabel(m.Cursor()) != "Пополнить" {
+		t.Fatalf("no «Пополнить» menu item")
 	}
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	view := next.View()
@@ -37,5 +40,10 @@ func TestTopUpScreenShowsThePayLink(t *testing.T) {
 	}
 	if strings.Contains(view, "@makscee") {
 		t.Errorf("Top up screen still sends people to @makscee:\n%s", view)
+	}
+	for _, want := range []string{"Пополнить баланс", "Оплатить здесь: https://profile.makscee.ru/vc/pay", "Нажмите любую клавишу, чтобы вернуться"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("Top up screen lacks %q:\n%s", want, view)
+		}
 	}
 }

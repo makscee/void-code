@@ -18,13 +18,13 @@ import (
 
 func TestStatusJSONCarriesWalletText(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"t1, 9 days", meBody(wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left"},
-		{"t2, 5 days", meBody(wallet("20.5", tariffT2, "true", "5")), "T2 · ~5 days left"},
-		{"one day", meBody(wallet("2", tariffT1, "true", "1")), "T1 · ~1 day left"},
+		{"t1, 9 days", meBody(wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней"},
+		{"t2, 5 days", meBody(wallet("20.5", tariffT2, "true", "5")), "T2 · осталось ~5 дней"},
+		{"one day", meBody(wallet("2", tariffT1, "true", "1")), "T1 · осталось ~1 день"},
 		{"a tariff without a day count", meBody(wallet("18", tariffT1, "true", "null")), "T1"},
-		{"a debt: no money shown, days never below 0", meBody(wallet("-3", tariffT1, "false", "-2")), "T1 · ~0 days left"},
-		{"t3, 0 days", meBody(wallet("7.666", tariffT3, "true", "0")), "T3 · ~0 days left"},
-		{"the retired pct alongside changes nothing", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "T1 · ~9 days left"},
+		{"a debt: no money shown, days never below 0", meBody(wallet("-3", tariffT1, "false", "-2")), "T1 · осталось ~0 дней"},
+		{"t3, 0 days", meBody(wallet("7.666", tariffT3, "true", "0")), "T3 · осталось ~0 дней"},
+		{"the retired pct alongside changes nothing", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "T1 · осталось ~9 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			obj := jsonStatus(t, tc.body) // asserts authState == signed_in

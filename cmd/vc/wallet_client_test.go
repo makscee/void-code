@@ -29,7 +29,7 @@ import (
 //  1. No percentage anywhere: no `budget:` line, no `pct` in --json, no
 //     "Budget at N%" at launch, no launch refused over pct. A server that still
 //     sends pct is ignored.
-//  2. `vc status` prints `plan: T1 · ~9 days left` (tariff), nothing
+//  2. `vc status` prints `plan: T1 · осталось ~9 дней` (tariff), nothing
 //     without a tariff or a wallet (no money shown, void-board#224); --json carries
 //     `wallet` mirroring the server.
 //  3. The welcome screen shows the same text where it showed `$X left`.
@@ -57,19 +57,16 @@ import (
 // body, so this file compiles against HEAD and says nothing about how the
 // wallet is carried inside the client.
 
-const walletBlockMessage = "Balance is not enough for today — top up: https://profile.makscee.ru/vc/pay"
+const walletBlockMessage = "Баланса не хватает на сегодня — пополнить: https://profile.makscee.ru/vc/pay"
 
 // launchNoticeEnv is how vc hands the launch notice to Pi.
 const launchNoticeEnv = "VC_LAUNCH_NOTICE"
 
-// walletLowNotice is the low-balance notice for n funded days, spelled the way
-// cmd/vc/wallet.go daysLeft spells a day count ("1 day left", "N days left").
+// walletLowNotice is the low-balance notice for n funded days, in Russian with
+// the Russian plural ("осталось 1 день", "2 дня", "0 дней"; void-board#234).
 func walletLowNotice(n int) string {
-	days := fmt.Sprintf("%d days left", n)
-	if n == 1 {
-		days = "1 day left"
-	}
-	return "Balance low — " + days + ". Top up: https://profile.makscee.ru/vc/pay"
+	days := map[int]string{0: "0 дней", 1: "1 день", 2: "2 дня"}[n]
+	return "Баланс на исходе — осталось " + days + ". Пополнить: https://profile.makscee.ru/vc/pay"
 }
 
 const (
@@ -146,11 +143,11 @@ func TestStatusShowsBalanceTierAndDays(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
 	}{
-		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
-		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "plan: T2 · ~5 days left"},
+		{"t1", meBody(wallet("18", tariffT1, "true", "9")), "plan: T1 · осталось ~9 дней"},
+		{"t2", meBody(wallet("20.5", tariffT2, "true", "5")), "plan: T2 · осталось ~5 дней"},
 		// The server that still sends the retired budget next to the wallet:
 		// the wallet line prints, the percentage does not.
-		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
+		{"t1 with retired pct alongside", meBody(`"pct":77,"resetAt":"2026-10-01T00:00:00Z",` + wallet("18", tariffT1, "true", "9")), "plan: T1 · осталось ~9 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
@@ -241,20 +238,22 @@ func jsonWallet(t *testing.T, obj map[string]any) map[string]any {
 }
 
 // The desktop reads --json; it gets the wallet as the server said it, under
-// the server's names — tier included, unformatted.
+// the server's names — tier included, unformatted — but an older Relay's
+// dollars stay behind (void-board#234): its balance mirrors as null kopecks.
 func TestStatusJSONMirrorsWallet(t *testing.T) {
 	obj := jsonStatus(t, meBody(`"pct":42.5,"resetAt":"2026-10-01T00:00:00Z",`+wallet("18", tariffT1, "true", "9")))
 	w := jsonWallet(t, obj)
-	if w["balanceUsd"] != 18.0 {
-		t.Errorf("wallet.balanceUsd = %v, want 18", w["balanceUsd"])
+	if v, present := w["balanceKopecks"]; !present || v != nil {
+		t.Errorf("wallet.balanceKopecks = %v (present=%v), want null from a dollar-only Relay", v, present)
 	}
 	tariff, ok := w["tariff"].(map[string]any)
 	if !ok {
 		t.Fatalf("wallet.tariff = %#v, want an object", w["tariff"])
 	}
-	if tariff["tier"] != "t1" || tariff["monthlyPriceUsd"] != 60.0 || tariff["dailyRateUsd"] != 2.0 {
-		t.Errorf("wallet.tariff = %v, want {tier:t1 monthlyPriceUsd:60 dailyRateUsd:2}", tariff)
+	if tariff["tier"] != "t1" {
+		t.Errorf("wallet.tariff = %v, want tier t1", tariff)
 	}
+	assertNoDollarField(t, w)
 	if w["todayPaid"] != true {
 		t.Errorf("wallet.todayPaid = %v, want true", w["todayPaid"])
 	}
@@ -273,16 +272,33 @@ func TestStatusJSONKeepsUnpaidDayAndZeroDays(t *testing.T) {
 	if v, present := w["fundedDays"]; !present || v != 0.0 {
 		t.Errorf("wallet.fundedDays = %v (present=%v), want 0", v, present)
 	}
-	if tariff, _ := w["tariff"].(map[string]any); tariff == nil || tariff["dailyRateUsd"] != 7.67 {
-		t.Errorf("wallet.tariff = %v, want t3 at 7.67", w["tariff"])
+	if tariff, _ := w["tariff"].(map[string]any); tariff == nil || tariff["tier"] != "t3" {
+		t.Errorf("wallet.tariff = %v, want t3", w["tariff"])
+	}
+	assertNoDollarField(t, w)
+}
+
+// assertNoDollarField fails on any key, at any depth, that names dollars.
+func assertNoDollarField(t *testing.T, v any) {
+	t.Helper()
+	switch v := v.(type) {
+	case map[string]any:
+		for k, inner := range v {
+			if strings.Contains(strings.ToLower(k), "usd") {
+				t.Errorf("--json carries %q = %v; no dollar leaves vc", k, inner)
+			}
+			assertNoDollarField(t, inner)
+		}
+	case []any:
+		for _, inner := range v {
+			assertNoDollarField(t, inner)
+		}
 	}
 }
 
 func TestStatusJSONWalletWithoutTariff(t *testing.T) {
 	w := jsonWallet(t, jsonStatus(t, meBody(wallet("18", "null", "null", "null"))))
-	if w["balanceUsd"] != 18.0 {
-		t.Errorf("wallet.balanceUsd = %v, want 18", w["balanceUsd"])
-	}
+	assertNoDollarField(t, w)
 	// null or absent — either says "no tariff"; a zero-valued object does not.
 	for _, field := range []string{"tariff", "todayPaid", "fundedDays"} {
 		if w[field] != nil {
@@ -377,9 +393,9 @@ var walletGateCases = []walletGateCase{
 	{name: "limit pct as a string: no notice", body: meBody(`"limit":{"pct":"85"},` + wallet("18", tariffT1, "true", "9"))},
 	// T3 has no higher tier to upgrade to: its warning says when the limit
 	// resets instead of linking the pay page. T1/T2 keep the link.
-	{name: "limit 85 pct on T3: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", tariffT3, "true", "9")), notice: "Weekly limit 85% used — resets in 3 days"},
-	{name: "limit 85 pct on T3 sent as upper case: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"T3"}`, "true", "9")), notice: "Weekly limit 85% used — resets in 3 days"},
-	{name: "limit 85 pct on T3, no reset sent: the share alone", body: meBody(`"limit":{"pct":85},` + wallet("18", tariffT3, "true", "9")), notice: "Weekly limit 85% used"},
+	{name: "limit 85 pct on T3: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", tariffT3, "true", "9")), notice: "Недельный лимит использован на 85%, сброс через 3 дня"},
+	{name: "limit 85 pct on T3 sent as upper case: resets, no link", body: meBody(limitMember(85) + "," + wallet("18", `{"tier":"T3"}`, "true", "9")), notice: "Недельный лимит использован на 85%, сброс через 3 дня"},
+	{name: "limit 85 pct on T3, no reset sent: the share alone", body: meBody(`"limit":{"pct":85},` + wallet("18", tariffT3, "true", "9")), notice: "Недельный лимит использован на 85%"},
 	{name: "limit 85 pct on T2: limit notice with the link", body: meBody(limitMember(85) + "," + wallet("18", tariffT2, "true", "9")), notice: limitNotice(85)},
 	{name: "limit 42 pct on T3: no notice", body: meBody(limitMember(42) + "," + wallet("18", tariffT3, "true", "9"))},
 	// A tariff without its prices (void-board#224): no daily rate to check
@@ -394,7 +410,7 @@ func limitMember(pct float64) string {
 }
 
 func limitNotice(pct int) string {
-	return fmt.Sprintf("Weekly limit %d%% used — upgrade: https://profile.makscee.ru/vc/pay", pct)
+	return fmt.Sprintf("Недельный лимит использован на %d%% — перейти на тариф выше: https://profile.makscee.ru/vc/pay", pct)
 }
 
 // staleLaunchNotice is planted in vc's own environment by every launch test.
@@ -586,10 +602,10 @@ func assertStatusJSONLaunchNotice(t *testing.T, tc walletGateCase) {
 // zero.
 func TestStatusBalanceDisplayRules(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
-		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "plan: T1 · ~0 days left"},
-		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "plan: T1 · ~0 days left"},
-		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "plan: T3 · ~0 days left"},
-		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "plan: T1 · ~9 days left"},
+		{"negative balance with a tariff", meBody(wallet("-3", tariffT1, "false", "-2")), "plan: T1 · осталось ~0 дней"},
+		{"negative days, positive balance", meBody(wallet("0.5", tariffT1, "true", "-1")), "plan: T1 · осталось ~0 дней"},
+		{"a fraction of a cent: no money shown", meBody(wallet("7.666", tariffT3, "true", "0")), "plan: T3 · осталось ~0 дней"},
+		{"99.9 cents: no money shown", meBody(wallet("18.999", tariffT1, "true", "9")), "plan: T1 · осталось ~9 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := humanStatus(t, tc.body)
@@ -625,8 +641,8 @@ func welcomeScreens(state welcome.AuthState) (view, banner string) {
 func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		if !strings.Contains(screen, "T1 · ~9 days left") {
-			t.Errorf("welcome %s lacks %q:\n%s", where, "T1 · ~9 days left", screen)
+		if !strings.Contains(screen, "T1 · осталось ~9 дней") {
+			t.Errorf("welcome %s lacks %q:\n%s", where, "T1 · осталось ~9 дней", screen)
 		}
 		if strings.Contains(screen, "$18.00 left") {
 			t.Errorf("welcome %s still shows the old `$X left`:\n%s", where, screen)
@@ -639,7 +655,7 @@ func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 func TestWelcomeShowsNoMoneyWithoutTariff(t *testing.T) {
 	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", "null", "null", "null")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		for _, stale := range []string{"$", "days left"} {
+		for _, stale := range []string{"$", "days left", "осталось"} {
 			if strings.Contains(screen, stale) {
 				t.Errorf("welcome %s shows %q without a tariff:\n%s", where, stale, screen)
 			}
