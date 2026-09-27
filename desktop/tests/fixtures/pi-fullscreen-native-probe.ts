@@ -121,7 +121,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   } finally { childProcess.execFileSync = originalExec; syncBuiltinESMExports(); }
   assert.ok(providers > 0, 'synthetic bootstrap did not register provider');
   assert.ok(handlers.has('session_start'), 'default clipboard lifecycle missing');
-  // The production writer kills PowerShell after 5s. On a fresh windows-latest runner the first
+  // The production writer kills PowerShell after 15s (5s before #217). On a fresh windows-latest runner the first
   // powershell.exe that loads System.Windows.Forms sometimes has not even read stdin by then
   // (seen: SIGKILL at 5.0-5.3s, then 1.1s for the next launch in the same station). Start it once
   // here, in this private station and before any timed copy, touching no clipboard, so the four
