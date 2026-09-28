@@ -59,6 +59,7 @@ interface ClipboardExtensionOptions {
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
 	registerLaunchNotice(pi);
+	registerBillingRefusalReply(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
@@ -677,7 +678,10 @@ function streamVoidCodex(
 			});
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			if (!response.ok) {
-				throw new Error(relayFailureMessage(response.status, await response.text()));
+				const text = await response.text();
+				const refusal = billingRefusalSentence(response.status, text);
+				if (refusal !== undefined) billingRefusals.add(refusal);
+				throw new Error(relayFailureMessage(response.status, text));
 			}
 			if (!response.body) throw new Error("Void relay Codex response had no body");
 
@@ -707,8 +711,13 @@ function streamVoidCodex(
 // auto-retry reads this text: the "HTTP 5xx" prefix is what makes an upstream 5xx retryable. A 402
 // that is not JSON, or lacks a non-empty string error.message, keeps the raw text too.
 function relayFailureMessage(status: number, text: string): string {
-	const raw = "Void relay Codex request failed: HTTP " + status + ": " + text;
-	if (status !== 402) return raw;
+	return billingRefusalSentence(status, text) ?? "Void relay Codex request failed: HTTP " + status + ": " + text;
+}
+
+// Relay's billing refusal — every 402 it sends (the unpaid week, the daily charge, the weekly
+// limit) carries its sentence in error.message — or undefined for anything else.
+function billingRefusalSentence(status: number, text: string): string | undefined {
+	if (status !== 402) return undefined;
 	try {
 		const parsed: unknown = JSON.parse(text);
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -719,7 +728,32 @@ function relayFailureMessage(status: number, text: string): string {
 			}
 		}
 	} catch {}
-	return raw;
+	return undefined;
+}
+
+// Billing refusals (void-board#373). Pi 0.87 follows an errored reply with «If this looks like a pi
+// bug, /bug sends a report to the developers.» — once per process, so in the 09-29 e2e the unpaid
+// refusal got it and the limit refusal, later in the same Pi, did not. A refusal to pay is not a bug,
+// and Pi skips that line only for a reply that did not end in an error, so in the terminal UI the
+// refusal ends the turn as a plain reply carrying the same sentence. Only Relay's 402 sentences
+// qualify: streamVoidCodex records each one it throws, and message_end turns exactly those back.
+// The reply is marked, and buildCodexBody leaves marked replies out of what the model sees — as Pi
+// leaves out an errored one. Other modes (the desktop's RPC, print) keep the error as it was.
+const billingRefusals = new Set<string>();
+const BILLING_REFUSAL_MARK = "voidBillingRefusal";
+
+function billingRefusalReply(message: any, mode: string | undefined): any {
+	if (mode !== "tui" || !message || message.role !== "assistant" || message.stopReason !== "error") return undefined;
+	if (typeof message.errorMessage !== "string" || !billingRefusals.has(message.errorMessage)) return undefined;
+	const { errorMessage, ...rest } = message;
+	return { ...rest, content: [{ type: "text", text: errorMessage }], stopReason: "stop", [BILLING_REFUSAL_MARK]: true };
+}
+
+function registerBillingRefusalReply(pi: ExtensionAPI): void {
+	pi.on("message_end", async (event, ctx) => {
+		const message = billingRefusalReply(event.message, ctx.mode);
+		return message ? { message } : undefined;
+	});
 }
 
 function promptCacheKey(sessionId?: string): string | undefined {
@@ -809,7 +843,8 @@ async function buildCodexBody(model: Model<any>, context: Context, options?: Sim
 	const { convertResponsesMessages, convertResponsesTools } = await openAIResponsesShared();
 	// agent-core >=0.86 sends only a transcript. Normalize the legacy shorthand if
 	// present, then replay system deltas rather than reading obsolete top-level fields.
-	const transcript = normalizeContext(context);
+	const normalized = normalizeContext(context);
+	const transcript = { ...normalized, messages: normalized.messages.filter((message: any) => message?.[BILLING_REFUSAL_MARK] !== true) };
 	const instructions = getCurrentSystemPrompt(transcript.messages);
 	const tools = getCurrentTools(transcript.messages);
 	const body: Record<string, unknown> = {

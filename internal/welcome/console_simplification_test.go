@@ -17,8 +17,41 @@ func TestConsoleOffersOnlySubscriptionActionsNotProviderOrHarnessControls(t *tes
 			t.Errorf("console still exposes obsolete choice %q:\n%s", forbidden, view)
 		}
 	}
-	if !strings.Contains(view, "Start") {
-		t.Fatal("authenticated subscription must offer Start")
+	if !strings.Contains(view, "Запустить") {
+		t.Fatal("authenticated subscription must offer «Запустить»")
+	}
+}
+
+// The screen speaks one language, Russian, like the wallet line and the
+// top-up screen next to it (void-board#373: «Start / Run doctor» sat next to
+// «Пополнить»).
+func TestWelcomeScreenIsRussian(t *testing.T) {
+	for _, state := range []welcome.AuthState{
+		{LoggedIn: true, Identity: "member@example.test", Balance: "0 ₽ · T1"},
+		{LoggedIn: true, IdentityUnverified: true},
+		{LoggedIn: true, Identity: "member@example.test", IdentityUnverified: true},
+		{},
+	} {
+		m := welcome.NewMenuModelForTest(state)
+		var labels []string
+		for i := 0; i < m.ItemCount(); i++ {
+			labels = append(labels, m.ItemLabel(i))
+		}
+		for _, text := range []string{m.View(), welcome.PlainBannerForTest(state)} {
+			for _, english := range []string{"Start", "Login", "Run doctor", "Open profile", "What now", "quit", "Not logged in", "identity", "unverified", "Logged in", "Identity", "subscription console"} {
+				if strings.Contains(text, english) {
+					t.Errorf("welcome screen has the English %q (items %q):\n%s", english, labels, text)
+				}
+			}
+		}
+	}
+	m := welcome.NewMenuModelForTest(welcome.AuthState{LoggedIn: true, Identity: "member@example.test"})
+	var labels []string
+	for i := 0; i < m.ItemCount(); i++ {
+		labels = append(labels, m.ItemLabel(i))
+	}
+	if got, want := strings.Join(labels, " / "), "Запустить / Пополнить / Проверить установку / Открыть профиль"; got != want {
+		t.Errorf("menu = %q, want %q", got, want)
 	}
 }
 

@@ -30,6 +30,22 @@ const walletRefusalMessage = "Баланса не хватает на сегод
 // wallet_charge_required (spec, "Недельное списание (решение 25.09)").
 const walletWeekRefusalMessage = "Баланса не хватает на эту неделю — пополнить: " + browser.PayURL
 
+// walletUnpaidText stands in the account line for a tier with no paid week
+// (void-board#373), in place of the limit.
+const walletUnpaidText = "не оплачено — оплатить: " + browser.PayURL
+
+// walletUnpaid reports a tier with no paid week: Keys' weekly verdict
+// chargeRequired is true — the one Relay refuses on — and no paid time runs
+// now. An absent verdict (an older Keys) is not "unpaid": the screen does not
+// guess what Relay will do. Only a rouble wallet, the one that sends paid
+// time: an older dollar Relay keeps its #224 line.
+func walletUnpaid(w *auth.Wallet, now time.Time) bool {
+	if w == nil || w.BalanceKopecks == nil || w.Tariff == nil || w.ChargeRequired == nil || !*w.ChargeRequired {
+		return false
+	}
+	return w.PaidUntil == nil || !w.PaidUntil.After(now)
+}
+
 // walletLowDays is the fundedDays at or below which a launch is warned.
 const walletLowDays = 2
 

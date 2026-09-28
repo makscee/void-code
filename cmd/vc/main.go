@@ -312,27 +312,26 @@ func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.Ru
 	return welcome.RunWithUpdates(shown, cb, late, opts...)
 }
 
-// welcomeBalance puts the wallet the launch's own background /v1/vc/me
-// reported on the welcome screen (spec 2026-09-23-client-wallet-days,
+// welcomeBalance puts the identity and the wallet the launch's own background
+// /v1/vc/me reported on the welcome screen (spec 2026-09-23-client-wallet-days,
 // amendment "после панели void-code#76" §4). main draws the screen in the same
 // millisecond it starts that request, so the answer usually lands while the
 // screen is already up: then the returned command waits for it and hands the
-// wallet to the running screen. An answer already in goes straight onto the
+// identity and the wallet to the running screen (the identity too since
+// void-board#373: the screen starts unverified and kept «identity temporarily
+// unavailable» once the answer was in). An answer already in goes straight onto the
 // state (a return to the menu, a slow terminal).
 func welcomeBalance(state welcome.AuthState, p *launchPreflight) (welcome.AuthState, tea.Cmd) {
 	if p == nil || !state.LoggedIn {
 		return state, nil
 	}
-	if balance, ready := p.balanceIfReady(); ready {
-		if balance != "" {
-			state.Balance = balance
-		}
-		return state, nil
+	if account, ready := p.accountIfReady(); ready {
+		return welcome.WithAccount(state, account), nil
 	}
 	return state, func() tea.Msg {
 		<-p.authDone
-		if arrived, _ := p.balanceIfReady(); arrived != "" {
-			return welcome.BalanceMsg(arrived)
+		if arrived, _ := p.accountIfReady(); arrived != (welcome.AccountMsg{}) {
+			return arrived
 		}
 		return nil
 	}
