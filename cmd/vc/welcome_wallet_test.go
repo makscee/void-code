@@ -166,7 +166,7 @@ func slowMeServer(t *testing.T, body string) (host string, release func()) {
 	return srv.URL, release
 }
 
-const welcomeMenuPrompt = "What now?"
+const welcomeMenuPrompt = "Что дальше?"
 
 // The production case: the screen is drawn at once, /v1/vc/me answers a moment
 // later with a wallet, and the screen that is up shows it.
@@ -246,4 +246,61 @@ func TestWelcomeShowsNoMoneyWhenTheLaunchFetchedNoWallet(t *testing.T) {
 			}
 		})
 	}
+}
+
+// void-board#373: the screen starts unverified (only the local token is read
+// before the first frame) and the launch's /v1/vc/me brings the email. After
+// vc login the e2e's screen kept «identity temporarily unavailable» next to a
+// balance that had arrived: only the balance was passed on. The email comes
+// with it now, both while the screen is up and when the answer is already in.
+func TestWelcomeShowsTheEmailTheLaunchVerified(t *testing.T) {
+	const email = "person@example.test"
+	const unverified = "не удалось проверить аккаунт"
+
+	t.Run("arrives while the screen is up", func(t *testing.T) {
+		host, release := slowMeServer(t, meBody(wallet("18", tariffT1, "true", "9")))
+		state, _, _ := welcomeLaunch(t, host)
+		s := showWelcome(t, state)
+		if screen, drawn := s.waitFor(unverified, time.Second); !drawn {
+			t.Fatalf("before /v1/vc/me answers the screen should say the account is not verified yet:\n%s", screen)
+		}
+		release()
+		screen, ok := s.waitFor(email, 3*time.Second)
+		if !ok {
+			t.Fatalf("/v1/vc/me answered with %s while the screen was up, and the screen never showed it:\n%s", email, screen)
+		}
+		// The renderer redraws only the lines that change: the identity line
+		// is redrawn with the email, and nothing after it says unverified.
+		if after := screen[strings.LastIndex(screen, email):]; strings.Contains(after, unverified) {
+			t.Errorf("the screen still says %q after the account was verified:\n%s", unverified, after)
+		}
+	})
+
+	t.Run("already in", func(t *testing.T) {
+		state, token, authHost := welcomeLaunch(t, meServer(t, meBody(wallet("18", tariffT1, "true", "9"))))
+		if _, reached, err, reused := currentLaunchPreflight.awaitAuth(token, authHost); !reused || !reached || err != nil {
+			t.Fatalf("preflight did not reach the fixture: reused=%v reached=%v err=%v", reused, reached, err)
+		}
+		s := showWelcome(t, state)
+		screen, ok := s.waitFor(email+" · T1 · осталось ~9 дней", 2*time.Second)
+		if !ok {
+			t.Fatalf("the launch's /v1/vc/me already verified %s, and the screen does not show it with the wallet:\n%s", email, screen)
+		}
+		if strings.Contains(screen, unverified) {
+			t.Errorf("the screen says %q though the account was verified before it was drawn:\n%s", unverified, screen)
+		}
+	})
+
+	t.Run("a refusal verifies no one", func(t *testing.T) {
+		refusal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		t.Cleanup(refusal.Close)
+		state, token, authHost := welcomeLaunch(t, refusal.URL)
+		currentLaunchPreflight.awaitAuth(token, authHost)
+		s := showWelcome(t, state)
+		if screen, drawn := s.waitFor(unverified, 2*time.Second); !drawn {
+			t.Fatalf("with no answer the screen must stay unverified:\n%s", screen)
+		}
+	})
 }

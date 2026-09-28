@@ -119,3 +119,23 @@ func TestPiVoidCodexExtensionSourceSanitizesPiCompactionPayload(t *testing.T) {
 		}
 	}
 }
+
+// void-board#373: every billing refusal (Relay's 402: the unpaid week, the daily charge, the weekly
+// limit) ends the turn in Pi's terminal UI as a plain reply, so Pi does not follow it with «/bug sends
+// a report», and the model never sees it. The behaviour runs in testdata/pi-responses-runtime.mjs
+// (pinned smoke in CI, VC_PI_RESPONSES_TEST_ROOT locally); this pins the wiring on every go test.
+func TestPiVoidCodexExtensionSourceTurnsBillingRefusalsIntoReplies(t *testing.T) {
+	for _, want := range []string{
+		`registerBillingRefusalReply(pi);`,
+		`if (status !== 402) return undefined;`,
+		`if (refusal !== undefined) billingRefusals.add(refusal);`,
+		`pi.on("message_end", async (event, ctx) => {`,
+		`if (mode !== "tui" || !message || message.role !== "assistant" || message.stopReason !== "error") return undefined;`,
+		`content: [{ type: "text", text: errorMessage }], stopReason: "stop", [BILLING_REFUSAL_MARK]: true`,
+		`normalized.messages.filter((message: any) => message?.[BILLING_REFUSAL_MARK] !== true)`,
+	} {
+		if !strings.Contains(piVoidCodexExtensionSource, want) {
+			t.Errorf("Pi Codex extension source missing %q", want)
+		}
+	}
+}

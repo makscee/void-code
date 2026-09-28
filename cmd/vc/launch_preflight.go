@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/welcome"
 )
 
 const launchPreflightFreshness = 5 * time.Minute
@@ -113,20 +114,27 @@ func (p *launchPreflight) updateIfReady() (string, bool) {
 	}
 }
 
-// balanceIfReady is the wallet this launch's own /v1/vc/me reported, rendered
-// for the welcome screen, once that answer is in (ready=false before). It is
-// "" when the answer carried no wallet, and when there was no answer to take
-// one from: a refusal or a failed check vouches for no wallet.
-func (p *launchPreflight) balanceIfReady() (balance string, ready bool) {
+// accountIfReady is what this launch's own /v1/vc/me reported, for the
+// welcome screen, once that answer is in (ready=false before): the verified
+// identity (the email, else the user id) and the wallet rendered. Both are ""
+// when there was no answer to take them from: a refusal or a failed check
+// vouches for no one and no wallet. The balance is "" too when the answer
+// carried no wallet.
+func (p *launchPreflight) accountIfReady() (account welcome.AccountMsg, ready bool) {
 	select {
 	case <-p.authDone:
 		p.mu.RLock()
 		defer p.mu.RUnlock()
 		if p.authResult.err != nil || !p.authResult.reached {
-			return "", true
+			return welcome.AccountMsg{}, true
 		}
-		return formatAccount(p.authResult.me, p.deps.now()), true
+		me := p.authResult.me
+		identity := me.Email
+		if identity == "" {
+			identity = me.UserID
+		}
+		return welcome.AccountMsg{Identity: identity, Balance: formatAccount(me, p.deps.now())}, true
 	default:
-		return "", false
+		return welcome.AccountMsg{}, false
 	}
 }

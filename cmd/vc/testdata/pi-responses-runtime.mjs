@@ -120,4 +120,71 @@ for (const scenario of [
     console.error(JSON.stringify({ scenario: scenario.name, pass: false, error: error.message }));
   }
 }
+// Billing refusals (void-board#373): Relay's 402 sentences, the unpaid week and the weekly limit
+// alike, end the turn in the terminal UI as a plain reply, since Pi follows only an errored reply
+// with its «/bug sends a report» line (maybeSuggestBugReport: stopReason !== "error" returns).
+// Any other failure stays an error, and the model never sees a refusal as something it said.
+try {
+  const jiti = createJiti(import.meta.url, {
+    moduleCache: false, fsCache: false, tryNative: false,
+    alias: {
+      '@earendil-works/pi-tui': require.resolve('@earendil-works/pi-tui'),
+      '@earendil-works/pi-ai': compatPath,
+      '@earendil-works/pi-ai/compat': compatPath,
+      '@earendil-works/pi-coding-agent': path.join(root, 'dist/index.js'),
+    },
+  });
+  const providers = new Map();
+  const handlers = new Map();
+  const factory = await jiti.import(extension, { default: true });
+  factory({
+    on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
+    registerProvider(id, config) { providers.set(id, config); },
+  });
+  const provider = providers.get('void-codex');
+  const model = { ...provider.models[0], provider: 'void-codex', api: provider.api };
+  const messageEnd = async (message, mode) => {
+    let result;
+    for (const handler of handlers.get('message_end') ?? []) result = (await handler({ type: 'message_end', message }, { mode, hasUI: true })) ?? result;
+    return result?.message;
+  };
+  const context = normalizeContext({ systemPrompt: 'probe', messages: [{ role: 'user', content: 'Reply with exactly PONG', timestamp: 1 }] });
+  const answer = async (status, body) => {
+    globalThis.fetch = async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers: { 'content-type': typeof body === 'string' ? 'text/plain' : 'application/json' } });
+    const stream = provider.streamSimple(model, context);
+    for await (const _ of stream) {}
+    return stream.result();
+  };
+  const unpaid = 'Баланса не хватает на эту неделю — пополнить: https://profile.makscee.ru/vc/pay';
+  const limit = 'Лимит на эту неделю исчерпан. Он обновится 6 октября в 01:17 МСК. Сейчас можно перейти на тариф выше: https://profile.makscee.ru/vc/pay?tier=t3&mode=upgrade';
+  for (const [type, sentence] of [['wallet_charge_required', unpaid], ['wallet_daily_charge_required', unpaid.replace('эту неделю', 'сегодня')], ['budget_exceeded', limit]]) {
+    const failed402 = await answer(402, { error: { type, message: sentence } });
+    assert.equal(failed402.stopReason, 'error');
+    assert.equal(failed402.errorMessage, sentence);
+    const reply = await messageEnd(failed402, 'tui');
+    assert.ok(reply, type + ': the terminal UI must get the refusal as a reply, not an error Pi offers /bug for');
+    assert.equal(reply.role, 'assistant');
+    assert.notEqual(reply.stopReason, 'error');
+    assert.equal(reply.errorMessage, undefined);
+    assert.deepEqual(reply.content, [{ type: 'text', text: sentence }]);
+    assert.equal(await messageEnd(failed402, 'rpc'), undefined, 'the desktop (RPC) keeps the error');
+    // The next turn: the refusal is not something the model said.
+    let sent;
+    globalThis.fetch = async (_url, options) => { sent = options.body; return new Response('x', { status: 500 }); };
+    const next = normalizeContext({ systemPrompt: 'probe', messages: [context.messages.at(-1), reply, { role: 'user', content: 'again', timestamp: 3 }] });
+    const stream = provider.streamSimple(model, next);
+    for await (const _ of stream) {}
+    assert.ok(sent.includes('again'));
+    assert.ok(!sent.includes(sentence.slice(0, 20)), type + ': the refusal reached the model as its own words');
+  }
+  for (const [status, body] of [[500, 'upstream exploded'], [402, 'not json'], [401, { error: { message: unpaid } }]]) {
+    const failed = await answer(status, body);
+    assert.equal(failed.stopReason, 'error');
+    assert.equal(await messageEnd(failed, 'tui'), undefined, 'HTTP ' + status + ' is not a billing refusal and keeps Pi\'s error');
+  }
+  console.log(JSON.stringify({ scenario: 'billing-refusal-reply', pass: true }));
+} catch (error) {
+  failed++;
+  console.error(JSON.stringify({ scenario: 'billing-refusal-reply', pass: false, error: error.message }));
+}
 process.exitCode = failed ? 1 : 0;

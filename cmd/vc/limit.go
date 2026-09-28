@@ -67,9 +67,15 @@ func ruPlural(n int, one, few, many string) string {
 // formatAccount is the line `vc status` prints after "plan:", the desktop
 // shows as walletText and the welcome screen shows next to the identity: the
 // wallet, then the limit, each only when the server sent it. "" for neither.
+// A tier with no paid week says so, with the pay link, in place of the limit
+// (void-board#373): a limit share and a reset date read as a plan that works.
 func formatAccount(me auth.MeResult, now time.Time) string {
+	limit := formatLimit(me.Limit, now)
+	if walletUnpaid(me.Wallet, now) {
+		limit = walletUnpaidText
+	}
 	var parts []string
-	for _, part := range []string{formatWallet(me.Wallet, now), formatLimit(me.Limit, now)} {
+	for _, part := range []string{formatWallet(me.Wallet, now), limit} {
 		if part != "" {
 			parts = append(parts, part)
 		}

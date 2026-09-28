@@ -40,14 +40,19 @@ func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (R
 	return RunWithUpdates(state, cb, nil, opts...)
 }
 
-// BalanceMsg puts a balance on a screen that is already up, rendered the way
-// AuthState.Balance is. The screen never waits on the network, so a wallet
-// that arrives a round trip after the first frame comes as this message.
-type BalanceMsg string
+// AccountMsg puts what the launch's /v1/vc/me answered on a screen that is
+// already up: the verified identity (the email, else the user id) and the
+// balance, rendered the way AuthState.Balance is. The screen never waits on
+// the network, so an answer that arrives a round trip after the first frame
+// comes as this message. An empty field leaves what the screen shows.
+type AccountMsg struct {
+	Identity string
+	Balance  string
+}
 
 // RunWithUpdates runs the screen like RunWithOptions and also runs updates in
 // the background from the first frame on; the message it returns (a
-// BalanceMsg) updates the screen that is up. A nil updates is RunWithOptions.
+// AccountMsg) updates the screen that is up. A nil updates is RunWithOptions.
 func RunWithUpdates(state AuthState, cb Callbacks, updates tea.Cmd, opts ...tea.ProgramOption) (RunResult, error) {
 	start := newModel(state)
 	start.updates = updates
@@ -69,6 +74,23 @@ func RunWithUpdates(state AuthState, cb Callbacks, updates tea.Cmd, opts ...tea.
 	}
 	return m.result, nil
 }
+
+// apply lays the answer over state: a verified identity replaces the
+// unverified one (void-board#373: the screen kept «identity temporarily
+// unavailable» after vc login), and a balance replaces the old one.
+func (a AccountMsg) apply(state AuthState) AuthState {
+	if a.Identity != "" {
+		state.Identity, state.IdentityUnverified = a.Identity, false
+	}
+	if a.Balance != "" {
+		state.Balance = a.Balance
+	}
+	return state
+}
+
+// WithAccount is state with the answer laid over it, as the running screen
+// does with an AccountMsg.
+func WithAccount(state AuthState, a AccountMsg) AuthState { return a.apply(state) }
 
 func balanceDisplay(balance string) string {
 	if balance == "" {
@@ -99,11 +121,13 @@ type model struct {
 	updates          tea.Cmd // started with the first frame; see RunWithUpdates
 }
 
+// The screen is Russian, like the wallet line, the top-up screen and the
+// launch notices it sits next to (void-board#373).
 func menuItemsFor(state AuthState) []menuItem {
 	if !state.LoggedIn {
-		return []menuItem{{"Login", RunLogin}}
+		return []menuItem{{"Войти", RunLogin}}
 	}
-	return []menuItem{{"Start", SpawnPi}, {"Пополнить", ShowTopUp}, {"Run doctor", RunDoctor}, {"Open profile", RunProfile}}
+	return []menuItem{{"Запустить", SpawnPi}, {"Пополнить", ShowTopUp}, {"Проверить установку", RunDoctor}, {"Открыть профиль", RunProfile}}
 }
 func newModel(state AuthState) model            { return model{AuthState: state, items: menuItemsFor(state)} }
 func (m model) Init() tea.Cmd                   { return m.updates }
@@ -119,8 +143,8 @@ func (m model) MoveCursor(d int) model {
 }
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if balance, isBalance := msg.(BalanceMsg); isBalance {
-		m.Balance = string(balance)
+	if account, isAccount := msg.(AccountMsg); isAccount {
+		m.AuthState = account.apply(m.AuthState)
 		return m, nil
 	}
 	key, ok := msg.(tea.KeyMsg)
@@ -156,9 +180,9 @@ func identityDisplay(identity string, unverified bool) string {
 		return identity
 	}
 	if identity == "" {
-		return "identity temporarily unavailable"
+		return "не удалось проверить аккаунт"
 	}
-	return identity + " (last known; temporarily unverified)"
+	return identity + " (последний известный; сейчас не проверен)"
 }
 func (m model) View() string {
 	if m.quitting {
@@ -176,13 +200,13 @@ func (m model) View() string {
 	if m.LoggedIn {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified)+" · "+balanceDisplay(m.Balance))) + "\n")
 	} else {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.WarnStyle.Render("Not logged in")) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.WarnStyle.Render("Вход не выполнен")) + "\n")
 	}
 	if m.UpdateNudge != "" {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.HintStyle.Render(m.UpdateNudge)) + "\n")
 	}
 	sb.WriteString(clackui.RailLine("│", "") + "\n")
-	sb.WriteString(clackui.RailLine("◆", "  "+clackui.InfoTextStyle.Render("What now?")) + "\n")
+	sb.WriteString(clackui.RailLine("◆", "  "+clackui.InfoTextStyle.Render("Что дальше?")) + "\n")
 	for i, item := range m.items {
 		style := clackui.UnselectedItemStyle
 		marker := "○"
@@ -192,21 +216,21 @@ func (m model) View() string {
 		sb.WriteString(clackui.RailLine("│", "  "+style.Render(marker+"  "+item.label)) + "\n")
 	}
 	sb.WriteString(clackui.RailLine("│", "") + "\n")
-	sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("↑/↓ · enter · q quit")) + "\n")
+	sb.WriteString(clackui.RailLine("└", "  "+clackui.HintStyle.Render("↑/↓ · enter · q — выход")) + "\n")
 	return sb.String()
 }
 func plainBanner(state AuthState) string {
 	var sb strings.Builder
-	sb.WriteString("\nvoid-code " + version.Version + " — subscription console — by makscee.ru\n\n")
+	sb.WriteString("\nvoid-code " + version.Version + " — консоль подписки — makscee.ru\n\n")
 	if state.LoggedIn {
 		if state.IdentityUnverified {
-			sb.WriteString("  Identity: " + identityDisplay(state.Identity, true) + "\n")
+			sb.WriteString("  Аккаунт: " + identityDisplay(state.Identity, true) + "\n")
 		} else {
-			sb.WriteString("  Logged in as " + state.Identity + "\n")
+			sb.WriteString("  Вы вошли как " + state.Identity + "\n")
 		}
 		sb.WriteString("  " + balanceDisplay(state.Balance) + "\n")
 	} else {
-		sb.WriteString("  Not logged in\n")
+		sb.WriteString("  Вход не выполнен\n")
 	}
 	if state.UpdateNudge != "" {
 		sb.WriteString("  " + state.UpdateNudge + "\n")
