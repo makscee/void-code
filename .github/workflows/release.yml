@@ -141,6 +141,12 @@ jobs:
           {
             "version": "${SEMVER}",
             "tag": "${VERSION}",
+            "desktop": {
+              "desktop-darwin-arm64": "desktop/${VERSION}/void-code-mac-arm64.zip",
+              "desktop-darwin-amd64": "desktop/${VERSION}/void-code-mac-x64.zip",
+              "desktop-windows-amd64": "desktop/${VERSION}/Void-Code-windows-x64.exe",
+              "desktop-sums": "desktop/${VERSION}/SHA256SUMS-desktop"
+            },
             "artifacts": {
               "darwin/amd64": "vc-darwin-amd64",
               "darwin/arm64": "vc-darwin-arm64",
@@ -418,10 +424,21 @@ jobs:
           SEMVER="${VERSION#v}"
           # Artifact paths include bin/ prefix because binaries live at /vc/bin/<name>
           # and DefaultReleaseBaseURL = https://auth.makscee.ru/vc (VCD-33).
+          # "desktop" names this tag's desktop builds, which mcow mirrors under
+          # /vc/desktop/<tag>/ (makscee/homelab vc-desktop-sync), so install.sh
+          # and install.ps1 install the desktop from the same tag as vc
+          # (void-works#65). Written now even though desktop-attach runs later:
+          # until the mirror has the tag, the installers skip the desktop.
           cat > void-auth/public/vc/version.json <<EOF
           {
             "version": "${SEMVER}",
             "tag": "${VERSION}",
+            "desktop": {
+              "desktop-darwin-arm64": "desktop/${VERSION}/void-code-mac-arm64.zip",
+              "desktop-darwin-amd64": "desktop/${VERSION}/void-code-mac-x64.zip",
+              "desktop-windows-amd64": "desktop/${VERSION}/Void-Code-windows-x64.exe",
+              "desktop-sums": "desktop/${VERSION}/SHA256SUMS-desktop"
+            },
             "artifacts": {
               "darwin/amd64": "bin/vc-darwin-amd64",
               "darwin/arm64": "bin/vc-darwin-arm64",
