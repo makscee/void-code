@@ -292,6 +292,38 @@ func TestCodexHookCommand(t *testing.T) {
 		}
 	})
 
+	// The clock is not the whole of the rule. A sequence already in status.json
+	// that is ahead of the clock (a clock stepped back, or two hooks inside one
+	// microsecond) must still be overtaken: the desktop drops a sequence that
+	// does not grow, and the chat would sit on its previous state. Seeded ten
+	// minutes ahead so the real clock cannot catch up during the test.
+	t.Run("a sequence ahead of the clock is still overtaken", func(t *testing.T) {
+		dir, status := h.channel()
+		seeded := time.Now().Add(10 * time.Minute).UnixMicro()
+		if seeded > maxSafeJSONInteger {
+			t.Fatalf("test seed %d is not a safe integer", seeded)
+		}
+		seed := map[string]any{
+			"version": 1, "chatId": hookChatID, "generation": 3,
+			"sequence": seeded, "state": "Ready", "timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		data, err := json.Marshal(seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(status, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		wantQuietSuccess(t, "UserPromptSubmit after a future sequence", first(h.run(userPromptInput, desktopHookEnv(status))))
+		got := statusMessage(t, status, "Working") // also bounds it by 2^53-1
+		if got <= seeded {
+			t.Fatalf("wrote sequence %d over an existing %d; the desktop drops a sequence that does not grow", got, seeded)
+		}
+		if got := strings.Join(hookDirNames(t, dir), ","); got != "status.json" {
+			t.Fatalf("channel directory holds [%s], want only status.json", got)
+		}
+	})
+
 	t.Run("SessionStart records the Codex session beside the status", func(t *testing.T) {
 		dir, status := h.channel()
 		wantQuietSuccess(t, "SessionStart", first(h.run(sessionStartInput, desktopHookEnv(status))))
