@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/makscee/void-code/internal/runtimechoice"
@@ -41,6 +42,9 @@ func init() {
 }
 
 func runRuntimeCmd(cmd *cobra.Command, args []string) error {
+	if switchFile := os.Getenv(runtimeSwitchFileEnv); switchFile != "" {
+		return runRuntimeInSession(cmd, args, switchFile)
+	}
 	var chosen runtimechoice.Runtime
 	if len(args) == 1 {
 		parsed, err := runtimechoice.Parse(args[0])
@@ -62,6 +66,35 @@ func runRuntimeCmd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("не удалось сохранить выбор: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "vc: выбран %s, он запустится при следующем vc. Сменить: vc runtime\n", chosen.Label())
+	return nil
+}
+
+// runRuntimeInSession is `vc runtime <x>` typed inside a runtime vc
+// supervises: it saves the choice and leaves the request for that vc, which
+// then starts <x> in the same terminal. The runtime owns the terminal, so there
+// is no menu. Asking for the runtime already running fails: Pi's `/runtime`
+// closes Pi on success, and with no request behind it vc would just exit.
+func runRuntimeInSession(cmd *cobra.Command, args []string, switchFile string) error {
+	if len(args) == 0 {
+		return errors.New("внутри сессии меню нет; укажите: vc runtime pi или vc runtime codex")
+	}
+	chosen, err := runtimechoice.Parse(args[0])
+	if err != nil {
+		return fmt.Errorf("%w; укажите vc runtime pi или vc runtime codex", err)
+	}
+	if running, parseErr := runtimechoice.Parse(os.Getenv("VC_HARNESS")); parseErr == nil && running == chosen {
+		return fmt.Errorf("уже %s", chosen.Label())
+	}
+	if !filepath.IsAbs(switchFile) {
+		return fmt.Errorf("%s=%q is not an absolute path", runtimeSwitchFileEnv, switchFile)
+	}
+	if err := runtimechoice.Save(chosen); err != nil {
+		return fmt.Errorf("не удалось сохранить выбор: %w", err)
+	}
+	if err := writeSwitchRequest(switchFile, chosen); err != nil {
+		return fmt.Errorf("не удалось передать заявку на переключение: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "vc: переключаюсь на %s…\n", chosen.Label())
 	return nil
 }
 

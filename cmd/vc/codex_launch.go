@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -46,29 +45,30 @@ var ensureCodexRuntime = func(w io.Writer) (string, error) {
 // ("path must be shorter than SUN_LEN").
 const codexNoDaemon = "--no-daemon"
 
-// launchCodex is runSpawn's Codex branch, after live admission. The grant is
-// checked before the install, so nobody downloads Codex only to be refused.
-func launchCodex(cfg config.Config, token, notice string) error {
+// prepareCodexChild readies Codex after admission. The grant is checked
+// before the install, so nobody downloads Codex only to be refused; it is a
+// live question on every Codex start.
+func prepareCodexChild(cfg config.Config, token, notice string) (runtimeChild, error) {
 	if cfg.CAOverride != "" {
-		return fmt.Errorf("Codex пока работает только с публичным релеем, а задан VC_RELAY_CA=%s. Уберите VC_RELAY_CA или переключитесь на Pi: vc runtime pi", cfg.CAOverride)
+		return runtimeChild{}, fmt.Errorf("Codex пока работает только с публичным релеем, а задан VC_RELAY_CA=%s. Уберите VC_RELAY_CA или переключитесь на Pi: vc runtime pi", cfg.CAOverride)
 	}
 	providerID, err := codexProviderID(cfg, token)
 	if err != nil {
-		return err
+		return runtimeChild{}, err
 	}
 	codexPath, err := ensureCodexRuntime(os.Stderr)
 	if err != nil {
-		return fmt.Errorf("не удалось установить Codex %s: %w\nПопробуйте ещё раз или переключитесь на Pi: vc runtime pi", codexruntime.Version, err)
+		return runtimeChild{}, fmt.Errorf("не удалось установить Codex %s: %w\nПопробуйте ещё раз или переключитесь на Pi: vc runtime pi", codexruntime.Version, err)
 	}
 	cacheDir, err := config.CacheDir()
 	if err != nil {
-		return err
+		return runtimeChild{}, err
 	}
 	codexHome := filepath.Join(cacheDir, "codex")
 	if err := codexruntime.WriteConfig(codexHome, fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost)); err != nil {
-		return err
+		return runtimeChild{}, err
 	}
-	env := buildCodexSpawnEnv(os.Environ(), codexHome, token, providerID)
+	env := buildCodexSpawnEnv(os.Environ(), codexHome, token, providerID, selfDir())
 	// Pi shows the wallet notice inside its session; Codex has no such hook,
 	// so it is printed before Codex takes the terminal.
 	if notice != "" {
@@ -76,7 +76,16 @@ func launchCodex(cfg config.Config, token, notice string) error {
 	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), codexPath, []string{codexNoDaemon}, env)
+	return runtimeChild{exe: codexPath, args: []string{codexNoDaemon}, env: env}, nil
+}
+
+// selfDir is the folder of the running vc, or "" when it cannot be told.
+func selfDir() string {
+	exe, err := os.Executable()
+	if err != nil || !filepath.IsAbs(exe) {
+		return ""
+	}
+	return filepath.Dir(exe)
 }
 
 // codexProviderID asks auth for the live grants and returns the first
@@ -97,12 +106,13 @@ func codexProviderID(cfg config.Config, token string) (string, error) {
 // buildCodexSpawnEnv is the parent environment without anything that could
 // point Codex elsewhere or hand it someone else's credential — OPENAI_API_KEY,
 // OPENAI_BASE_URL, every CODEX_* and VC_* variable, and the relay/auth keys
-// direct.PlainEnv strips — plus the four values vc sets. PATH is left as is:
-// Codex is a native binary and its tools run in the person's environment.
-// Names are matched without regard to case, as Windows reads them.
-func buildCodexSpawnEnv(parent []string, codexHome, token, providerID string) []string {
+// direct.PlainEnv strips — plus the four values vc sets. PATH stays the
+// person's own, with vc's folder put first so `!vc runtime pi` typed in Codex
+// reaches this vc: Codex is a native binary and its tools run in the person's
+// environment. Names are matched without regard to case, as Windows reads them.
+func buildCodexSpawnEnv(parent []string, codexHome, token, providerID, vcDir string) []string {
 	base := direct.PlainEnv(parent)
-	out := make([]string, 0, len(base)+4)
+	out := make([]string, 0, len(base)+5)
 	for _, e := range base {
 		k, _, _ := strings.Cut(e, "=")
 		if codexStrippedEnv(k) {
@@ -110,12 +120,33 @@ func buildCodexSpawnEnv(parent []string, codexHome, token, providerID string) []
 		}
 		out = append(out, e)
 	}
+	out = withPathFirst(out, vcDir)
 	return append(out,
 		"CODEX_HOME="+codexHome,
 		"VC_AUTH_TOKEN="+token,
 		"VC_CODEX_PROVIDER="+providerID,
 		"VC_HARNESS=codex",
 	)
+}
+
+// withPathFirst puts dir at the front of env's PATH (whatever its case, as
+// Windows writes Path), or makes it the PATH when there is none.
+func withPathFirst(env []string, dir string) []string {
+	if dir == "" {
+		return env
+	}
+	for i, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		if strings.EqualFold(k, "PATH") {
+			if v == "" {
+				env[i] = k + "=" + dir
+			} else {
+				env[i] = k + "=" + dir + string(os.PathListSeparator) + v
+			}
+			return env
+		}
+	}
+	return append(env, "PATH="+dir)
 }
 
 func codexStrippedEnv(key string) bool {

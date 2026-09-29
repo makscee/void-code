@@ -9,7 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"syscall"
+	"time"
 )
+
+// TerminateGrace is how long a child stopped through its context has to exit
+// after SIGTERM before it is killed. Codex 0.158 dies at once on SIGTERM; the
+// grace is for a child that ignores it.
+var TerminateGrace = 5 * time.Second
 
 // Spawn directly executes an absolute, validated wrappedBin, replaces the
 // current process's stdio streams with passthrough handles, and runs it to completion.
@@ -32,6 +40,10 @@ func Spawn(ctx context.Context, wrappedBin string, args []string, env []string) 
 	}
 
 	cmd := exec.CommandContext(ctx, wrappedBin, args...)
+	// Cancelling ctx asks the child to stop (SIGTERM) instead of killing it
+	// outright; it is killed only when still there after TerminateGrace.
+	cmd.Cancel = func() error { return terminate(cmd.Process) }
+	cmd.WaitDelay = TerminateGrace
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -44,4 +56,13 @@ func Spawn(ctx context.Context, wrappedBin string, args []string, env []string) 
 	applyCmdLine(cmd, wrappedBin, args)
 
 	return cmd.Run()
+}
+
+// terminate asks p to exit. Windows has no SIGTERM for a console child, so
+// there it is Kill.
+func terminate(p *os.Process) error {
+	if runtime.GOOS == "windows" {
+		return p.Kill()
+	}
+	return p.Signal(syscall.SIGTERM)
 }

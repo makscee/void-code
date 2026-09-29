@@ -59,6 +59,7 @@ interface ClipboardExtensionOptions {
 export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) {
 	registerDesktopLifecycle(pi);
 	registerLaunchNotice(pi);
+	registerRuntimeSwitch(pi);
 	registerBillingRefusalReply(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
 	const bootstrap = loadBootstrap();
@@ -561,6 +562,49 @@ function registerLaunchNotice(pi: ExtensionAPI): void {
 		docked = false;
 		ctx.ui.setWidget(LAUNCH_NOTICE_WIDGET_KEY, undefined);
 	});
+}
+
+// /runtime exists only while vc supervises this Pi (VC_RUNTIME_SWITCH_FILE is set): vc runtime <x>
+// saves the choice and leaves the request, Pi then closes itself through ctx.shutdown() (it finishes
+// the turn and restores the terminal), and vc starts <x> in the same terminal. The desktop never sets
+// the variable, so its chats never get the command. A failed vc runtime keeps Pi open and says why.
+const RUNTIME_CHOICES = ["pi", "codex"];
+
+function registerRuntimeSwitch(pi: ExtensionAPI): void {
+	if (!process.env.VC_RUNTIME_SWITCH_FILE) return;
+	pi.registerCommand("runtime", {
+		description: "Переключить рантайм: /runtime codex или /runtime pi",
+		getArgumentCompletions: (prefix: string) => RUNTIME_CHOICES
+			.filter((value) => value.startsWith(prefix.trim()))
+			.map((value) => ({ value, label: value })),
+		handler: async (args, ctx) => {
+			const target = args.trim();
+			if (target !== "pi" && target !== "codex") {
+				ctx.ui.notify("Укажите: /runtime codex или /runtime pi", "warning");
+				return;
+			}
+			const executable = process.env.VC_BOOTSTRAP_EXECUTABLE;
+			if (!executable || !path.isAbsolute(executable)) {
+				ctx.ui.notify("vc недоступен: переключение рантайма невозможно", "error");
+				return;
+			}
+			try {
+				execFileSync(executable, ["runtime", target], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000 });
+			} catch (error) {
+				ctx.ui.notify(runtimeSwitchFailure(error), "error");
+				return;
+			}
+			ctx.shutdown();
+		},
+	});
+}
+
+function runtimeSwitchFailure(error: unknown): string {
+	const stderr = (error as { stderr?: unknown } | undefined)?.stderr;
+	const text = typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : "";
+	const message = text.trim().replace(/^Error:\s*/, "");
+	if (message) return message;
+	return error instanceof Error ? error.message : String(error);
 }
 
 function registerDesktopLifecycle(pi: ExtensionAPI): void {

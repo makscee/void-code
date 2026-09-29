@@ -7,7 +7,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -393,9 +392,29 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if chosen == runtimechoice.Codex {
-		return launchCodex(cfg, token, notice)
+	return superviseRuntimes(cfg, token, notice, chosen)
+}
+
+// runtimeChild is one prepared runtime process: what to run, with what.
+type runtimeChild struct {
+	exe  string
+	args []string
+	env  []string
+}
+
+// prepareRuntimeChild readies rt after admission: Pi as it has always been
+// launched, Codex through its grant, install and managed config.
+func prepareRuntimeChild(rt runtimechoice.Runtime, cfg config.Config, token, notice string) (runtimeChild, error) {
+	if rt == runtimechoice.Codex {
+		return prepareCodexChild(cfg, token, notice)
 	}
+	return preparePiChild(cfg, token, notice)
+}
+
+// preparePiChild resolves Pi's launch. The wallet notice rides in Pi's
+// environment; Pi shows it once the session is up.
+func preparePiChild(cfg config.Config, token, notice string) (runtimeChild, error) {
+	var err error
 	// Resolve launch artifacts after live admission but before constructing a
 	// token-bearing child environment. A bundled runtime starts its already
 	// resolved private Node directly, never through Pi's shebang or pi.cmd. The
@@ -412,16 +431,16 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	case nodeErr == nil:
 		modulePath, err = pibin.ResolveModule()
 		if err != nil {
-			return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+			return runtimeChild{}, fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
 		}
 		launchPath = privateNode
 	case errors.Is(nodeErr, pibin.ErrBundledNodeUnprovisioned):
 		launchPath, err = pibin.Resolve()
 		if err != nil {
-			return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+			return runtimeChild{}, fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
 		}
 	default:
-		return fmt.Errorf("cannot resolve bundled Node: %w", nodeErr)
+		return runtimeChild{}, fmt.Errorf("cannot resolve bundled Node: %w", nodeErr)
 	}
 	extPath, extErr := reconcileManagedPiExtension()
 	if extErr != nil {
@@ -437,12 +456,12 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	}
 	caPath, err := resolveCA(cfg)
 	if err != nil {
-		return fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
+		return runtimeChild{}, fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
 	}
 	if extPath == "" {
 		extPath, err = ensurePiVoidCodexExtension()
 		if err != nil {
-			return fmt.Errorf("cannot write Pi relay extension: %w", err)
+			return runtimeChild{}, fmt.Errorf("cannot write Pi relay extension: %w", err)
 		}
 	}
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
@@ -456,7 +475,7 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), launchPath, piArgs, env)
+	return runtimeChild{exe: launchPath, args: piArgs, env: env}, nil
 }
 
 var piVoidCodexModels = []string{
@@ -536,6 +555,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 		"VC_AUTH_TOKEN":            true,
 		"VC_BOOTSTRAP_EXECUTABLE":  true,
 		"VC_DESKTOP_SESSION":       true,
+		runtimeSwitchFileEnv:       true,
 		"ANTHROPIC_CUSTOM_HEADERS": true,
 	}
 	if p.Kind == provider.Relay || p.Kind == provider.RelayProvider {
