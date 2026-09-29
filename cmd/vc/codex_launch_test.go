@@ -261,7 +261,17 @@ func TestCodexLaunchSpawnsTheInstalledCodexThroughTheRelay(t *testing.T) {
 		}
 	}
 	// Codex is a native binary; its tools run in the person's own environment.
-	wantEnvOnce(t, env, "PATH", l.userPath)
+	// Step 2 puts vc's own directory first, so `!vc runtime pi` finds this vc;
+	// the person's PATH follows unchanged.
+	path, pathCount := envCount(env, "PATH")
+	self, selfErr := os.Executable()
+	if selfErr != nil {
+		t.Fatal(selfErr)
+	}
+	first, rest, _ := strings.Cut(path, string(os.PathListSeparator))
+	if pathCount != 1 || !sameDirectory(first, filepath.Dir(self)) || rest != l.userPath {
+		t.Errorf("PATH = %q (present %d times), want exactly one: %s%c%s", path, pathCount, filepath.Dir(self), os.PathListSeparator, l.userPath)
+	}
 
 	configPath := filepath.Join(codexHome, "config.toml")
 	data, err := os.ReadFile(configPath)

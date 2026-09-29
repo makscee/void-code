@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/runtimechoice"
 )
 
@@ -67,6 +68,9 @@ type switchLaunch struct {
 	provHits  int
 	scripts   []childScript
 	extraCall bool
+	// grantsByHit, when set, is what /v1/vc/providers answers on its n-th call
+	// (the last entry repeats); unset means codexGrants every time.
+	grantsByHit [][]map[string]string
 }
 
 func (l *switchLaunch) event(e string) {
@@ -103,9 +107,17 @@ func prepareSwitchLaunch(t *testing.T, meJSON string, scripts ...childScript) *s
 			_, _ = w.Write([]byte(meJSON))
 		case "/v1/vc/providers":
 			l.mu.Lock()
+			hit := l.provHits
 			l.provHits++
+			grants := codexGrants
+			if n := len(l.grantsByHit); n > 0 {
+				if hit >= n {
+					hit = n - 1
+				}
+				grants = l.grantsByHit[hit]
+			}
 			l.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]any{"providers": codexGrants})
+			_ = json.NewEncoder(w).Encode(map[string]any{"providers": grants})
 		default:
 			http.NotFound(w, r)
 		}
@@ -722,5 +734,159 @@ func TestPiExtensionRegistersRuntimeCommandOnlyUnderTheSwitchFile(t *testing.T) 
 	}
 	if run, shutdown := strings.Index(body, "VC_BOOTSTRAP_EXECUTABLE"), strings.Index(body, "ctx.shutdown()"); run >= 0 && shutdown >= 0 && shutdown < run {
 		t.Error("ctx.shutdown() comes before `vc runtime` is run; Pi must close only after it succeeded")
+	}
+}
+
+// ─── a switch that cannot be prepared ───────────────────────────────────────
+
+var noChatGPTGrant = []map[string]string{{"id": "deepseek-granted", "name": "DeepSeek", "type": "deepseek"}}
+
+// piSwitchesTo is what `/runtime <x>` does in Pi: `vc runtime <x>` saves the
+// choice and writes the request, then Pi closes itself.
+func piSwitchesTo(t *testing.T, target string) childScript {
+	return func(ctx context.Context, run *childRun) error {
+		if err := config.WriteConfigFile(map[string]string{"runtime": target}); err != nil {
+			t.Errorf("save runtime: %v", err)
+		}
+		requestSwitch(t, run, target+"\n")
+		return nil
+	}
+}
+
+// runSupervisedBounded is runSupervised with a deadline, so a supervisor that
+// loops between two failing runtimes fails the test instead of hanging it.
+func runSupervisedBounded(t *testing.T) (string, error) {
+	t.Helper()
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := runSupervised(t)
+		done <- result{out, err}
+	}()
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-time.After(20 * time.Second):
+		t.Fatal("runSpawn did not return: the supervisor loops between runtimes that cannot start")
+		return "", nil
+	}
+}
+
+// Switching to Codex without a ChatGPT grant must not throw the person out of
+// vc: they are told why, get their Pi back in the same vc, and the saved choice
+// goes back to Pi so the next `vc` does not fail the same way.
+func TestFailedSwitchToCodexWithoutAGrantFallsBackToPi(t *testing.T) {
+	l := prepareSwitchLaunch(t, meBody(""), piSwitchesTo(t, "codex"), exitWith(4))
+	l.grantsByHit = [][]map[string]string{noChatGPTGrant}
+	saveRuntimeKey(t, "pi")
+
+	out, err := runSupervisedBounded(t)
+	runs, events, meHits, provHits := l.snapshot()
+	if !equalStrings(kinds(runs), []string{"pi", "pi"}) {
+		t.Fatalf("children = %v, want [pi pi]: the failed switch relaunches Pi", kinds(runs))
+	}
+	if code, ok := exitCodeOf(err); !ok || code != 4 {
+		t.Fatalf("runSpawn = %v, want the relaunched Pi's exit code 4", err)
+	}
+	if provHits < 1 {
+		t.Error("the Codex grant was never asked")
+	}
+	if !strings.Contains(out, "vc runtime pi") {
+		t.Errorf("vc did not say why Codex could not start (the no-grant reason); printed:\n%s", out)
+	}
+	if got, _ := configKey(t, "runtime"); got != "pi" {
+		t.Errorf("saved runtime = %q after the switch to Codex failed, want pi restored", got)
+	}
+	if meHits != 1 {
+		t.Errorf("admission asked %d times, want 1", meHits)
+	}
+	want := []string{"capture", "start:pi", "end:pi", "restore", "capture", "start:pi", "end:pi", "restore"}
+	if !equalStrings(events, want) {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+	if runs[1].switchFile == "" {
+		t.Error("the fallback Pi has no request file: it could never switch again")
+	}
+}
+
+func TestFailedCodexInstallOnSwitchFallsBackToPi(t *testing.T) {
+	l := prepareSwitchLaunch(t, meBody(""), piSwitchesTo(t, "codex"), exitWith(0))
+	l.ensure.path, l.ensure.err = "", errors.New("sha256 mismatch for codex-package")
+	saveRuntimeKey(t, "pi")
+
+	out, err := runSupervisedBounded(t)
+	runs, _, _, _ := l.snapshot()
+	if !equalStrings(kinds(runs), []string{"pi", "pi"}) {
+		t.Fatalf("children = %v, want [pi pi]", kinds(runs))
+	}
+	if err != nil {
+		t.Fatalf("runSpawn = %v after the fallback Pi exited 0", err)
+	}
+	if !strings.Contains(out, "sha256 mismatch for codex-package") {
+		t.Errorf("vc did not print the install error; printed:\n%s", out)
+	}
+	if got, _ := configKey(t, "runtime"); got != "pi" {
+		t.Errorf("saved runtime = %q after the Codex install failed, want pi restored", got)
+	}
+}
+
+// The fallback is an ordinary supervised child: once the grant exists, the
+// same vc can switch again.
+func TestFallbackChildCanSwitchAgain(t *testing.T) {
+	l := prepareSwitchLaunch(t, meBody(""),
+		piSwitchesTo(t, "codex"),
+		piSwitchesTo(t, "codex"),
+		exitWith(0),
+	)
+	l.grantsByHit = [][]map[string]string{noChatGPTGrant, codexGrants}
+	saveRuntimeKey(t, "pi")
+
+	if _, err := runSupervisedBounded(t); err != nil {
+		t.Fatalf("runSpawn: %v", err)
+	}
+	runs, _, _, provHits := l.snapshot()
+	if !equalStrings(kinds(runs), []string{"pi", "pi", "codex"}) {
+		t.Fatalf("children = %v, want [pi pi codex]", kinds(runs))
+	}
+	if provHits != 2 {
+		t.Errorf("grant asked %d times, want 2 (once per Codex start)", provHits)
+	}
+	if got, _ := configKey(t, "runtime"); got != "codex" {
+		t.Errorf("saved runtime = %q after the second switch succeeded, want codex", got)
+	}
+}
+
+// When the runtime to fall back to cannot start either, vc gives up with that
+// error instead of bouncing between two runtimes that both fail.
+func TestFallbackThatAlsoFailsEndsVCWithAnError(t *testing.T) {
+	var l *switchLaunch
+	breakPiAndSwitch := func(ctx context.Context, run *childRun) error {
+		// Pi's runtime disappears while it runs (no source can put it back in
+		// tests), so falling back to Pi cannot be prepared either.
+		if err := os.RemoveAll(filepath.Join(l.home, ".void-code", "runtime")); err != nil {
+			t.Errorf("remove Pi runtime: %v", err)
+		}
+		return piSwitchesTo(t, "codex")(ctx, run)
+	}
+	l = prepareSwitchLaunch(t, meBody(""), breakPiAndSwitch)
+	l.grantsByHit = [][]map[string]string{noChatGPTGrant}
+	saveRuntimeKey(t, "pi")
+
+	_, err := runSupervisedBounded(t)
+	runs, _, _, provHits := l.snapshot()
+	if err == nil {
+		t.Fatal("runSpawn returned nil although neither Codex nor the fallback Pi could start")
+	}
+	if len(runs) != 1 {
+		t.Fatalf("children = %v, want only the first Pi", kinds(runs))
+	}
+	if provHits > 1 {
+		t.Errorf("Codex was prepared %d times; after the fallback failed vc must stop, not retry", provHits)
+	}
+	if l.ensure.calls > 1 {
+		t.Errorf("ensureCodexRuntime called %d times; at most one attempt", l.ensure.calls)
 	}
 }
