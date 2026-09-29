@@ -515,6 +515,10 @@ const RELEASE_ACTION = /softprops\/action-gh-release|ncipollo\/release-action|ac
 // behind is a bundle archive, a disk image, or a named installer.
 const DESKTOP_ASSET = /\.(?:app|dmg|msi|zip|tar\.gz)\b|\bvoid-code-(?:mac|windows)|\bwin-unpacked\b|installer|Void-Code-[^\s/]*\.exe/i;
 
+// A version.json entry pointing at the desktop mirror, e.g.
+// `"desktop-darwin-arm64": "desktop/${VERSION}/void-code-mac-arm64.zip",`.
+const MIRROR_POINTER = /^"desktop-[a-z0-9-]+": "desktop\/\$\{VERSION\}\/[^"/]+",?$/;
+
 const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter((line) => line !== '');
 const isDesktopAsset = (path: string) => !TODAYS_ASSETS.includes(path) && DESKTOP_ASSET.test(path);
 
@@ -618,7 +622,12 @@ describe('and does none of it on an ordinary tag', () => {
       .filter((step) => conditionHolds(asText(step.if), PLAIN_TAG))
       .map((step) => `${asText(step.uses)} ${interpolate(asText(step.run), PLAIN_TAG)} ${interpolate(asText(asMap(step.with).fileName), PLAIN_TAG)}`)
       .join('\n');
-    const named = lines(script).filter((line) => DESKTOP_ASSET.test(line));
+    // version.json may name this tag's desktop builds by their path on mcow's
+    // mirror (desktop/<tag>/<file>, void-works#65): a pointer, not a file sent
+    // into void-auth. A shell comment sends nothing either.
+    const named = lines(script)
+      .filter((line) => !line.startsWith('#') && !MIRROR_POINTER.test(line))
+      .filter((line) => DESKTOP_ASSET.test(line));
     expect(sync === undefined ? 'there is no publish-auth job any more' : named.join(' | ') || 'the CLI only').toBe('the CLI only');
   });
 });
