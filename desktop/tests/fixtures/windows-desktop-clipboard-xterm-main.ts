@@ -49,8 +49,13 @@ void app.whenReady().then(async () => {
     }
     if (stage === 'done' && title.startsWith('XTERM:RESULT:')) {
       writeFileSync(resultFile, title.slice('XTERM:RESULT:'.length), { encoding: 'utf8', mode: 0o600 });
-      window.destroy();
-      app.exit(0);
+      // The result is on disk, so nothing is left to shut down cleanly. app.exit() and
+      // process.exit() both run Chromium's shutdown, which on a loaded macOS runner can
+      // sit idle for a minute after Node's exit hooks have run; the test then reports
+      // "hidden Electron fixture did not finish" for a fixture that passed (#421).
+      // reallyExit is Node's raw exit(3): exit code 0, no shutdown. The helper
+      // processes follow their parent out.
+      (process as unknown as { reallyExit(code: number): never }).reallyExit(0);
     }
   });
   window.webContents.on('render-process-gone', (_event, details) => {
