@@ -6,9 +6,9 @@ import { desktopChildEnv } from '../src/main/desktop-child-env';
 // environment desktopChildEnv builds from nothing, so a variable the desktop sets for `vc status`
 // does not reach it — and `vc desktop-session` runs its own access check before Pi ever starts:
 //
-//   cmd/vc/desktop_session.go:73     deps.authGate(token, <host>, ...)
-//   cmd/vc/main.go:541-547           authGate -> auth.FetchMe -> ErrNotLoggedIn -> error
-//   cmd/vc/desktop_session.go:74-76  -> "authentication unavailable: %w"
+//   cmd/vc/session_core.go     prepareSession: deps.authGate(token, <host>, ...)
+//   cmd/vc/main.go             authGate -> auth.FetchMe -> ErrNotLoggedIn -> error
+//   cmd/vc/desktop_session.go  prepareDesktopSession -> "authentication unavailable: %w"
 //
 // That gate runs before buildPiSpawnEnv, i.e. before anything resolved from VC_RELAY_HOST. Fixing
 // only the status probe leaves the app honest about being signed in and still unable to open a

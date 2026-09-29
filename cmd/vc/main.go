@@ -364,90 +364,56 @@ func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, 
 	return result, cmd.Execute()
 }
 
-// runSpawn is the default RunE for rootCmd — no sub-command launches Pi.
+// runSpawn is the default RunE for rootCmd — no sub-command launches Pi. It is
+// the CLI's view over prepareSession: it finds its own runtime, lets the
+// managed pieces fail soft, and starts Pi in this terminal.
 func runSpawn(_ *cobra.Command, args []string) error {
-	cfg := config.OSResolve()
-	token, _, _ := auth.Load()
-
-	// Admission is always live: cached identity and wallet are only display hints,
-	// never permission to start a paid session. The question is the access check
-	// — who the token belongs to and whether they are let in — so it goes to the
-	// access-check host, the same one the desktop session gate asks.
-	me, reached, err := authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
-	if err != nil {
+	plan, err := prepareSession(sessionRequest{resolveRuntime: resolveCLIPiRuntime}, defaultSessionDeps())
+	for _, warning := range plan.warnings {
+		fmt.Fprintln(os.Stderr, warning)
+	}
+	var access sessionAccessError
+	if errors.As(err, &access) {
 		currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeRejected, sourceRejected)
 		currentLaunchDiagnostics.flush()
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, access.err)
 		exitProcess(1)
+		return access.err
+	}
+	if err != nil {
 		return err
 	}
-	// The wallet never stops the launch; what it has to say goes to Pi, which
-	// shows it once the session is up (see walletLaunchNotice).
-	notice := ""
-	if reached {
-		notice = launchNotice(me, time.Now())
-	}
-	// Resolve launch artifacts after live admission but before constructing a
-	// token-bearing child environment. A bundled runtime starts its already
-	// resolved private Node directly, never through Pi's shebang or pi.cmd. The
-	// legacy install.sh channel has no bundled Node, so it keeps its existing Pi
-	// entrypoint launch and inherited PATH exactly.
+	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
+	currentLaunchDiagnostics.flush()
+	return spawnHarness(context.Background(), plan.path, plan.args, plan.env)
+}
+
+// resolveCLIPiRuntime finds the Pi the CLI starts. A bundled runtime starts its
+// already resolved private Node directly, never through Pi's shebang or pi.cmd.
+// The legacy install.sh channel has no bundled Node, so it keeps its existing
+// Pi entrypoint launch and inherited PATH exactly.
+func resolveCLIPiRuntime() (sessionRuntime, error) {
 	// Installs from before v0.2.48 have no managed Pi at all, and their `vc
 	// update` only swapped the binary. Put the pinned Pi in place first; on
 	// failure the resolution below reports it missing, as before.
 	_ = ensurePiRuntime(os.Stderr)
 	privateNode, nodeErr := pibin.ResolveNode()
-	launchPath := ""
-	modulePath := ""
 	switch {
 	case nodeErr == nil:
-		modulePath, err = pibin.ResolveModule()
+		modulePath, err := pibin.ResolveModule()
 		if err != nil {
-			return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+			return sessionRuntime{}, fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
 		}
-		launchPath = privateNode
+		return sessionRuntime{path: privateNode, entry: modulePath, privateNode: privateNode}, nil
 	case errors.Is(nodeErr, pibin.ErrBundledNodeUnprovisioned):
-		launchPath, err = pibin.Resolve()
+		launchPath, err := pibin.Resolve()
 		if err != nil {
-			return fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
+			return sessionRuntime{}, fmt.Errorf("%s: %w", pibin.MissingMessage(), err)
 		}
+		return sessionRuntime{path: launchPath}, nil
 	default:
-		return fmt.Errorf("cannot resolve bundled Node: %w", nodeErr)
+		return sessionRuntime{}, fmt.Errorf("cannot resolve bundled Node: %w", nodeErr)
 	}
-	extPath, extErr := reconcileManagedPiExtension()
-	if extErr != nil {
-		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi provider was not reconciled: %v\n", extErr)
-	}
-	if _, webErr := reconcileManagedWebSearch(true); webErr != nil {
-		fmt.Fprintf(os.Stderr, "vc: warning: managed Pi web search was not reconciled: %v\n", webErr)
-	}
-	// A seeded default is a convenience, never a precondition: an unreadable or
-	// hand-broken settings.json must still let Pi start.
-	if modelErr := ensurePiDefaultModel(); modelErr != nil {
-		fmt.Fprintf(os.Stderr, "vc: warning: Pi default model was not seeded: %v\n", modelErr)
-	}
-	caPath, err := resolveCA(cfg)
-	if err != nil {
-		return fmt.Errorf("cannot resolve relay CA (required for proxy TLS): %w", err)
-	}
-	if extPath == "" {
-		extPath, err = ensurePiVoidCodexExtension()
-		if err != nil {
-			return fmt.Errorf("cannot write Pi relay extension: %w", err)
-		}
-	}
-	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-	if privateNode != "" {
-		env = withBuiltPiPath(env, os.Environ(), privateNode)
-	}
-	env = withLaunchNotice(env, notice)
-	piArgs := buildPiArgs(nil, extPath)
-	if modulePath != "" {
-		piArgs = append([]string{modulePath}, piArgs...)
-	}
-	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
-	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), launchPath, piArgs, env)
 }
 
 var piVoidCodexModels = []string{
@@ -596,7 +562,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 // Returns reached=true only when the server responded successfully.
 func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, bool, error) {
 	if token == "" {
-		return auth.MeResult{}, false, fmt.Errorf("Not logged in. Run `vc login` to authenticate (email, pairing code, or --code <ACCESS-CODE>).")
+		return auth.MeResult{}, false, errNotLoggedIn
 	}
 
 	me, err := fetchMeForAdmission(authHost, token, httpClient)
