@@ -43,8 +43,7 @@ package installercontract
 //
 // Isolation, same contract as installer_mirror_test.go: the environment is built
 // from scratch rather than inherited, USERPROFILE/HOME/TMPDIR live in the test's
-// own temp dir, no agent CLI is selected (so node/npm/winget are never reached),
-// and VC_TRUST_RELAY_CA is unset (so nothing is imported into a trust store).
+// own temp dir, and no agent CLI is selected (so node/npm/winget are never reached).
 //
 // ── why the runs are skipped on Windows ─────────────────────────────────────
 //
