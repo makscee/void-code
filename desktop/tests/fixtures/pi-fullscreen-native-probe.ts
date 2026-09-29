@@ -105,7 +105,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         return value(actualTui, theme);
       } : value, options);
     },
-    setEditorComponent: () => assert.fail('must not replace editor'),
+    // The managed factory's prompt-keys editor (void-works#77); the clipboard adapter itself never calls this.
+    setEditorComponent: () => {},
   } };
   // Substitute only bootstrap, never native clipboard IO or the managed factory.
   // The actual consumer loader imports the unchanged Go-managed source above.

@@ -14,7 +14,7 @@ import type {
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, normalizeContext } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
 const CODEX_PROVIDER_ID = "void-codex";
@@ -61,6 +61,7 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 	registerLaunchNotice(pi);
 	registerBillingRefusalReply(pi);
 	registerFullscreenClipboardLifecycle(pi, options?.clipboardIO);
+	registerPromptKeys(pi);
 	const bootstrap = loadBootstrap();
 	if (!bootstrap) return;
 	activeBootstrap = bootstrap;
@@ -100,6 +101,65 @@ function registerVoidCodex(
 		...(relayProviderId ? { headers: { "x-void-provider": relayProviderId } } : {}),
 		models,
 		streamSimple: streamVoidCodex,
+	});
+}
+
+// Esc clears the prompt, Up/Down recall prompt history (void-works#77), with Pi 0.87.1's public API
+// only: the main editor becomes a CustomEditor subclass through ctx.ui.setEditorComponent, which is
+// how Pi documents changing editor keys. Pi wires its own handlers, submit, autocomplete and prompt
+// history into it, and puts its default editor back on /new, /resume, fork and /reload.
+//
+// Esc runs Pi's handler first (abort a turn, cancel !bash, leave bash mode, double-Esc /tree, a
+// retry's or compaction's own cancel). Only when the agent was idle, nothing was queued and that
+// handler left a non-empty draft as it was does the draft clear, with setText, so Pi's undo brings
+// it back. Autocomplete keeps its own Esc.
+//
+// Up/Down run Pi's own tui.editor.historyPrevious/historyNext actions, which browse history from
+// anywhere in the draft. Those actions have no default key; the bare arrow is added to them for this
+// one keystroke through the KeybindingsManager Pi hands the factory, so keybindings.json is never
+// written, /hotkeys and /reload keep what the person set, and other editors (dialogs) keep arrows
+// that move the cursor. Autocomplete keeps its own Up/Down, and Pi drops key releases before input.
+function registerPromptKeys(pi: ExtensionAPI): void {
+	// Built here, not at module scope: a host without CustomEditor keeps Pi's editor instead of
+	// failing the whole extension (and the transport with it) on load.
+	if (typeof CustomEditor !== "function") return;
+	class PromptKeysEditor extends CustomEditor {
+		private readonly keys: any;
+		private readonly idle: () => boolean;
+
+		constructor(tui: any, theme: any, keybindings: any, idle: () => boolean) {
+			super(tui, theme, keybindings);
+			this.keys = keybindings;
+			this.idle = idle;
+		}
+
+		handleInput(data: string): void {
+			if (this.keys.matches(data, "app.interrupt") && !this.isShowingAutocomplete()) {
+				const draft = this.getText();
+				const idle = this.idle();
+				super.handleInput(data);
+				if (idle && draft.length > 0 && this.getText() === draft) this.setText("");
+				return;
+			}
+			const key = matchesKey(data, "up") ? "up" : matchesKey(data, "down") ? "down" : undefined;
+			if (!key || this.isShowingAutocomplete()) {
+				super.handleInput(data);
+				return;
+			}
+			const action = key === "up" ? "tui.editor.historyPrevious" : "tui.editor.historyNext";
+			const bindings = this.keys.getUserBindings();
+			this.keys.setUserBindings({ ...bindings, [action]: [...this.keys.getKeys(action), key] });
+			try {
+				super.handleInput(data);
+			} finally {
+				this.keys.setUserBindings(bindings);
+			}
+		}
+	}
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+		const idle = (): boolean => ctx.isIdle() && !ctx.hasPendingMessages();
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => new PromptKeysEditor(tui, theme, keybindings, idle));
 	});
 }
 
