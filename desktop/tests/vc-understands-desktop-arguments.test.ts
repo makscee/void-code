@@ -61,9 +61,40 @@ function temp(prefix: string) {
 interface Invocation { readonly site: string; readonly command: string; readonly flags: readonly string[] }
 
 // Only arrays handed to a vc spawn count, and only those shaped like argv: a
-// subcommand followed by flags. `stdio: ['ignore', 'pipe', 'pipe']` lives in the
-// same call and is not argv, so the shape is what excludes it -- not its
-// position, which a reformat would move.
+// subcommand followed by at least one flag. `stdio: ['ignore', 'pipe', 'pipe']`
+// lives in the same call and has no flag, so the shape is what excludes it --
+// not its position, which a reformat would move.
+//
+// An argv may be assembled inside the call: a literal value between flags
+// (`'--runtime', 'codex'`) or a conditional spread of a nested array
+// (`...(id ? ['--codex-session', id] : [])`). The outermost array is the argv;
+// everything quoted inside it is read, and of the items after the subcommand
+// only the flags are kept. Values are not flags and vc does not parse them as
+// such, so dropping them loses nothing this file checks.
+function outermostArrays(call: string): string[] {
+  const arrays: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let quote: string | null = null;
+  for (let index = 0; index < call.length; index += 1) {
+    const character = call[index];
+    if (quote) {
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') { quote = character; continue; }
+    if (character === '[') {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (character === ']') {
+      depth -= 1;
+      if (depth === 0 && start >= 0) { arrays.push(call.slice(start + 1, index)); start = -1; }
+    }
+  }
+  return arrays;
+}
+
 function argvLists(source: string): string[][] {
   const found: string[][] = [];
   const marker = /\bspawn\(\s*(?:vcPath|runtime\.vc)\s*,/g;
@@ -79,13 +110,23 @@ function argvLists(source: string): string[][] {
         if (depth === 0) break;
       }
     }
-    for (const array of source.slice(open, end + 1).matchAll(/\[([^[\]]*)\]/g)) {
-      const items = [...array[1].matchAll(/'([^']*)'/g)].map((item) => item[1]);
+    // Arrays directly in the call, or in either branch of a conditional there.
+    // Arrays inside an options object ({ stdio: [...] }) are skipped with it.
+    const call = source.slice(open + 1, end);
+    let objectDepth = 0;
+    let outside = '';
+    for (const character of call) {
+      if (character === '{') objectDepth += 1;
+      if (objectDepth === 0) outside += character;
+      if (character === '}') objectDepth -= 1;
+    }
+    for (const array of outermostArrays(outside)) {
+      const items = [...array.matchAll(/'([^']*)'/g)].map((item) => item[1]);
       const [command, ...rest] = items;
       if (command === undefined || !/^[a-z][a-z0-9-]*$/.test(command)) continue;
-      if (!rest.every((item) => item.startsWith('--'))) continue;
-      if (!rest.some((item) => item.length > 2)) continue;
-      found.push(items);
+      const flags = rest.filter((item) => item.startsWith('--'));
+      if (!flags.some((item) => item.length > 2)) continue;
+      found.push([command, ...flags]);
     }
   }
   return found;
@@ -120,6 +161,29 @@ describe('the argv reader', () => {
   it('ignores a spawn of something that is not vc', () => {
     expect(argvLists(fixture).map(([command]) => command)).not.toContain('whatever');
   });
+
+  // The Codex launch writes a value between flags and adds a flag only when the
+  // chat has a session. The old reader dropped such an argv whole, so a Codex
+  // spawn with a flag vc lacked would have passed this file unseen.
+  const codexFixture = `
+    return spawn(runtime.vc, codex
+      ? ['desktop-session', '--runtime', 'codex', ...(id ? ['--codex-session', id] : []), '--']
+      : ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle], {
+      name: 'xterm-256color', env: { ...process.env, LIST: ['x', '--not-a-flag'].join(',') },
+    });
+  `;
+
+  it('reads an argv with a literal value between flags and a nested conditional spread', () => {
+    expect(argvLists(codexFixture)).toContainEqual(['desktop-session', '--runtime', '--codex-session', '--']);
+  });
+
+  it('still reads the other branch of the same call', () => {
+    expect(argvLists(codexFixture)).toContainEqual(['desktop-session', '--node', '--pi-entry', '--']);
+  });
+
+  it('does not read arrays inside the options object', () => {
+    expect(argvLists(codexFixture).flat()).not.toContain('--not-a-flag');
+  });
 });
 
 const invocations: Invocation[] = readdirSync(path.join(repo, 'desktop/src/main'))
@@ -134,6 +198,15 @@ describe('what the desktop spawns vc with', () => {
     // named once, here, and nowhere else.
     expect(invocations.map(({ command, flags }) => [command, ...flags].join(' ')))
       .toContain('login --json');
+  });
+
+  it('finds the Codex chat launch and both of its flags', () => {
+    // Spec 2026-09-29-desktop-codex-chats-design, item 8: a Codex chat is
+    // `vc desktop-session --runtime codex [--codex-session <id>] --`. Written
+    // in the spawn call itself, where this file reads it.
+    const codex = invocations.filter(({ command, flags }) => command === 'desktop-session' && flags.includes('--runtime'));
+    expect(codex.map(({ site }) => site)).toContain('src/main/spawn-request.ts');
+    expect(codex.flatMap(({ flags }) => flags)).toContain('--codex-session');
   });
 
   it('finds every vc subcommand the app drives', () => {
