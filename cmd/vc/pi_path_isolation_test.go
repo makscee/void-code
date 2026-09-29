@@ -104,11 +104,6 @@ func TestRunSpawnGivesPiTheBundledNodeAndNotTheUsersPath(t *testing.T) {
 		writeExecutableFixture(t, piModule, "fixture")
 	}
 
-	caPath := filepath.Join(home, "relay-ca.pem")
-	if err := os.WriteFile(caPath, []byte("test CA"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VC_RELAY_CA", caPath)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"userId":"u1","email":"u@example.test"}`))
@@ -364,11 +359,6 @@ func preparePiPathLaunch(t *testing.T) (home, foreignPath string) {
 	writeExecutableFixture(t, managedPi, "#!/bin/sh\nexit 0\n")
 	assertManagedPiFixtureIsWhatResolverLooksFor(t, home)
 
-	caPath := filepath.Join(home, "relay-ca.pem")
-	if err := os.WriteFile(caPath, []byte("test CA"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VC_RELAY_CA", caPath)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"userId":"u1","email":"u@example.test"}`))

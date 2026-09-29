@@ -32,7 +32,6 @@ type desktopSessionDeps struct {
 	loadToken       func() (string, error)
 	resolveConfig   func() config.Config
 	authGate        func(string, string, *http.Client) (auth.MeResult, bool, error)
-	resolveCA       func(config.Config) (string, error)
 	reconcilePi     func() (string, error)
 	reconcileSearch func(bool) (managedWebSearchState, error)
 	reconcileUI     func() (string, error)
@@ -46,7 +45,6 @@ func defaultDesktopSessionDeps() desktopSessionDeps {
 		loadToken:       func() (string, error) { token, _, err := auth.Load(); return token, err },
 		resolveConfig:   config.OSResolve,
 		authGate:        authGate,
-		resolveCA:       resolveCA,
 		reconcilePi:     reconcileManagedPiExtension,
 		reconcileSearch: reconcileManagedWebSearch,
 		reconcileUI:     reconcileManagedPiUIExtension,
@@ -117,7 +115,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 // core is the shared session core's dependencies, taken from the desktop's.
 func (d desktopSessionDeps) core() sessionDeps {
 	c := defaultSessionDeps()
-	c.loadToken, c.resolveConfig, c.authGate, c.resolveCA = d.loadToken, d.resolveConfig, d.authGate, d.resolveCA
+	c.loadToken, c.resolveConfig, c.authGate = d.loadToken, d.resolveConfig, d.authGate
 	c.reconcilePi, c.reconcileSearch, c.reconcileUI, c.seedUIDefaults = d.reconcilePi, d.reconcileSearch, d.reconcileUI, d.seedUIDefaults
 	if d.now != nil {
 		c.now = d.now

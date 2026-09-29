@@ -525,7 +525,6 @@ func assertDesktopSessionLaunch(t *testing.T, tc walletGateCase) {
 			return config.Config{AuthHost: "http://auth.invalid", AccessCheckHost: host, RelayScheme: "https", RelayHost: "relay.invalid"}
 		},
 		authGate:        authGate, // the real gate, against the fixture server
-		resolveCA:       func(config.Config) (string, error) { return "/ca.pem", nil },
 		reconcilePi:     func() (string, error) { return "/managed.ts", nil },
 		reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil },
 		now:             time.Now,
@@ -555,7 +554,7 @@ func assertDesktopSessionLaunch(t *testing.T, tc walletGateCase) {
 // with: VC_LAUNCH_NOTICE is vc's to set, like every other VC_* seam, and an
 // inherited one is dropped before vc decides whether to add its own.
 func TestPiSpawnEnvDropsInheritedLaunchNotice(t *testing.T) {
-	env := buildPiSpawnEnv(providerRelay(), []string{"HOME=/home/person", launchNoticeEnv + "=" + staleLaunchNotice}, "https", "relay.test", "secret", "/ca.pem")
+	env := buildPiSpawnEnv(providerRelay(), []string{"HOME=/home/person", launchNoticeEnv + "=" + staleLaunchNotice})
 	for _, entry := range env {
 		if name, _, _ := strings.Cut(entry, "="); strings.EqualFold(name, launchNoticeEnv) {
 			t.Fatalf("buildPiSpawnEnv passed an inherited %s through to Pi: %q", launchNoticeEnv, entry)

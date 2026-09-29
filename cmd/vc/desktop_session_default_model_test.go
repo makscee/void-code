@@ -71,7 +71,6 @@ func (p *desktopSeedProbe) deps() desktopSessionDeps {
 			}
 			return auth.MeResult{}, true, nil
 		},
-		resolveCA:   func(config.Config) (string, error) { p.note("resolveCA"); return "/ca.pem", nil },
 		reconcilePi: func() (string, error) { p.note("reconcilePi"); return "/managed.ts", nil },
 		reconcileSearch: func(bool) (managedWebSearchState, error) {
 			p.note("reconcileSearch")
