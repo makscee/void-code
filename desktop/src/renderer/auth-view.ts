@@ -32,6 +32,15 @@ export function walletLineFor(status: AuthStatus | null): string | null {
   return typeof text === 'string' && text !== '' ? text : null;
 }
 
+// The header's Profile button opens the page with the balance, weekly limit and usage
+// (void-board#480): the URL vc sent, for a signed-in status only, next to the wallet line; null
+// hides the button.
+export function profileLinkFor(status: AuthStatus | null): string | null {
+  if (status?.authState !== 'signed_in') return null;
+  const url: unknown = status.profileUrl;
+  return typeof url === 'string' && url !== '' ? url : null;
+}
+
 // Whether the shared Sign in button belongs on a given screen. Lives here, next to the mapper that
 // produces the screens, so the rule is testable without a DOM and so a fifth screen has exactly one
 // place to declare its answer — inline in the renderer, the default for anything new would silently
