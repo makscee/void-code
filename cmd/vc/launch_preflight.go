@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -91,12 +92,16 @@ func (p *launchPreflight) updateIfReady() (string, bool) {
 // identity (the email, else the user id) and the wallet rendered. Both are ""
 // when there was no answer to take them from: a refusal or a failed check
 // vouches for no one and no wallet. The balance is "" too when the answer
-// carried no wallet.
+// carried no wallet. A rejected token (auth.ErrNotLoggedIn) signs the screen
+// out, so the person is offered login instead of a launch that cannot pass.
 func (p *launchPreflight) accountIfReady() (account welcome.AccountMsg, ready bool) {
 	select {
 	case <-p.authDone:
 		p.mu.RLock()
 		defer p.mu.RUnlock()
+		if errors.Is(p.authResult.err, auth.ErrNotLoggedIn) {
+			return welcome.AccountMsg{SignedOut: true}, true
+		}
 		if p.authResult.err != nil || !p.authResult.reached {
 			return welcome.AccountMsg{}, true
 		}
