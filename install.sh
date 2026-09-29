@@ -1208,7 +1208,6 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   printf '==> installed to %s (from %s)\n' "$BIN_DIR/vc" "$VC_BIN_SOURCE" >&2
 fi
 
-
 # 2. PATH — register vc FIRST, before the node/agent bootstrap. The vc launcher
 # (vc login, vc doctor) works without node; a node/agent hiccup must NEVER leave
 # vc off PATH. Previously this ran AFTER node bootstrap, so a node failure's

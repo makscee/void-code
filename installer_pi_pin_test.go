@@ -892,7 +892,7 @@ func TestPowerShellInstallerPiPinDryRun(t *testing.T) {
 // that compares something meaningless, still mentions the manifest and the pin.
 // These runs execute install.ps1 end to end the way installer_windows_download_test.go
 // does — a local httptest host behind VC_AUTH_HOST serves version.json, the
-// binary and the relay CA — but with Pi selected, and with `node` and `npm` on
+// binary — but with Pi selected, and with `node` and `npm` on
 // PATH as the same fixtures the shell harness uses. Skipped on Windows for the
 // reason given there (install.ps1 writes the real HKCU PATH), and skipped where
 // no PowerShell is installed.

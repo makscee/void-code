@@ -62,7 +62,7 @@ func TestShellInstallerDryRunPlansNoSystemTrust(t *testing.T) {
 	skipInstallShOnWindows(t)
 
 	r := runDryRun(t)
-	for _, bad := range []string{"relay-ca", "add-trusted-cert", "update-ca-", "trust"} {
+	for _, bad := range []string{"relay-ca", "add-trusted-cert", "update-ca-", "trusted"} {
 		if strings.Contains(r, bad) {
 			t.Errorf("dry-run still plans %q:\n%s", bad, r)
 		}
