@@ -28,7 +28,7 @@ var desktopFilesByKey = map[string]string{
 }
 
 func TestReleaseListsTheTagsDesktopFilesInBothVersionJSONs(t *testing.T) {
-	release := readInstaller(t, ".github/workflows/release.yml")
+	release := readWorkflow(t, ".github/workflows/release.yml")
 	blocks := regexp.MustCompile(`(?s)"desktop": \{\n(.*?)\n\s*\},\n`).FindAllStringSubmatch(release, -1)
 	if len(blocks) != 2 {
 		t.Fatalf("release.yml has %d version.json desktop blocks, want 2 (dist/ and void-auth/)", len(blocks))
@@ -51,7 +51,7 @@ func TestReleaseListsTheTagsDesktopFilesInBothVersionJSONs(t *testing.T) {
 }
 
 func TestDesktopWorkflowsProduceTheListedFiles(t *testing.T) {
-	mac := readInstaller(t, ".github/workflows/desktop-mac-app.yml")
+	mac := readWorkflow(t, ".github/workflows/desktop-mac-app.yml")
 	if !strings.Contains(mac, "release/void-code-mac-${{ matrix.arch }}.zip") {
 		t.Error("desktop-mac-app.yml no longer zips to void-code-mac-<arch>.zip")
 	}
@@ -64,7 +64,7 @@ func TestDesktopWorkflowsProduceTheListedFiles(t *testing.T) {
 	if !strings.Contains(pkg, `"artifactName": "Void-Code-windows-${arch}.${ext}"`) {
 		t.Error("desktop/package.json nsis artifactName changed")
 	}
-	if !strings.Contains(readInstaller(t, ".github/workflows/release.yml"), "sha256sum * > SHA256SUMS-desktop") {
+	if !strings.Contains(readWorkflow(t, ".github/workflows/release.yml"), "sha256sum * > SHA256SUMS-desktop") {
 		t.Error("release.yml no longer writes SHA256SUMS-desktop")
 	}
 }
@@ -93,6 +93,13 @@ func TestInstallersReadTheDesktopKeysReleaseWrites(t *testing.T) {
 			t.Errorf("install.ps1 lacks %s", want)
 		}
 	}
+}
+
+// readWorkflow reads a file with its line endings as committed: the Windows
+// runner checks out with core.autocrlf=true, and the patterns above match "\n".
+func readWorkflow(t *testing.T, name string) string {
+	t.Helper()
+	return strings.ReplaceAll(readInstaller(t, name), "\r\n", "\n")
 }
 
 func keys(m map[string]string) []string {
