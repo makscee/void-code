@@ -1145,7 +1145,9 @@ remove_old_relay_ca() {
       security delete-certificate -Z "$_h" -t "$_kc" >/dev/null || true
     done
     if old_relay_ca_present; then
-      printf 'vc: could not remove the old void-relay CA. To remove it yourself, run:\n' >&2
+      # Over ssh, or with no one at the screen, macOS cannot ask for the password
+      # and refuses; the same command works from Terminal on the Mac itself.
+      printf 'vc: could not remove the old void-relay CA. To remove it yourself, run in Terminal on this Mac:\n' >&2
       printf '    security delete-certificate -c %s -t %s\n' "$OLD_RELAY_CA_NAME" "$_kc" >&2
     else
       printf '==> removed the old void-relay CA\n' >&2
