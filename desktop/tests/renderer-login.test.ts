@@ -107,10 +107,11 @@ describe('index.ts is actually wired to the pure auth-view state machine, not re
     expect(pushHandler, 'could not locate handleLoginPush').not.toBe('');
     expect(pushHandler, 'handleLoginPush still calls openLink — a prompt push must not open anything by itself').not.toMatch(/openLink\(/);
     // Every call to openLink in the whole file must therefore live inside a click handler — this
-    // repo has exactly one such call site left (the Open button; the other openLink use is the
-    // unrelated recent-chat-entry click in createProductTerminal's `activate`, also click-gated).
+    // repo has exactly one such call site left (the Open button; the other openLink uses are the
+    // unrelated recent-chat-entry click in createProductTerminal's `activate` and the header's
+    // Profile button, void-board#480, both click-gated).
     const openLinkCalls = renderer.match(/openLink\(/g)?.length ?? 0;
-    expect(openLinkCalls, 'expected exactly the two click-gated openLink call sites (Open button, recent-entry activate)').toBe(2);
+    expect(openLinkCalls, 'expected exactly the three click-gated openLink call sites (Open button, recent-entry activate, Profile button)').toBe(3);
   });
 
   it('re-reads auth status after a login reaches a phase that requires it, instead of trusting the push alone', () => {

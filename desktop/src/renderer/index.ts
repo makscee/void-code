@@ -5,7 +5,7 @@ import { appVersionLabel } from './app-version';
 import { wireProductTerminalClipboard } from './clipboard-shortcuts';
 import { detectRendererPlatform } from './platform';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
-import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, walletLineFor, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
+import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, profileLinkFor, walletLineFor, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import { installFileDropHandlers } from './file-drop';
 import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
@@ -51,6 +51,7 @@ const signinLinkElement = document.querySelector<HTMLElement>('#signin-link')!;
 const signinLinkOpenButton = document.querySelector<HTMLButtonElement>('#signin-link-open')!;
 const signinReadyElement = document.querySelector<HTMLElement>('#signin-ready')!;
 const walletLineElement = document.querySelector<HTMLElement>('#wallet-line')!;
+const profileLinkButton = document.querySelector<HTMLButtonElement>('#profile-link')!;
 const signinStartButton = document.querySelector<HTMLButtonElement>('#signin-start')!;
 const signinStatusElement = document.querySelector<HTMLElement>('#signin-status')!;
 
@@ -61,6 +62,7 @@ let view: RendererWorkspaceView = { workspace: null, recoveryPath: null };
 let recentOpen = false;
 let currentRecovery: RecoveryCode = 'AUTH_PREFLIGHT_REQUIRED';
 let authScreen: AuthScreen = 'signed_out';
+let profileUrl: string | null = null;
 let loginPhase: LoginPhase = { phase: 'idle' };
 // null until the first read comes back — which is neither "nothing was filed" nor "we could not
 // ask", and describeAccessRequest is what keeps those three apart.
@@ -129,6 +131,8 @@ function applyAuthStatus(result: Awaited<ReturnType<typeof window.voidTerminal.a
   const walletLine = walletLineFor(result.ok ? result.status : null);
   walletLineElement.textContent = walletLine ?? '';
   walletLineElement.hidden = walletLine === null;
+  profileUrl = profileLinkFor(result.ok ? result.status : null);
+  profileLinkButton.hidden = profileUrl === null;
   if (authScreen !== 'access_not_granted') accessRequest = null;
   renderAuthScreens();
   if (authScreen === 'access_not_granted') void loadAccessRequest(false);
@@ -370,6 +374,7 @@ async function chooseFolder(): Promise<void> {
 
 chooseButton.addEventListener('click', () => { void chooseFolder(); }); emptyChooseButton.addEventListener('click', () => { void chooseFolder(); }); locateButton.addEventListener('click', () => { void chooseFolder(); });
 supportToggleButton.addEventListener('click', () => { setSupportOpen(supportPanel.hidden); });
+profileLinkButton.addEventListener('click', () => { if (profileUrl !== null) void window.voidTerminal.openLink(profileUrl); });
 supportCloseButton.addEventListener('click', () => { setSupportOpen(false); });
 supportCopyButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.copy(supportContext()); announce(result.action === 'copied' ? 'Support Report copied. Review it before sharing.' : 'Support Report was not copied.'); });
 supportSaveButton.addEventListener('click', async () => { const result = await window.voidTerminal.support.save(supportContext()); announce(result.action === 'saved' ? 'Support Report saved. Review it before sharing.' : 'Support Report save cancelled.'); });

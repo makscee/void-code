@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/spf13/cobra"
@@ -41,6 +42,9 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	cfg := config.OSResolve()
+	// The profile page shows the balance, the weekly limit and the usage; it
+	// asks for its own email code, so every state points there, signed out too.
+	defer fmt.Printf("%s %s\n", labelStyle.Render("Профиль:"), valueStyle.Render(browser.ProfileURL))
 	fmt.Printf("%s %s\n", labelStyle.Render("version:"), valueStyle.Render(version.Version))
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
 	fmt.Printf("%s %s\n", labelStyle.Render("runtime:"), valueStyle.Render("Pi"))
