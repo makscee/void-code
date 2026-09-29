@@ -243,27 +243,11 @@ func TestLaunchPreflightIsHandedTheAccessCheckHost(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		_, _, host := resolveLocalAuthState()
+		_, _, host, _ := resolveLocalAuthStateWithSource()
 		if host != "https://check.example" {
 			t.Errorf("signed in=%v: launch preflight host = %q, want the access-check host — it is handed straight to authGate", signedInFirst, host)
 		}
 	}
-}
-
-// The welcome screen's identity and budget line. It reads MeResult, so it is an
-// access check like any other, and a wrong host here renders "not logged in" to
-// someone who is.
-func TestWelcomeAuthStateAsksTheAccessCheckHost(t *testing.T) {
-	signedIn(t)
-	check := newHostSpy(t, http.StatusOK, `{"userId":"u-1","email":"person@example.test"}`)
-	signIn := newHostSpy(t, http.StatusOK, `{"userId":"wrong-host"}`)
-	t.Setenv(config.EnvAuthHost, signIn.url())
-	t.Setenv(config.EnvAccessCheckHost, check.url())
-
-	_ = resolveAuthState()
-
-	check.assertReached(t, "the welcome auth state")
-	signIn.assertUntouched(t, "the sign-in")
 }
 
 // `vc status` without --json. Its --json sibling was moved; a human running the

@@ -111,7 +111,9 @@ func TestAtomicReplacementPreservesPreviousOnRenameFailure(t *testing.T) {
 	}
 	path, _ := tokenPath()
 	failure := errors.New("injected rename failure")
-	if err := saveAt(path, "replacement-credential", func(string, string) error { return failure }); !errors.Is(err, failure) {
+	ops := defaultCredentialOps()
+	ops.rename = func(string, string) error { return failure }
+	if err := saveWithOps(path, "replacement-credential", ops); !errors.Is(err, failure) {
 		t.Fatalf("got %v", err)
 	}
 	got, _, err := Load()

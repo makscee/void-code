@@ -9,8 +9,6 @@ import (
 	"github.com/makscee/void-code/internal/welcome"
 )
 
-const launchPreflightFreshness = 5 * time.Minute
-
 type launchAuthResult struct {
 	me      auth.MeResult
 	reached bool
@@ -77,32 +75,6 @@ func startLaunchPreflight(token, authHost string, withUpdate bool, deps launchPr
 	return p
 }
 
-func (p *launchPreflight) reusable(token, authHost string) bool {
-	return p != nil && token == p.token && authHost == p.authHost && p.deps.now().Sub(p.started) <= launchPreflightFreshness
-}
-func (p *launchPreflight) awaitAuth(token, authHost string) (auth.MeResult, bool, error, bool) {
-	if !p.reusable(token, authHost) {
-		return auth.MeResult{}, false, nil, false
-	}
-	remaining := authAdmissionBound - p.deps.now().Sub(p.started)
-	if remaining > 0 {
-		timer := time.NewTimer(remaining)
-		defer timer.Stop()
-		select {
-		case <-p.authDone:
-		case <-timer.C:
-			return auth.MeResult{}, false, nil, true
-		}
-	}
-	select {
-	case <-p.authDone:
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-		return p.authResult.me, p.authResult.reached, p.authResult.err, true
-	default:
-		return auth.MeResult{}, false, nil, true
-	}
-}
 func (p *launchPreflight) updateIfReady() (string, bool) {
 	select {
 	case <-p.updateDone:

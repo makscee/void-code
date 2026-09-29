@@ -36,11 +36,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// meCache holds a cached result from FetchMe to avoid repeated auth-host calls.
 var (
-	meCacheResult *auth.MeResult
-	meCacheExpiry time.Time
-
 	spawnHarness             = harness.Spawn
 	exitProcess              = os.Exit
 	currentLaunchDiagnostics = newLaunchDiagnostics(false, time.Now, io.Discard)
@@ -204,13 +200,6 @@ func decideGate(stdinTTY, loggedIn bool) gateDecision {
 	return gateShowWelcome
 }
 
-// resolveLocalAuthState reads only local token/cache state so the welcome screen
-// can render before any optional network request completes.
-func resolveLocalAuthState() (welcome.AuthState, string, string) {
-	state, token, authHost, _ := resolveLocalAuthStateWithSource()
-	return state, token, authHost
-}
-
 func refreshLaunchAfterLogin(deps launchPreflightDeps) (welcome.AuthState, string, string, *launchPreflight) {
 	state, token, authHost, source := resolveLocalAuthStateWithSource()
 	deps.diagnostics.record(phaseLocalStateLoad, outcomeComplete, source)
@@ -229,44 +218,6 @@ func resolveLocalAuthStateWithSource() (welcome.AuthState, string, string, launc
 		return welcome.AuthState{LoggedIn: false}, token, cfg.AccessCheckHost, sourceLocal
 	}
 	return welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, token, cfg.AccessCheckHost, sourceLocal
-}
-
-// resolveAuthState checks token presence and fetches /v1/vc/me for sub-days.
-// Never fatal — on any error it returns a graceful degraded state.
-func resolveAuthState() welcome.AuthState {
-	token, _, err := auth.Load()
-	if err != nil || strings.TrimSpace(token) == "" {
-		return welcome.AuthState{LoggedIn: false}
-	}
-	me, err := auth.FetchMe(config.OSResolve().AccessCheckHost, token, &http.Client{Timeout: authProbeTimeout})
-	if err != nil {
-		return welcome.AuthState{LoggedIn: false, IdentityUnverified: true}
-	}
-	return meResultToState(me)
-}
-
-func staleMeResultToState(me auth.MeResult) welcome.AuthState {
-	identity := me.Email
-	if identity == "" {
-		identity = me.UserID
-	}
-	return welcome.AuthState{
-		LoggedIn:           true,
-		Identity:           identity,
-		IdentityUnverified: true,
-	}
-}
-
-func meResultToState(me auth.MeResult) welcome.AuthState {
-	identity := me.Email
-	if identity == "" {
-		identity = me.UserID
-	}
-	return welcome.AuthState{
-		LoggedIn: true,
-		Identity: identity,
-		Balance:  formatAccount(me, time.Now()), // "" when the server sent no wallet or limit → nothing shown
-	}
 }
 
 // openProfile mints a vc-web-session and opens the auto-login redeem URL in the
@@ -413,16 +364,6 @@ func buildPiArgs(args []string, extensionPath string) []string {
 		out = append(out, "-e", extensionPath)
 	}
 	return append(out, args...)
-}
-
-func hasPiFlag(args []string, name string) bool {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == name || strings.HasPrefix(a, name+"=") {
-			return true
-		}
-	}
-	return false
 }
 
 func ensurePiVoidCodexExtension() (string, error) {

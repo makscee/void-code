@@ -254,16 +254,13 @@ func TestResolveModuleFailures(t *testing.T) {
 	})
 }
 
-// --- Resolve / IsInstalled ---
+// --- Resolve ---
 
 func TestResolveFailures(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		fakeHome(t)
 		if _, err := Resolve(); !os.IsNotExist(err) {
 			t.Fatalf("Resolve() error = %v, want not-exist", err)
-		}
-		if IsInstalled() {
-			t.Fatal("IsInstalled() = true with no managed Pi")
 		}
 	})
 	t.Run("directory", func(t *testing.T) {
@@ -284,18 +281,7 @@ func TestResolveFailures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not executable") {
 			t.Fatalf("Resolve() error = %v, want a not-executable refusal", err)
 		}
-		if IsInstalled() {
-			t.Fatal("IsInstalled() = true for a non-executable entrypoint")
-		}
 	})
-}
-
-func TestIsInstalled(t *testing.T) {
-	home := fakeHome(t)
-	writeFile(t, managedPiPath(home), 0700)
-	if !IsInstalled() {
-		t.Fatal("IsInstalled() = false with a managed Pi in place")
-	}
 }
 
 // Resolving under a home that is itself a symlink works: the home is

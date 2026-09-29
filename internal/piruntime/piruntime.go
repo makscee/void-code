@@ -71,12 +71,6 @@ func packageDir(root string) string {
 	return filepath.Join(root, "node_modules", "@earendil-works", "pi-coding-agent")
 }
 
-// InstalledVersion reads the managed Pi's version from its package.json, or ""
-// when there is none.
-func InstalledVersion(home string) string {
-	return treeVersion(Dir(home))
-}
-
 func treeVersion(root string) string {
 	data, err := os.ReadFile(filepath.Join(packageDir(root), "package.json"))
 	if err != nil {

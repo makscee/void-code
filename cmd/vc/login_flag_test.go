@@ -96,7 +96,6 @@ func TestLoginJSONFlagSelectsRunnerExclusively(t *testing.T) {
 func TestNewDeviceLoginDepsWiresToConfiguredAuthHost(t *testing.T) {
 	withTempHome(t)
 
-	const expiresIn = 600
 	const interval = 5
 	future := time.Now().Add(time.Hour).UnixMilli()
 

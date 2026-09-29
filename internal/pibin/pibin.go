@@ -230,12 +230,6 @@ func splitPath(path string) []string {
 	return components
 }
 
-// IsInstalled reports whether VC's managed Pi entrypoint is available.
-func IsInstalled() bool {
-	_, err := Resolve()
-	return err == nil
-}
-
 // vcDownloadPage is where a person gets an installed copy of VC. A bare binary
 // taken from the release page cannot install the runtime itself — vc resolves
 // the managed runtime and never provisions it — so the address has to travel

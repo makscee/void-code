@@ -10,9 +10,3 @@ import (
 //
 //go:embed embed/pi-web-access-0.13.0
 var piWebAccessFork embed.FS
-
-//go:embed embed/pi-web-access-0.13.0/openai-search.ts
-var piWebAccessOpenAISource string
-
-//go:embed embed/pi-web-access-0.13.0/gemini-search.ts
-var piWebAccessRoutingSource string

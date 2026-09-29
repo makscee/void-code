@@ -13,19 +13,6 @@ var nonInteractiveFlag bool
 // the real process args; tests override it.
 var osArgs = os.Args
 
-// interactiveStdin reports whether stdin is an interactive terminal.
-// Wraps isStdinTTY (cmd/vc/main.go) so the intent reads clearly at call sites.
-func interactiveStdin() bool {
-	return isStdinTTY()
-}
-
-// nonInteractive is the single predicate commands consult before opening a
-// prompt: true when --non-interactive was passed OR stdin is not a TTY. In
-// either case vc must not block on input.
-func nonInteractive() bool {
-	return nonInteractiveFlag || !interactiveStdin()
-}
-
 // hasNonInteractiveArg scans os.Args for --non-interactive before cobra parses.
 // The bare-launch gate in main() runs before rootCmd.Execute(), so the cobra
 // flag value is not yet populated there — this mirrors the early --raw scan.
