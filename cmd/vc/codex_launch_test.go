@@ -231,8 +231,12 @@ func TestCodexLaunchSpawnsTheInstalledCodexThroughTheRelay(t *testing.T) {
 	if l.spawn.exe != l.fakeCodex {
 		t.Fatalf("spawned %q, want the Codex that ensureCodexRuntime returned (%q)", l.spawn.exe, l.fakeCodex)
 	}
-	if len(l.spawn.args) != 0 {
-		t.Fatalf("Codex was given arguments %q; step 1 passes none", l.spawn.args)
+	// --no-daemon, and nothing else: Codex 0.158's TUI otherwise starts a
+	// `codex app-server --managed-daemon` that outlives the session and needs a
+	// unix socket under CODEX_HOME, which fails on long homes with "path must be
+	// shorter than SUN_LEN" (live run, 29.09).
+	if len(l.spawn.args) != 1 || l.spawn.args[0] != "--no-daemon" {
+		t.Fatalf("Codex was given arguments %q, want exactly [--no-daemon]", l.spawn.args)
 	}
 
 	env := l.spawn.env

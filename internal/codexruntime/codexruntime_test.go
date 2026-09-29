@@ -7,11 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -235,6 +238,137 @@ func TestEnsureInstallsTheVerifiedPackageAndReturnsTheBinary(t *testing.T) {
 	// 130–160 MB is not a silent wait: the person is told what is downloading.
 	if !strings.Contains(strings.ToLower(progress.String()), "codex") {
 		t.Errorf("no progress line about Codex was written; got %q", progress.String())
+	}
+}
+
+// An interrupted download (93 MB observed live) or a half-unpacked staging
+// tree stays beside the install forever unless the next install clears it.
+func TestEnsureClearsLeftoversOfAnInterruptedInstall(t *testing.T) {
+	home := t.TempDir()
+	parent := filepath.Dir(Dir(home))
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	staleDownload := filepath.Join(parent, ".codex-download-123456")
+	if err := os.WriteFile(staleDownload, bytes.Repeat([]byte("x"), 4096), 0600); err != nil {
+		t.Fatal(err)
+	}
+	staleDownloadDir := filepath.Join(parent, ".codex-download-dir-789")
+	if err := os.MkdirAll(staleDownloadDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	staleStage := filepath.Join(parent, ".codex-stage-654321")
+	if err := os.MkdirAll(filepath.Join(staleStage, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleStage, "bin", "codex"), []byte("half"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	staleStageFile := filepath.Join(parent, ".codex-stage-file")
+	if err := os.WriteFile(staleStageFile, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := tarGz(t, packageTree(testGOOS))
+	asset := &Asset{Name: "codex-package-test.tar.gz", SHA256: sumOf(archive)}
+	if _, err := Ensure(testOptions(home, serveArchive(t, archive), asset, &bytes.Buffer{})); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	for _, stale := range []string{staleDownload, staleDownloadDir, staleStage, staleStageFile} {
+		if _, err := os.Lstat(stale); err == nil {
+			t.Errorf("leftover %s survived a fresh install", filepath.Base(stale))
+		}
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".codex-download-") || strings.HasPrefix(e.Name(), ".codex-stage-") {
+			t.Errorf("%s remains beside the install after it finished", e.Name())
+		}
+	}
+}
+
+// sizedHost serves the archive with Content-Length, in flushed chunks, the way
+// a release host sends a 130–160 MB package.
+func sizedHost(t *testing.T, archive []byte) *releaseHost {
+	t.Helper()
+	h := &releaseHost{}
+	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		h.paths = append(h.paths, r.URL.Path)
+		h.mu.Unlock()
+		w.Header().Set("Content-Length", strconv.Itoa(len(archive)))
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		const chunk = 32 << 10
+		for off := 0; off < len(archive); off += chunk {
+			end := off + chunk
+			if end > len(archive) {
+				end = len(archive)
+			}
+			if _, err := w.Write(archive[off:end]); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(h.srv.Close)
+	return h
+}
+
+var hundredPercent = regexp.MustCompile(`(^|[^0-9.])100(\.0+)?\s*%`)
+
+// A single line for a ~90 s download reads as a hang. With a known size the
+// person sees a percentage; one at completion is enough, so nothing here
+// depends on timing.
+func TestEnsureReportsDownloadPercentWhenTheSizeIsKnown(t *testing.T) {
+	home := t.TempDir()
+	payload := make([]byte, 768<<10)
+	rand.New(rand.NewSource(1)).Read(payload) // incompressible: the gzip stays large
+	tree := append(packageTree(testGOOS), entry{name: "codex-resources/blob.bin", body: string(payload), mode: 0644})
+	archive := tarGz(t, tree)
+	if len(archive) < 512<<10 {
+		t.Fatalf("test archive is only %d bytes; it must span many chunks", len(archive))
+	}
+	asset := &Asset{Name: "codex-package-test.tar.gz", SHA256: sumOf(archive)}
+	var progress bytes.Buffer
+
+	if _, err := Ensure(testOptions(home, sizedHost(t, archive), asset, &progress)); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	var lines []string
+	for _, l := range strings.FieldsFunc(progress.String(), func(r rune) bool { return r == '\n' || r == '\r' }) {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) < 2 {
+		t.Fatalf("progress has %d lines, want a percentage and then a completion line: %q", len(lines), progress.String())
+	}
+	firstPercent, sawHundred := -1, false
+	for i, l := range lines {
+		if strings.Contains(l, "%") && firstPercent < 0 {
+			firstPercent = i
+		}
+		if hundredPercent.MatchString(l) {
+			sawHundred = true
+		}
+	}
+	if firstPercent < 0 {
+		t.Fatalf("no progress line carries a percentage: %q", progress.String())
+	}
+	if firstPercent >= len(lines)-1 {
+		t.Fatalf("the percentage is the last line; want it before the completion line: %q", progress.String())
+	}
+	if strings.Contains(lines[len(lines)-1], "%") {
+		t.Errorf("the last progress line is still a percentage, not a completion line: %q", lines[len(lines)-1])
+	}
+	if !sawHundred {
+		t.Errorf("the download finished but no line reached 100%%: %q", progress.String())
 	}
 }
 
@@ -476,6 +610,9 @@ func TestWriteConfigRoutesCodexThroughTheRelay(t *testing.T) {
 	expect("model_providers.void", "wire_api", `"responses"`)
 	expect("model_providers.void", "requires_openai_auth", "false")
 	expect("model_providers.void", "env_http_headers", `{ "x-void-provider" = "VC_CODEX_PROVIDER" }`)
+	// Codex otherwise clones https://github.com/openai/plugins.git in the
+	// background on every start (live run, 29.09).
+	expect("features", "plugins", "false")
 }
 
 func TestWriteConfigTakesTheRelayFromItsArgument(t *testing.T) {
