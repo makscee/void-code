@@ -40,6 +40,8 @@
 #   VC_INSTALL_PI       default 1; install @earendil-works/pi-coding-agent
 #   VC_INSTALL_CLAUDE   default 0; install @anthropic-ai/claude-code
 #   VC_INSTALL_CODEX    default 0; install @openai/codex
+#   VC_SKIP_DESKTOP     set to 1 to skip the desktop app (macOS only; see
+#                       "desktop app" below for VC_DESKTOP_DIR)
 #   VC_MIRROR_REPO      default makscee/void-code — GitHub repo whose release
 #                       serves the vc binary when VC_AUTH_HOST fails. The
 #                       mirror download is always sha256-checked against the
@@ -461,6 +463,147 @@ resolve_mirror_tag_from_latest() {
 }
 
 mirror_urls_from_tag
+
+# ── desktop app (macOS) ───────────────────────────────────────────────────────
+# void-works#65: the installer also puts the desktop app on a Mac, from the SAME
+# release tag as the CLI. The desktop bundles its own vc, so a desktop from
+# another release would run a different vc than the one on PATH. version.json
+# names the files by tag ("desktop/<tag>/<file>"), and $AUTH_HOST serves each
+# release's desktop builds under /vc/desktop/<tag>/ (makscee/homelab keeps the
+# current and the previous tag there). A version.json without a desktop entry
+# (releases before this change) or a tag the host no longer keeps means no
+# desktop, never a desktop from some other release.
+#
+# The desktop is an extra: nothing in this step can fail the CLI install. A
+# refusal or a failed download says so and points at the /download page.
+#
+# A curl-downloaded app carries no com.apple.quarantine, so Gatekeeper does not
+# stop it even though it is only ad-hoc signed (void-works#54).
+#
+# Env:
+#   VC_SKIP_DESKTOP=1   do not install the desktop app
+#   VC_DESKTOP_DIR      where "Void Code.app" goes. Default: the folder that
+#                       already holds it (~/Applications, then /Applications);
+#                       for a first install /Applications when it is writable
+#                       without sudo, ~/Applications otherwise.
+DESKTOP_APP_NAME="Void Code.app"
+DESKTOP_URL=""
+DESKTOP_SUMS_URL=""
+DESKTOP_ASSET=""
+DESKTOP_SKIP=""
+DESKTOP_DONE=""
+DESKTOP_PAGE_URL="$AUTH_HOST/download?platform=macos"
+
+# A "desktop-*" value from version.json. The keys carry the prefix so they can
+# never be confused with the same platform's CLI entry in "artifacts"/"files".
+vj_desktop_field() {
+  printf '%s' "$_vj_raw" | grep -o "\"desktop-$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"[^"]*"$' | tr -d '"'
+}
+
+# desktop/<tag>/<file>, where both parts are in the tag alphabet and neither is
+# a dot segment. The path is third-party text headed for a URL, like the tag.
+desktop_path_is_valid() {
+  case "${1:-}" in desktop/*/*) ;; *) return 1 ;; esac
+  _dv_rest="${1#desktop/}"
+  _dv_tag="${_dv_rest%%/*}"
+  _dv_file="${_dv_rest#*/}"
+  tag_is_valid "$_dv_tag" && tag_is_valid "$_dv_file" || return 1
+  case "$_dv_tag" in .|..) return 1 ;; esac
+  case "$_dv_file" in .|..) return 1 ;; esac
+  return 0
+}
+
+if [ "${VC_SKIP_DESKTOP:-0}" = "1" ]; then
+  [ "$OS" = "darwin" ] && DESKTOP_SKIP="skipped (VC_SKIP_DESKTOP=1)"
+elif [ "$OS" = "darwin" ]; then
+  _dp="$(vj_desktop_field "darwin-$ARCH")" || _dp=""
+  _ds="$(vj_desktop_field sums)" || _ds=""
+  if [ -z "$_dp" ] || [ -z "$_ds" ]; then
+    DESKTOP_SKIP="not installed: $VERSION_JSON_URL lists no desktop app for darwin/$ARCH"
+  elif ! desktop_path_is_valid "$_dp" || ! desktop_path_is_valid "$_ds"; then
+    printf 'vc: %s named a desktop path that is not desktop/<tag>/<file> — refusing it: %s %s\n' \
+      "$VERSION_JSON_URL" "$(tag_render "$_dp")" "$(tag_render "$_ds")" >&2
+    DESKTOP_SKIP="not installed: version.json named a desktop path that was refused"
+  else
+    DESKTOP_URL="$AUTH_HOST/vc/$_dp"
+    DESKTOP_SUMS_URL="$AUTH_HOST/vc/$_ds"
+    DESKTOP_ASSET="${_dp##*/}"
+  fi
+fi
+
+# The folder "Void Code.app" goes to (see VC_DESKTOP_DIR above).
+desktop_dest_dir() {
+  if [ -n "${VC_DESKTOP_DIR:-}" ]; then
+    printf '%s' "$VC_DESKTOP_DIR"
+  elif [ -d "$HOME/Applications/$DESKTOP_APP_NAME" ]; then
+    printf '%s' "$HOME/Applications"
+  elif [ -d "/Applications/$DESKTOP_APP_NAME" ] || [ -w /Applications ]; then
+    printf '/Applications'
+  else
+    printf '%s' "$HOME/Applications"
+  fi
+}
+
+# Download, check and unpack the desktop app, then swap it into place. The old
+# app is moved aside first and put back if the new one cannot take its place.
+install_desktop_app() {
+  _da_dir="$(desktop_dest_dir)"
+  _da_dest="$_da_dir/$DESKTOP_APP_NAME"
+  _da_plist="$_da_dest/Contents/Info.plist"
+  if [ -n "${_ver:-}" ] && [ -f "$_da_plist" ] \
+     && [ "$(/usr/bin/defaults read "$_da_dest/Contents/Info" CFBundleShortVersionString 2>/dev/null)" = "$_ver" ]; then
+    printf '==> desktop app %s is already at v%s\n' "$_da_dest" "$_ver" >&2
+    DESKTOP_DONE="$_da_dest (already v$_ver)"
+    return 0
+  fi
+
+  printf '==> downloading the desktop app from %s\n' "$DESKTOP_URL" >&2
+  _da_tmp="$(mktemp -d)"
+  if ! fetch_to_file_retry "$DESKTOP_URL" "$_da_tmp/$DESKTOP_ASSET"; then
+    printf 'vc: failed to download %s\n' "$DESKTOP_URL" >&2
+    rm -rf "$_da_tmp"
+    DESKTOP_SKIP="not installed: the download failed"
+    return 1
+  fi
+  # Strict: the list is published with the builds, so no list is a failure too.
+  if ! sha256_status "$_da_tmp/$DESKTOP_ASSET" "$DESKTOP_SUMS_URL" "$DESKTOP_ASSET"; then
+    printf '    Not installing the desktop app. Nothing was replaced.\n' >&2
+    rm -rf "$_da_tmp"
+    DESKTOP_SKIP="not installed: its sha256 did not check out"
+    return 1
+  fi
+  # ditto keeps the bundle's symlinks (Electron frameworks) that unzip can break.
+  if ! ditto -x -k "$_da_tmp/$DESKTOP_ASSET" "$_da_tmp/x" || [ ! -d "$_da_tmp/x/$DESKTOP_APP_NAME" ]; then
+    printf 'vc: %s did not unpack to %s\n' "$DESKTOP_ASSET" "$DESKTOP_APP_NAME" >&2
+    rm -rf "$_da_tmp"
+    DESKTOP_SKIP="not installed: the archive did not unpack"
+    return 1
+  fi
+
+  if ! mkdir -p "$_da_dir" 2>/dev/null; then
+    printf 'vc: cannot create %s\n' "$_da_dir" >&2
+    rm -rf "$_da_tmp"
+    DESKTOP_SKIP="not installed: cannot write to $_da_dir"
+    return 1
+  fi
+  if [ -e "$_da_dest" ] && ! mv "$_da_dest" "$_da_tmp/old.app" 2>/dev/null; then
+    printf 'vc: cannot replace %s (no permission?)\n' "$_da_dest" >&2
+    rm -rf "$_da_tmp"
+    DESKTOP_SKIP="not installed: cannot replace $_da_dest"
+    return 1
+  fi
+  if ! mv "$_da_tmp/x/$DESKTOP_APP_NAME" "$_da_dest" 2>/dev/null; then
+    [ -e "$_da_tmp/old.app" ] && mv "$_da_tmp/old.app" "$_da_dest" 2>/dev/null
+    printf 'vc: cannot write %s\n' "$_da_dest" >&2
+    rm -rf "$_da_tmp"
+    DESKTOP_SKIP="not installed: cannot write $_da_dest"
+    return 1
+  fi
+  rm -rf "$_da_tmp"
+  printf '==> installed the desktop app to %s\n' "$_da_dest" >&2
+  DESKTOP_DONE="$_da_dest"
+  return 0
+}
 
 # ── shell rc file detection + idempotent PATH append ─────────────────────────
 # Detect login shell, pick the right rc file. CREATE it if absent.
@@ -1200,6 +1343,12 @@ if [ "$DRY_RUN" = 1 ]; then
     print_npm_install_global @openai/codex
     printf '\n'
   fi
+  if [ -n "$DESKTOP_URL" ]; then
+    printf 'GET %s  (desktop app, checked against %s)\n' "$DESKTOP_URL" "$DESKTOP_SUMS_URL"
+    printf 'WOULD: ditto -x -k <zip> and put %s in %s\n' "$DESKTOP_APP_NAME" "$(desktop_dest_dir)"
+  elif [ -n "$DESKTOP_SKIP" ]; then
+    printf 'Desktop app: %s\n' "$DESKTOP_SKIP"
+  fi
   _dry_rc="$(detect_rc_file)"
   printf 'RC file: %s\n' "${_dry_rc}"
   printf 'NEXT: vc login\n'
@@ -1311,6 +1460,11 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   append_path_to_rc "$RC_FILE" "$BIN_DIR"
 fi
 
+# 3b. The desktop app on macOS — NON-FATAL, like everything after the PATH.
+if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ] && [ -n "$DESKTOP_URL" ]; then
+  install_desktop_app || true
+fi
+
 # 4. node/npm + selected agent bootstrap — NON-FATAL. On failure, vc is already
 # installed and on PATH; the post-install steps print exactly what's left.
 printf '==> bootstrapping node / selected agents\n' >&2
@@ -1340,6 +1494,12 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   printf '==============================================\n'
   printf '  vc installed — reachable as `vc` %s\n' "$_vc_note"
   printf '==============================================\n'
+  if [ -n "$DESKTOP_DONE" ]; then
+    printf '  desktop app: %s\n' "$DESKTOP_DONE"
+  elif [ -n "$DESKTOP_SKIP" ]; then
+    printf '  desktop app %s\n' "$DESKTOP_SKIP"
+    printf '  get it from %s\n' "$DESKTOP_PAGE_URL"
+  fi
   printf '\n'
   printf 'NEXT STEPS:\n'
 
