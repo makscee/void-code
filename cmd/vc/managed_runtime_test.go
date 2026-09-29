@@ -39,11 +39,6 @@ func TestRunSpawnNeverExecutesPathPiWithCredentials(t *testing.T) {
 	t.Setenv("PATH", maliciousDir)
 	assertManagedPiFixtureIsWhatResolverLooksFor(t, home)
 
-	caPath := filepath.Join(home, "relay-ca.pem")
-	if err := os.WriteFile(caPath, []byte("test CA"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VC_RELAY_CA", caPath)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"userId":"u1","email":"u@example.test"}`))
@@ -59,12 +54,15 @@ func TestRunSpawnNeverExecutesPathPiWithCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(maliciousToken); err == nil {
-		t.Fatalf("PATH pi ran and received VC_AUTH_TOKEN=%q", data)
+		t.Fatalf("PATH pi ran (recorded %q)", data)
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(managedToken); err != nil || recordedToken(data) != "admitted-token" {
-		t.Fatalf("managed Pi did not receive admitted token: data=%q err=%v", data, err)
+	// The managed Pi runs, and even it gets no token in its environment: the
+	// extension asks `vc pi-bootstrap` for it, so the commands Pi runs cannot
+	// read it.
+	if data, err := os.ReadFile(managedToken); err != nil || recordedToken(data) != "ran:" {
+		t.Fatalf("managed Pi did not run with a token-free environment: data=%q err=%v", data, err)
 	}
 }
 
@@ -119,14 +117,16 @@ func piPathLookupName() string {
 	return "pi"
 }
 
-// tokenRecorderScript returns a script that copies VC_AUTH_TOKEN into sink,
+// tokenRecorderScript returns a script that writes "ran:" and then whatever
+// VC_AUTH_TOKEN it was given into sink, so the file proves the child ran and
+// shows which token, if any, reached it,
 // written in the dialect the platform actually executes: a POSIX shell script
 // for the cli.js entrypoint, a batch file for the .cmd shim, which
 // harness.Spawn routes through cmd.exe.
 func tokenRecorderScript(t *testing.T, sink string) string {
 	t.Helper()
 	if runtime.GOOS != "windows" {
-		return "#!/bin/sh\nprintf %s \"$VC_AUTH_TOKEN\" > " + shellQuote(sink) + "\n"
+		return "#!/bin/sh\nprintf 'ran:%s' \"$VC_AUTH_TOKEN\" > " + shellQuote(sink) + "\n"
 	}
 	// cmd.exe has no escape for these inside a quoted token; a temp directory
 	// never contains them, and a fixture that silently mis-redirected would look
@@ -134,7 +134,7 @@ func tokenRecorderScript(t *testing.T, sink string) string {
 	if strings.ContainsAny(sink, "\"%") {
 		t.Fatalf("sink path %q cannot be quoted for cmd.exe", sink)
 	}
-	return "@echo off\r\n> \"" + sink + "\" echo %VC_AUTH_TOKEN%\r\n"
+	return "@echo off\r\n> \"" + sink + "\" echo ran:%VC_AUTH_TOKEN%\r\n"
 }
 
 // recordedToken normalizes what the fixture wrote. The POSIX fixture uses

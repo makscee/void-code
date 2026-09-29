@@ -45,7 +45,6 @@ func (p *desktopUIProbe) deps() desktopSessionDeps {
 			p.note("ui-settings")
 			return p.uiSettingsErr
 		},
-		resolveCA: func(config.Config) (string, error) { p.note("ca"); return "/ca.pem", nil },
 	}
 }
 
@@ -75,7 +74,6 @@ func TestDefaultDesktopSessionInstallsCompactUIForFreshUser(t *testing.T) {
 	}
 	deps.reconcilePi = func() (string, error) { return "/managed/void-code.ts", nil }
 	deps.reconcileSearch = func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil }
-	deps.resolveCA = func(config.Config) (string, error) { return "/ca.pem", nil }
 
 	plan, err := prepareDesktopSession(node, piEntry, nil, deps)
 	if err != nil {
@@ -112,11 +110,11 @@ func TestDesktopSessionMintsOneTrustedCompactUIMarker(t *testing.T) {
 	if got := envValues(plan.env, "VC_DESKTOP_SESSION"); len(got) != 1 || got[0] != "1" {
 		t.Fatalf("VC_DESKTOP_SESSION = %#v, want one vc-minted value [1]", got)
 	}
-	plain := buildPiSpawnEnv(providerRelay(), []string{"VC_DESKTOP_SESSION=1"}, "https", "relay.invalid", "token", "/ca.pem")
+	plain := buildPiSpawnEnv(providerRelay(), []string{"VC_DESKTOP_SESSION=1"})
 	if got := envValues(plain, "VC_DESKTOP_SESSION"); len(got) != 0 {
 		t.Fatalf("terminal Pi inherited desktop-only marker: %#v", got)
 	}
-	if strings.Join(probe.journal, ",") != "token,config,access,transport,search,ui,ui-settings,ca" {
+	if strings.Join(probe.journal, ",") != "token,config,access,transport,search,ui,ui-settings" {
 		t.Fatalf("desktop UI prepared outside the admitted pre-launch phase: %v", probe.journal)
 	}
 }
@@ -194,7 +192,7 @@ func TestDesktopSessionDoesNotPrepareCompactUIBeforeAccess(t *testing.T) {
 	if _, err := prepareDesktopSession(node, piEntry, nil, deps); err == nil {
 		t.Fatal("refused token prepared a desktop session")
 	}
-	for _, forbidden := range []string{"transport", "search", "ui", "ui-settings", "ca"} {
+	for _, forbidden := range []string{"transport", "search", "ui", "ui-settings"} {
 		if strings.Contains(strings.Join(probe.journal, ","), forbidden) {
 			t.Fatalf("%s ran before access was granted: %v", forbidden, probe.journal)
 		}

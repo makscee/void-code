@@ -23,8 +23,7 @@ import (
 //  4. web search
 //  5. compact UI (when the surface asks for it)
 //  6. the default model seed
-//  7. relay CA
-//  8. the child environment, with the wallet notice
+//  7. the child environment, with the wallet notice
 //
 // A surface decides only how its runtime is found, how strict it is about the
 // managed pieces, and how it reports what the core returns.
@@ -56,8 +55,8 @@ func prepareSession(req sessionRequest, deps sessionDeps) (sessionPlan, error) {
 		notice = launchNotice(me, deps.now())
 	}
 
-	// Resolve launch artifacts after live admission but before constructing a
-	// token-bearing child environment.
+	// Resolve launch artifacts after live admission but before preparing
+	// anything for the child.
 	rt, err := req.resolveRuntime()
 	if err != nil {
 		return plan, err
@@ -102,13 +101,9 @@ func prepareSession(req sessionRequest, deps sessionDeps) (sessionPlan, error) {
 	if err := deps.seedDefaultModel(); err != nil {
 		warn("Pi default model was not seeded: %v", err)
 	}
-	caPath, err := deps.resolveCA(cfg)
-	if err != nil {
-		return plan, fmt.Errorf("relay CA unavailable: %w", err)
-	}
 
 	parent := os.Environ()
-	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, parent, cfg.RelayScheme, cfg.RelayHost, token, caPath)
+	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, parent)
 	// A bundled runtime gets the PATH composed around its private Node; a
 	// runtime without one keeps its inherited PATH exactly.
 	if rt.privateNode != "" {
@@ -166,7 +161,6 @@ type sessionDeps struct {
 	loadToken        func() (string, error)
 	resolveConfig    func() config.Config
 	authGate         func(string, string, *http.Client) (auth.MeResult, bool, error)
-	resolveCA        func(config.Config) (string, error)
 	reconcilePi      func() (string, error)
 	writeEmbeddedPi  func() (string, error)
 	reconcileSearch  func(bool) (managedWebSearchState, error)
@@ -181,7 +175,6 @@ func defaultSessionDeps() sessionDeps {
 		loadToken:        func() (string, error) { token, _, err := auth.Load(); return token, err },
 		resolveConfig:    config.OSResolve,
 		authGate:         authGate,
-		resolveCA:        resolveCA,
 		reconcilePi:      reconcileManagedPiExtension,
 		writeEmbeddedPi:  ensurePiVoidCodexExtension,
 		reconcileSearch:  reconcileManagedWebSearch,

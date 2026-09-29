@@ -112,7 +112,7 @@ func TestPiExtensionUsesOnlyTrustedBootstrapPath(t *testing.T) {
 			t.Fatalf("extension missing %q", want)
 		}
 	}
-	env := buildPiSpawnEnv(providerRelay(), []string{"VC_BOOTSTRAP_EXECUTABLE=/tmp/attacker", "ANTHROPIC_API_KEY=leak", "OPENAI_API_KEY=leak"}, "https", "relay.test", "secret", "/ca.pem")
+	env := buildPiSpawnEnv(providerRelay(), []string{"VC_BOOTSTRAP_EXECUTABLE=/tmp/attacker", "ANTHROPIC_API_KEY=leak", "OPENAI_API_KEY=leak"})
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "/tmp/attacker") || strings.Contains(joined, "ANTHROPIC_API_KEY=leak") || strings.Contains(joined, "OPENAI_API_KEY=leak") || !strings.Contains(joined, "VC_BOOTSTRAP_EXECUTABLE=") {
 		t.Fatalf("unsafe Pi env: %s", joined)
@@ -138,7 +138,7 @@ func desktopFiles(t *testing.T) (string, string) {
 func repairDesktopDeps() desktopSessionDeps {
 	return desktopSessionDeps{loadToken: func() (string, error) { return "token", nil }, resolveConfig: func() config.Config {
 		return config.Config{AuthHost: "http://invalid", RelayScheme: "https", RelayHost: "relay.invalid"}
-	}, authGate: func(string, string, *http.Client) (auth.MeResult, bool, error) { return auth.MeResult{}, true, nil }, resolveCA: func(config.Config) (string, error) { return "/ca.pem", nil }, reconcilePi: func() (string, error) { return "/managed.ts", nil }, reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil }}
+	}, authGate: func(string, string, *http.Client) (auth.MeResult, bool, error) { return auth.MeResult{}, true, nil }, reconcilePi: func() (string, error) { return "/managed.ts", nil }, reconcileSearch: func(bool) (managedWebSearchState, error) { return managedWebSearchReady, nil }}
 }
 func TestDesktopSessionProtectsPiAuthorityAndRuntime(t *testing.T) {
 	// This test walks a preparation all the way through, and a preparation

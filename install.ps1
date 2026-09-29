@@ -19,6 +19,7 @@
 #   $env:VC_INSTALL_PI       default '1'; install @earendil-works/pi-coding-agent.
 #   $env:VC_INSTALL_CLAUDE   default '0'; install @anthropic-ai/claude-code.
 #   $env:VC_INSTALL_CODEX    default '0'; install @openai/codex.
+#   $env:VC_SKIP_DESKTOP = '1'     do not install the desktop app.
 #
 # Local script params:
 #   -WithPi -WithoutPi -WithClaude -WithCodex
@@ -948,6 +949,70 @@ if (Test-Path $configFile) {
     $langLine | Set-Content $configFile
 }
 
+# The desktop app, from the SAME release tag as vc (void-works#65) — NON-FATAL.
+# The desktop bundles its own vc, so a desktop from another release would run a
+# different vc than the one on PATH. version.json names the files by tag
+# ("desktop/<tag>/<file>") and $authHost serves each release's desktop builds
+# under /vc/desktop/<tag>/. No desktop entry (releases before this change) or a
+# tag the host no longer keeps means no desktop, never one from another release.
+# The NSIS installer runs silently (/S) and per-user (/currentuser): no UAC
+# prompt, and the app runs as the same user whose ~/.void-code token vc uses.
+# An Invoke-WebRequest download carries no Mark-of-the-Web, so SmartScreen does
+# not stop the unsigned installer (void-works#54). VC_SKIP_DESKTOP=1 opts out.
+$desktopDone = $null
+$desktopSkip = $null
+$desktopPageUrl = "$authHost/download?platform=windows"
+if ($env:VC_SKIP_DESKTOP -eq '1') {
+    $desktopSkip = 'skipped (VC_SKIP_DESKTOP=1)'
+} else {
+    $desktopPath = $null
+    $desktopSumsPath = $null
+    if ($versionJson -and $versionJson.desktop) {
+        $desktopPath = [string]$versionJson.desktop.'desktop-windows-amd64'
+        $desktopSumsPath = [string]$versionJson.desktop.'desktop-sums'
+    }
+    # Third-party text headed for a URL, held to the same shape install.sh uses.
+    $desktopShape = '^desktop/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+    if (-not $desktopPath -or -not $desktopSumsPath) {
+        $desktopSkip = "not installed: $versionJsonUrl lists no desktop app for windows/amd64"
+    } elseif ($desktopPath -notmatch $desktopShape -or $desktopSumsPath -notmatch $desktopShape -or
+              ($desktopPath -split '/') -contains '..' -or ($desktopSumsPath -split '/') -contains '..') {
+        Write-Host "vc: $versionJsonUrl named a desktop path that is not desktop/<tag>/<file> — refusing it" -ForegroundColor Yellow
+        $desktopSkip = 'not installed: version.json named a desktop path that was refused'
+    } else {
+        $desktopUrl = "$authHost/vc/$desktopPath"
+        $desktopSumsUrl = "$authHost/vc/$desktopSumsPath"
+        $desktopAsset = ($desktopPath -split '/')[-1]
+        $desktopTmp = New-VCTempPath '.exe'
+        try {
+            Write-Host "==> downloading the desktop app from $desktopUrl" -ForegroundColor Cyan
+            if (-not (Invoke-VCDownload -Uri $desktopUrl -OutFile $desktopTmp)) {
+                Write-Host "vc: failed to download $desktopUrl" -ForegroundColor Yellow
+                $desktopSkip = 'not installed: the download failed'
+            } elseif ((Get-VCSha256Status -FilePath $desktopTmp -SumsUrl $desktopSumsUrl -AssetName $desktopAsset) -ne 'ok') {
+                # Strict: the list is published with the builds, so no list is a failure too.
+                Write-Host "    Not installing the desktop app." -ForegroundColor Yellow
+                $desktopSkip = 'not installed: its sha256 did not check out'
+            } else {
+                Write-Host "==> installing the desktop app (per-user, silent)" -ForegroundColor Cyan
+                $proc = Start-Process -FilePath $desktopTmp -ArgumentList '/S', '/currentuser' -Wait -PassThru
+                if ($proc.ExitCode -eq 0) {
+                    $desktopDone = 'installed (Start menu: Void Code)'
+                    Write-Host "==> desktop app installed" -ForegroundColor Green
+                } else {
+                    Write-Host "vc: the desktop installer exited with $($proc.ExitCode)" -ForegroundColor Yellow
+                    $desktopSkip = "not installed: its installer exited with $($proc.ExitCode)"
+                }
+            }
+        } catch {
+            Write-Host "vc: desktop app install failed: $_" -ForegroundColor Yellow
+            $desktopSkip = 'not installed: the install failed'
+        } finally {
+            Remove-Item -Force $desktopTmp -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # Post-install UX
 # Refresh PATH so we can resolve the binaries we just installed.
 $machinePathFinal = [System.Environment]::GetEnvironmentVariable('PATH','Machine')
@@ -963,6 +1028,12 @@ Write-Host ""
 Write-Host "==============================================" -ForegroundColor Cyan
 Write-Host "  vc installed successfully!" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
+if ($desktopDone) {
+    Write-Host "  desktop app: $desktopDone" -ForegroundColor Cyan
+} elseif ($desktopSkip) {
+    Write-Host "  desktop app $desktopSkip" -ForegroundColor Yellow
+    Write-Host "  get it from $desktopPageUrl" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "NEXT STEPS:" -ForegroundColor White
 

@@ -32,7 +32,6 @@ func (p *sessionCoreProbe) deps() sessionDeps {
 			step("access")
 			return auth.MeResult{}, false, p.gateErr
 		},
-		resolveCA:        func(config.Config) (string, error) { step("ca"); return "/ca.pem", nil },
 		reconcilePi:      func() (string, error) { step("transport"); return p.piPath, p.piErr },
 		writeEmbeddedPi:  func() (string, error) { step("embedded"); return "/embedded.ts", nil },
 		reconcileSearch:  func(bool) (managedWebSearchState, error) { step("search"); return managedWebSearchReady, p.searchErr },
@@ -66,11 +65,11 @@ func TestPrepareSessionOneOrderForBothSurfaces(t *testing.T) {
 	if _, err := prepareSession(coreRequest(desktop, true), desktop.deps()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"token", "config", "access", "runtime", "transport", "search", "model", "ca"}
+	want := []string{"token", "config", "access", "runtime", "transport", "search", "model"}
 	if !reflect.DeepEqual(cli.steps, want) {
 		t.Fatalf("CLI steps = %v, want %v", cli.steps, want)
 	}
-	wantDesktop := []string{"token", "config", "access", "runtime", "transport", "search", "ui", "ui-defaults", "model", "ca"}
+	wantDesktop := []string{"token", "config", "access", "runtime", "transport", "search", "ui", "ui-defaults", "model"}
 	if !reflect.DeepEqual(desktop.steps, wantDesktop) {
 		t.Fatalf("desktop steps = %v, want %v", desktop.steps, wantDesktop)
 	}

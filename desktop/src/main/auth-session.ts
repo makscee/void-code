@@ -57,6 +57,9 @@ export interface AuthStatus {
   // What vc hands Pi about the wallet at launch (a low balance, a day Relay will refuse); absent
   // when there is nothing to say.
   launchNotice?: string;
+  // The profile page (balance, weekly limit, usage), as `vc status` prints it; absent when vc sent
+  // no https link (void-board#480).
+  profileUrl?: string;
 }
 export type StatusResult =
   | { ok: true; status: AuthStatus }
@@ -114,6 +117,16 @@ function readWallet(value: unknown): Wallet | undefined {
   return { balanceKopecks, paidUntil, tariff, todayPaid, fundedDays };
 }
 
+// The profile link goes to the browser as is, so only an https URL passes.
+function readProfileUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    return new URL(value).protocol === 'https:' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type LoginEvent =
   | { event: 'prompt'; userCode: string; verificationUrl: string; expiresInSeconds?: number }
   | { event: 'authorized' }
@@ -156,6 +169,8 @@ export function readAuthStatus(vcPath: string, spawn: AuthSpawner): Promise<Stat
           if (wallet !== undefined) status.wallet = wallet;
           if (typeof parsed.walletText === 'string' && parsed.walletText !== '') status.walletText = parsed.walletText;
           if (typeof parsed.launchNotice === 'string' && parsed.launchNotice !== '') status.launchNotice = parsed.launchNotice;
+          const profileUrl = readProfileUrl(parsed.profileUrl);
+          if (profileUrl !== undefined) status.profileUrl = profileUrl;
         }
       }
       resolve({ ok: true, status });
