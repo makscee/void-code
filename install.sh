@@ -1118,10 +1118,16 @@ login_keychain() {
   [ -f "$_kc" ] && printf '%s\n' "$_kc"
 }
 
-# The SHA-1 of every copy of the old CA in keychain $1, one per line.
+# The SHA-1 of every copy of the old CA in keychain $1, one per line. `-c`
+# matches any label that merely contains the name, so a certificate counts only
+# when its label is exactly the old CA's: a look-alike such as
+# "my-void-relay-local-ca-backup" is someone else's and stays.
 old_relay_ca_hashes() {
   security find-certificate -a -c "$OLD_RELAY_CA_NAME" -Z "$1" 2>/dev/null \
-    | awk '/^SHA-1 hash:/ { print $3 }'
+    | awk -v want="\"labl\"<blob>=\"$OLD_RELAY_CA_NAME\"" '
+        /^SHA-1 hash:/ { h = $3; next }
+        { l = $0; sub(/^[ \t]+/, "", l) }
+        l == want && h != "" { print h; h = "" }'
 }
 
 # Succeeds when this machine still trusts the old CA.
@@ -1171,8 +1177,8 @@ remove_old_relay_ca() {
   # is reported now: the CA would otherwise stay in the bundle unannounced.
   _refresh_failed=""
   if [ -f "$OLD_RELAY_CA_DEB" ] && $_sudo rm -f "$OLD_RELAY_CA_DEB"; then
-    $_sudo update-ca-certificates --fresh >/dev/null 2>&1 ||
-      _refresh_failed="sudo update-ca-certificates --fresh"
+    $_sudo update-ca-certificates >/dev/null 2>&1 ||
+      _refresh_failed="sudo update-ca-certificates"
   fi
   if [ -f "$OLD_RELAY_CA_RHEL" ] && $_sudo rm -f "$OLD_RELAY_CA_RHEL"; then
     $_sudo update-ca-trust extract >/dev/null 2>&1 ||
@@ -1191,7 +1197,7 @@ remove_old_relay_ca() {
 
 print_old_relay_ca_manual() {
   [ -f "$OLD_RELAY_CA_DEB" ] &&
-    printf '    sudo rm %s && sudo update-ca-certificates --fresh\n' "$OLD_RELAY_CA_DEB" >&2
+    printf '    sudo rm %s && sudo update-ca-certificates\n' "$OLD_RELAY_CA_DEB" >&2
   [ -f "$OLD_RELAY_CA_RHEL" ] &&
     printf '    sudo rm %s && sudo update-ca-trust extract\n' "$OLD_RELAY_CA_RHEL" >&2
   return 0

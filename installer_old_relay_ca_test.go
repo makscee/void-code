@@ -10,8 +10,13 @@ package installercontract
 // does not exist off Windows.
 //
 // What the runs pin:
-//   - the old CA goes, and only it: the keychain copy by its SHA-1, the anchor
-//     files by their fixed names, the CurrentUser\Root entry by its subject;
+//   - the old CA goes, and only it: the keychain copy whose label is exactly
+//     the old CA's (a look-alike label stays), the anchor files by their fixed
+//     names, the CurrentUser\Root entry by its subject;
+//   - the Linux refresh is a plain update-ca-certificates: --fresh would
+//     rebuild every link in /etc/ssl/certs, hand-made ones included;
+//   - on Windows, a run no one can answer the confirm dialog in only prints
+//     the command, and "removed" is said only after a re-check that ran;
 //   - the installer says what is happening before the prompt that removal can
 //     raise (fakes print a marker the moment they would prompt, into the same
 //     stream, so the order is checked in the output itself);
@@ -28,19 +33,39 @@ import (
 	"testing"
 )
 
-const oldRelayCASHA1 = "5749964BB2A0E0DC72554BE9726F784D033EDB23"
+const (
+	oldRelayCASHA1 = "5749964BB2A0E0DC72554BE9726F784D033EDB23"
+	// A certificate of someone else's whose label merely contains the old CA's
+	// name: `security find-certificate -c` returns it too.
+	lookalikeCASHA1 = "9965F0EE7E6D00958547FB92BEF274307C74F61E"
+)
 
 // A stateful `security`: the old CA is in the keychain while $FAKE_KC_STATE
-// exists. delete-certificate prints a prompt marker (where macOS would ask for
-// the password) and, unless FAKE_KC_DELETE=refuse, removes the state.
+// exists, and a look-alike always is when FAKE_KC_LOOKALIKE=1. find-certificate
+// prints records the way the real one does with -Z. delete-certificate prints a
+// prompt marker (where macOS would ask for the password) and, unless
+// FAKE_KC_DELETE=refuse, removes the old CA; the look-alike never goes away,
+// so deleting it shows up only in the log.
 const fakeSecurityScript = `#!/bin/sh
 printf 'security %s\n' "$*" >> "$FAKE_LOG"
+record() {
+  printf 'SHA-256 hash: 56F78607C98C710DAE70744BA09D5FD8F5B820FE19D4F6A7D105BAE1D530AFB1\n'
+  printf 'SHA-1 hash: %s\n' "$1"
+  printf 'keychain: "%s"\n' "$FAKE_KC"
+  printf 'version: 512\nclass: 0x80001000 \nattributes:\n'
+  printf '    "alis"<blob>="%s"\n' "$2"
+  printf '    "labl"<blob>="%s"\n' "$2"
+}
 case "$1" in
   find-certificate)
-    [ -f "$FAKE_KC_STATE" ] || exit 44
-    printf 'keychain: "%s"\n' "$FAKE_KC"
-    printf 'SHA-1 hash: ` + oldRelayCASHA1 + `\n'
-    printf '    "labl"<blob>="void-relay-local-ca"\n'
+    found=""
+    if [ "$FAKE_KC_LOOKALIKE" = 1 ]; then
+      record ` + lookalikeCASHA1 + ` my-void-relay-local-ca-backup; found=1
+    fi
+    if [ -f "$FAKE_KC_STATE" ]; then
+      record ` + oldRelayCASHA1 + ` void-relay-local-ca; found=1
+    fi
+    [ -n "$found" ] || exit 44
     ;;
   delete-certificate)
     printf '<<PASSWORD PROMPT>>\n' >&2
@@ -86,7 +111,7 @@ func TestShellInstallerRemovesOldRelayCAFromKeychain(t *testing.T) {
 		t.Skip("runs the shell installer with command fixtures")
 	}
 
-	run := func(t *testing.T, deleteMode string) (mirrorResult, string, string) {
+	run := func(t *testing.T, deleteMode string, extraEnv ...string) (mirrorResult, string, string) {
 		state := filepath.Join(t.TempDir(), "kc-has-old-ca")
 		if err := os.WriteFile(state, nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -96,7 +121,7 @@ func TestShellInstallerRemovesOldRelayCAFromKeychain(t *testing.T) {
 			primary: "ok",
 			uname:   "Darwin",
 			fakes:   map[string]string{"security": fakeSecurityScript},
-			env:     []string{"FAKE_KC_STATE=" + state, "FAKE_KC_DELETE=" + deleteMode},
+			env:     append([]string{"FAKE_KC_STATE=" + state, "FAKE_KC_DELETE=" + deleteMode}, extraEnv...),
 			prepare: func(home, _ string) {
 				kc = filepath.Join(home, "Library", "Keychains", "login.keychain-db")
 				if err := os.MkdirAll(filepath.Dir(kc), 0o755); err != nil {
@@ -133,6 +158,38 @@ func TestShellInstallerRemovesOldRelayCAFromKeychain(t *testing.T) {
 		}
 	})
 
+	t.Run("a look-alike label is left alone", func(t *testing.T) {
+		r, state, kc := run(t, "ok", "FAKE_KC_LOOKALIKE=1")
+
+		if calls := mirrorLogLines(r.log, "delete-certificate", lookalikeCASHA1); len(calls) != 0 {
+			t.Errorf("the installer deleted a certificate that is not the old CA:\n%s", strings.Join(calls, "\n"))
+		}
+		want := "security delete-certificate -Z " + oldRelayCASHA1 + " -t " + kc
+		if calls := mirrorLogLines(r.log, want); len(calls) != 1 {
+			t.Errorf("want exactly one %q, got:\n%s", want, strings.Join(r.log, "\n"))
+		}
+		if _, err := os.Stat(state); !os.IsNotExist(err) {
+			t.Errorf("the old CA is still in the keychain after the run")
+		}
+		// The look-alike still there must not read as a failed removal.
+		requireBefore(t, r.combined, "<<PASSWORD PROMPT>>", "==> removed the old void-relay CA")
+		if strings.Contains(r.combined, lookalikeCASHA1) {
+			t.Errorf("the run names the look-alike:\n%s", r.combined)
+		}
+	})
+
+	t.Run("a keychain with only a look-alike sees nothing", func(t *testing.T) {
+		// A later FAKE_KC_STATE wins: the old CA was never in this keychain.
+		r, _, _ := run(t, "ok", "FAKE_KC_LOOKALIKE=1", "FAKE_KC_STATE="+filepath.Join(t.TempDir(), "absent"))
+
+		if calls := mirrorLogLines(r.log, "delete-certificate"); len(calls) != 0 {
+			t.Errorf("the installer deleted a certificate:\n%s", strings.Join(calls, "\n"))
+		}
+		if strings.Contains(r.combined, "void-relay CA") || strings.Contains(r.combined, "<<PASSWORD PROMPT>>") {
+			t.Errorf("the run talks about the old CA although it is not there:\n%s", r.combined)
+		}
+	})
+
 	t.Run("a refused password leaves the install whole and says how to finish", func(t *testing.T) {
 		r, state, kc := run(t, "refuse")
 
@@ -166,7 +223,7 @@ func TestShellInstallerRemovesOldRelayCAFromLinuxAnchors(t *testing.T) {
 	for _, tc := range []struct {
 		name, anchor, refresh string
 	}{
-		{"debian", "usr/local/share/ca-certificates/void-relay-ca.crt", "update-ca-certificates --fresh"},
+		{"debian", "usr/local/share/ca-certificates/void-relay-ca.crt", "update-ca-certificates"},
 		{"rhel", "etc/pki/ca-trust/source/anchors/void-relay-ca.pem", "update-ca-trust extract"},
 	} {
 		run := func(t *testing.T, sudoMode string, refreshFails ...bool) (mirrorResult, string) {
@@ -211,6 +268,9 @@ func TestShellInstallerRemovesOldRelayCAFromLinuxAnchors(t *testing.T) {
 			}
 			if calls := mirrorLogLines(r.log, "sudo "+tc.refresh); len(calls) != 1 {
 				t.Errorf("want one sudo %s, log:\n%s", tc.refresh, strings.Join(r.log, "\n"))
+			}
+			if calls := mirrorLogLines(r.log, "--fresh"); len(calls) != 0 {
+				t.Errorf("--fresh rebuilds every link in /etc/ssl/certs, hand-made ones too:\n%s", strings.Join(calls, "\n"))
 			}
 			requireBefore(t, r.combined, "removing the old void-relay CA from the system trust store", "<<SUDO PROMPT>>")
 			requireBefore(t, r.combined, "sudo may ask for your password", "<<SUDO PROMPT>>")
@@ -280,6 +340,7 @@ func TestShellInstallerDryRunPlansOldRelayCARemoval(t *testing.T) {
 // Windows: a PowerShell stand-in for Cert:\CurrentUser\Root holding the old CA
 // and one unrelated root. Remove-Item prints a marker where Windows shows its
 // confirmation dialog, and fails when FAKE_CERT_REMOVE=refuse (the user said No).
+// FAKE_CERT_RECHECK=throw makes every read of the store after the first fail.
 const winCertStorePrelude = `
 $global:fakeRoot = [System.Collections.ArrayList]::new()
 [void]$global:fakeRoot.Add([pscustomobject]@{ Subject = 'CN=void-relay-local-ca'; Thumbprint = '` + oldRelayCASHA1 + `' })
@@ -288,8 +349,13 @@ function global:Test-Path {
     if ("$args" -like '*Cert:*') { return $true }
     Microsoft.PowerShell.Management\Test-Path @args
 }
+$global:certReads = 0
 function global:Get-ChildItem {
-    if ("$args" -like '*Cert:*') { return $global:fakeRoot.ToArray() }
+    if ("$args" -like '*Cert:*') {
+        $global:certReads++
+        if ($env:FAKE_CERT_RECHECK -eq 'throw' -and $global:certReads -gt 1) { throw 'The store could not be opened.' }
+        return $global:fakeRoot.ToArray()
+    }
     Microsoft.PowerShell.Management\Get-ChildItem @args
 }
 function global:Remove-Item {
@@ -344,5 +410,37 @@ func TestPowerShellInstallerRemovesOldRelayCA(t *testing.T) {
 		if strings.Contains(r.combined, "==> removed the old void-relay CA") {
 			t.Errorf("the run claims a removal that did not happen:\n%s", r.combined)
 		}
+	})
+	t.Run("no one to answer the dialog: no removal, only the command", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "ok", prelude: winCertStorePrelude,
+			env: []string{"VC_TEST_NONINTERACTIVE=1"}})
+		if r.code != 0 {
+			t.Fatalf("installer exited %d\n%s", r.code, r.combined)
+		}
+		if _, err := os.Stat(r.vcPath); err != nil {
+			t.Errorf("vc.exe is not installed: %v", err)
+		}
+		if strings.Contains(r.combined, "<<CONFIRM DIALOG>>") {
+			t.Errorf("a non-interactive run raised the confirm dialog:\n%s", r.combined)
+		}
+		manual := `Get-ChildItem Cert:\CurrentUser\Root | Where-Object Subject -eq 'CN=void-relay-local-ca' | Remove-Item`
+		requireBefore(t, r.combined, "the old void-relay CA is still in your trusted root certificates", manual)
+		if strings.Contains(r.combined, "==> removed the old void-relay CA") {
+			t.Errorf("the run claims a removal that did not happen:\n%s", r.combined)
+		}
+	})
+
+	t.Run("a re-check that fails is not reported as a removal", func(t *testing.T) {
+		r := runWindowsInstall(t, winOpts{sums: "ok", prelude: winCertStorePrelude,
+			env: []string{"FAKE_CERT_RECHECK=throw"}})
+		if r.code != 0 {
+			t.Fatalf("installer exited %d\n%s", r.code, r.combined)
+		}
+		if strings.Contains(r.combined, "==> removed the old void-relay CA") {
+			t.Errorf("the run claims a removal it could not check:\n%s", r.combined)
+		}
+		manual := `Get-ChildItem Cert:\CurrentUser\Root | Where-Object Subject -eq 'CN=void-relay-local-ca' | Remove-Item`
+		requireBefore(t, r.combined, "<<CONFIRM DIALOG>>", "could not check that the old void-relay CA is gone")
+		requireBefore(t, r.combined, "could not check that the old void-relay CA is gone", manual)
 	})
 }

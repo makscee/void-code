@@ -424,33 +424,50 @@ Write-Host "==> installing to $target" -ForegroundColor Green
 # Installers before void-works#71 imported it into CurrentUser\Root when
 # VC_TRUST_RELAY_CA=1 was set. A root there vouches for any site to every program
 # this user runs, so it is taken out again. Windows asks to confirm each deletion
-# from Root, so say why before the dialog. Non-fatal: a failure prints the
-# command that finishes the job by hand.
+# from Root with a dialog, so say why before it; with no one to answer it (ssh,
+# CI, a service) the dialog would hang the install, so that case only prints the
+# command. Non-fatal: a failure prints the command that finishes the job by hand.
+# VC_TEST_NONINTERACTIVE exists for the tests only: .NET reports every process
+# off Windows as interactive.
 $oldRelayCaSubject = 'CN=void-relay-local-ca'
 $userRootStore = 'Cert:\CurrentUser\Root'
 function Get-OldRelayCa {
-    try {
-        if (-not (Test-Path -LiteralPath $userRootStore)) { return @() }
-        return @(Get-ChildItem -LiteralPath $userRootStore -ErrorAction Stop |
-            Where-Object { $_.Subject -eq $oldRelayCaSubject })
-    } catch { return @() }
+    if (-not (Test-Path -LiteralPath $userRootStore)) { return @() }
+    return @(Get-ChildItem -LiteralPath $userRootStore -ErrorAction Stop |
+        Where-Object { $_.Subject -eq $oldRelayCaSubject })
 }
-$oldRelayCa = @(Get-OldRelayCa)
+function Write-OldRelayCaManual {
+    Write-Host "    Get-ChildItem $userRootStore | Where-Object Subject -eq '$oldRelayCaSubject' | Remove-Item" -ForegroundColor Yellow
+}
+$oldRelayCa = @()
+try { $oldRelayCa = @(Get-OldRelayCa) } catch { }
 if ($oldRelayCa.Count -gt 0) {
-    Write-Host "==> removing the old void-relay CA from your trusted root certificates: vc no longer needs it." -ForegroundColor Cyan
-    Write-Host "    Windows will ask you to confirm the deletion; answer Yes." -ForegroundColor Cyan
-    foreach ($cert in $oldRelayCa) {
-        try {
-            Remove-Item -LiteralPath "$userRootStore\$($cert.Thumbprint)" -ErrorAction Stop
-        } catch {
-            Write-Host "vc: $_" -ForegroundColor Yellow
-        }
-    }
-    if (@(Get-OldRelayCa).Count -gt 0) {
-        Write-Host "vc: could not remove the old void-relay CA. To remove it yourself, run in PowerShell:" -ForegroundColor Yellow
-        Write-Host "    Get-ChildItem $userRootStore | Where-Object Subject -eq '$oldRelayCaSubject' | Remove-Item" -ForegroundColor Yellow
+    $canConfirm = [Environment]::UserInteractive -and -not $env:VC_TEST_NONINTERACTIVE
+    if (-not $canConfirm) {
+        Write-Host "vc: the old void-relay CA is still in your trusted root certificates. Removing it needs a confirmation no one can answer here; to remove it yourself, run in PowerShell on this PC:" -ForegroundColor Yellow
+        Write-OldRelayCaManual
     } else {
-        Write-Host "==> removed the old void-relay CA" -ForegroundColor Green
+        Write-Host "==> removing the old void-relay CA from your trusted root certificates: vc no longer needs it." -ForegroundColor Cyan
+        Write-Host "    Windows will ask you to confirm the deletion; answer Yes." -ForegroundColor Cyan
+        foreach ($cert in $oldRelayCa) {
+            try {
+                Remove-Item -LiteralPath "$userRootStore\$($cert.Thumbprint)" -ErrorAction Stop
+            } catch {
+                Write-Host "vc: $_" -ForegroundColor Yellow
+            }
+        }
+        # Only a re-check that ran and found nothing counts as a removal.
+        $left = $null
+        try { $left = @(Get-OldRelayCa).Count } catch { }
+        if ($left -eq 0) {
+            Write-Host "==> removed the old void-relay CA" -ForegroundColor Green
+        } elseif ($null -eq $left) {
+            Write-Host "vc: could not check that the old void-relay CA is gone. To make sure, run in PowerShell:" -ForegroundColor Yellow
+            Write-OldRelayCaManual
+        } else {
+            Write-Host "vc: could not remove the old void-relay CA. To remove it yourself, run in PowerShell:" -ForegroundColor Yellow
+            Write-OldRelayCaManual
+        }
     }
 }
 
