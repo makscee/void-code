@@ -190,6 +190,7 @@ func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing
 		body string
 	}{
 		{name: "another void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna"}`},
+		{name: "Terra stays on its latest, 5.6", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-5.6-terra"}`},
 		{name: "gpt-6-sol under a foreign provider", body: `{"defaultProvider":"openai","defaultModel":"gpt-6-sol"}`},
 		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"claude-opus-5"}`},
 		{name: "model without provider", body: `{"defaultModel":"gpt-5.6-luna","theme":"nord"}`},

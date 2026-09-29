@@ -28,7 +28,7 @@ func TestPiManualGPT6SelectionSmoke(t *testing.T) {
 	}
 	prerequisites := requireOrSkipPinnedPiSmoke(t, root)
 
-	for _, model := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-luna"} {
 		t.Run(model, func(t *testing.T) {
 			var requested string
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +59,7 @@ func TestPiManualGPT6SelectionSmoke(t *testing.T) {
 			}
 			payload, err := json.Marshal(map[string]any{
 				"version": 1, "relayUrl": upstream.URL, "authToken": "local-only",
-				"providers": []map[string]any{{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"}}},
+				"providers": []map[string]any{{"kind": "codex", "relayProviderId": "codex-local", "models": []string{"gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-luna"}}},
 			})
 			if err != nil {
 				t.Fatal(err)
