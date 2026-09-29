@@ -14,7 +14,7 @@ import (
 // of whatever provider relay happens to register first.
 const (
 	wantPiDefaultProvider = "void-codex"
-	wantPiDefaultModel    = "gpt-6-sol"
+	wantPiDefaultModel    = "gpt-6.1-sol"
 )
 
 // piSettingsSandbox isolates both seams that can resolve to a real home:
@@ -165,14 +165,32 @@ func TestEnsurePiDefaultModelMigratesLegacyDeepSeekSelection(t *testing.T) {
 	}
 }
 
+// A saved void-codex/gpt-6-sol default moves to gpt-6.1-sol (void-works#79);
+// every other setting stays as it was.
+func TestEnsurePiDefaultModelMovesGPT6SolToGPT61Sol(t *testing.T) {
+	dir := piSettingsSandbox(t)
+	path := writePiSettings(t, dir, `{"defaultProvider":"void-codex","defaultModel":"gpt-6-sol","theme":"nord"}`, 0600)
+
+	if err := ensurePiDefaultModel(); err != nil {
+		t.Fatalf("ensurePiDefaultModel() error = %v", err)
+	}
+
+	after := readPiSettings(t, path)
+	assertDefaultsWritten(t, after)
+	if after["theme"] != "nord" || len(after) != 3 {
+		t.Errorf("settings = %#v, want only defaultModel changed", after)
+	}
+}
+
 // Current Codex choices and third-party choices are user-owned and remain byte-identical;
-// only the explicitly retired void-deepseek provider is eligible for migration.
+// only void-deepseek and void-codex/gpt-6-sol are eligible for migration.
 func TestEnsurePiDefaultModelLeavesCurrentCodexAndForeignChoicesAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
 	}{
 		{name: "another void model", body: `{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna"}`},
+		{name: "gpt-6-sol under a foreign provider", body: `{"defaultProvider":"openai","defaultModel":"gpt-6-sol"}`},
 		{name: "foreign provider", body: `{"defaultProvider":"anthropic","defaultModel":"claude-opus-5"}`},
 		{name: "model without provider", body: `{"defaultModel":"gpt-5.6-luna","theme":"nord"}`},
 	} {

@@ -34,13 +34,15 @@ func piSettingsPath() string {
 // (CODEX_PROVIDER_ID / CODEX_MODEL_ID).
 const (
 	piDefaultProvider = "void-codex"
-	piDefaultModel    = "gpt-6-sol"
+	piDefaultModel    = "gpt-6.1-sol"
 )
 
 // ensurePiDefaultModel seeds defaultModel (and defaultProvider alongside it,
 // when the user has not picked one) into Pi's settings.json. A legacy managed
-// DeepSeek selection is the one retired choice: its provider and model move to
+// DeepSeek selection is a retired choice: its provider and model move to
 // the OpenAI default together inside this single atomic settings writer.
+// A saved void-codex/gpt-6-sol default moves to gpt-6.1-sol the same way, so
+// existing users land on the new default; gpt-6-sol stays in the picker.
 //
 // Other existing model/provider choices are user-owned and leave the file
 // untouched. Neither does vc invent a pair no provider can serve: a user who
@@ -52,6 +54,12 @@ func ensurePiDefaultModel() error {
 			settings["defaultProvider"] = piDefaultProvider
 			settings["defaultModel"] = piDefaultModel
 			return true
+		}
+		if provider, _ := settings["defaultProvider"].(string); provider == piDefaultProvider {
+			if model, _ := settings["defaultModel"].(string); model == "gpt-6-sol" {
+				settings["defaultModel"] = piDefaultModel
+				return true
+			}
 		}
 		if isNonEmptyJSONString(settings["defaultModel"]) {
 			return false

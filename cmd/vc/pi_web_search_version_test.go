@@ -20,6 +20,7 @@ import (
 var managedWebSearchForkDigests = map[string]string{
 	"0.13.0-void.2": "904baf79b2c51ee8a871b4e269e1f11d530df49d4eb931e8d404efb8a85522cc", // v0.2.59; v0.2.54 shipped other content under this version
 	"0.13.0-void.3": "0a7dc700382d4a86e59b57aebcc1fa87c3e3608487e30437cd28e7bf4ff23082", // GPT-6 model list from #75 (void-board#138)
+	"0.13.0-void.4": "5a4749df349b12052b563040992826411b33ba5442722a99b6f5f61d2d141aa9", // GPT-6.1 Sol added (void-works#79)
 }
 
 func TestManagedWebSearchForkContentMatchesVersion(t *testing.T) {

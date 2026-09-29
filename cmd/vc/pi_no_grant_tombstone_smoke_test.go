@@ -27,7 +27,7 @@ func TestPiVoidCodexNoGrantSourceRegistersLocalSolTombstone(t *testing.T) {
 	}{
 		{
 			name:    "Sol model identity",
-			pattern: `(?m)^[\t ]*const[\t ]+CODEX_MODEL_ID[\t ]*=[\t ]*"gpt-6-sol"[\t ]*;`,
+			pattern: `(?m)^[\t ]*const[\t ]+CODEX_MODEL_ID[\t ]*=[\t ]*"gpt-6.1-sol"[\t ]*;`,
 		},
 		{
 			name:    "absence-first Codex grant state",
@@ -78,7 +78,7 @@ func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(agentDir, "settings.json"),
-		[]byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-6-sol"}`),
+		[]byte(`{"defaultProvider":"void-codex","defaultModel":"gpt-6.1-sol"}`),
 		0600,
 	); err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestPiVoidCodexNoGrantTombstoneSmoke(t *testing.T) {
 	}
 	const wantError = "Void Codex provider grant is unavailable"
 	if !strings.Contains(string(output), wantError) {
-		t.Fatalf("managed void-codex/gpt-6-sol tombstone was not reached; want %q, run error=%v; Pi output:\n%s", wantError, runErr, output)
+		t.Fatalf("managed void-codex/gpt-6.1-sol tombstone was not reached; want %q, run error=%v; Pi output:\n%s", wantError, runErr, output)
 	}
 	if runErr == nil {
 		t.Fatalf("no-grant prompt exited successfully after reporting %q; Pi output:\n%s", wantError, output)

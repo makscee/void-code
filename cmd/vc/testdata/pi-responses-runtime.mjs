@@ -65,7 +65,7 @@ for (const scenario of [
     requests++;
     assert.equal(url, 'https://relay.invalid/codex/responses');
     const body = JSON.parse(options.body);
-    assert.equal(body.model, 'gpt-6-sol');
+    assert.equal(body.model, 'gpt-6.1-sol');
     assert.equal(body.instructions, 'You are the VC GPT-6 Sol coding assistant. Use bash to inspect this isolated fixture.');
     assert.equal(body.tools[0].name, 'bash');
     assert.ok(body.input.length > 0);
