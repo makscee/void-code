@@ -1,20 +1,24 @@
 // Package update implements vc's self-update mechanism.
 //
 // The update model is single-launch: vc probes the GitHub Releases
-// version.json, downloads the new binary, and atomically replaces the
-// running binary.  There is no banner-and-exit dance (ADR-0002).
+// version.json, downloads the new binary, checks it against the release's
+// SHA256SUMS, and atomically replaces the running binary.  There is no
+// banner-and-exit dance (ADR-0002).
 package update
 
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"net"
 	"net/http"
 	"os"
+	"path"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/makscee/void-code/internal/releasesums"
 )
 
 // DefaultVersionURL is the canonical version.json location for vc releases.
@@ -24,6 +28,21 @@ const DefaultVersionURL = "https://auth.makscee.ru/vc/version.json"
 // DefaultReleaseBaseURL is the base URL for vc release artifacts.
 // version.json is at <base>/version.json; binaries at <base>/<artifact-path>.
 const DefaultReleaseBaseURL = "https://auth.makscee.ru/vc"
+
+// maxVersionJSONBytes bounds a version.json download; the real one is under 2 KB.
+const maxVersionJSONBytes = 1 << 20
+
+// maxBinaryBytes bounds a binary download. vc is about 9 MB.
+const maxBinaryBytes = 128 << 20
+
+// DownloadTimeout bounds a whole update (version.json, SHA256SUMS and the
+// binary) when Options.Client is nil. A stalled server fails sooner, on
+// responseHeaderTimeout.
+const DownloadTimeout = 5 * time.Minute
+
+// responseHeaderTimeout is how long the default client waits for a server to
+// start answering.
+const responseHeaderTimeout = 30 * time.Second
 
 // VersionJSON is the schema for the version.json file published alongside
 // each GH Release.
@@ -41,6 +60,19 @@ type Options struct {
 	// BinaryPath is the path of the binary to replace.
 	// When empty, defaults to os.Executable().
 	BinaryPath string
+	// Client overrides the HTTP client (for tests). When nil, a client with
+	// DownloadTimeout is used.
+	Client *http.Client
+}
+
+// newClient returns the client CheckAndUpdate uses by default: the whole
+// update is bounded by DownloadTimeout, and a server that accepts the
+// connection but never answers fails after responseHeaderTimeout.
+func newClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	return &http.Client{Timeout: DownloadTimeout, Transport: transport}
 }
 
 // PlatformKey returns the platform identifier used in release artifact names,
@@ -115,7 +147,7 @@ func probe(current, baseURL string, timeout time.Duration) ProbeResult {
 	if timeout > 0 {
 		client.Timeout = timeout
 	}
-	data, err := fetchURLWithClient(client, baseURL+"/version.json")
+	data, err := releasesums.Fetch(client, baseURL+"/version.json", maxVersionJSONBytes)
 	if err != nil {
 		return ProbeResult{Err: err}
 	}
@@ -135,7 +167,8 @@ func probe(current, baseURL string, timeout time.Duration) ProbeResult {
 }
 
 // CheckAndUpdate checks for a new version and, if one is available, downloads
-// it and atomically replaces the current binary.
+// it, checks its SHA-256 against <base>/SHA256SUMS, and atomically replaces
+// the current binary. A binary the list doesn't vouch for is never installed.
 //
 // Returns (true, nil) when the binary was replaced, (false, nil) when
 // already up-to-date, or (false, err) on failure.
@@ -145,8 +178,13 @@ func CheckAndUpdate(opts Options) (updated bool, err error) {
 		baseURL = DefaultReleaseBaseURL
 	}
 
+	client := opts.Client
+	if client == nil {
+		client = newClient()
+	}
+
 	versionURL := baseURL + "/version.json"
-	data, err := fetchURL(versionURL)
+	data, err := releasesums.Fetch(client, versionURL, maxVersionJSONBytes)
 	if err != nil {
 		return false, fmt.Errorf("fetch version.json: %w", err)
 	}
@@ -174,8 +212,10 @@ func CheckAndUpdate(opts Options) (updated bool, err error) {
 		}
 	}
 
+	// SHA256SUMS names each file by its base name ("vc-darwin-arm64"), while
+	// version.json gives its path under the base ("bin/vc-darwin-arm64").
 	binaryURL := baseURL + "/" + filename
-	newBin, err := fetchURL(binaryURL)
+	newBin, err := releasesums.Download(client, baseURL+"/SHA256SUMS", binaryURL, path.Base(filename), maxBinaryBytes)
 	if err != nil {
 		return false, fmt.Errorf("fetch binary %s: %w", filename, err)
 	}
@@ -194,24 +234,6 @@ func CheckAndUpdate(opts Options) (updated bool, err error) {
 	}
 
 	return true, nil
-}
-
-// fetchURL performs a GET request and returns the body bytes.
-func fetchURL(url string) ([]byte, error) {
-	return fetchURLWithClient(http.DefaultClient, url)
-}
-
-// fetchURLWithClient performs a GET request using the provided client and returns the body bytes.
-func fetchURLWithClient(client *http.Client, url string) ([]byte, error) {
-	resp, err := client.Get(url) //nolint:noctx
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-	return io.ReadAll(resp.Body)
 }
 
 // parseVersion splits a version string into [major, minor, patch] integers.

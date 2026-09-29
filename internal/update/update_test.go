@@ -1,6 +1,8 @@
 package update_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -90,6 +92,23 @@ func TestPlatformKey(t *testing.T) {
 
 // --- integration: CheckAndUpdate with mock server ---
 
+// withSums answers <base>/SHA256SUMS with content's SHA-256 under each name,
+// as release.yml's `sha256sum` writes it, and passes every other request to h.
+func withSums(h http.HandlerFunc, content []byte, names ...string) http.HandlerFunc {
+	sum := sha256.Sum256(content)
+	var list strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&list, "%s  %s\n", hex.EncodeToString(sum[:]), name)
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/SHA256SUMS" {
+			_, _ = w.Write([]byte(list.String()))
+			return
+		}
+		h(w, r)
+	}
+}
+
 func TestCheckNoUpdate(t *testing.T) {
 	// Server reports same version as current → no update.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,14 +145,14 @@ func TestCheckUpdateAvailable(t *testing.T) {
 
 	newBinaryContent := []byte("new-binary-content")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withSums(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "version.json"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(update.VersionJSON{
 				Version: "v0.2.0",
 				Artifacts: map[string]string{
-					update.PlatformKey(): "vc-" + update.PlatformKey(),
+					update.PlatformKey(): "vc-" + update.PlatformKeyLegacy(),
 				},
 			})
 		default:
@@ -141,7 +160,7 @@ func TestCheckUpdateAvailable(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(newBinaryContent)
 		}
-	}))
+	}, newBinaryContent, "vc-"+update.PlatformKeyLegacy()))
 	defer srv.Close()
 
 	updated, err := update.CheckAndUpdate(update.Options{
@@ -215,7 +234,7 @@ func TestCheckUpdateLegacyHyphenKey(t *testing.T) {
 	newBinaryContent := []byte("new-bin")
 
 	legacyKey := update.PlatformKeyLegacy() // e.g. "darwin-arm64"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withSums(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "version.json"):
 			w.Header().Set("Content-Type", "application/json")
@@ -227,7 +246,7 @@ func TestCheckUpdateLegacyHyphenKey(t *testing.T) {
 		default:
 			_, _ = w.Write(newBinaryContent)
 		}
-	}))
+	}, newBinaryContent, "vc-"+legacyKey))
 	defer srv.Close()
 
 	updated, err := update.CheckAndUpdate(update.Options{
@@ -255,7 +274,7 @@ func TestCheckUpdateBothKeys(t *testing.T) {
 
 	slashKey := update.PlatformKey()     // e.g. "darwin/arm64"
 	legacyKey := update.PlatformKeyLegacy() // e.g. "darwin-arm64"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withSums(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "version.json"):
 			w.Header().Set("Content-Type", "application/json")
@@ -271,7 +290,7 @@ func TestCheckUpdateBothKeys(t *testing.T) {
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
-	}))
+	}, newBinaryContent, "vc-slash"))
 	defer srv.Close()
 
 	updated, err := update.CheckAndUpdate(update.Options{
@@ -404,7 +423,7 @@ func TestDarwinArm64Regression(t *testing.T) {
 		"windows-arm64": "vc-windows-arm64.exe",
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withSums(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "version.json"):
 			w.Header().Set("Content-Type", "application/json")
@@ -415,7 +434,7 @@ func TestDarwinArm64Regression(t *testing.T) {
 		default:
 			_, _ = w.Write(newBinaryContent)
 		}
-	}))
+	}, newBinaryContent, "vc-darwin-amd64", "vc-darwin-arm64", "vc-linux-amd64", "vc-linux-arm64", "vc-windows-amd64.exe", "vc-windows-arm64.exe"))
 	defer srv.Close()
 
 	updated, err := update.CheckAndUpdate(update.Options{
@@ -446,7 +465,7 @@ func TestCheckUpdateBinPrefixArtifacts(t *testing.T) {
 
 	slashKey := update.PlatformKey() // e.g. "darwin/arm64"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withSums(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "version.json"):
 			w.Header().Set("Content-Type", "application/json")
@@ -462,7 +481,7 @@ func TestCheckUpdateBinPrefixArtifacts(t *testing.T) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	}, newBinaryContent, "vc-"+runtime.GOOS+"-"+runtime.GOARCH))
 	defer srv.Close()
 
 	updated, err := update.CheckAndUpdate(update.Options{
@@ -506,7 +525,7 @@ func TestCheckUpdateWindowsExeExtension(t *testing.T) {
 	}
 	newContent := []byte("new-win-bin")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withSums(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "version.json"):
 			w.Header().Set("Content-Type", "application/json")
@@ -519,7 +538,7 @@ func TestCheckUpdateWindowsExeExtension(t *testing.T) {
 		default:
 			_, _ = w.Write(newContent)
 		}
-	}))
+	}, newContent, "vc-"+runtime.GOOS+"-"+runtime.GOARCH+".exe"))
 	defer srv.Close()
 
 	updated, err := update.CheckAndUpdate(update.Options{
@@ -549,4 +568,154 @@ func TestCleanOldBinaryNoop(t *testing.T) {
 	// There is no test-binary.old file, so this must be a no-op.
 	update.CleanOldBinary()
 	// Success = no panic.
+}
+
+// --- SHA256SUMS check and download timeout ---
+
+// refusalServer offers v0.2.0 with the binary "bin/vc-test"; sums is served
+// as SHA256SUMS (a nil sums answers 404) and bin as the binary.
+func refusalServer(t *testing.T, sums []byte, bin http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version.json":
+			_ = json.NewEncoder(w).Encode(update.VersionJSON{
+				Version:   "v0.2.0",
+				Artifacts: map[string]string{update.PlatformKey(): "bin/vc-test"},
+			})
+		case "/SHA256SUMS":
+			if sums == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write(sums)
+		case "/bin/vc-test":
+			bin(w, r)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func writeOldBinary(t *testing.T) string {
+	t.Helper()
+	binaryPath := filepath.Join(t.TempDir(), "vc")
+	if err := os.WriteFile(binaryPath, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return binaryPath
+}
+
+func assertOldBinary(t *testing.T, binaryPath string) {
+	t.Helper()
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Errorf("binary was replaced with %q; a refused update must leave it alone", got)
+	}
+}
+
+func sumLine(content []byte, name string) []byte {
+	sum := sha256.Sum256(content)
+	return []byte(hex.EncodeToString(sum[:]) + "  " + name + "\n")
+}
+
+func TestCheckUpdateRefusesChecksumMismatch(t *testing.T) {
+	// The list vouches for other bytes than the server sends: a tampered or
+	// truncated download.
+	sums := sumLine([]byte("the real binary"), "vc-test")
+	srv := refusalServer(t, sums, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("tampered binary"))
+	})
+	binaryPath := writeOldBinary(t)
+
+	updated, err := update.CheckAndUpdate(update.Options{Current: "v0.1.0", BaseURL: srv.URL, BinaryPath: binaryPath})
+	if err == nil || updated {
+		t.Fatalf("CheckAndUpdate = (%v, %v); want a refusal", updated, err)
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Errorf("error = %v; want a checksum mismatch", err)
+	}
+	assertOldBinary(t, binaryPath)
+}
+
+func TestCheckUpdateRefusesBinaryMissingFromSums(t *testing.T) {
+	sums := sumLine([]byte("x"), "vc-other")
+	srv := refusalServer(t, sums, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new"))
+	})
+	binaryPath := writeOldBinary(t)
+
+	updated, err := update.CheckAndUpdate(update.Options{Current: "v0.1.0", BaseURL: srv.URL, BinaryPath: binaryPath})
+	if err == nil || updated {
+		t.Fatalf("CheckAndUpdate = (%v, %v); want a refusal", updated, err)
+	}
+	if !strings.Contains(err.Error(), "lists no vc-test") {
+		t.Errorf("error = %v; want a missing-entry refusal", err)
+	}
+	assertOldBinary(t, binaryPath)
+}
+
+func TestCheckUpdateRefusesWithoutSums(t *testing.T) {
+	srv := refusalServer(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new"))
+	})
+	binaryPath := writeOldBinary(t)
+
+	updated, err := update.CheckAndUpdate(update.Options{Current: "v0.1.0", BaseURL: srv.URL, BinaryPath: binaryPath})
+	if err == nil || updated {
+		t.Fatalf("CheckAndUpdate = (%v, %v); want a refusal when SHA256SUMS is missing", updated, err)
+	}
+	assertOldBinary(t, binaryPath)
+}
+
+func TestCheckUpdateAcceptsStarredSumsLine(t *testing.T) {
+	// `sha256sum -b` marks binary mode with "*<name>".
+	content := []byte("new")
+	sums := []byte(strings.Replace(string(sumLine(content, "vc-test")), "  ", " *", 1))
+	srv := refusalServer(t, sums, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(content)
+	})
+	binaryPath := writeOldBinary(t)
+
+	updated, err := update.CheckAndUpdate(update.Options{Current: "v0.1.0", BaseURL: srv.URL, BinaryPath: binaryPath})
+	if err != nil || !updated {
+		t.Fatalf("CheckAndUpdate = (%v, %v); want an update", updated, err)
+	}
+}
+
+func TestCheckUpdateTimesOutStalledDownload(t *testing.T) {
+	// The binary's server sends headers and a few bytes, then stalls.
+	stall := make(chan struct{})
+	t.Cleanup(func() { close(stall) })
+	sums := sumLine([]byte("new"), "vc-test")
+	srv := refusalServer(t, sums, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = w.Write([]byte("ne"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-stall:
+		case <-r.Context().Done():
+		}
+	})
+	binaryPath := writeOldBinary(t)
+
+	start := time.Now()
+	updated, err := update.CheckAndUpdate(update.Options{
+		Current:    "v0.1.0",
+		BaseURL:    srv.URL,
+		BinaryPath: binaryPath,
+		Client:     &http.Client{Timeout: 300 * time.Millisecond},
+	})
+	if err == nil || updated {
+		t.Fatalf("CheckAndUpdate = (%v, %v); want a timeout", updated, err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("stalled download took %v to fail", elapsed)
+	}
+	assertOldBinary(t, binaryPath)
 }
