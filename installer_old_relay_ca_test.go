@@ -35,16 +35,18 @@ import (
 
 const (
 	oldRelayCASHA1 = "5749964BB2A0E0DC72554BE9726F784D033EDB23"
-	// A certificate of someone else's whose label merely contains the old CA's
-	// name: `security find-certificate -c` returns it too.
-	lookalikeCASHA1 = "9965F0EE7E6D00958547FB92BEF274307C74F61E"
+	// Certificates of someone else's whose labels merely contain the old CA's
+	// name, one around it and one that only extends it (a prefix match would
+	// take that one): `security find-certificate -c` returns both.
+	lookalikeCASHA1       = "9965F0EE7E6D00958547FB92BEF274307C74F61E"
+	suffixLookalikeCASHA1 = "1C2D3E4F5A6B7C8D9E0F1A2B3C4D5E6F7A8B9C0D"
 )
 
 // A stateful `security`: the old CA is in the keychain while $FAKE_KC_STATE
-// exists, and a look-alike always is when FAKE_KC_LOOKALIKE=1. find-certificate
+// exists, and two look-alikes always are when FAKE_KC_LOOKALIKE=1. find-certificate
 // prints records the way the real one does with -Z. delete-certificate prints a
 // prompt marker (where macOS would ask for the password) and, unless
-// FAKE_KC_DELETE=refuse, removes the old CA; the look-alike never goes away,
+// FAKE_KC_DELETE=refuse, removes the old CA; the look-alikes never go away,
 // so deleting it shows up only in the log.
 const fakeSecurityScript = `#!/bin/sh
 printf 'security %s\n' "$*" >> "$FAKE_LOG"
@@ -60,7 +62,8 @@ case "$1" in
   find-certificate)
     found=""
     if [ "$FAKE_KC_LOOKALIKE" = 1 ]; then
-      record ` + lookalikeCASHA1 + ` my-void-relay-local-ca-backup; found=1
+      record ` + lookalikeCASHA1 + ` my-void-relay-local-ca-backup
+      record ` + suffixLookalikeCASHA1 + ` void-relay-local-ca-old; found=1
     fi
     if [ -f "$FAKE_KC_STATE" ]; then
       record ` + oldRelayCASHA1 + ` void-relay-local-ca; found=1
@@ -161,8 +164,10 @@ func TestShellInstallerRemovesOldRelayCAFromKeychain(t *testing.T) {
 	t.Run("a look-alike label is left alone", func(t *testing.T) {
 		r, state, kc := run(t, "ok", "FAKE_KC_LOOKALIKE=1")
 
-		if calls := mirrorLogLines(r.log, "delete-certificate", lookalikeCASHA1); len(calls) != 0 {
-			t.Errorf("the installer deleted a certificate that is not the old CA:\n%s", strings.Join(calls, "\n"))
+		for _, other := range []string{lookalikeCASHA1, suffixLookalikeCASHA1} {
+			if calls := mirrorLogLines(r.log, "delete-certificate", other); len(calls) != 0 {
+				t.Errorf("the installer deleted a certificate that is not the old CA:\n%s", strings.Join(calls, "\n"))
+			}
 		}
 		want := "security delete-certificate -Z " + oldRelayCASHA1 + " -t " + kc
 		if calls := mirrorLogLines(r.log, want); len(calls) != 1 {
@@ -173,8 +178,8 @@ func TestShellInstallerRemovesOldRelayCAFromKeychain(t *testing.T) {
 		}
 		// The look-alike still there must not read as a failed removal.
 		requireBefore(t, r.combined, "<<PASSWORD PROMPT>>", "==> removed the old void-relay CA")
-		if strings.Contains(r.combined, lookalikeCASHA1) {
-			t.Errorf("the run names the look-alike:\n%s", r.combined)
+		if strings.Contains(r.combined, lookalikeCASHA1) || strings.Contains(r.combined, suffixLookalikeCASHA1) {
+			t.Errorf("the run names a look-alike:\n%s", r.combined)
 		}
 	})
 
