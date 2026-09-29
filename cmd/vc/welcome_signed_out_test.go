@@ -118,9 +118,9 @@ func TestWelcomeOffersLoginWhenTheLaunchRejectsTheToken(t *testing.T) {
 	t.Run("already in", func(t *testing.T) {
 		host, release := rejectingMeServer(t)
 		release()
-		state, token, authHost := welcomeLaunch(t, host)
-		if _, _, err, reused := currentLaunchPreflight.awaitAuth(token, authHost); !reused || !errors.Is(err, auth.ErrNotLoggedIn) {
-			t.Fatalf("preflight: reused=%v err=%v, want the rejection", reused, err)
+		state, _, _ := welcomeLaunch(t, host)
+		if r := awaitPreflightAuth(t, currentLaunchPreflight); !errors.Is(r.err, auth.ErrNotLoggedIn) {
+			t.Fatalf("preflight: err=%v, want the rejection", r.err)
 		}
 		s := showWelcome(t, state)
 		screen, ok := s.waitFor(welcomeMenuPrompt, 2*time.Second)

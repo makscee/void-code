@@ -7,15 +7,17 @@ import (
 
 // The embedded transport keeps every OpenAI model while registering no retired provider.
 func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
-	if piDefaultProvider != "void-codex" || piDefaultModel != "gpt-6-sol" {
-		t.Fatalf("fresh-user default = %s/%s, want void-codex/gpt-6-sol", piDefaultProvider, piDefaultModel)
+	if piDefaultProvider != "void-codex" || piDefaultModel != "gpt-6.1-sol" {
+		t.Fatalf("fresh-user default = %s/%s, want void-codex/gpt-6.1-sol", piDefaultProvider, piDefaultModel)
 	}
 
 	for _, want := range []string{
 		`if (provider.kind === "codex")`,
+		`"gpt-6.1-sol"`,
 		`"gpt-6-sol"`,
 		`"gpt-6-luna"`,
 		`"gpt-6-astra"`,
+		`if (id === "gpt-6.1-sol") return "GPT-6.1 Sol via Void relay";`,
 		`if (id === "gpt-6-sol") return "GPT-6 Sol via Void relay";`,
 		`if (id === "gpt-6-luna") return "GPT-6 Luna via Void relay";`,
 		`if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";`,
