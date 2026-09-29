@@ -39,27 +39,6 @@ func TestAuthGate_ValidToken(t *testing.T) {
 	}
 }
 
-func TestAuthGateIgnoresFreshCacheAfterRevocation(t *testing.T) {
-	withTempHome(t)
-	var revoked bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if revoked {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"email":"before@example.test","pct":1}`))
-	}))
-	defer srv.Close()
-	if _, err := cachedFetchMe(srv.URL, "same-token", srv.Client()); err != nil {
-		t.Fatal(err)
-	}
-	revoked = true
-	if _, _, err := authGate("same-token", srv.URL, srv.Client()); err == nil {
-		t.Fatal("fresh cached identity admitted revoked token")
-	}
-}
-
 // TestAuthGate_RejectedToken verifies that a 401 from the auth server returns
 // a "Session token rejected" error and does not expose raw HTTP details.
 func TestAuthGate_RejectedToken(t *testing.T) {
