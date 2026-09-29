@@ -296,6 +296,10 @@ func TestCodexLaunchWithoutAChatGPTGrantDoesNotStartCodex(t *testing.T) {
 	if l.spawn.calls != 0 {
 		t.Fatalf("Codex was spawned without a grant: %q", l.spawn.exe)
 	}
+	// A refused person must not pay for a 130–160 MB download first.
+	if l.ensure.calls != 0 {
+		t.Fatalf("Codex was installed (%d calls) for a person with no ChatGPT grant", l.ensure.calls)
+	}
 	if l.providers == 0 {
 		t.Error("the grant decision was made without asking auth for the current providers")
 	}
@@ -311,6 +315,9 @@ func TestCodexLaunchStopsWhenTheGrantListCannotBeRead(t *testing.T) {
 	}
 	if l.spawn.calls != 0 {
 		t.Fatalf("Codex was spawned with no known grant: %q", l.spawn.exe)
+	}
+	if l.ensure.calls != 0 {
+		t.Fatalf("Codex was installed (%d calls) before any grant was known", l.ensure.calls)
 	}
 }
 
@@ -349,5 +356,8 @@ func TestCodexLaunchRefusesACustomRelayCA(t *testing.T) {
 	}
 	if l.spawn.calls != 0 {
 		t.Fatalf("Codex was spawned against a custom-CA relay: %q", l.spawn.exe)
+	}
+	if l.ensure.calls != 0 {
+		t.Fatalf("Codex was installed (%d calls) for a relay step 1 refuses", l.ensure.calls)
 	}
 }
