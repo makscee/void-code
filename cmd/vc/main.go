@@ -32,6 +32,7 @@ import (
 	"github.com/makscee/void-code/internal/harness/relay"
 	"github.com/makscee/void-code/internal/pibin"
 	"github.com/makscee/void-code/internal/provider"
+	"github.com/makscee/void-code/internal/runtimechoice"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
 	"github.com/makscee/void-code/internal/welcome"
@@ -65,6 +66,7 @@ var welcomeGateSkippingSubCommands = map[string]bool{
 	"login": true, "logout": true, "status": true, "update": true,
 	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
 	"desktop-session": true, "access-request": true, "install-pi-runtime": true,
+	"runtime": true,
 }
 
 func main() {
@@ -386,6 +388,13 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	notice := ""
 	if reached {
 		notice = launchNotice(me, time.Now())
+	}
+	chosen, err := resolveLaunchRuntime()
+	if err != nil {
+		return err
+	}
+	if chosen == runtimechoice.Codex {
+		return launchCodex(cfg, token, notice)
 	}
 	// Resolve launch artifacts after live admission but before constructing a
 	// token-bearing child environment. A bundled runtime starts its already

@@ -35,6 +35,7 @@ Sub-commands:
   login    Authenticate interactively or with device flow
   logout   Wipe cached credentials
   status   Show current auth / relay / version status
+  runtime  Choose what vc launches: Pi or Codex
   update           Fetch the latest vc release and swap the binary
   desktop-session  Launch a caller-supplied private Node/Pi runtime
 

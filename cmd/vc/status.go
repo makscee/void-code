@@ -43,7 +43,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	cfg := config.OSResolve()
 	fmt.Printf("%s %s\n", labelStyle.Render("version:"), valueStyle.Render(version.Version))
 	fmt.Printf("%s %s\n", labelStyle.Render("relay:  "), valueStyle.Render(cfg.RelayHost))
-	fmt.Printf("%s %s\n", labelStyle.Render("runtime:"), valueStyle.Render("Pi"))
+	fmt.Printf("%s %s\n", labelStyle.Render("runtime:"), valueStyle.Render(runtimeStatusValue()))
 	token, _, err := auth.Load()
 	if err != nil || strings.TrimSpace(token) == "" {
 		fmt.Printf("%s %s\n", labelStyle.Render("auth:   "), errorStyle.Render("not logged in"))
