@@ -37,7 +37,6 @@ vc update             # self-update
 |---|---|---|
 | `VC_RELAY_HOST` | `relay.makscee.ru:443` | relay host:port |
 | `VC_AUTH_HOST` | `https://auth.makscee.ru` | auth base URL |
-| `VC_RELAY_CA` | _(embedded)_ | relay CA PEM path |
 | `VC_PI_COMPACT_UI` | enabled | set to `false` to remove and disable the managed compact UI in desktop sessions |
 
 ### Desktop compact interface

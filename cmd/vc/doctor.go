@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/makscee/void-code/internal/auth"
-	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/pibin"
 	"github.com/spf13/cobra"
 )
@@ -22,8 +21,7 @@ type doctorCheck struct {
 }
 
 func runDoctor() error {
-	cfg := config.OSResolve()
-	checks := []doctorCheck{checkPi(), checkToken(), checkCA(cfg), checkVCPath(), checkManagedExtension(), checkManagedSearch()}
+	checks := []doctorCheck{checkPi(), checkToken(), checkVCPath(), checkManagedExtension(), checkManagedSearch()}
 	for _, check := range checks {
 		mark := "✓"
 		if !check.ok {
@@ -46,20 +44,6 @@ func checkToken() doctorCheck {
 		return doctorCheck{"authentication", "not logged in; run vc login", false}
 	}
 	return doctorCheck{"authentication", "token present (run vc status to verify)", true}
-}
-func checkCA(cfg config.Config) doctorCheck {
-	path := cfg.CAOverride
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return doctorCheck{"relay CA", "cannot resolve home directory", false}
-		}
-		path = filepath.Join(home, ".void-code", "relay-ca.pem")
-	}
-	if _, err := os.Stat(path); err != nil {
-		return doctorCheck{"relay CA", "not cached; VC will fetch it on launch", false}
-	}
-	return doctorCheck{"relay CA", path, true}
 }
 func checkVCPath() doctorCheck {
 	path, err := os.Executable()

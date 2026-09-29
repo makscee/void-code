@@ -28,7 +28,6 @@ import (
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/direct"
-	"github.com/makscee/void-code/internal/harness/relay"
 	"github.com/makscee/void-code/internal/pibin"
 	"github.com/makscee/void-code/internal/provider"
 	"github.com/makscee/void-code/internal/update"
@@ -465,9 +464,13 @@ func withBuiltPiPath(env, parent []string, privateNode string) []string {
 	return childenv.PiEnv(runtime.GOOS, env, parent, privateNode)
 }
 
-// buildPiSpawnEnv strips client-provider secrets and exposes only vc-owned relay
-// seams for Pi relay modes.
-func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHost, token, caPath string) []string {
+// buildPiSpawnEnv strips client-provider secrets and vc's own relay variables
+// from the inherited environment. Pi gets no vc token and no relay address: the
+// managed extension asks `vc pi-bootstrap` (at VC_BOOTSTRAP_EXECUTABLE) for
+// both, so nothing else Pi runs can read the token from its environment. The
+// relay variables stay on the strip list so a stale copy in the parent shell
+// never reaches Pi either.
+func buildPiSpawnEnv(p provider.Provider, parent []string) []string {
 	strip := map[string]bool{
 		"VC_HARNESS":               true,
 		"VC_PROVIDER":              true,
@@ -494,7 +497,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 		}
 	}
 	base := direct.PlainEnv(parent)
-	out := make([]string, 0, len(base)+6)
+	out := make([]string, 0, len(base)+2)
 	for _, e := range base {
 		k, _, _ := strings.Cut(e, "=")
 		// The launch notice is vc's to set, per launch: an inherited one was
@@ -510,28 +513,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string, relayScheme, relayHos
 	if executable, err := os.Executable(); err == nil && filepath.IsAbs(executable) {
 		out = append(out, "VC_BOOTSTRAP_EXECUTABLE="+executable)
 	}
-	out = append(out, "VC_HARNESS=pi")
-	switch p.Kind {
-	case provider.RelayProvider:
-		out = append(out,
-			"VC_PROVIDER=relay",
-			"VC_RELAY_PROVIDER_ID="+p.ID,
-			fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
-			"VC_RELAY_CA="+caPath,
-			"VC_AUTH_TOKEN="+token,
-		)
-	case provider.Relay:
-		out = append(out,
-			"VC_PROVIDER=relay",
-			"VC_RELAY_PROVIDER_ID=deepseek",
-			fmt.Sprintf("VC_RELAY_URL=%s://%s", relayScheme, relayHost),
-			"VC_RELAY_CA="+caPath,
-			"VC_AUTH_TOKEN="+token,
-		)
-	default:
-		out = append(out, "VC_PROVIDER=plain")
-	}
-	return out
+	return append(out, "VC_HARNESS=pi")
 }
 
 // authGate validates the session token before spawning Pi.
@@ -603,62 +585,6 @@ func admissionRetryable(err error) bool {
 		}
 	}
 	return false
-}
-
-// resolveCA determines the relay CA path in priority order:
-//  1. VC_RELAY_CA env override (cfg.CAOverride).
-//  2. Cached file at ~/.void-code/relay-ca.pem (FetchCA returns it if present,
-//     fetches from <authHost>/vc/relay-ca.pem otherwise).
-//  3. On network failure, write the embedded fallback CA to the cache dir
-//     so first-run-offline always has a working CA.
-func resolveCA(cfg config.Config) (string, error) {
-	if cfg.CAOverride != "" {
-		return cfg.CAOverride, nil
-	}
-
-	cacheDir, err := config.CacheDir()
-	if err != nil {
-		return writeFallbackCA("")
-	}
-
-	caPath, err := relay.FetchCA(http.DefaultClient, cfg.AuthHost, cacheDir)
-	if err != nil {
-		// Network unavailable or server error — fall back to embedded CA.
-		return writeFallbackCA(cacheDir)
-	}
-	return caPath, nil
-}
-
-// writeFallbackCA writes the build-time-embedded relay-ca.pem to cacheDir
-// (creating the directory as needed) and returns the path.
-// If cacheDir is empty a temp file is used.
-func writeFallbackCA(cacheDir string) (string, error) {
-	if len(relayCA) == 0 {
-		return "", fmt.Errorf("relay: embedded CA is empty")
-	}
-
-	var dest string
-	if cacheDir == "" {
-		f, err := os.CreateTemp("", "vc-relay-ca-*.pem")
-		if err != nil {
-			return "", fmt.Errorf("relay: temp CA: %w", err)
-		}
-		dest = f.Name()
-		if _, err := f.Write(relayCA); err != nil {
-			f.Close()
-			return "", fmt.Errorf("relay: temp CA write: %w", err)
-		}
-		return dest, f.Close()
-	}
-
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		return "", fmt.Errorf("relay: mkdir cache: %w", err)
-	}
-	dest = filepath.Join(cacheDir, "relay-ca.pem")
-	if err := os.WriteFile(dest, relayCA, 0600); err != nil {
-		return "", fmt.Errorf("relay: write fallback CA: %w", err)
-	}
-	return dest, nil
 }
 
 // isFdTTY reports whether the given file descriptor refers to a terminal.
