@@ -69,7 +69,7 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
 			hasCodexGrant = true;
-			const allowed = new Set([CODEX_MODEL_ID, "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]);
+			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-terra", "gpt-6-luna", "gpt-6-astra"]);
 			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
 			if (models.length === 0) continue;
 			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
@@ -604,7 +604,7 @@ function loadBootstrap(): Bootstrap | undefined {
 
 function codexName(id: string): string {
 	if (id === "gpt-6.1-sol") return "GPT-6.1 Sol via Void relay";
-	if (id === "gpt-6-sol") return "GPT-6 Sol via Void relay";
+	if (id === "gpt-5.6-terra") return "GPT-5.6 Terra via Void relay";
 	if (id === "gpt-6-luna") return "GPT-6 Luna via Void relay";
 	if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";
 	return id + " via Void relay";

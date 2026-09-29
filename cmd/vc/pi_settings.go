@@ -42,7 +42,7 @@ const (
 // DeepSeek selection is a retired choice: its provider and model move to
 // the OpenAI default together inside this single atomic settings writer.
 // A saved void-codex/gpt-6-sol default moves to gpt-6.1-sol the same way, so
-// existing users land on the new default; gpt-6-sol stays in the picker.
+// existing users land on the new default; gpt-6-sol has left the picker.
 //
 // Other existing model/provider choices are user-owned and leave the file
 // untouched. Neither does vc invent a pair no provider can serve: a user who

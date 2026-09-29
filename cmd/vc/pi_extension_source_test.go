@@ -14,27 +14,27 @@ func TestPiManagedOpenAIOnlyExtensionContract(t *testing.T) {
 	for _, want := range []string{
 		`if (provider.kind === "codex")`,
 		`"gpt-6.1-sol"`,
-		`"gpt-6-sol"`,
+		`"gpt-5.6-terra"`,
 		`"gpt-6-luna"`,
 		`"gpt-6-astra"`,
 		`if (id === "gpt-6.1-sol") return "GPT-6.1 Sol via Void relay";`,
-		`if (id === "gpt-6-sol") return "GPT-6 Sol via Void relay";`,
+		`if (id === "gpt-5.6-terra") return "GPT-5.6 Terra via Void relay";`,
 		`if (id === "gpt-6-luna") return "GPT-6 Luna via Void relay";`,
 		`if (id === "gpt-6-astra") return "GPT-6 Astra via Void relay";`,
 	} {
 		if !strings.Contains(piVoidCodexExtensionSource, want) {
-			t.Errorf("the managed Pi extension is missing Astra contract %q", want)
+			t.Errorf("the managed Pi extension is missing model contract %q", want)
 		}
 	}
 	for _, forbidden := range []string{
 		`pi.registerProvider(DEEPSEEK_PROVIDER_ID`,
 		`pi.registerProvider("void-deepseek"`,
 		`"gpt-5.6-sol"`,
-		`"gpt-5.6-terra"`,
 		`"gpt-5.6-luna"`,
+		`"gpt-6-sol"`,
 	} {
 		if strings.Contains(piVoidCodexExtensionSource, forbidden) {
-			t.Errorf("managed Pi extension still registers the retired provider through %q", forbidden)
+			t.Errorf("managed Pi extension still registers a retired provider or superseded model through %q", forbidden)
 		}
 	}
 }
