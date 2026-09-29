@@ -269,6 +269,13 @@ printf 'REFUSED %s %s\n' "$0" "$*" >> "$FAKE_LOG"
 exit 1
 `
 
+// Answers `uname -s` as the test asks and passes everything else (`uname -m`)
+// to the real one.
+const fakeUnameScript = `#!/bin/sh
+if [ "$1" = "-s" ] && [ -n "$FAKE_UNAME_S" ]; then printf '%s\n' "$FAKE_UNAME_S"; exit 0; fi
+exec /usr/bin/uname "$@"
+`
+
 // ── harness ──────────────────────────────────────────────────────────────────
 
 // skipInstallShOnWindows guards every test in this package that spawns
@@ -316,6 +323,16 @@ type mirrorOpts struct {
 	existingCA    string // pre-create $HOME/.void-code/relay-ca.pem with this content
 	existingRC    string // pre-create $HOME/.zshrc with this content
 	skipDownload  bool   // VC_SKIP_DOWNLOAD=1
+	// uname answers `uname -s` with this (Darwin | Linux) instead of the real
+	// kernel name, so one runner can drive both of install.sh's OS branches.
+	uname string
+	// fakes replaces or adds fake commands on PATH, by name.
+	fakes map[string]string
+	// env is appended to the run's environment.
+	env []string
+	// prepare runs before the installer, with the run's HOME and the scratch
+	// dir VC_TEST_ROOT points at (where install.sh looks for the Linux anchors).
+	prepare func(home, sysRoot string)
 }
 
 type mirrorResult struct {
@@ -326,6 +343,7 @@ type mirrorResult struct {
 	vcPath   string
 	caPath   string
 	rcPath   string
+	sysRoot  string // VC_TEST_ROOT of the run
 	// The run's private TMPDIR. Nothing but install.sh's own mktemp writes
 	// here, so whatever is left in it after the run is a leftover of the run.
 	tmpDir string
@@ -346,7 +364,8 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 	fixtures := filepath.Join(root, "fixtures")
 	home := filepath.Join(root, "home")
 	tmp := filepath.Join(root, "tmp")
-	for _, d := range []string{binDir, fixtures, home, tmp} {
+	sysRoot := filepath.Join(root, "sysroot")
+	for _, d := range []string{binDir, fixtures, home, tmp, sysRoot} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -422,6 +441,15 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 	} {
 		writeExec(name, fakeRefuserScript)
 	}
+	if o.uname != "" {
+		writeExec("uname", fakeUnameScript)
+	}
+	for name, body := range o.fakes {
+		writeExec(name, body)
+	}
+	if o.prepare != nil {
+		o.prepare(home, sysRoot)
+	}
 
 	if o.existingVC != "" {
 		if err := os.MkdirAll(filepath.Join(home, ".void-code", "bin"), 0o755); err != nil {
@@ -482,10 +510,16 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 		"FAKE_FLAKY_N=" + fmt.Sprint(flakyN),
 		"FAKE_VERSION_FLAKY_N=" + fmt.Sprint(versionFlakyN),
 		"FAKE_CURL_OLD=" + oldCurl,
+		"FAKE_UNAME_S=" + o.uname,
+		// Never the real /usr/local/share/ca-certificates: a machine an old
+		// installer left its CA on would otherwise meet sudo in the middle of
+		// `go test`.
+		"VC_TEST_ROOT=" + sysRoot,
 	}
 	if o.skipDownload {
 		env = append(env, "VC_SKIP_DOWNLOAD=1")
 	}
+	env = append(env, o.env...)
 
 	cmd := exec.Command("sh", "install.sh")
 	cmd.Env = env
@@ -527,6 +561,7 @@ func runMirrorInstall(t *testing.T, o mirrorOpts) mirrorResult {
 		vcPath:   filepath.Join(home, ".void-code", "bin", "vc"),
 		caPath:   filepath.Join(home, ".void-code", "relay-ca.pem"),
 		rcPath:   filepath.Join(home, ".zshrc"),
+		sysRoot:  sysRoot,
 		tmpDir:   tmp,
 	}
 }

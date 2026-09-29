@@ -103,7 +103,7 @@ func TestShellInstallerProvisionsManagedPiDespiteHealthyPathPi(t *testing.T) {
 	writeMock("npm", "#!/bin/sh\nprefix=\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --prefix ]; then prefix=$2; shift 2; continue; fi\n  shift\ndone\nmkdir -p \"$prefix/node_modules/@earendil-works/pi-coding-agent/dist\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$prefix/node_modules/@earendil-works/pi-coding-agent/dist/cli.js\"\nchmod 700 \"$prefix/node_modules/@earendil-works/pi-coding-agent/dist/cli.js\"\nprintf invoked > \"$HOME/npm-was-called\"\n")
 
 	cmd := exec.Command("sh", "install.sh")
-	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+mockBin+":/usr/bin:/bin", "VC_SKIP_DOWNLOAD=1", "VC_INSTALL_YES=1")
+	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+mockBin+":/usr/bin:/bin", "VC_SKIP_DOWNLOAD=1", "VC_INSTALL_YES=1", "VC_TEST_ROOT="+t.TempDir())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("installer failed: %v\n%s", err, output)
@@ -140,7 +140,7 @@ func TestShellInstallerDryRunDoesNotWrite(t *testing.T) {
 	}
 
 	cmd := exec.Command("sh", "install.sh", "--dry-run")
-	cmd.Env = append(os.Environ(), "HOME="+home, "VC_AUTH_HOST=http://127.0.0.1:1")
+	cmd.Env = append(os.Environ(), "HOME="+home, "VC_AUTH_HOST=http://127.0.0.1:1", "VC_TEST_ROOT="+t.TempDir())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("dry-run failed: %v\n%s", err, output)

@@ -420,6 +420,39 @@ Write-Host "==> installing to $target" -ForegroundColor Green
 
 # The relay CA is neither downloaded nor trusted: relay and auth serve publicly
 # trusted certificates, so nothing is added to the Windows certificate stores.
+#
+# Installers before void-works#71 imported it into CurrentUser\Root when
+# VC_TRUST_RELAY_CA=1 was set. A root there vouches for any site to every program
+# this user runs, so it is taken out again. Windows asks to confirm each deletion
+# from Root, so say why before the dialog. Non-fatal: a failure prints the
+# command that finishes the job by hand.
+$oldRelayCaSubject = 'CN=void-relay-local-ca'
+$userRootStore = 'Cert:\CurrentUser\Root'
+function Get-OldRelayCa {
+    try {
+        if (-not (Test-Path -LiteralPath $userRootStore)) { return @() }
+        return @(Get-ChildItem -LiteralPath $userRootStore -ErrorAction Stop |
+            Where-Object { $_.Subject -eq $oldRelayCaSubject })
+    } catch { return @() }
+}
+$oldRelayCa = @(Get-OldRelayCa)
+if ($oldRelayCa.Count -gt 0) {
+    Write-Host "==> removing the old void-relay CA from your trusted root certificates: vc no longer needs it." -ForegroundColor Cyan
+    Write-Host "    Windows will ask you to confirm the deletion; answer Yes." -ForegroundColor Cyan
+    foreach ($cert in $oldRelayCa) {
+        try {
+            Remove-Item -LiteralPath "$userRootStore\$($cert.Thumbprint)" -ErrorAction Stop
+        } catch {
+            Write-Host "vc: $_" -ForegroundColor Yellow
+        }
+    }
+    if (@(Get-OldRelayCa).Count -gt 0) {
+        Write-Host "vc: could not remove the old void-relay CA. To remove it yourself, run in PowerShell:" -ForegroundColor Yellow
+        Write-Host "    Get-ChildItem $userRootStore | Where-Object Subject -eq '$oldRelayCaSubject' | Remove-Item" -ForegroundColor Yellow
+    } else {
+        Write-Host "==> removed the old void-relay CA" -ForegroundColor Green
+    }
+}
 
 # Add ~/.void-code/bin to user PATH if not already there (idempotent)
 $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')

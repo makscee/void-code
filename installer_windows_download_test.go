@@ -144,6 +144,13 @@ type winOpts struct {
 	// sumsStatusAlways (nothing to check against) by a route the host never
 	// named with a status code.
 	sumsTorn bool
+
+	// prelude is PowerShell run in the same session before install.ps1, to
+	// stand in for what does not exist off Windows (the Cert: drive). Functions
+	// it defines shadow the cmdlets of the same name inside the installer.
+	prelude string
+	// env is appended to the run's environment.
+	env []string
 }
 
 type winResult struct {
@@ -359,7 +366,12 @@ func runWindowsInstall(t *testing.T, o winOpts) winResult {
 		"VC_INSTALL_CODEX=0",
 	}
 
+	env = append(env, o.env...)
 	cmd := exec.Command(ps, "-NoProfile", "-File", "install.ps1")
+	if o.prelude != "" {
+		cmd = exec.Command(ps, "-NoProfile", "-Command",
+			o.prelude+"\n& ./install.ps1\nexit $LASTEXITCODE")
+	}
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	code := 0

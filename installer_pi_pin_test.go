@@ -313,6 +313,7 @@ func runPiPinInstall(t *testing.T, o piPinOpts) piPinResult {
 		"TMPDIR=" + tmp,
 		"SHELL=/bin/zsh",
 		"VC_AUTH_HOST=http://127.0.0.1:1",
+		"VC_TEST_ROOT=" + t.TempDir(),
 		"VC_SKIP_DOWNLOAD=1",
 		"VC_INSTALL_YES=1",
 		"VC_INSTALL_PI=1",

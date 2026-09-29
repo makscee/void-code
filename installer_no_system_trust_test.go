@@ -12,6 +12,11 @@ package installercontract
 // Each run below would fail against the old installers: install.sh called
 // `security add-trusted-cert` (or sudo + update-ca-*) and both installers asked
 // the host for /vc/relay-ca.pem.
+//
+// Machines an old installer ran on still trust the CA, so the installers take it
+// out again (Maks, void-works#71): from the login keychain, the Linux anchors or
+// CurrentUser\Root. That can raise a password, sudo or confirmation prompt once,
+// and each installer says what is happening before the prompt appears.
 
 import (
 	"os"
@@ -20,8 +25,9 @@ import (
 	"testing"
 )
 
-// trustStoreTools are the programs install.sh used to reach a trust store with.
-// runMirrorInstall puts a refusing fake of each on PATH that logs the call.
+// trustStoreTools are the programs install.sh reaches a trust store with.
+// runMirrorInstall puts a refusing fake of each on PATH that logs the call; with
+// no old CA on the machine, none of them may run at all.
 var trustStoreTools = []string{"security", "sudo", "install", "update-ca-certificates", "update-ca-trust"}
 
 func TestShellInstallerAddsNoSystemTrust(t *testing.T) {
@@ -73,7 +79,7 @@ func runDryRun(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	cmd := exec.Command("sh", "install.sh", "--dry-run")
-	cmd.Env = append(os.Environ(), "HOME="+home, "VC_AUTH_HOST=http://127.0.0.1:1")
+	cmd.Env = append(os.Environ(), "HOME="+home, "VC_AUTH_HOST=http://127.0.0.1:1", "VC_TEST_ROOT="+t.TempDir())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("dry-run failed: %v\n%s", err, output)
@@ -100,13 +106,13 @@ func TestPowerShellInstallerAddsNoSystemTrust(t *testing.T) {
 	}
 }
 
-// The runs above cannot see a Windows certificate store (Import-Certificate
+// The runs above cannot see a real Windows certificate store (Import-Certificate
 // does not exist off Windows) or every Linux branch, so the source is checked
-// too: no step that writes a trust store may come back.
+// too: no step that adds to a trust store may come back. Removing is allowed.
 func TestInstallersHaveNoTrustStoreStep(t *testing.T) {
 	for file, banned := range map[string][]string{
-		"install.sh":  {"add-trusted-cert", "update-ca-certificates", "update-ca-trust", "relay-ca.pem"},
-		"install.ps1": {"Import-Certificate", `Cert:\`, "certutil", "X509Store", "relay-ca.pem"},
+		"install.sh":  {"add-trusted-cert", "add-certificates", "/vc/relay-ca.pem"},
+		"install.ps1": {"Import-Certificate", "certutil", "X509Store", "/vc/relay-ca.pem"},
 	} {
 		data, err := os.ReadFile(file)
 		if err != nil {
@@ -115,6 +121,24 @@ func TestInstallersHaveNoTrustStoreStep(t *testing.T) {
 		for _, b := range banned {
 			if strings.Contains(string(data), b) {
 				t.Errorf("%s still contains %q", file, b)
+			}
+		}
+	}
+
+	// The Linux anchors are named only to be deleted: no line that names one
+	// may copy, move or link a file there.
+	data, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(line, "OLD_RELAY_CA_DEB") && !strings.Contains(line, "OLD_RELAY_CA_RHEL") &&
+			!strings.Contains(line, "ca-certificates/") && !strings.Contains(line, "anchors/") {
+			continue
+		}
+		for _, w := range []string{"install ", "cp ", "mv ", "ln ", "tee ", ">"} {
+			if strings.Contains(strings.ReplaceAll(line, ">&2", ""), w) && !strings.Contains(line, "/dev/null") {
+				t.Errorf("install.sh:%d writes to a trust anchor: %s", i+1, strings.TrimSpace(line))
 			}
 		}
 	}
