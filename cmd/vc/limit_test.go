@@ -59,7 +59,7 @@ func TestStatusJSONCarriesTheLimit(t *testing.T) {
 func TestWelcomeShowsTheLimit(t *testing.T) {
 	reset := time.Now().Add(73 * time.Hour)
 	me := auth.MeResult{UserID: "u-1", Limit: &auth.Limit{Pct: 42, ResetAt: &reset}}
-	if got, want := meResultToState(me).Balance, "лимит использован на 42%, сброс через 3 дня"; got != want {
+	if got, want := verifiedWelcomeState(me).Balance, "лимит использован на 42%, сброс через 3 дня"; got != want {
 		t.Errorf("welcome balance = %q, want %q", got, want)
 	}
 }

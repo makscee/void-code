@@ -2,35 +2,6 @@ package main
 
 import "testing"
 
-// TestNonInteractive_FlagForcesTrue verifies that setting --non-interactive
-// makes nonInteractive() report true regardless of the stdin TTY state.
-func TestNonInteractive_FlagForcesTrue(t *testing.T) {
-	prev := nonInteractiveFlag
-	t.Cleanup(func() { nonInteractiveFlag = prev })
-
-	nonInteractiveFlag = true
-	if !nonInteractive() {
-		t.Error("nonInteractive() = false with --non-interactive set; want true")
-	}
-}
-
-// TestNonInteractive_NonTTYStdin verifies that when stdin is not a TTY (the case
-// under `go test`, whose stdin is a pipe/devnull), nonInteractive() is true even
-// with the flag unset. This is the auto-detect path the directive requires.
-func TestNonInteractive_NonTTYStdin(t *testing.T) {
-	prev := nonInteractiveFlag
-	t.Cleanup(func() { nonInteractiveFlag = prev })
-
-	nonInteractiveFlag = false
-	// Test harness stdin is not a terminal, so interactiveStdin() is false.
-	if interactiveStdin() {
-		t.Skip("test stdin is unexpectedly a TTY — cannot exercise the non-TTY path")
-	}
-	if !nonInteractive() {
-		t.Error("nonInteractive() = false with non-TTY stdin and flag unset; want true")
-	}
-}
-
 // TestNonInteractiveFlag_Registered verifies the persistent --non-interactive
 // flag is wired on rootCmd as a bool defaulting to false.
 func TestNonInteractiveFlag_Registered(t *testing.T) {

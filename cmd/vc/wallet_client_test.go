@@ -631,6 +631,16 @@ func fetchMeFrom(t *testing.T, body string) auth.MeResult {
 	return me
 }
 
+// verifiedWelcomeState is the welcome state main draws once the launch's
+// /v1/vc/me has answered with me: the local signed-in state, with the account
+// the preflight took from that answer (welcomeBalance).
+func verifiedWelcomeState(me auth.MeResult) welcome.AuthState {
+	p := &launchPreflight{deps: launchPreflightDeps{now: time.Now}, authDone: make(chan struct{}), authResult: launchAuthResult{me: me, reached: true}}
+	close(p.authDone)
+	state, _ := welcomeBalance(welcome.AuthState{LoggedIn: true, IdentityUnverified: true}, p)
+	return state
+}
+
 func welcomeScreens(state welcome.AuthState) (view, banner string) {
 	return plainText(welcome.NewMenuModelForTest(state).View()), plainText(welcome.PlainBannerForTest(state))
 }
@@ -638,7 +648,7 @@ func welcomeScreens(state welcome.AuthState) (view, banner string) {
 // Where the welcome screen said `$X left` it now says what `vc status` says
 // after its label.
 func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
-	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))))
+	view, banner := welcomeScreens(verifiedWelcomeState(fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
 		if !strings.Contains(screen, "T1 · осталось ~9 дней") {
 			t.Errorf("welcome %s lacks %q:\n%s", where, "T1 · осталось ~9 дней", screen)
@@ -652,7 +662,7 @@ func TestWelcomeShowsBalanceTierAndDays(t *testing.T) {
 
 // No tariff: nothing to show but money, so the welcome screen shows no wallet.
 func TestWelcomeShowsNoMoneyWithoutTariff(t *testing.T) {
-	view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, meBody(wallet("18", "null", "null", "null")))))
+	view, banner := welcomeScreens(verifiedWelcomeState(fetchMeFrom(t, meBody(wallet("18", "null", "null", "null")))))
 	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
 		for _, stale := range []string{"$", "days left", "осталось"} {
 			if strings.Contains(screen, stale) {
@@ -669,23 +679,11 @@ func TestWelcomeShowsNoMoneyWithoutWallet(t *testing.T) {
 		meBody(`"balanceUsd":12.4`),
 		meBody(`"pct":42,"resetAt":"2026-10-01T00:00:00Z","balanceUsd":12.4`),
 	} {
-		view, banner := welcomeScreens(meResultToState(fetchMeFrom(t, body)))
+		view, banner := welcomeScreens(verifiedWelcomeState(fetchMeFrom(t, body)))
 		for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
 			if strings.Contains(screen, "$") || strings.Contains(screen, "%") {
 				t.Errorf("welcome %s shows money or percent with no wallet on the wire (%s):\n%s", where, body, screen)
 			}
-		}
-	}
-}
-
-// A stale identity is only an identity: the wallet it came with is not
-// current, so it is not shown.
-func TestWelcomeStaleStateShowsNoWallet(t *testing.T) {
-	me := fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))
-	view, banner := welcomeScreens(staleMeResultToState(me))
-	for where, screen := range map[string]string{"menu": view, "plain banner": banner} {
-		if strings.Contains(screen, "18.00") || strings.Contains(screen, "days left") {
-			t.Errorf("stale welcome %s presents the last wallet as current:\n%s", where, screen)
 		}
 	}
 }

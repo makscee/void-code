@@ -21,12 +21,10 @@ import (
 // wallet from the background /v1/vc/me the launch already makes
 // (startLaunchPreflight).
 //
-// Until now the only function that put a wallet on the welcome state was
-// meResultToState, and production never calls it. main() draws the screen from
-// resolveLocalAuthStateWithSource — a token-only state with no wallet — and the
-// preflight's /v1/vc/me answer is read by nobody on the way to the screen. The
-// welcome tests in wallet_client_test.go go through meResultToState and so
-// prove the formatting, not that anyone sees it.
+// main() draws the screen from resolveLocalAuthStateWithSource — a token-only
+// state with no wallet — so the wallet reaches it only through the preflight.
+// The welcome tests in wallet_client_test.go hand welcomeBalance a finished
+// preflight and so prove the formatting, not that the answer arrives in time.
 //
 // These tests replay main's bare launch from the outside with its own pieces:
 // the local state from resolveLocalAuthStateWithSource; the preflight from
@@ -201,9 +199,9 @@ func TestWelcomeShowsWalletTheLaunchAlreadyFetched(t *testing.T) {
 		{"negative balance, negative days", meBody(wallet("-3", tariffT1, "false", "-2")), "T1 · осталось ~0 дней"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state, token, authHost := welcomeLaunch(t, meServer(t, tc.body))
-			if _, reached, err, reused := currentLaunchPreflight.awaitAuth(token, authHost); !reused || !reached || err != nil {
-				t.Fatalf("preflight did not reach the fixture: reused=%v reached=%v err=%v", reused, reached, err)
+			state, _, _ := welcomeLaunch(t, meServer(t, tc.body))
+			if r := awaitPreflightAuth(t, currentLaunchPreflight); !r.reached || r.err != nil {
+				t.Fatalf("preflight did not reach the fixture: reached=%v err=%v", r.reached, r.err)
 			}
 			s := showWelcome(t, state)
 			if screen, ok := s.waitFor(tc.want, 2*time.Second); !ok {
@@ -230,8 +228,8 @@ func TestWelcomeShowsNoMoneyWhenTheLaunchFetchedNoWallet(t *testing.T) {
 		{"access refused", refusal.URL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state, token, authHost := welcomeLaunch(t, tc.host)
-			currentLaunchPreflight.awaitAuth(token, authHost)
+			state, _, _ := welcomeLaunch(t, tc.host)
+			awaitPreflightAuth(t, currentLaunchPreflight)
 			s := showWelcome(t, state)
 			screen, drawn := s.waitFor(welcomeMenuPrompt, 2*time.Second)
 			if !drawn {
@@ -277,9 +275,9 @@ func TestWelcomeShowsTheEmailTheLaunchVerified(t *testing.T) {
 	})
 
 	t.Run("already in", func(t *testing.T) {
-		state, token, authHost := welcomeLaunch(t, meServer(t, meBody(wallet("18", tariffT1, "true", "9"))))
-		if _, reached, err, reused := currentLaunchPreflight.awaitAuth(token, authHost); !reused || !reached || err != nil {
-			t.Fatalf("preflight did not reach the fixture: reused=%v reached=%v err=%v", reused, reached, err)
+		state, _, _ := welcomeLaunch(t, meServer(t, meBody(wallet("18", tariffT1, "true", "9"))))
+		if r := awaitPreflightAuth(t, currentLaunchPreflight); !r.reached || r.err != nil {
+			t.Fatalf("preflight did not reach the fixture: reached=%v err=%v", r.reached, r.err)
 		}
 		s := showWelcome(t, state)
 		screen, ok := s.waitFor(email+" · T1 · осталось ~9 дней", 2*time.Second)
@@ -296,8 +294,8 @@ func TestWelcomeShowsTheEmailTheLaunchVerified(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}))
 		t.Cleanup(refusal.Close)
-		state, token, authHost := welcomeLaunch(t, refusal.URL)
-		currentLaunchPreflight.awaitAuth(token, authHost)
+		state, _, _ := welcomeLaunch(t, refusal.URL)
+		awaitPreflightAuth(t, currentLaunchPreflight)
 		s := showWelcome(t, state)
 		if screen, drawn := s.waitFor(unverified, 2*time.Second); !drawn {
 			t.Fatalf("with no answer the screen must stay unverified:\n%s", screen)

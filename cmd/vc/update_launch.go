@@ -62,7 +62,7 @@ func touchUpdateCache() {
 
 // launchUpdateCheck performs only the terminal-inert part of launch update
 // handling. It may probe the network and touch the check cache, but it never
-// reads stdin, writes to the terminal, installs, or restarts while welcome.Run
+// reads stdin, writes to the terminal, installs, or restarts while the welcome screen
 // owns the terminal. A completed probe can be surfaced as a nonblocking nudge;
 // installation remains available through the explicit `vc update` command.
 func launchUpdateCheck() string {
@@ -80,33 +80,4 @@ func launchUpdateNudge(result update.ProbeResult) string {
 		return ""
 	}
 	return fmt.Sprintf("update available · run vc update to install %s", result.Latest)
-}
-
-// runInstallAndRestart downloads the latest binary, replaces it, and
-// exec-restarts.  If any step fails, returns an error nudge string (install
-// failed, user can retry with vc update).
-func runInstallAndRestart(latest string) string {
-	updated, err := update.CheckAndUpdate(update.Options{
-		Current: version.Version,
-	})
-	if err != nil {
-		return fmt.Sprintf("update failed: %v — try: vc update", err)
-	}
-	if !updated {
-		return ""
-	}
-	fmt.Println("  ==> installing...")
-
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Sprintf("restart failed: %v — re-run vc", err)
-	}
-	fmt.Println("  ==> restarting...")
-	if err := update.RestartWithNewBinary(exe); err != nil {
-		// Windows: process was spawned and we exit below via os.StartProcess.
-		// On unix this is fatal.
-		return fmt.Sprintf("restart failed: %v — re-run vc", err)
-	}
-	// Unreachable on unix (syscall.Exec replaces process).
-	return ""
 }

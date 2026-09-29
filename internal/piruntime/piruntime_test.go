@@ -156,7 +156,7 @@ func TestEnsureReplacesAnotherVersion(t *testing.T) {
 	if installed, err := Ensure(opts(home, source(srv))); err != nil || !installed {
 		t.Fatalf("Ensure = %v, %v", installed, err)
 	}
-	if v := InstalledVersion(home); v != PinnedVersion {
+	if v := treeVersion(Dir(home)); v != PinnedVersion {
 		t.Fatalf("version = %q", v)
 	}
 }
@@ -174,7 +174,7 @@ func TestEnsureRefusesATamperedArchiveAndKeepsTheOldRuntime(t *testing.T) {
 	if err == nil || installed || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("Ensure = %v, %v; want a hash refusal", installed, err)
 	}
-	if v := InstalledVersion(home); v != "0.80.0" {
+	if v := treeVersion(Dir(home)); v != "0.80.0" {
 		t.Fatalf("old runtime changed: version %q", v)
 	}
 	if _, err := os.Stat(filepath.Join(Dir(home), "node_modules", "evil.js")); !os.IsNotExist(err) {

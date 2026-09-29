@@ -201,8 +201,8 @@ func TestPiDefaultPairIsWiredIntoTheExtensionThatMustAcceptIt(t *testing.T) {
 		}
 	})
 
-	// Third copy of the same string, and the one resolvePiManagedModel checks a
-	// user's choice against: a model absent from here is refused as unsupported.
+	// Third copy of the same string: the codex model list vc pi-bootstrap hands
+	// Pi.
 	t.Run("relay model list carries the seeded model", func(t *testing.T) {
 		found := false
 		for _, model := range piVoidCodexModels {

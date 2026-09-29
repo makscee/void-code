@@ -35,11 +35,6 @@ const (
 // Callbacks is intentionally empty: console subscription choices are not persisted here.
 type Callbacks struct{}
 
-func Run(state AuthState, cb Callbacks) (RunResult, error) { return RunWithOptions(state, cb) }
-func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (RunResult, error) {
-	return RunWithUpdates(state, cb, nil, opts...)
-}
-
 // AccountMsg puts what the launch's /v1/vc/me answered on a screen that is
 // already up: the verified identity (the email, else the user id) and the
 // balance, rendered the way AuthState.Balance is. The screen never waits on
@@ -50,9 +45,9 @@ type AccountMsg struct {
 	Balance  string
 }
 
-// RunWithUpdates runs the screen like RunWithOptions and also runs updates in
-// the background from the first frame on; the message it returns (a
-// AccountMsg) updates the screen that is up. A nil updates is RunWithOptions.
+// RunWithUpdates runs the screen and also runs updates in the background from
+// the first frame on; the message it returns (a AccountMsg) updates the screen
+// that is up. A nil updates runs the screen alone.
 func RunWithUpdates(state AuthState, cb Callbacks, updates tea.Cmd, opts ...tea.ProgramOption) (RunResult, error) {
 	start := newModel(state)
 	start.updates = updates

@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/makscee/void-code/internal/auth"
 )
@@ -63,4 +62,3 @@ func TestStatusReportsLiveRejectionAndUnreachableServer(t *testing.T) {
 		})
 	}
 }
-func nowForTest() time.Time { return time.Now() }

@@ -48,13 +48,6 @@ func Save(token string) error {
 	return saveWithOps(path, token, defaultCredentialOps())
 }
 
-// saveAt retains the narrow rename seam used by existing callers and tests.
-func saveAt(path, token string, rename func(string, string) error) error {
-	ops := defaultCredentialOps()
-	ops.rename = rename
-	return saveWithOps(path, token, ops)
-}
-
 func saveWithOps(path, token string, ops credentialOps) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

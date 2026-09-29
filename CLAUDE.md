@@ -57,7 +57,7 @@ internal/
   childenv/     — PATH and env for the Pi child process
   clackui/      — terminal UI pieces
   config/       — env resolution (VC_* vars), cache paths
-  harness/      — Spawn seam (passthrough stdio); direct/ strips env, relay/ fetches the CA
+  harness/      — Spawn seam (passthrough stdio); direct/ strips env
   pibin/        — resolve the managed Pi entrypoint
   piruntime/    — install the pinned Pi runtime
   provider/     — relay route kinds used by buildPiSpawnEnv
