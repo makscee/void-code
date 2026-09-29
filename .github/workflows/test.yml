@@ -6,6 +6,15 @@ on:
       - 'main'
   pull_request:
 
+# A push to a branch with an open pull request fires both events above for the
+# same commit, and each ran the whole suite (7-13 min). Both land in one group
+# keyed by the branch, so the later run cancels the earlier: one full run per
+# commit, and a newer push also cancels the run it supersedes. The fork's repo
+# is part of the key so a fork's same-named branch does not cancel ours.
+concurrency:
+  group: test-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test
