@@ -189,6 +189,7 @@ func runTagInstall(t *testing.T, o tagOpts) mirrorResult {
 		"LC_ALL=" + orDefault(o.locale, "C"),
 		"LANG=" + orDefault(o.locale, "C"),
 		"VC_AUTH_HOST=" + tagAuthHost,
+		"VC_TEST_ROOT=" + t.TempDir(),
 		"VC_INSTALL_PI=0",
 		"VC_INSTALL_YES=1",
 		"FAKE_LOG=" + logPath,

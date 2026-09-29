@@ -7,9 +7,9 @@ package installercontract
 // pins the tag rule. Both are about the path that WORKS. This file is about the
 // edges around it — the cases where the point is that nothing was damaged:
 //
-//   1. a failed CA fetch never damages a working install (spec §3): an existing
-//      relay-ca.pem survives byte for byte, and where there was none, nothing
-//      is left at the final path — not an empty file, not a partial one;
+//   1. (was: a failed relay CA fetch never damages a working install. The
+//      installer no longer fetches the CA at all; installer_no_system_trust_test.go
+//      pins that instead.)
 //   2. both sources down: non-zero exit, no `vc`, no scratch file parked in
 //      TMPDIR (on the real thing that is ~8 MB per failed attempt);
 //   3. a healthy primary asks GitHub nothing at all — no releases/latest
@@ -107,85 +107,6 @@ func mirrorRequireNoPartialBytes(t *testing.T, home string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-// ── 1. a failed CA fetch never damages a working install ─────────────────────
-//
-// The CA used to be fetched straight to its final path, and fetch_to_file_retry
-// truncates its destination when it runs out of attempts. So a re-run on a
-// flapping network blanked a relay-ca.pem that had been working a minute
-// earlier and left the machine worse than before the installer ran. The fix
-// (CA_TMP → mv) has no test in this repository at all: every fixture here
-// hardcodes FAKE_CA=ok, so the truncate bug could walk straight back in under a
-// green `go test ./...`.
-
-func TestShellInstallerNeverDamagesAnExistingRelayCA(t *testing.T) {
-	skipInstallShOnWindows(t)
-
-	if testing.Short() {
-		t.Skip("runs the shell installer with command fixtures")
-	}
-
-	// The exit code is deliberately not asserted in the first subtest: whether a
-	// machine that already trusts the CA should still fail the run is the
-	// implementation's call. What is NOT its call is the existing bytes.
-	t.Run("a working relay-ca.pem survives a failed download byte for byte", func(t *testing.T) {
-		// Long enough that a truncated or partially-rewritten file cannot
-		// coincide with it, and marked so a survivor is identifiable.
-		existing := "-----BEGIN CERTIFICATE-----\nWORKING-CA-" + strings.Repeat("k", 3072) +
-			"\n-----END CERTIFICATE-----\n"
-
-		r := runMirrorInstall(t, mirrorOpts{primary: "ok", ca: "fail", existingCA: existing})
-
-		// Without these the subtest passes on a run that never went near the CA.
-		if len(mirrorLogLines(r.log, "/vc/relay-ca.pem")) == 0 {
-			t.Fatalf("the relay CA was never fetched, so no failure was survived\nlog:\n%s",
-				strings.Join(r.log, "\n"))
-		}
-		lower := strings.ToLower(r.combined)
-		if !strings.Contains(lower, "relay ca") && !strings.Contains(lower, "relay-ca") {
-			t.Errorf("the run never says a word about the relay CA it failed to fetch:\n%s", r.combined)
-		}
-
-		got, err := os.ReadFile(r.caPath)
-		if err != nil {
-			t.Fatalf("the existing relay CA is gone after a failed refresh: %v\n%s", err, r.combined)
-		}
-		if string(got) != existing {
-			t.Errorf("the existing relay CA was damaged by a failed refresh: %d bytes left of %d, starts %.40q",
-				len(got), len(existing), string(got))
-		}
-
-		mirrorRequireNoPartialBytes(t, r.home)
-		if left := mirrorLeftovers(t, r.tmpDir); len(left) != 0 {
-			t.Errorf("the CA fetch left scratch files behind: %s", strings.Join(left, ", "))
-		}
-	})
-
-	t.Run("no relay-ca.pem is left at all when there was none to keep", func(t *testing.T) {
-		r := runMirrorInstall(t, mirrorOpts{primary: "ok", ca: "fail"})
-
-		if r.code == 0 {
-			t.Errorf("installer exited 0 with no relay CA installed at all\n%s", r.combined)
-		}
-		if !strings.Contains(strings.ToLower(r.combined), "failed to download relay ca") {
-			t.Errorf("the failure never names the relay CA download:\n%s", r.combined)
-		}
-
-		// Not "empty" — absent. An empty relay-ca.pem is a file vc reads and
-		// chokes on, and it satisfies every check that only tests existence.
-		if info, err := os.Stat(r.caPath); err == nil {
-			t.Errorf("a relay-ca.pem was left at %s (%d bytes) though none could be downloaded",
-				r.caPath, info.Size())
-		} else if !os.IsNotExist(err) {
-			t.Fatalf("stat %s: %v", r.caPath, err)
-		}
-
-		mirrorRequireNoPartialBytes(t, r.home)
-		if left := mirrorLeftovers(t, r.tmpDir); len(left) != 0 {
-			t.Errorf("the failed CA fetch left scratch files behind: %s", strings.Join(left, ", "))
-		}
-	})
 }
 
 // ── 2. both sources down ─────────────────────────────────────────────────────

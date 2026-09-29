@@ -1,6 +1,7 @@
 #!/bin/sh
-# vc/install.sh — installs the void-code relay launcher `vc`, provisions
-# the production relay CA, and bootstraps node + selected agent CLIs.
+# vc/install.sh — installs the void-code relay launcher `vc` and bootstraps
+# node + selected agent CLIs. It adds nothing to the OS trust store: relay and
+# auth serve publicly trusted certificates.
 # Default: vc + node + Pi only. Optional flags install Claude Code and/or Codex.
 #
 # Usage (recommended):
@@ -84,7 +85,6 @@ done
 AUTH_HOST="${VC_AUTH_HOST:-https://auth.makscee.ru}"
 VC_DIR="$HOME/.void-code"
 BIN_DIR="$VC_DIR/bin"
-CA_DIR="$VC_DIR"
 # Pi lives under VC's managed runtime; vc launches this fixed entrypoint, never a PATH shim.
 PI_RUNTIME_DIR="$VC_DIR/runtime/pi"
 PI_ENTRY="$PI_RUNTIME_DIR/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
@@ -99,7 +99,6 @@ PI_PACKAGE_SPEC="@earendil-works/pi-coding-agent@$PI_VERSION"
 MIN_NODE_MAJOR=22
 
 VERSION_JSON_URL="$AUTH_HOST/vc/version.json"
-RELAY_CA_URL="$AUTH_HOST/vc/relay-ca.pem"
 
 # ── HTTP fetcher ─────────────────────────────────────────────────────────────
 # Prefer curl; fall back to wget (fresh debian/ubuntu LXC ships wget only).
@@ -1241,58 +1240,110 @@ check_selected_agents() {
   [ "$INSTALL_CODEX" = 1 ] && check_npm_agent codex @openai/codex "OpenAI Codex" || true
 }
 
-# ── relay CA → OS trust store ─────────────────────────────────────────────────
-# vc injects NODE_EXTRA_CA_CERTS so *Node* (claude) trusts the relay's HTTPS
-# proxy cert — but tools the agent shells out to (curl, git, python) use the OS
-# trust store and otherwise fail the proxy TLS hop with:
-#   curl: (60) SSL certificate problem: unable to get local issuer certificate
-# Teach the OS to trust the relay CA. Non-fatal + idempotent: a failure here
-# leaves vc fully working; only in-session curl/git would need a manual trust.
-trust_relay_ca() {
-  _ca="$CA_DIR/relay-ca.pem"
-  [ -f "$_ca" ] || return 0
+# ── the relay CA older installers trusted system-wide ─────────────────────────
+# Installers before void-works#71 fetched the relay's private CA and made the
+# whole OS trust it: the login keychain on macOS, the system anchors on Linux.
+# Nothing needs it now (relay and auth serve publicly trusted certificates), and
+# a root there vouches for any site to every program on the machine, so it is
+# taken out again. Those stores change only with the keychain password or root,
+# so this can raise one password or sudo prompt; it says why before that.
+# Non-fatal: a failure prints the command that finishes the job by hand. vc's own
+# cached copy of the CA under ~/.void-code stays: only vc reads it, it is no OS trust.
+OLD_RELAY_CA_NAME="void-relay-local-ca"
+# VC_TEST_ROOT exists for the tests only: it moves the Linux anchors under a
+# scratch dir so a test run never reaches the real ones.
+OLD_RELAY_CA_DEB="${VC_TEST_ROOT:-}/usr/local/share/ca-certificates/void-relay-ca.crt"
+OLD_RELAY_CA_RHEL="${VC_TEST_ROOT:-}/etc/pki/ca-trust/source/anchors/void-relay-ca.pem"
+
+login_keychain() {
+  _kc="$HOME/Library/Keychains/login.keychain-db"
+  [ -f "$_kc" ] || _kc="$HOME/Library/Keychains/login.keychain"
+  [ -f "$_kc" ] && printf '%s\n' "$_kc"
+}
+
+# The SHA-1 of every copy of the old CA in keychain $1, one per line. `-c`
+# matches any label that merely contains the name, so a certificate counts only
+# when its label is exactly the old CA's: a look-alike such as
+# "my-void-relay-local-ca-backup" is someone else's and stays.
+old_relay_ca_hashes() {
+  security find-certificate -a -c "$OLD_RELAY_CA_NAME" -Z "$1" 2>/dev/null \
+    | awk -v want="\"labl\"<blob>=\"$OLD_RELAY_CA_NAME\"" '
+        /^SHA-1 hash:/ { h = $3; next }
+        { l = $0; sub(/^[ \t]+/, "", l) }
+        l == want && h != "" { print h; h = "" }'
+}
+
+# Succeeds when this machine still trusts the old CA.
+old_relay_ca_present() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    _kc="$(login_keychain)" || return 1
+    [ -n "$(old_relay_ca_hashes "$_kc")" ]
+  else
+    [ -f "$OLD_RELAY_CA_DEB" ] || [ -f "$OLD_RELAY_CA_RHEL" ]
+  fi
+}
+
+remove_old_relay_ca() {
+  old_relay_ca_present || return 0
 
   if [ "$(uname -s)" = "Darwin" ]; then
-    _kc="$HOME/Library/Keychains/login.keychain-db"
-    [ -f "$_kc" ] || _kc="$HOME/Library/Keychains/login.keychain"
-    if security add-trusted-cert -r trustRoot -k "$_kc" "$_ca" >/dev/null 2>&1; then
-      printf '==> trusted relay CA in login keychain\n' >&2
+    _kc="$(login_keychain)"
+    printf '==> removing the old void-relay CA from your login keychain: vc no longer needs it.\n' >&2
+    printf '    macOS may ask for your password once to change certificate trust settings.\n' >&2
+    for _h in $(old_relay_ca_hashes "$_kc"); do
+      security delete-certificate -Z "$_h" -t "$_kc" >/dev/null || true
+    done
+    if old_relay_ca_present; then
+      # Over ssh, or with no one at the screen, macOS cannot ask for the password
+      # and refuses; the same command works from Terminal on the Mac itself.
+      printf 'vc: could not remove the old void-relay CA. To remove it yourself, run in Terminal on this Mac:\n' >&2
+      for _h in $(old_relay_ca_hashes "$_kc"); do
+        printf '    security delete-certificate -Z %s -t %s\n' "$_h" "$_kc" >&2
+      done
     else
-      printf 'vc: could not auto-trust relay CA in keychain — in-session curl/git may show SSL errors.\n' >&2
-      printf '    Fix manually: security add-trusted-cert -r trustRoot -k %s %s\n' "$_kc" "$_ca" >&2
+      printf '==> removed the old void-relay CA\n' >&2
     fi
     return 0
   fi
 
-  # Linux — need root to write the system anchor dir.
   _sudo=""
   if [ "$(id -u)" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then _sudo="sudo"; else
-      printf 'vc: not root and no sudo — skipping OS CA trust (in-session curl/git may show SSL errors).\n' >&2
+      printf 'vc: the old void-relay CA is still trusted system-wide, and removing it needs root.\n' >&2
+      print_old_relay_ca_manual
       return 0
     fi
   fi
-
-  if command -v update-ca-certificates >/dev/null 2>&1; then
-    # Debian / Ubuntu / Alpine — anchor must end in .crt
-    if $_sudo install -m 0644 "$_ca" /usr/local/share/ca-certificates/void-relay-ca.crt 2>/dev/null \
-       && $_sudo update-ca-certificates >/dev/null 2>&1; then
-      printf '==> trusted relay CA via update-ca-certificates\n' >&2
-    else
-      printf 'vc: update-ca-certificates failed — in-session curl/git may show SSL errors.\n' >&2
-    fi
-  elif command -v update-ca-trust >/dev/null 2>&1; then
-    # RHEL / Fedora / CentOS
-    if $_sudo install -m 0644 "$_ca" /etc/pki/ca-trust/source/anchors/void-relay-ca.pem 2>/dev/null \
-       && $_sudo update-ca-trust extract >/dev/null 2>&1; then
-      printf '==> trusted relay CA via update-ca-trust\n' >&2
-    else
-      printf 'vc: update-ca-trust failed — in-session curl/git may show SSL errors.\n' >&2
-    fi
-  else
-    printf 'vc: no known CA-trust tool found — in-session curl/git may show SSL errors.\n' >&2
-    printf '    Add %s to your system trust store manually.\n' "$_ca" >&2
+  printf '==> removing the old void-relay CA from the system trust store: vc no longer needs it.\n' >&2
+  [ -n "$_sudo" ] && printf '    sudo may ask for your password once.\n' >&2
+  # With the anchor gone a later run finds nothing to do, so a failed refresh
+  # is reported now: the CA would otherwise stay in the bundle unannounced.
+  _refresh_failed=""
+  if [ -f "$OLD_RELAY_CA_DEB" ] && $_sudo rm -f "$OLD_RELAY_CA_DEB"; then
+    $_sudo update-ca-certificates >/dev/null 2>&1 ||
+      _refresh_failed="sudo update-ca-certificates"
   fi
+  if [ -f "$OLD_RELAY_CA_RHEL" ] && $_sudo rm -f "$OLD_RELAY_CA_RHEL"; then
+    $_sudo update-ca-trust extract >/dev/null 2>&1 ||
+      _refresh_failed="${_refresh_failed:+$_refresh_failed && }sudo update-ca-trust extract"
+  fi
+  if old_relay_ca_present; then
+    printf 'vc: could not remove the old void-relay CA. To remove it yourself, run:\n' >&2
+    print_old_relay_ca_manual
+  elif [ -n "$_refresh_failed" ]; then
+    printf 'vc: removed the old void-relay CA file, but refreshing the trust store failed. To finish, run:\n' >&2
+    printf '    %s\n' "$_refresh_failed" >&2
+  else
+    printf '==> removed the old void-relay CA\n' >&2
+  fi
+}
+
+print_old_relay_ca_manual() {
+  [ -f "$OLD_RELAY_CA_DEB" ] &&
+    printf '    sudo rm %s && sudo update-ca-certificates\n' "$OLD_RELAY_CA_DEB" >&2
+  [ -f "$OLD_RELAY_CA_RHEL" ] &&
+    printf '    sudo rm %s && sudo update-ca-trust extract\n' "$OLD_RELAY_CA_RHEL" >&2
+  return 0
 }
 
 # ── dry-run ───────────────────────────────────────────────────────────────────
@@ -1300,7 +1351,6 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '%s\n' "$VERSION_BANNER"
   printf 'GET %s  (-> %s/vc)\n' "$VC_BIN_URL" "$BIN_DIR"
   printf 'GET %s  (checked against, if it is there yet)\n' "$PRIMARY_SUMS_URL"
-  printf 'GET %s  (-> %s/relay-ca.pem)\n' "$RELAY_CA_URL" "$CA_DIR"
   if [ -n "$MIRROR_BIN_URL" ]; then
     printf 'FALLBACK (only if the GET above fails): GET %s\n' "$MIRROR_BIN_URL"
     printf '  verified against %s before install\n' "$MIRROR_SUMS_URL"
@@ -1312,10 +1362,8 @@ if [ "$DRY_RUN" = 1 ]; then
     printf '  would be resolved from https://api.github.com/repos/%s/releases/latest\n' "$MIRROR_REPO"
     printf '  and the download verified against the SHA256SUMS of that release\n'
   fi
-  if [ "$(uname -s)" = "Darwin" ]; then
-    printf 'WOULD: security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db <relay-ca.pem>\n'
-  else
-    printf 'WOULD: install relay-ca.pem to system anchors + update-ca-certificates / update-ca-trust\n'
+  if old_relay_ca_present; then
+    printf 'WOULD: remove the old void-relay CA from the OS trust store (may ask for a password)\n'
   fi
   _dry_major="$(node_major)"
   if [ -z "$_dry_major" ] || ! [ "$_dry_major" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
@@ -1359,7 +1407,7 @@ fi
 printf '%s\n' "$VERSION_BANNER"
 printf '==> detecting platform: %s/%s\n' "$OS" "$ARCH"
 
-# 1. Download vc binary + provision relay CA
+# 1. Download vc binary
 mkdir -p "$BIN_DIR"
 
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
@@ -1418,40 +1466,7 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   printf '==> installed to %s (from %s)\n' "$BIN_DIR/vc" "$VC_BIN_SOURCE" >&2
 fi
 
-# 2. Provision the production relay CA (public cert only)
-#
-# Fetched to a temp file and moved into place only once it is whole. It used to
-# be written straight to its final path, and fetch_to_file_retry truncates its
-# destination when it runs out of attempts — so a re-run on a flapping network
-# blanked a relay-ca.pem that was working a minute ago and left the machine
-# worse than before the installer touched it.
-printf '==> provisioning relay CA\n' >&2
-CA_FILE="$CA_DIR/relay-ca.pem"
-CA_TMP="$(mktemp)"
-if fetch_to_file_retry "$RELAY_CA_URL" "$CA_TMP"; then
-  chmod 0644 "$CA_TMP"
-  mv -f "$CA_TMP" "$CA_FILE"
-else
-  rm -f "$CA_TMP"
-  if [ -s "$CA_FILE" ]; then
-    # A usable cert is already on the machine and stays exactly as it was. The
-    # install is complete without a fresh copy, so this is loud, not fatal.
-    printf 'vc: failed to download relay CA from %s — kept the existing %s untouched.\n' \
-      "$RELAY_CA_URL" "$CA_FILE" >&2
-    printf '    Re-run the installer once the network is back to refresh it.\n' >&2
-  else
-    # Nothing to keep, so leave nothing behind: an empty relay-ca.pem is a file
-    # vc will read and choke on, and it passes every test for existence.
-    rm -f "$CA_FILE"
-    printf 'vc: failed to download relay CA from %s\n' "$RELAY_CA_URL" >&2
-    exit 1
-  fi
-fi
-
-# 2b. Trust the relay CA in the OS store so curl/git (not just node) work in-session.
-trust_relay_ca
-
-# 3. PATH — register vc FIRST, before the node/agent bootstrap. The vc launcher
+# 2. PATH — register vc FIRST, before the node/agent bootstrap. The vc launcher
 # (vc login, vc doctor) works without node; a node/agent hiccup must NEVER leave
 # vc off PATH. Previously this ran AFTER node bootstrap, so a node failure's
 # `exit 1` skipped it entirely → vc installed but unreachable on fresh machines.
@@ -1475,6 +1490,10 @@ if ensure_node; then
 else
   printf 'vc: node bootstrap incomplete — vc itself is installed; finish node + selected agents per the steps below.\n' >&2
 fi
+
+# 5. Take the relay CA older installers trusted out of the OS trust store. Last
+# of the steps, so a Ctrl-C at its password prompt cuts nothing else short.
+remove_old_relay_ca
 
 # ── post-install UX ───────────────────────────────────────────────────────────
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then

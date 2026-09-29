@@ -319,7 +319,6 @@ try {
 Write-Host $versionBanner
 
 $vcUrl      = "$authHost/vc/$vcArtifactPath"
-$relayCaUrl = "$authHost/vc/relay-ca.pem"
 # The list lives beside version.json, on the host the bytes come from, and names
 # the asset by its bare basename — release.yml publishes one file for both
 # installers, so this is the same route install.sh takes.
@@ -420,46 +419,57 @@ if (Test-Path $target) { Move-Item -Force $target $old }
 Move-Item -Force $tmp $target
 Write-Host "==> installing to $target" -ForegroundColor Green
 
-# 2. Download relay CA (public cert). This is useful for relay-backed agents,
-# but it must never prevent vc.exe itself from installing. Windows PowerShell's
-# Invoke-WebRequest can occasionally wait indefinitely during this small fetch,
-# so bound it and degrade with actionable guidance.
-$caPath = Join-Path $vcDir 'relay-ca.pem'
-Write-Host "==> provisioning relay CA" -ForegroundColor Cyan
-$caReady = $false
-try {
-    Invoke-WebRequest -Uri $relayCaUrl -OutFile $caPath -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
-    $caReady = (Test-Path $caPath) -and ((Get-Item $caPath).Length -gt 0)
-    if (-not $caReady) { throw 'downloaded relay CA is empty' }
-} catch {
-    Remove-Item -Force $caPath -ErrorAction SilentlyContinue
-    Write-Host "vc: relay CA download failed or timed out: $_" -ForegroundColor Yellow
-    Write-Host "    vc is installed; retry later by re-running this installer." -ForegroundColor Yellow
+# The relay CA is neither downloaded nor trusted: relay and auth serve publicly
+# trusted certificates, so nothing is added to the Windows certificate stores.
+#
+# Installers before void-works#71 imported it into CurrentUser\Root when
+# VC_TRUST_RELAY_CA=1 was set. A root there vouches for any site to every program
+# this user runs, so it is taken out again. Windows asks to confirm each deletion
+# from Root with a dialog, so say why before it; with no one to answer it (ssh,
+# CI, a service) the dialog would hang the install, so that case only prints the
+# command. Non-fatal: a failure prints the command that finishes the job by hand.
+# VC_TEST_NONINTERACTIVE exists for the tests only: .NET reports every process
+# off Windows as interactive.
+$oldRelayCaSubject = 'CN=void-relay-local-ca'
+$userRootStore = 'Cert:\CurrentUser\Root'
+function Get-OldRelayCa {
+    if (-not (Test-Path -LiteralPath $userRootStore)) { return @() }
+    return @(Get-ChildItem -LiteralPath $userRootStore -ErrorAction Stop |
+        Where-Object { $_.Subject -eq $oldRelayCaSubject })
 }
-
-# 2b. Trust the relay CA in the OS store so Schannel/.NET consumers (PowerShell
-# Invoke-WebRequest, etc.) can validate the relay's HTTPS proxy cert. vc injects
-# NODE_EXTRA_CA_CERTS so *Node* (claude) already trusts it; this covers the rest.
-# NOTE (VCD-81): this is necessary but NOT sufficient for Windows system32 curl.exe
-# — Schannel fail-closes on a revocation check of the relay leaf cert
-# (CRYPT_E_NO_REVOCATION_CHECK) that a private CA can't satisfy, and curl has no
-# proxy-revocation override. Full curl fix is relay-side (leaf cert CRL/OCSP) or the
-# plaintext relay (VC_RELAY_HOST=http://relay.makscee.ru:8448). A trust prompt appears
-# once (CurrentUser\Root). Non-fatal + idempotent (same-thumbprint re-import is a no-op).
-# Importing a private CA into Trusted Root can display a GUI confirmation and
-# indefinitely block terminal-only installs. vc passes this CA directly to its
-# managed Node agents, so OS-store trust is optional. Operators that explicitly
-# need Schannel/.NET trust can opt in; ordinary onboarding remains unattended.
-if ($env:VC_TRUST_RELAY_CA -eq '1') {
-    try {
-        if (-not $caReady) { throw 'relay CA is unavailable' }
-        Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
-        Write-Host "==> trusted relay CA in CurrentUser\Root store" -ForegroundColor Green
-    } catch {
-        Write-Host "vc: could not trust relay CA: $_" -ForegroundColor Yellow
+function Write-OldRelayCaManual {
+    Write-Host "    Get-ChildItem $userRootStore | Where-Object Subject -eq '$oldRelayCaSubject' | Remove-Item" -ForegroundColor Yellow
+}
+$oldRelayCa = @()
+try { $oldRelayCa = @(Get-OldRelayCa) } catch { }
+if ($oldRelayCa.Count -gt 0) {
+    $canConfirm = [Environment]::UserInteractive -and -not $env:VC_TEST_NONINTERACTIVE
+    if (-not $canConfirm) {
+        Write-Host "vc: the old void-relay CA is still in your trusted root certificates. Removing it needs a confirmation no one can answer here; to remove it yourself, run in PowerShell on this PC:" -ForegroundColor Yellow
+        Write-OldRelayCaManual
+    } else {
+        Write-Host "==> removing the old void-relay CA from your trusted root certificates: vc no longer needs it." -ForegroundColor Cyan
+        Write-Host "    Windows will ask you to confirm the deletion; answer Yes." -ForegroundColor Cyan
+        foreach ($cert in $oldRelayCa) {
+            try {
+                Remove-Item -LiteralPath "$userRootStore\$($cert.Thumbprint)" -ErrorAction Stop
+            } catch {
+                Write-Host "vc: $_" -ForegroundColor Yellow
+            }
+        }
+        # Only a re-check that ran and found nothing counts as a removal.
+        $left = $null
+        try { $left = @(Get-OldRelayCa).Count } catch { }
+        if ($left -eq 0) {
+            Write-Host "==> removed the old void-relay CA" -ForegroundColor Green
+        } elseif ($null -eq $left) {
+            Write-Host "vc: could not check that the old void-relay CA is gone. To make sure, run in PowerShell:" -ForegroundColor Yellow
+            Write-OldRelayCaManual
+        } else {
+            Write-Host "vc: could not remove the old void-relay CA. To remove it yourself, run in PowerShell:" -ForegroundColor Yellow
+            Write-OldRelayCaManual
+        }
     }
-} elseif ($caReady) {
-    Write-Host "==> relay CA saved (OS trust skipped; set VC_TRUST_RELAY_CA=1 to opt in)" -ForegroundColor Green
 }
 
 # Add ~/.void-code/bin to user PATH if not already there (idempotent)
@@ -471,7 +481,7 @@ if ($userPath -notlike "*$binDir*") {
 }
 if ($env:PATH -notlike "*$binDir*") { $env:PATH = "$env:PATH;$binDir" }
 
-# 3. Bootstrap node if absent or below minimum required version when an agent is selected.
+# 2. Bootstrap node if absent or below minimum required version when an agent is selected.
 $AnyAgentSelected = $InstallPi -or $InstallClaude -or $InstallCodex
 if ($AnyAgentSelected) {
 Write-Host "==> bootstrapping node / selected agents"
@@ -568,7 +578,7 @@ if (-not $nodeOk) {
     Write-Host "==> no agent CLIs selected; skipping node bootstrap"
 }
 
-# 4. Install selected agent CLIs via npm.cmd if absent.
+# 3. Install selected agent CLIs via npm.cmd if absent.
 # npm.cmd bypasses Windows execution-policy restrictions that block npm.ps1.
 # Install to the default npm global prefix (AppData\Roaming\npm) so agent shims
 # are available from new terminals after PATH refresh.

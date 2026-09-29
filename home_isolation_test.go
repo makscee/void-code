@@ -15,8 +15,7 @@ import (
 // fails the package if a test left installer-owned state behind in it.
 //
 // This package runs install.sh for real. The installer writes ~/.void-code, it
-// appends to the user's shell rc file, and on macOS it hands the relay CA to
-// `security add-trusted-cert` — so a test that forgets to redirect HOME does not
+// appends to the user's shell rc file — so a test that forgets to redirect HOME does not
 // produce a wrong assertion, it edits the machine of whoever ran `go test`.
 // Redirect rather than snapshot-and-compare: a check that lets the write land in
 // the real home and reports it afterwards has already caused the damage it
