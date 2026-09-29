@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/makscee/void-code/internal/auth"
+	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/config"
 )
 
@@ -18,7 +19,9 @@ import (
 // lipgloss-rendered strings: those carry ANSI escape codes that a GUI would
 // display literally.
 func runStatusJSON(cfg config.Config, out io.Writer) error {
-	obj := map[string]any{}
+	// The profile page (balance, weekly limit, usage), in every state, as
+	// `vc status` prints it: the page asks for its own email code.
+	obj := map[string]any{"profileUrl": browser.ProfileURL}
 
 	token, _, err := auth.Load()
 	if err != nil || strings.TrimSpace(token) == "" {
