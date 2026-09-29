@@ -13,7 +13,8 @@ const Model = "gpt-6-sol"
 // configTemplate is the whole of $CODEX_HOME/config.toml. The relay URL is the
 // only variable part; the VC token never goes in the file, Codex reads it from
 // VC_AUTH_TOKEN in its environment, and the granted relay provider from
-// VC_CODEX_PROVIDER.
+// VC_CODEX_PROVIDER. Plugins are off: Codex otherwise clones
+// github.com/openai/plugins in the background on every start.
 const configTemplate = `# Managed by vc: rewritten whole on every launch; edits here do not survive.
 # The VC token is not stored here, Codex reads it from VC_AUTH_TOKEN.
 model = "%s"
@@ -25,6 +26,9 @@ enabled = false
 
 [feedback]
 enabled = false
+
+[features]
+plugins = false
 
 [model_providers.void]
 name = "Void relay"

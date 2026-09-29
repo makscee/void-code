@@ -109,7 +109,8 @@ func install(opts Options, url string, asset Asset, dest string) error {
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return fmt.Errorf("create %s: %w", parent, err)
 	}
-	archive, err := downloadVerified(opts.Client, url, asset.SHA256, parent)
+	clearLeftovers(parent)
+	archive, err := downloadVerified(opts.Client, url, asset.SHA256, parent, opts.Progress)
 	if err != nil {
 		return err
 	}
@@ -130,13 +131,13 @@ func install(opts Options, url string, asset Asset, dest string) error {
 
 // downloadVerified streams url into a temporary file in dir and returns its
 // path only when the SHA-256 matches want. On any failure the file is removed.
-func downloadVerified(client *http.Client, url, want, dir string) (string, error) {
+func downloadVerified(client *http.Client, url, want, dir string, progress io.Writer) (string, error) {
 	f, err := os.CreateTemp(dir, ".codex-download-*")
 	if err != nil {
 		return "", fmt.Errorf("download Codex: %w", err)
 	}
 	path := f.Name()
-	got, err := fetchInto(client, url, f)
+	got, err := fetchInto(client, url, f, progress)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -150,8 +151,9 @@ func downloadVerified(client *http.Client, url, want, dir string) (string, error
 	return path, nil
 }
 
-// fetchInto copies the body of url into w and returns its hex SHA-256.
-func fetchInto(client *http.Client, url string, w io.Writer) (string, error) {
+// fetchInto copies the body of url into w and returns its hex SHA-256. When
+// the size is known, the share downloaded so far goes to progress.
+func fetchInto(client *http.Client, url string, w io.Writer, progress io.Writer) (string, error) {
 	resp, err := client.Get(url) //nolint:noctx
 	if err != nil {
 		return "", fmt.Errorf("download Codex: %w", err)
@@ -161,7 +163,11 @@ func fetchInto(client *http.Client, url string, w io.Writer) (string, error) {
 		return "", fmt.Errorf("download Codex: HTTP %d from %s", resp.StatusCode, url)
 	}
 	hash := sha256.New()
-	n, err := io.Copy(io.MultiWriter(w, hash), io.LimitReader(resp.Body, maxArchiveBytes+1))
+	dst := io.MultiWriter(w, hash)
+	if resp.ContentLength > 0 {
+		dst = io.MultiWriter(dst, &percentWriter{out: progress, total: resp.ContentLength, next: 10})
+	}
+	n, err := io.Copy(dst, io.LimitReader(resp.Body, maxArchiveBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("download Codex: %w", err)
 	}

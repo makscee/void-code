@@ -40,6 +40,12 @@ var ensureCodexRuntime = func(w io.Writer) (string, error) {
 	})
 }
 
+// codexNoDaemon is the only argument Codex gets. Without --no-daemon the 0.158
+// TUI starts a `codex app-server --managed-daemon` that outlives the session
+// and needs a unix socket under CODEX_HOME, which a long home path breaks
+// ("path must be shorter than SUN_LEN").
+const codexNoDaemon = "--no-daemon"
+
 // launchCodex is runSpawn's Codex branch, after live admission. The grant is
 // checked before the install, so nobody downloads Codex only to be refused.
 func launchCodex(cfg config.Config, token, notice string) error {
@@ -70,7 +76,7 @@ func launchCodex(cfg config.Config, token, notice string) error {
 	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), codexPath, nil, env)
+	return spawnHarness(context.Background(), codexPath, []string{codexNoDaemon}, env)
 }
 
 // codexProviderID asks auth for the live grants and returns the first
