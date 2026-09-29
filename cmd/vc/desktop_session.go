@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
-	"github.com/makscee/void-code/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -77,6 +77,11 @@ func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 var desktopSessionCmd = newDesktopSessionCommand(defaultDesktopSessionDeps())
 
 func init() { rootCmd.AddCommand(desktopSessionCmd) }
+
+// prepareDesktopSession is the desktop's view over prepareSession: it checks
+// the runtime the app hands over, then asks the core for a strict session with
+// the compact UI. The managed transport and web search are required here,
+// since the app has no fallback to offer.
 func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps desktopSessionDeps) (desktopSessionPlan, error) {
 	if err := validateDesktopPiArgs(piArgs); err != nil {
 		return desktopSessionPlan{}, err
@@ -87,66 +92,37 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if err := validateDesktopRuntime("Pi entrypoint", piEntry, false); err != nil {
 		return desktopSessionPlan{}, err
 	}
-	token, err := deps.loadToken()
-	if err != nil || strings.TrimSpace(token) == "" {
+	plan, err := prepareSession(sessionRequest{
+		piArgs: piArgs,
+		resolveRuntime: func() (sessionRuntime, error) {
+			return sessionRuntime{path: nodePath, entry: piEntry}, nil
+		},
+		requireManaged: true,
+		compactUI:      true,
+		env:            [][2]string{{"PI_SKIP_VERSION_CHECK", "1"}, {"VC_DESKTOP_SESSION", "1"}},
+	}, deps.core())
+	var access sessionAccessError
+	if errors.Is(err, errNotLoggedIn) {
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
 	}
-	cfg := deps.resolveConfig()
-	// The access check, not sign-in: this asks who the token belongs to and
-	// whether they are let in, and in production that answer comes from a
-	// different service than the one serving the device-authorization routes.
-	me, reached, err := deps.authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
+	if errors.As(err, &access) {
+		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", access.err)
+	}
 	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
+		return desktopSessionPlan{}, err
 	}
-	// The wallet never refuses the session — a refused desktop-session exits,
-	// and the app then shows "Chat stopped… check your network" instead of
-	// Relay's own 402. Nor is its notice a warning on the command's error
-	// stream: the app shows that in the terminal Pi's fullscreen then clears.
-	// It travels to Pi in the plan's environment.
-	notice := ""
-	if reached {
-		notice = launchNotice(me, time.Now())
+	return desktopSessionPlan{nodePath: plan.path, args: plan.args, env: plan.env, warnings: plan.warnings}, nil
+}
+
+// core is the shared session core's dependencies, taken from the desktop's.
+func (d desktopSessionDeps) core() sessionDeps {
+	c := defaultSessionDeps()
+	c.loadToken, c.resolveConfig, c.authGate, c.resolveCA = d.loadToken, d.resolveConfig, d.authGate, d.resolveCA
+	c.reconcilePi, c.reconcileSearch, c.reconcileUI, c.seedUIDefaults = d.reconcilePi, d.reconcileSearch, d.reconcileUI, d.seedUIDefaults
+	if d.now != nil {
+		c.now = d.now
 	}
-	var warnings []string
-	extensionPath, err := deps.reconcilePi()
-	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("managed Pi transport unavailable: %w", err)
-	}
-	if extensionPath == "" {
-		return desktopSessionPlan{}, fmt.Errorf("managed Pi transport is disabled")
-	}
-	if _, err := deps.reconcileSearch(true); err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("managed Pi web search unavailable: %w", err)
-	}
-	if deps.reconcileUI != nil {
-		uiPath, uiErr := deps.reconcileUI()
-		if uiErr != nil {
-			warnings = append(warnings, fmt.Sprintf("vc: warning: managed Pi compact UI was not reconciled: %v", uiErr))
-		} else if uiPath != "" && deps.seedUIDefaults != nil {
-			if settingsErr := deps.seedUIDefaults(); settingsErr != nil {
-				warnings = append(warnings, fmt.Sprintf("vc: warning: Pi compact UI defaults were not seeded: %v", settingsErr))
-			}
-		}
-	}
-	// The same seed runSpawn does, in the same place and on the same terms —
-	// the desktop app never goes through runSpawn, so without this line the
-	// default model reaches only the people who open a terminal. It sits behind
-	// the access check on purpose: a token that was refused must not leave a
-	// mark in anyone's Pi settings. Unlike everything else here, its failure is
-	// a warning: an unreadable settings.json is not worth the user's session.
-	if err := ensurePiDefaultModel(); err != nil {
-		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi default model was not seeded: %v", err))
-	}
-	caPath, err := deps.resolveCA(cfg)
-	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("relay CA unavailable: %w", err)
-	}
-	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
-	env = setDesktopEnv(env, "PI_SKIP_VERSION_CHECK", "1")
-	env = setDesktopEnv(env, "VC_DESKTOP_SESSION", "1")
-	env = withLaunchNotice(env, notice)
-	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env, warnings: warnings}, nil
+	return c
 }
 
 var desktopPiArgs = map[string]bool{"--continue": false, "-c": false, "--resume": false, "-r": false, "--session": true, "--session-id": true, "--fork": true, "--no-session": false, "--name": true, "-n": true}
@@ -172,16 +148,6 @@ func validateDesktopPiArgs(args []string) error {
 		}
 	}
 	return nil
-}
-func setDesktopEnv(env []string, key, value string) []string {
-	out := make([]string, 0, len(env)+1)
-	for _, entry := range env {
-		name, _, _ := strings.Cut(entry, "=")
-		if !strings.EqualFold(name, key) {
-			out = append(out, entry)
-		}
-	}
-	return append(out, key+"="+value)
 }
 func validateDesktopRuntime(name, path string, executable bool) error {
 	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
