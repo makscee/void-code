@@ -16,11 +16,8 @@ package piruntime
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +29,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/makscee/void-code/internal/releasesums"
 )
 
 // PinnedVersion is the Pi the vc extension supports. It must equal the pin in
@@ -180,55 +179,8 @@ func Ensure(opts Options) (bool, error) {
 // download fetches the archive from one source and checks it against that
 // source's SHA256SUMS. A missing or mismatched entry is a refusal.
 func download(client *http.Client, src Source, name string) ([]byte, error) {
-	sums, err := fetch(client, src.SumsURL, 1<<20)
-	if err != nil {
-		return nil, err
-	}
-	want, ok := lookupSum(sums, name)
-	if !ok {
-		return nil, fmt.Errorf("%s lists no %s", src.SumsURL, name)
-	}
 	url := strings.TrimRight(src.ArchiveBase, "/") + "/" + name
-	data, err := fetch(client, url, maxArchiveBytes)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != want {
-		return nil, fmt.Errorf("%s: SHA-256 %s does not match the release's %s", url, got, want)
-	}
-	return data, nil
-}
-
-func fetch(client *http.Client, url string, limit int64) ([]byte, error) {
-	resp, err := client.Get(url) //nolint:noctx
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", url, err)
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%s is larger than %d bytes", url, limit)
-	}
-	return data, nil
-}
-
-// lookupSum finds name in sha256sum output ("<hex>  <name>" or "<hex> *<name>").
-func lookupSum(sums []byte, name string) (string, bool) {
-	sc := bufio.NewScanner(bytes.NewReader(sums))
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name && len(fields[0]) == 64 {
-			return strings.ToLower(fields[0]), true
-		}
-	}
-	return "", false
+	return releasesums.Download(client, src.SumsURL, url, name, maxArchiveBytes)
 }
 
 // install unpacks a verified archive beside runtime/pi and swaps it in.
