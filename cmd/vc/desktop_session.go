@@ -56,9 +56,21 @@ func defaultDesktopSessionDeps() desktopSessionDeps {
 	}
 }
 func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
-	var nodePath, piEntry string
-	cmd := &cobra.Command{Use: "desktop-session --node <absolute-node> --pi-entry <absolute-cli.js> -- <pi-args...>", Short: "Launch a private Pi runtime", Args: cobra.ArbitraryArgs, RunE: func(cmd *cobra.Command, args []string) error {
-		plan, err := prepareDesktopSession(nodePath, piEntry, args, deps)
+	var nodePath, piEntry, runtimeName, codexSession string
+	cmd := &cobra.Command{Use: "desktop-session [--runtime pi] --node <absolute-node> --pi-entry <absolute-cli.js> -- <pi-args...> | desktop-session --runtime codex [--codex-session <id>] --", Short: "Launch a private Pi or Codex runtime for a desktop chat", Args: cobra.ArbitraryArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		var plan desktopSessionPlan
+		var err error
+		switch runtimeName {
+		case "pi":
+			if codexSession != "" {
+				return fmt.Errorf("desktop-session: --codex-session is only for --runtime codex")
+			}
+			plan, err = prepareDesktopSession(nodePath, piEntry, args, deps)
+		case "codex":
+			plan, err = prepareDesktopCodexSession(codexSession, args, deps)
+		default:
+			return fmt.Errorf("desktop-session: unknown runtime %q; want pi or codex", runtimeName)
+		}
 		if err != nil {
 			return fmt.Errorf("desktop-session: %w", err)
 		}
@@ -67,10 +79,10 @@ func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 		}
 		return deps.run(cmd.Context(), plan, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}}
-	cmd.Flags().StringVar(&nodePath, "node", "", "absolute path to the package-owned Node executable")
-	cmd.Flags().StringVar(&piEntry, "pi-entry", "", "absolute path to the package-owned Pi CLI entrypoint")
-	_ = cmd.MarkFlagRequired("node")
-	_ = cmd.MarkFlagRequired("pi-entry")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "pi", "the chat's runtime: pi or codex")
+	cmd.Flags().StringVar(&nodePath, "node", "", "absolute path to the package-owned Node executable (pi)")
+	cmd.Flags().StringVar(&piEntry, "pi-entry", "", "absolute path to the package-owned Pi CLI entrypoint (pi)")
+	cmd.Flags().StringVar(&codexSession, "codex-session", "", "Codex session id to resume (codex)")
 	return cmd
 }
 
@@ -149,6 +161,65 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env, warnings: warnings}, nil
 }
 
+// prepareDesktopCodexSession readies a desktop chat on Codex: the same
+// admission as the CLI and in the same order — token, access check, the
+// ChatGPT grant, and only then the install — then Codex in the chat's folder
+// (the process cwd, which the managed config trusts) with the desktop's status
+// channel and the hook executable in its environment. codexArgs must be empty:
+// the lifecycle is --codex-session, anything else would be someone else's
+// authority over Codex.
+func prepareDesktopCodexSession(codexSession string, codexArgs []string, deps desktopSessionDeps) (desktopSessionPlan, error) {
+	if len(codexArgs) != 0 {
+		return desktopSessionPlan{}, fmt.Errorf("Codex arguments %q are not allowed; desktop-session accepts only --codex-session", codexArgs)
+	}
+	if codexSession != "" && !desktopUUIDPattern.MatchString(codexSession) {
+		return desktopSessionPlan{}, fmt.Errorf("--codex-session %q is not a Codex session id", codexSession)
+	}
+	token, err := deps.loadToken()
+	if err != nil || strings.TrimSpace(token) == "" {
+		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
+	}
+	cfg := deps.resolveConfig()
+	me, reached, err := deps.authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
+	if err != nil {
+		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
+	}
+	var warnings []string
+	if reached {
+		// Codex has no place for vc's notice inside its session, so it is
+		// said before Codex takes the terminal, as in the CLI.
+		if notice := launchNotice(me, deps.now()); notice != "" {
+			warnings = append(warnings, "vc: "+notice)
+		}
+	}
+	folder, err := os.Getwd()
+	if err != nil {
+		return desktopSessionPlan{}, fmt.Errorf("chat folder unavailable: %w", err)
+	}
+	// Codex sees its cwd resolved (getcwd), so the trust names that spelling.
+	if resolved, resolveErr := filepath.EvalSymlinks(folder); resolveErr == nil {
+		folder = resolved
+	}
+	prepared, err := prepareCodex(cfg, token, folder, os.Stderr)
+	if err != nil {
+		return desktopSessionPlan{}, err
+	}
+	env := prepared.env
+	// buildCodexSpawnEnv drops every VC_* variable; the chat's status channel
+	// is handed back explicitly, for `vc codex-hook`.
+	for _, key := range []string{"VC_DESKTOP_STATUS_PATH", "VC_DESKTOP_CHAT_ID", "VC_DESKTOP_STATUS_GENERATION"} {
+		if value := os.Getenv(key); value != "" {
+			env = setDesktopEnv(env, key, value)
+		}
+	}
+	env = setDesktopEnv(env, "VC_DESKTOP_SESSION", "1")
+	args := []string{codexNoDaemon}
+	if codexSession != "" {
+		args = append(args, "resume", codexSession)
+	}
+	return desktopSessionPlan{nodePath: prepared.exe, args: args, env: env, warnings: warnings}, nil
+}
+
 var desktopPiArgs = map[string]bool{"--continue": false, "-c": false, "--resume": false, "-r": false, "--session": true, "--session-id": true, "--fork": true, "--no-session": false, "--name": true, "-n": true}
 
 func validateDesktopPiArgs(args []string) error {
@@ -220,6 +291,6 @@ func runDesktopSessionProcess(ctx context.Context, plan desktopSessionPlan, stdi
 type desktopProcessExitError struct{ code int }
 
 func (e desktopProcessExitError) Error() string {
-	return fmt.Sprintf("Pi exited with status %d", e.code)
+	return fmt.Sprintf("runtime exited with status %d", e.code)
 }
 func (e desktopProcessExitError) ExitCode() int { return e.code }

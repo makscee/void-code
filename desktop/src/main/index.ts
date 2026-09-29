@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import * as pty from 'node-pty';
-import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, renameRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
+import { IPC, accessRequestRequest, chatRequest, codeCopyRequest, inputRequest, linkRequest, newChatRequest, renameRequest, resizeRequest, sessionRequest, startRequest, subscribeRequest, supportRequest } from '../shared/contract';
 import type { StartRequest } from '../shared/contract';
 import { resolvePrivateRuntimeAsync } from './resources';
 import { spawnDesktopRequest } from './spawn-request';
@@ -92,8 +92,13 @@ function assertRenderer(event: IpcMainInvokeEvent | IpcMainEvent): void {
 function registerIpc(): void {
   ipcMain.handle(IPC.start, (event, raw: unknown) => { assertRenderer(event);
     const request = startRequest(raw);
-    if (!('fixture' in request)) workspace.assertLaunch(request.sessionId, request.cwd);
-    return { sessionId: request.sessionId, ...manager.start(event.sender.id, request) };
+    let launch: StartRequest = request;
+    if (!('fixture' in request)) {
+      // Which runtime a chat runs is the workspace's record, not something the page asserts.
+      const tab = workspace.assertLaunch(request.sessionId, request.cwd);
+      if (tab.runtime === 'codex') launch = { ...request, runtime: 'codex', ...(tab.codexSessionId ? { codexSessionId: tab.codexSessionId } : {}) };
+    }
+    return { sessionId: request.sessionId, ...manager.start(event.sender.id, launch) };
   });
   ipcMain.handle(IPC.input, (event, raw: unknown) => { assertRenderer(event); const request = inputRequest(raw); manager.input(event.sender.id, request.sessionId, request.data); });
   ipcMain.handle(IPC.resize, (event, raw: unknown) => { assertRenderer(event); const request = resizeRequest(raw); manager.resize(event.sender.id, request.sessionId, request.cols, request.rows); });
@@ -109,7 +114,7 @@ function registerIpc(): void {
     return result.canceled ? null : workspace.setFolder(result.filePaths[0]);
   });
   ipcMain.handle(IPC.workspaceRemove, (event) => { assertRenderer(event); return workspace.removeWorkspace(); });
-  ipcMain.handle(IPC.workspaceNewChat, (event) => { assertRenderer(event); return { view: workspace.newChat(randomUUID()) }; });
+  ipcMain.handle(IPC.workspaceNewChat, (event, raw: unknown) => { assertRenderer(event); const request = newChatRequest(raw); return { view: workspace.newChat(randomUUID(), request.runtime) }; });
   ipcMain.handle(IPC.workspaceSelect, (event, raw: unknown) => { assertRenderer(event);
     const selected = chatRequest(raw).sessionId;
     const view = workspace.select(selected);
@@ -273,6 +278,8 @@ async function prepareApplication(): Promise<SessionManager> {
     path.join(app.getPath('userData'), 'status-channels'),
     (ownerId, event) => manager?.lifecycleChanged(ownerId, event),
     (chatId) => workspace.view().workspace?.selectedId === chatId,
+    // The Codex conversation a Codex chat continues after the app restarts.
+    (chatId, codexSessionId) => { try { workspace.bindCodexSession(chatId, codexSessionId); } catch { /* the chat is gone or is not Codex */ } },
   );
   manager = new SessionManager((request, authority) => spawnRequest(runtime, request, authority), (ownerId, channel, payload) => webContents.fromId(ownerId)?.send(channel, payload), statusChannels);
   return manager;

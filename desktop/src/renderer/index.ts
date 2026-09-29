@@ -7,12 +7,15 @@ import { detectRendererPlatform } from './platform';
 import { reduceChatTabRename, type ChatTabRenameEvent, type ChatTabRenameResult, type ChatTabRenameState } from './chat-tab-rename';
 import { beginLogin, canStartLogin, codeSecondsRemaining, describeAccessRequest, formatCountdown, isCodeExpired, loginStatusText, offersSignIn, reduceLoginPush, requiresStatusRecheck, routeStartFailure, screenForStatus, signInButtonLabel, walletLineFor, type AccessRequestOutcome, type AuthScreen, type LoginPhase } from './auth-view';
 import { installFileDropHandlers } from './file-drop';
-import type { AuthLoginPush, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
+import { chatRuntimeLabel } from './chat-runtime-label';
+import type { AuthLoginPush, ChatRuntime, RecoveryCode, RuntimeSupportState, SupportRequest } from '../shared/contract';
 const appVersionElement = document.querySelector<HTMLElement>('#app-version')!;
 const folderElement = document.querySelector<HTMLElement>('#folder')!;
 const chooseButton = document.querySelector<HTMLButtonElement>('#choose')!;
 const emptyChooseButton = document.querySelector<HTMLButtonElement>('#empty-choose')!;
 const newChatButton = document.querySelector<HTMLButtonElement>('#new-chat')!;
+const newChatMenu = document.querySelector<HTMLElement>('#new-chat-menu')!;
+const newChatChoices = [...newChatMenu.querySelectorAll<HTMLButtonElement>('button[data-runtime]')];
 const supportToggleButton = document.querySelector<HTMLButtonElement>('#support-toggle')!;
 const supportPanel = document.querySelector<HTMLElement>('#support-panel')!;
 const supportCopyButton = document.querySelector<HTMLButtonElement>('#support-copy')!;
@@ -299,6 +302,7 @@ function render(): void {
   const workspace = view.workspace; const recovering = Boolean(view.recoveryPath);
   folderElement.textContent = recovering ? 'Workspace unavailable' : workspace?.path ?? 'No folder selected';
   chooseButton.hidden = Boolean(workspace && !recovering); newChatButton.hidden = !workspace || recovering;
+  if (newChatButton.hidden) setNewChatMenuOpen(false, false);
   emptyElement.hidden = Boolean(workspace); preflightElement.hidden = !workspace || recovering || (Boolean(workspace.selectedId) && !signinOnStartFailure); recoveryElement.hidden = !recovering; tabsElement.hidden = !workspace || recovering;
   recoveryPathElement.textContent = recovering ? 'The previously selected folder cannot be found.' : '';
   tabsElement.replaceChildren(); recentListElement.replaceChildren();
@@ -336,6 +340,8 @@ function render(): void {
       });
       item.append(title);
     }
+    const runtimeLabel = chatRuntimeLabel(tab);
+    if (runtimeLabel) { const label = document.createElement('span'); label.className = 'tab-runtime'; label.textContent = runtimeLabel; item.append(label); }
     const statusElement = document.createElement('span'); statusElement.className = 'tab-status'; statusElement.textContent = badge;
     const close = document.createElement('button'); close.className = 'tab-close'; close.textContent = '×'; close.setAttribute('aria-label', `Close ${tab.title}`); close.addEventListener('click', (event) => { event.stopPropagation(); void closeChat(tab.id); });
     item.append(statusElement, close); tabsElement.append(item);
@@ -353,7 +359,7 @@ function render(): void {
   recentToggleButton.textContent = `Recent Chats (${recent.length})`;
   recentToggleButton.setAttribute('aria-label', `Recent Chats, ${recent.length} chat${recent.length === 1 ? '' : 's'}`);
   if (recent.length === 0) setRecentOpen(false, false); else recentElement.hidden = !recentOpen;
-  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; row.dataset.chatId = tab.id; const title = document.createElement('span'); title.textContent = tab.title; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.setAttribute('aria-label', `Resume ${tab.title}`); resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(title, resume); recentListElement.append(row); }
+  for (const tab of recent) { const row = document.createElement('div'); row.className = 'recent-row'; row.dataset.chatId = tab.id; const title = document.createElement('span'); title.textContent = tab.title; const runtimeLabel = chatRuntimeLabel(tab); const label = runtimeLabel ? Object.assign(document.createElement('span'), { className: 'tab-runtime', textContent: runtimeLabel }) : null; const resume = document.createElement('button'); resume.textContent = 'Resume'; resume.setAttribute('aria-label', `Resume ${tab.title}`); resume.addEventListener('click', () => { void resumeChat(tab.id); }); row.append(...(label ? [title, label, resume] : [title, resume])); recentListElement.append(row); }
   if (focusedRecentChatId && recentOpen) {
     const resume = [...recentListElement.querySelectorAll<HTMLButtonElement>('.recent-row button')].find((button) => button.closest<HTMLElement>('.recent-row')?.dataset.chatId === focusedRecentChatId);
     resume?.focus({ preventScroll: true });
@@ -377,7 +383,29 @@ recentToggleButton.addEventListener('click', () => { setRecentOpen(!recentOpen);
 recentCloseButton.addEventListener('click', () => { setRecentOpen(false); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && recentOpen) { event.preventDefault(); setRecentOpen(false); } });
 removeWorkspaceButton.addEventListener('click', async () => { for (const id of [...runtimes.keys()]) await stop(id); view = await window.voidTerminal.workspace.remove(); render(); });
-newChatButton.addEventListener('click', async () => { chatTabRename = { editing: null }; const reply = await window.voidTerminal.workspace.newChat(); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); });
+// New Chat asks which runtime the chat runs on; the chat keeps it for life. Focus starts on the last
+// choice (lastRuntime), so Enter repeats it.
+function setNewChatMenuOpen(open: boolean, restoreFocus = true): void {
+  if (open === !newChatMenu.hidden) return;
+  newChatMenu.hidden = !open; newChatButton.setAttribute('aria-expanded', String(open));
+  if (!open) { if (restoreFocus) newChatButton.focus(); return; }
+  const anchor = newChatButton.getBoundingClientRect();
+  newChatMenu.style.top = `${Math.round(anchor.bottom + 4)}px`;
+  newChatMenu.style.right = `${Math.max(8, Math.round(window.innerWidth - anchor.right))}px`;
+  const last: ChatRuntime = view.workspace?.lastRuntime ?? 'pi';
+  (newChatChoices.find((choice) => choice.dataset.runtime === last) ?? newChatChoices[0])?.focus();
+}
+async function newChat(runtime: ChatRuntime): Promise<void> { chatTabRename = { editing: null }; const reply = await window.voidTerminal.workspace.newChat(runtime); view = reply.view; render(); const tab = selectedTab(); if (tab) await launch(tab, 'create'); render(); }
+newChatButton.addEventListener('click', () => { setNewChatMenuOpen(newChatMenu.hidden); });
+for (const choice of newChatChoices) choice.addEventListener('click', () => { const runtime = choice.dataset.runtime as ChatRuntime; setNewChatMenuOpen(false, false); void newChat(runtime); });
+newChatMenu.addEventListener('keydown', (event) => {
+  const index = newChatChoices.indexOf(document.activeElement as HTMLButtonElement);
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewChatMenuOpen(false); }
+  else if (event.key === 'Tab') setNewChatMenuOpen(false, false);
+  else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); const step = event.key === 'ArrowDown' ? 1 : -1; newChatChoices[(index + step + newChatChoices.length) % newChatChoices.length]?.focus(); }
+  else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); newChatChoices[event.key === 'Home' ? 0 : newChatChoices.length - 1]?.focus(); }
+});
+document.addEventListener('pointerdown', (event) => { if (!newChatMenu.hidden && !newChatMenu.contains(event.target as Node) && !newChatButton.contains(event.target as Node)) setNewChatMenuOpen(false, false); });
 restartButton.addEventListener('click', async () => { const tab = selectedTab(); if (!tab) return; restartButton.hidden = false; await stop(tab.id); endedElement.hidden = true; await launch(tab, 'resume'); render(); });
 closeEndedButton.addEventListener('click', () => { const tab = selectedTab(); if (tab) void closeChat(tab.id); });
 signinStartButton.addEventListener('click', () => {

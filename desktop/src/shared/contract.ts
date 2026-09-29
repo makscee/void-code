@@ -13,7 +13,12 @@ export interface ChatLifecycleEvent { version: 1; chatId: string; generation: nu
 export interface ChatSemanticStatus { sessionId: SessionId; state: ChatLifecycleState; unread: boolean; diagnostic?: string }
 export interface ChatStatusReply { sessionId: SessionId; status: ChatSemanticStatus }
 
-export interface RealStartRequest { sessionId: SessionId; cwd: string; mode: 'create' | 'resume' }
+/**
+ * What the renderer asks to start is { sessionId, cwd, mode } and nothing else (startRequest). Which
+ * runtime a chat runs, and the Codex conversation it continues, are the workspace's record: main
+ * adds them from WorkspaceStore.assertLaunch, never from the page.
+ */
+export interface RealStartRequest { sessionId: SessionId; cwd: string; mode: 'create' | 'resume'; runtime?: ChatRuntime; codexSessionId?: string }
 export interface FixtureStartRequest { sessionId: SessionId; fixture: 'roundTrip' | 'terminalFidelity' }
 export type StartRequest = RealStartRequest | FixtureStartRequest;
 export interface InputRequest { sessionId: SessionId; data: string }
@@ -26,8 +31,12 @@ export interface ExitEvent { sessionId: SessionId; exitCode: number; signal?: nu
 export interface StatusReply { sessionId: SessionId; status: SessionStatus }
 export interface StartReply extends StatusReply { showSharedFilesWarning: boolean }
 export type Unsubscribe = () => void;
-export interface TabRecord { id: string; title: string; location: 'active' | 'recent' }
-export interface WorkspaceRecord { path: string; tabs: TabRecord[]; selectedId: string | null }
+/** The runtime a chat was created on. Absent means Pi: every chat before Codex chats is Pi. */
+export type ChatRuntime = 'pi' | 'codex';
+export const CHAT_RUNTIMES: readonly ChatRuntime[] = ['pi', 'codex'];
+export interface TabRecord { id: string; title: string; location: 'active' | 'recent'; runtime?: ChatRuntime; codexSessionId?: string }
+export interface WorkspaceRecord { path: string; tabs: TabRecord[]; selectedId: string | null; lastRuntime?: ChatRuntime }
+export interface NewChatRequest { runtime: ChatRuntime | undefined }
 export interface WorkspaceView { workspace: WorkspaceRecord | null; recoveryPath: string | null }
 export interface NewChatReply { view: WorkspaceView }
 export type RuntimeSupportState = 'not_started' | 'running' | 'ended' | 'start_failed';
@@ -63,7 +72,7 @@ export interface TerminalApi {
     load(): Promise<WorkspaceView>;
     choose(): Promise<WorkspaceView | null>;
     remove(): Promise<WorkspaceView>;
-    newChat(): Promise<NewChatReply>;
+    newChat(runtime?: ChatRuntime): Promise<NewChatReply>;
     select(sessionId: SessionId): Promise<WorkspaceView>;
     rename(sessionId: SessionId, title: string): Promise<WorkspaceView>;
     close(sessionId: SessionId): Promise<WorkspaceView>;
@@ -116,6 +125,15 @@ export function supportRequest(value: unknown): SupportRequest {
   const recoveryCodes: RecoveryCode[] = ['NONE', 'AUTH_PREFLIGHT_REQUIRED', 'SESSION_START_FAILED', 'RUNTIME_EXITED', 'WORKSPACE_MISSING', 'SESSION_MISSING'];
   if (!runtimes.includes(object.runtime as RuntimeSupportState) || !recoveryCodes.includes(object.recoveryCode as RecoveryCode)) throw new Error('invalid support context');
   return { runtime: object.runtime as RuntimeSupportState, recoveryCode: object.recoveryCode as RecoveryCode };
+}
+export function isChatRuntime(value: unknown): value is ChatRuntime { return value === 'pi' || value === 'codex'; }
+/** The workspace:new-chat payload: { runtime?: 'pi' | 'codex' }. No runtime leaves it to the last choice. */
+export function newChatRequest(value: unknown): NewChatRequest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('request must be an object');
+  const object = value as Record<string, unknown>;
+  if (Object.keys(object).some((key) => key !== 'runtime')) throw new Error('request contains unknown fields');
+  if (object.runtime !== undefined && !isChatRuntime(object.runtime)) throw new Error('invalid chat runtime');
+  return { runtime: object.runtime };
 }
 export function sessionRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId, true) }; }
 export function chatRequest(value: unknown): SessionRequest { const object = ownedObject(value, ['sessionId']); return { sessionId: sessionId(object.sessionId) }; }

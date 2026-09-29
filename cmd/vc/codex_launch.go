@@ -49,26 +49,10 @@ const codexNoDaemon = "--no-daemon"
 // before the install, so nobody downloads Codex only to be refused; it is a
 // live question on every Codex start.
 func prepareCodexChild(cfg config.Config, token, notice string) (runtimeChild, error) {
-	if cfg.CAOverride != "" {
-		return runtimeChild{}, fmt.Errorf("Codex пока работает только с публичным релеем, а задан VC_RELAY_CA=%s. Уберите VC_RELAY_CA или переключитесь на Pi: vc runtime pi", cfg.CAOverride)
-	}
-	providerID, err := codexProviderID(cfg, token)
+	prepared, err := prepareCodex(cfg, token, "", os.Stderr)
 	if err != nil {
 		return runtimeChild{}, err
 	}
-	codexPath, err := ensureCodexRuntime(os.Stderr)
-	if err != nil {
-		return runtimeChild{}, fmt.Errorf("не удалось установить Codex %s: %w\nПопробуйте ещё раз или переключитесь на Pi: vc runtime pi", codexruntime.Version, err)
-	}
-	cacheDir, err := config.CacheDir()
-	if err != nil {
-		return runtimeChild{}, err
-	}
-	codexHome := filepath.Join(cacheDir, "codex")
-	if err := codexruntime.WriteConfig(codexHome, fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost)); err != nil {
-		return runtimeChild{}, err
-	}
-	env := buildCodexSpawnEnv(os.Environ(), codexHome, token, providerID, selfDir())
 	// Pi shows the wallet notice inside its session; Codex has no such hook,
 	// so it is printed before Codex takes the terminal.
 	if notice != "" {
@@ -76,16 +60,61 @@ func prepareCodexChild(cfg config.Config, token, notice string) (runtimeChild, e
 	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return runtimeChild{exe: codexPath, args: []string{codexNoDaemon}, env: env}, nil
+	return runtimeChild{exe: prepared.exe, args: []string{codexNoDaemon}, env: prepared.env}, nil
+}
+
+// preparedCodex is an installed, configured Codex and the environment to run
+// it in.
+type preparedCodex struct {
+	exe string
+	env []string
+}
+
+// prepareCodex is the part of a Codex launch the CLI and the desktop share,
+// after admission and in this order: the grant, the install, the managed
+// config (trusting trustedFolder when it is set), the environment. Install
+// progress goes to progress.
+func prepareCodex(cfg config.Config, token, trustedFolder string, progress io.Writer) (preparedCodex, error) {
+	if cfg.CAOverride != "" {
+		return preparedCodex{}, fmt.Errorf("Codex пока работает только с публичным релеем, а задан VC_RELAY_CA=%s. Уберите VC_RELAY_CA или переключитесь на Pi: vc runtime pi", cfg.CAOverride)
+	}
+	providerID, err := codexProviderID(cfg, token)
+	if err != nil {
+		return preparedCodex{}, err
+	}
+	codexPath, err := ensureCodexRuntime(progress)
+	if err != nil {
+		return preparedCodex{}, fmt.Errorf("не удалось установить Codex %s: %w\nПопробуйте ещё раз или переключитесь на Pi: vc runtime pi", codexruntime.Version, err)
+	}
+	cacheDir, err := config.CacheDir()
+	if err != nil {
+		return preparedCodex{}, err
+	}
+	codexHome := filepath.Join(cacheDir, "codex")
+	if err := codexruntime.WriteConfigFor(codexHome, fmt.Sprintf("%s://%s", cfg.RelayScheme, cfg.RelayHost), trustedFolder); err != nil {
+		return preparedCodex{}, err
+	}
+	env := buildCodexSpawnEnv(os.Environ(), codexHome, token, providerID, selfDir(), selfExecutablePath())
+	return preparedCodex{exe: codexPath, env: env}, nil
 }
 
 // selfDir is the folder of the running vc, or "" when it cannot be told.
 func selfDir() string {
+	exe := selfExecutablePath()
+	if exe == "" {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
+// selfExecutablePath is the absolute path of the running vc, or "" when it
+// cannot be told.
+func selfExecutablePath() string {
 	exe, err := os.Executable()
 	if err != nil || !filepath.IsAbs(exe) {
 		return ""
 	}
-	return filepath.Dir(exe)
+	return exe
 }
 
 // codexProviderID asks auth for the live grants and returns the first
@@ -106,13 +135,15 @@ func codexProviderID(cfg config.Config, token string) (string, error) {
 // buildCodexSpawnEnv is the parent environment without anything that could
 // point Codex elsewhere or hand it someone else's credential — OPENAI_API_KEY,
 // OPENAI_BASE_URL, every CODEX_* and VC_* variable, and the relay/auth keys
-// direct.PlainEnv strips — plus the four values vc sets. PATH stays the
+// direct.PlainEnv strips — plus the values vc sets. PATH stays the
 // person's own, with vc's folder put first so `!vc runtime pi` typed in Codex
 // reaches this vc: Codex is a native binary and its tools run in the person's
-// environment. Names are matched without regard to case, as Windows reads them.
-func buildCodexSpawnEnv(parent []string, codexHome, token, providerID, vcDir string) []string {
+// environment. VC_HOOK_EXE names this vc for the managed hooks
+// (`"$VC_HOOK_EXE" codex-hook`), never a value inherited from the parent.
+// Names are matched without regard to case, as Windows reads them.
+func buildCodexSpawnEnv(parent []string, codexHome, token, providerID, vcDir, hookExe string) []string {
 	base := direct.PlainEnv(parent)
-	out := make([]string, 0, len(base)+5)
+	out := make([]string, 0, len(base)+6)
 	for _, e := range base {
 		k, _, _ := strings.Cut(e, "=")
 		if codexStrippedEnv(k) {
@@ -121,12 +152,16 @@ func buildCodexSpawnEnv(parent []string, codexHome, token, providerID, vcDir str
 		out = append(out, e)
 	}
 	out = withPathFirst(out, vcDir)
-	return append(out,
+	out = append(out,
 		"CODEX_HOME="+codexHome,
 		"VC_AUTH_TOKEN="+token,
 		"VC_CODEX_PROVIDER="+providerID,
 		"VC_HARNESS=codex",
 	)
+	if hookExe != "" {
+		out = append(out, "VC_HOOK_EXE="+hookExe)
+	}
+	return out
 }
 
 // withPathFirst puts dir at the front of env's PATH (whatever its case, as

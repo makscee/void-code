@@ -65,7 +65,7 @@ var welcomeGateSkippingSubCommands = map[string]bool{
 	"login": true, "logout": true, "status": true, "update": true,
 	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
 	"desktop-session": true, "access-request": true, "install-pi-runtime": true,
-	"runtime": true,
+	"runtime": true, "codex-hook": true,
 }
 
 func main() {
@@ -178,8 +178,10 @@ func main() {
 	Execute()
 }
 
+// shouldCleanOldBinary is false for the commands another program runs on the
+// person's behalf: the desktop's session and the hook Codex runs every turn.
 func shouldCleanOldBinary(args []string) bool {
-	return len(args) < 2 || args[1] != "desktop-session"
+	return len(args) < 2 || (args[1] != "desktop-session" && args[1] != "codex-hook")
 }
 
 // gateDecision is the outcome of the bare-launch interactivity/auth gate.

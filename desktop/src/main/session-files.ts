@@ -180,3 +180,49 @@ export function sessionLifecycleArgs(root: string, sessionId: string, mode: 'cre
   if (mode === 'create' && persisted) throw new SessionDiscoveryError('SESSION_EXISTS');
   return mode === 'create' ? ['--session-id', sessionId] : ['--session', persisted];
 }
+
+// Codex keeps each conversation as sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl under its
+// CODEX_HOME (vc's is ~/.void-code/codex). Codex issues UUIDv7 ids.
+const CODEX_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * The rollout file of a Codex session anywhere under sessionsRoot, or undefined. Links are never
+ * followed -- a rollout reached through one is not a conversation this Codex home holds -- and the
+ * walk is bounded like the Pi lookup.
+ */
+export function findCodexRollout(sessionsRoot: string, codexSessionId: string, limits: Partial<SessionScanLimits> = {}): string | undefined {
+  if (!CODEX_SESSION.test(codexSessionId)) throw new SessionDiscoveryError('SESSION_INVALID_SOURCE');
+  const bounds = { ...DEFAULT_SESSION_SCAN_LIMITS, ...limits };
+  const suffix = `-${codexSessionId}.jsonl`;
+  const queue: Array<{ directory: string; depth: number }> = [{ directory: path.resolve(sessionsRoot), depth: 0 }];
+  let directories = 0; let entriesSeen = 0;
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (next.depth > bounds.maxDepth || ++directories > bounds.maxDirectories) throw new SessionDiscoveryError('SESSION_SCAN_LIMIT');
+    let entries;
+    try { entries = readdirSync(next.directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'en')); }
+    catch (error) {
+      if (next.depth === 0 && ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ENOTDIR')) return undefined;
+      throw new SessionDiscoveryError('SESSION_STORE_UNAVAILABLE');
+    }
+    entriesSeen += entries.length;
+    if (entriesSeen > bounds.maxEntries) throw new SessionDiscoveryError('SESSION_SCAN_LIMIT');
+    for (const entry of entries) {
+      const candidate = path.join(next.directory, entry.name);
+      if (entry.isDirectory()) queue.push({ directory: candidate, depth: next.depth + 1 });
+      else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith(suffix) && entry.name.length > 'rollout-'.length + suffix.length) return candidate;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * What `vc desktop-session --runtime codex` is given for a chat: nothing for a new chat or for one
+ * closed before Codex reported a session (a new Codex session), --codex-session for a saved one, and
+ * the Pi SESSION_MISSING screen when that saved conversation is gone.
+ */
+export function codexLifecycleArgs(sessionsRoot: string, mode: 'create' | 'resume', codexSessionId: string | undefined): string[] {
+  if (mode === 'create' || codexSessionId === undefined) return [];
+  if (!findCodexRollout(sessionsRoot, codexSessionId)) throw new SessionDiscoveryError('SESSION_MISSING');
+  return ['--codex-session', codexSessionId];
+}

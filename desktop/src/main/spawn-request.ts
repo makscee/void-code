@@ -6,7 +6,7 @@ import type { RealStartRequest, StartRequest } from '../shared/contract';
 import type { PrivateRuntime } from './resources';
 import type { StatusWriteAuthority } from './status-channel';
 import { desktopChildEnv, fixtureChildEnv, type DesktopPlatform } from './desktop-child-env';
-import { sessionLifecycleArgs } from './session-files';
+import { codexLifecycleArgs, sessionLifecycleArgs } from './session-files';
 
 interface SpawnOptions { name: string; cols: number; rows: number; cwd: string; useConptyDll?: boolean; env: Record<string, string>; }
 export type PtySpawner = (file: string, args: string[], options: SpawnOptions) => IPty;
@@ -30,8 +30,16 @@ export function spawnDesktopRequest(runtime: PrivateRuntime, request: StartReque
   });
   const real = request as RealStartRequest;
   if (!statSync(real.cwd).isDirectory()) throw new Error('selected folder is unavailable');
-  const lifecycle = sessionLifecycleArgs(path.join(os.homedir(), '.pi/agent/sessions'), real.sessionId, real.mode, real.cwd);
-  return spawn(runtime.vc, ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle], {
+  // A Codex chat has no Pi session file, and a Pi chat no Codex rollout: each looks only for its own.
+  // Codex's sessions live under vc's CODEX_HOME, ~/.void-code/codex.
+  const codex = real.runtime === 'codex';
+  const lifecycle = codex
+    ? codexLifecycleArgs(path.join(os.homedir(), '.void-code', 'codex', 'sessions'), real.mode, real.codexSessionId)
+    : sessionLifecycleArgs(path.join(os.homedir(), '.pi/agent/sessions'), real.sessionId, real.mode, real.cwd);
+  const codexSession = codex && lifecycle.length > 0 ? real.codexSessionId : undefined;
+  return spawn(runtime.vc, codex
+    ? ['desktop-session', '--runtime', 'codex', ...(codexSession ? ['--codex-session', codexSession] : []), '--']
+    : ['desktop-session', '--node', runtime.node, '--pi-entry', runtime.piEntry, '--', ...lifecycle], {
     name: 'xterm-256color', cols: 100, rows: 30, cwd: real.cwd, ...conpty,
     env: desktopChildEnv(platform, process.env, runtime.node, authority, runtime.piPackageDir),
   });

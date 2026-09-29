@@ -16,13 +16,19 @@ interface LiveChannel {
   watcher: FSWatcher;
   poller: NodeJS.Timeout;
   status: ChatSemanticStatus;
+  sessionFile: string;
+  codexSessionId?: string;
 }
 export type StatusListener = (ownerId: number, event: ChatSemanticStatus) => void;
+/** Told the Codex session a chat's `vc codex-hook` reported in session.json beside status.json. */
+export type CodexSessionListener = (chatId: string, codexSessionId: string) => void;
+export interface CodexSessionEvent { version: 1; chatId: string; runtime: 'codex'; sessionId: string }
+const SESSION_FILE = 'session.json';
 
 export class StatusChannelStore {
   private readonly channels = new Map<string, LiveChannel>();
   private nextGeneration = 1;
-  constructor(private readonly root: string, private readonly listener: StatusListener, private readonly isActive: (chatId: string) => boolean = () => true) {
+  constructor(private readonly root: string, private readonly listener: StatusListener, private readonly isActive: (chatId: string) => boolean = () => true, private readonly onCodexSession?: CodexSessionListener) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
   }
 
@@ -33,14 +39,20 @@ export class StatusChannelStore {
     const file = path.join(directory, 'status.json');
     mkdirSync(directory, { mode: 0o700 });
     const channel = {
-      ownerId, chatId, generation, sequence: 0, directory, file,
+      ownerId, chatId, generation, sequence: 0, directory, file, sessionFile: path.join(directory, SESSION_FILE),
       watcher: undefined as unknown as FSWatcher,
       poller: undefined as unknown as NodeJS.Timeout,
       status: { sessionId: chatId, state: 'running', unread: false, diagnostic: 'status channel awaiting lifecycle' } as ChatSemanticStatus,
     };
-    channel.watcher = watch(directory, (_event, filename) => { if (filename === path.basename(file)) this.read(channel); });
+    channel.watcher = watch(directory, (_event, filename) => {
+      if (filename === path.basename(file)) this.read(channel);
+      else if (filename === SESSION_FILE) this.readSession(channel);
+    });
     channel.watcher.on('error', () => this.broken(channel, 'status channel unavailable'));
-    channel.poller = setInterval(() => { if (existsSync(file)) this.read(channel); }, 50);
+    channel.poller = setInterval(() => {
+      if (existsSync(file)) this.read(channel);
+      if (this.onCodexSession && existsSync(channel.sessionFile)) this.readSession(channel);
+    }, 50);
     channel.poller.unref();
     this.channels.set(chatId, channel);
     return { path: file, chatId, generation };
@@ -96,6 +108,16 @@ export class StatusChannelStore {
       this.broken(channel, 'status channel unreadable');
     }
   }
+  // A session record that cannot be read or is not this chat's is ignored: it says nothing about
+  // Working/Ready, and the next hook rewrites it whole.
+  private readSession(channel: LiveChannel): void {
+    if (this.channels.get(channel.chatId) !== channel || !this.onCodexSession) return;
+    let event: CodexSessionEvent | null;
+    try { event = codexSessionEvent(JSON.parse(readFileSync(channel.sessionFile, 'utf8'))); } catch { return; }
+    if (!event || event.chatId !== channel.chatId || event.sessionId === channel.codexSessionId) return;
+    channel.codexSessionId = event.sessionId;
+    this.onCodexSession(channel.chatId, event.sessionId);
+  }
   private broken(channel: LiveChannel, diagnostic: string): void {
     if (this.channels.get(channel.chatId) !== channel) return;
     channel.status = { sessionId: channel.chatId, state: 'running', unread: false, diagnostic };
@@ -118,4 +140,16 @@ export function lifecycleEvent(value: unknown): ChatLifecycleEvent | null {
   if (object.state !== 'Working' && object.state !== 'Ready') return null;
   if (typeof object.timestamp !== 'string' || !Number.isFinite(Date.parse(object.timestamp))) return null;
   return object as unknown as ChatLifecycleEvent;
+}
+
+const CHANNEL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** session.json exactly as `vc codex-hook` writes it on Codex's SessionStart, or null. */
+export function codexSessionEvent(value: unknown): CodexSessionEvent | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const object = value as Record<string, unknown>;
+  if (Object.keys(object).sort().join(',') !== 'chatId,runtime,sessionId,version') return null;
+  if (object.version !== 1 || object.runtime !== 'codex') return null;
+  if (typeof object.chatId !== 'string' || !CHANNEL_UUID.test(object.chatId)) return null;
+  if (typeof object.sessionId !== 'string' || !CHANNEL_UUID.test(object.sessionId)) return null;
+  return { version: 1, chatId: object.chatId, runtime: 'codex', sessionId: object.sessionId };
 }

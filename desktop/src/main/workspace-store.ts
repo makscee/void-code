@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { renameRequest } from '../shared/contract';
+import { isChatRuntime, renameRequest, type ChatRuntime } from '../shared/contract';
 
 export type TabLocation = 'active' | 'recent';
-export interface TabRecord { id: string; title: string; location: TabLocation }
-export interface WorkspaceRecord { path: string; tabs: TabRecord[]; selectedId: string | null }
+/** runtime absent = Pi; codexSessionId only on a Codex chat, once Codex has reported its session. */
+export interface TabRecord { id: string; title: string; location: TabLocation; runtime?: ChatRuntime; codexSessionId?: string }
+/** lastRuntime is the last explicit New Chat choice, the default for the next one. */
+export interface WorkspaceRecord { path: string; tabs: TabRecord[]; selectedId: string | null; lastRuntime?: ChatRuntime }
 interface StoredState { version: 1; workspace: WorkspaceRecord | null }
 export interface WorkspaceView { workspace: WorkspaceRecord | null; recoveryPath: string | null }
 
@@ -25,11 +27,20 @@ function parseState(raw: string): StoredState {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) throw new Error('invalid tab metadata');
     const tab = item as Record<string, unknown>;
     if (typeof tab.id !== 'string' || !UUID.test(tab.id) || ids.has(tab.id) || typeof tab.title !== 'string' || tab.title.length < 1 || tab.title.length > 80 || (tab.location !== 'active' && tab.location !== 'recent')) throw new Error('invalid tab metadata');
-    ids.add(tab.id); return { id: tab.id, title: tab.title, location: tab.location };
+    if ('runtime' in tab && !isChatRuntime(tab.runtime)) throw new Error('invalid tab metadata');
+    if ('codexSessionId' in tab && (tab.runtime !== 'codex' || typeof tab.codexSessionId !== 'string' || !UUID.test(tab.codexSessionId))) throw new Error('invalid tab metadata');
+    ids.add(tab.id);
+    const record: TabRecord = { id: tab.id, title: tab.title, location: tab.location };
+    if (tab.runtime !== undefined) record.runtime = tab.runtime as ChatRuntime;
+    if (tab.codexSessionId !== undefined) record.codexSessionId = tab.codexSessionId as string;
+    return record;
   });
+  if ('lastRuntime' in workspace && !isChatRuntime(workspace.lastRuntime)) throw new Error('invalid workspace metadata');
   const selectedId = workspace.selectedId as string | null;
   if (selectedId !== null && !tabs.some((tab) => tab.id === selectedId && tab.location === 'active')) throw new Error('invalid selected tab');
-  return { version: 1, workspace: { path: workspace.path, tabs, selectedId } };
+  const record: WorkspaceRecord = { path: workspace.path, tabs, selectedId };
+  if (workspace.lastRuntime !== undefined) record.lastRuntime = workspace.lastRuntime as ChatRuntime;
+  return { version: 1, workspace: record };
 }
 
 export class WorkspaceStore {
@@ -55,12 +66,34 @@ export class WorkspaceStore {
     this.save(); return this.view();
   }
   removeWorkspace(): WorkspaceView { this.state = emptyState(); this.save(); return this.view(); }
-  newChat(id: string): WorkspaceView {
+  /** A chat on runtime, or on the last runtime chosen when none is given (Pi when none ever was). */
+  newChat(id: string, runtime?: ChatRuntime): WorkspaceView {
+    if (runtime !== undefined && !isChatRuntime(runtime)) throw new Error('invalid chat runtime');
     const workspace = this.available();
     if (!UUID.test(id) || workspace.tabs.some((tab) => tab.id === id)) throw new Error('invalid chat UUID');
     const number = workspace.tabs.length + 1;
-    workspace.tabs.push({ id, title: `Chat ${number}`, location: 'active' }); workspace.selectedId = id;
+    const tab: TabRecord = { id, title: `Chat ${number}`, location: 'active' };
+    // Absence is what Pi means, so a Pi chat's record carries no runtime at all.
+    if ((runtime ?? workspace.lastRuntime) === 'codex') tab.runtime = 'codex';
+    if (runtime !== undefined) workspace.lastRuntime = runtime;
+    workspace.tabs.push(tab); workspace.selectedId = id;
     this.save(); return this.view();
+  }
+  /** Records the Codex conversation a Codex chat continues; the latest report wins. */
+  bindCodexSession(id: string, codexSessionId: string): WorkspaceView {
+    const workspace = this.state.workspace;
+    if (!workspace) throw new Error('no workspace');
+    if (typeof codexSessionId !== 'string' || !UUID.test(codexSessionId)) throw new Error('invalid Codex session');
+    const tab = workspace.tabs.find((candidate) => candidate.id === id);
+    if (!tab || tab.runtime !== 'codex') throw new Error('unknown Codex chat');
+    if (tab.codexSessionId === codexSessionId) return this.view();
+    const previous = tab.codexSessionId;
+    tab.codexSessionId = codexSessionId;
+    try { this.save(); } catch (error) {
+      if (previous === undefined) delete tab.codexSessionId; else tab.codexSessionId = previous;
+      throw error;
+    }
+    return this.view();
   }
   select(id: string): WorkspaceView { const workspace = this.available(); this.tab(workspace, id, 'active'); workspace.selectedId = id; this.save(); return this.view(); }
   rename(id: string, title: string): WorkspaceView {
@@ -83,10 +116,11 @@ export class WorkspaceStore {
     this.save(); return this.view();
   }
   resume(id: string): WorkspaceView { const workspace = this.available(); const tab = this.tab(workspace, id, 'recent'); tab.location = 'active'; workspace.selectedId = id; this.save(); return this.view(); }
-  assertLaunch(id: string, cwd: string): void {
+  /** The chat a launch is for, runtime and Codex session included; throws unless it may launch. */
+  assertLaunch(id: string, cwd: string): TabRecord {
     const workspace = this.available();
     if (cwd !== workspace.path) throw new Error('chat cwd does not match its window workspace');
-    this.tab(workspace, id, 'active');
+    return structuredClone(this.tab(workspace, id, 'active'));
   }
   private available(): WorkspaceRecord {
     const workspace = this.state.workspace;
