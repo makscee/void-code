@@ -152,8 +152,7 @@ func TestMissingMessageSeparatesBareBinaryFromBrokenInstall(t *testing.T) {
 		if tc.message == legacyMissingMessage {
 			t.Fatalf("%s: still the text that failed on a live tester: %q", tc.situation, tc.message)
 		}
-		// Named for the same reason claudebin's message names claude: the missing
-		// thing has to appear in the sentence about it.
+		// The missing thing has to appear in the sentence about it.
 		if !strings.Contains(tc.message, "Pi") {
 			t.Fatalf("%s: message never names Pi, so it does not say what is missing: %q", tc.situation, tc.message)
 		}

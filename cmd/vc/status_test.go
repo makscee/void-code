@@ -23,7 +23,6 @@ func TestStatusUsesLiveMeNotCachedIdentityOrBudget(t *testing.T) {
 	if err := auth.Save("status-token"); err != nil {
 		t.Fatal(err)
 	}
-	writeMeCache(srv.URL, "status-token", auth.MeResult{UserID: "old", Email: "old@example.test"}, nowForTest())
 	// The live answer still carries the retired pct next to the wallet: the
 	// wallet is what prints, the percentage never does.
 	response = `{"userId":"new","email":"new@example.test","pct":77,"resetAt":"2026-02-02","wallet":{"balanceUsd":18,"tariff":{"tier":"t1","monthlyPriceUsd":60,"dailyRateUsd":2},"todayPaid":true,"fundedDays":9}}`

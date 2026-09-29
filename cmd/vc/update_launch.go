@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/makscee/void-code/internal/ccupdate"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/update"
 	"github.com/makscee/void-code/internal/version"
@@ -110,25 +109,4 @@ func runInstallAndRestart(latest string) string {
 	}
 	// Unreachable on unix (syscall.Exec replaces process).
 	return ""
-}
-
-// launchCCUpdateCheck checks the installed @anthropic-ai/claude-code version
-// against npm registry and installs the latest if stale.  It prints the result
-// directly to stdout (e.g. "claude-code: v1.x → v1.y") so the user sees it
-// before claude starts.  Called from runSpawn after vc self-update completes.
-//
-// The check is skipped when the TTL sentinel is fresh.
-// Network failures are silent; only hard npm errors surface a one-liner.
-func launchCCUpdateCheck() {
-	// Wire the cache path so ccupdate uses the same cache dir.
-	if ccupdate.CachePath == "" {
-		if p, err := config.CCUpdateCacheFilePath(); err == nil {
-			ccupdate.CachePath = p
-		}
-	}
-
-	msg := ccupdate.CheckAndUpdate()
-	if msg != "" {
-		fmt.Println(msg)
-	}
 }

@@ -1,9 +1,5 @@
-// Package direct builds claude env for the non-relay provider modes (VCD-57):
-//   - NamedKeyEnv: BYO OAuth token, direct to api.anthropic.com (relay bypassed).
-//   - PlainEnv:    native Claude Code auth, no vc injection at all.
-//
-// Both strip the same relay-specific keys that relay.BuildEnv injects, so a
-// previously-relay parent env cannot leak proxy settings onto the direct path.
+// Package direct strips inherited Claude Code relay and auth variables from a
+// parent environment (PlainEnv), so none of them reach the child process.
 package direct
 
 import "strings"
@@ -28,19 +24,6 @@ func stripped(parent []string) []string {
 		}
 		out = append(out, e)
 	}
-	return out
-}
-
-// NamedKeyEnv builds env for direct-to-Anthropic with a BYO OAuth token.
-// No proxy, no base-url override (ANTHROPIC_AUTH_TOKEN defaults to
-// api.anthropic.com), token supplied via ANTHROPIC_AUTH_TOKEN — CC sends it as
-// Authorization: Bearer. We use ANTHROPIC_AUTH_TOKEN rather than
-// CLAUDE_CODE_OAUTH_TOKEN because interactive CC lets the machine's stored OAuth
-// account override CLAUDE_CODE_OAUTH_TOKEN (VCD-060), which would silently
-// replace the user's selected BYO key; ANTHROPIC_AUTH_TOKEN is not overridden.
-func NamedKeyEnv(parent []string, token string) []string {
-	out := stripped(parent)
-	out = append(out, "ANTHROPIC_AUTH_TOKEN="+token)
 	return out
 }
 

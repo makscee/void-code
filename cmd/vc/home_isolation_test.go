@@ -10,7 +10,6 @@ import (
 	"testing"
 	"unicode"
 
-	"github.com/makscee/void-code/internal/ccsettings"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/piruntime"
 )
@@ -24,9 +23,8 @@ import (
 // file exists". No test file is inspected, so a violator added tomorrow is caught
 // the same way as one added today.
 //
-// Redirect rather than snapshot-and-compare: the state at risk is ~/.void-code/token
-// and ~/.claude/settings.json — the live session credential and the user's own
-// Claude Code configuration. A check that lets the write land in the real home and
+// Redirect rather than snapshot-and-compare: the state at risk is ~/.void-code/token,
+// the live session credential, and Pi's agent directory. A check that lets the write land in the real home and
 // reports it afterwards has already caused the damage it describes. Here the write
 // lands in the sandbox, and its presence is the evidence.
 //
@@ -78,11 +76,7 @@ func vcOwnedHomeRoots(home string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config.CacheDir: %w", err)
 	}
-	settings, err := ccsettings.SettingsPath()
-	if err != nil {
-		return nil, fmt.Errorf("ccsettings.SettingsPath: %w", err)
-	}
-	owned := []string{cacheDir, settings}
+	owned := []string{cacheDir}
 	// piAgentDir honours PI_CODING_AGENT_DIR; when that points outside home it is
 	// not a home-derived door and topLevelUnder drops it.
 	if dir := piAgentDir(); dir != "" {
@@ -187,8 +181,7 @@ func formatHomeLeakReport(roots []string, leaks []homeLeak) string {
 	b.WriteString("\n--- FAIL: изоляция домашнего каталога\n")
 	fmt.Fprintf(&b, "    Тест этого пакета записал состояние VC в домашний каталог.\n")
 	fmt.Fprintf(&b, "    HOME был подменён на песочницу, поэтому настоящий ~/ уцелел — но без\n")
-	fmt.Fprintf(&b, "    подмены эти записи легли бы в него, поверх ~/.void-code/token и\n")
-	fmt.Fprintf(&b, "    ~/.claude/settings.json.\n\n")
+	fmt.Fprintf(&b, "    подмены эти записи легли бы в него, поверх ~/.void-code/token.\n\n")
 	fmt.Fprintf(&b, "    Под наблюдением: %s\n\n", strings.Join(roots, ", "))
 	for _, leak := range leaks {
 		if leak.dir {

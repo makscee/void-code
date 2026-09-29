@@ -25,7 +25,6 @@ import (
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/browser"
 	"github.com/makscee/void-code/internal/childenv"
-	"github.com/makscee/void-code/internal/compat"
 	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/harness"
 	"github.com/makscee/void-code/internal/harness/direct"
@@ -63,7 +62,7 @@ var (
 // against the commands actually registered on rootCmd.
 var welcomeGateSkippingSubCommands = map[string]bool{
 	"login": true, "logout": true, "status": true, "update": true,
-	"hook": true, "doctor": true, "statusline": true, "pi-bootstrap": true,
+	"doctor": true, "pi-bootstrap": true,
 	"desktop-session": true, "access-request": true, "install-pi-runtime": true,
 }
 
@@ -284,21 +283,6 @@ func openProfile(authHost, token string, httpClient *http.Client, open func(stri
 		}
 	}
 	open(browser.ProfileURL)
-}
-
-func fetchCompatGrants(authHost, token string) ([]compat.Grant, error) {
-	if strings.TrimSpace(token) == "" {
-		return nil, nil
-	}
-	infos, err := fetchProvidersLive(authHost, token, &http.Client{Timeout: authProbeTimeout})
-	if err != nil {
-		return nil, err
-	}
-	grants := make([]compat.Grant, 0, len(infos))
-	for _, pi := range infos {
-		grants = append(grants, compat.Grant{ID: pi.ID, Name: pi.Name, Type: pi.Type})
-	}
-	return grants, nil
 }
 
 var welcomeProgramOptions []tea.ProgramOption

@@ -2,11 +2,15 @@
 
 ## What this is
 
-`vc` is a relay harness over `claude` (and later codex/pi). Single static Go binary.
+`vc` launches a coding-agent harness on a void-code subscription. Today the
+only harness is Pi: vc installs a pinned Pi, signs in through Void Identity,
+and hands Pi a transport extension that talks to the relay. Pi's own UI owns
+model selection. More harnesses (a harness picker) are planned; see the vc
+architecture map in `team-void-m/void-works-wiki`
+(`wiki/concepts/vc-architecture-map.md`) for where each layer lives today.
 
-Design canon: `hub/vault/projects/void-code/CONTEXT.md`  
-ADR: `docs/adr/0002-void-code-fresh-harness.md`  
-Task tree: `hub/vault/work/tasks/active/VCD-*.md`
+Single static Go binary (`cmd/vc`), plus an Electron desktop app in `desktop/`
+that wraps it.
 
 ## Module
 
@@ -28,55 +32,58 @@ CGO_ENABLED=0 always — static binary, no libc dep.
 | Binary | `vc` |
 | Token file | `~/.void-code/token` mode 0600 |
 | Cache dir | `~/.void-code/` |
+| Pi runtime | `~/.void-code/runtime/pi` (never a `pi` from `PATH`) |
 | Relay CA cache | `~/.void-code/relay-ca.pem` |
 | Relay host default | `relay.makscee.ru:443` (https); `:8448` plaintext still supported via `VC_RELAY_HOST=http://relay.makscee.ru:8448` |
 | Auth host default | `https://auth.makscee.ru` |
 | Env override: relay | `VC_RELAY_HOST` |
 | Env override: CA | `VC_RELAY_CA` |
 | Env override: auth | `VC_AUTH_HOST` |
-| Env into claude | `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` + `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_API_KEY=` (empty) + `ANTHROPIC_BASE_URL=` (empty) |
-| Env stripped | `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` |
+| Env override: access check | `VC_ACCESS_CHECK_HOST` (defaults to the relay) |
 | GH artifacts | `vc-{darwin,linux,windows}-{amd64,arm64}` (windows: `.exe`) |
 | Spawn seam | `internal/harness.Spawn(ctx, wrappedBin, args, env)` |
+
+Pi's environment is built by `buildPiSpawnEnv` in `cmd/vc/main.go`. The Pi
+extension gets its credentials from `vc pi-bootstrap`, not from the environment.
 
 ## Package layout
 
 ```
-cmd/vc/         — main package: Cobra wiring, sub-command stubs
+cmd/vc/         — main package: Cobra commands, Pi launch, Pi extension
+                  (pi_extension.go), desktop-session
 internal/
-  config/       — env resolution (VC_* vars)
-  harness/      — Spawn seam (passthrough stdio)
+  auth/         — token store, device flow, /v1/vc/me, wallet, access requests
+  browser/      — open URLs
+  childenv/     — PATH and env for the Pi child process
+  clackui/      — terminal UI pieces
+  config/       — env resolution (VC_* vars), cache paths
+  harness/      — Spawn seam (passthrough stdio); direct/ strips env, relay/ fetches the CA
+  pibin/        — resolve the managed Pi entrypoint
+  piruntime/    — install the pinned Pi runtime
+  provider/     — relay route kinds used by buildPiSpawnEnv
+  releasesums/  — checksum-checked release downloads
+  update/       — vc self-update
   version/      — build-time Version var
-  auth/         — (VCD-3) token store + code-exchange + device flow
-embed/          — relay-ca.pem (populated by VCD-4)
-docs/adr/       — architecture decisions
-.github/
-  workflows/
-    release.yml — 6-arch matrix on tag push
+  welcome/      — landing screen
+desktop/        — Electron + xterm desktop app
+.github/workflows/ — release builds on tag push
 ```
 
 ## TDD
 
-Every `internal/` package has a `*_test.go`. bubbletea views use `teatest`.  
+Every `internal/` package with behaviour has a `*_test.go`. bubbletea views use `teatest`.  
 Run `go test ./...` before every commit.
 
-## DO NOT inherit from claudev
+## Written fresh
 
-Only these 5 patterns are re-implemented (not imported):
-1. POST access code → token via `/v1/auth/access-codes/exchange`
-2. Fetch + embed relay CA
-3. Export `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS`
-4. `Spawn(ctx, wrappedBin, args, env)` with passthrough stdio
-5. Wipe `~/.void-code/token` on logout
-
-Everything else is fresh. No `~/.claudev/token` compat, no migration banner,  
-no two-launch update, no `--bare` flag.
+vc was written fresh, not imported from claudev. No `~/.claudev/token` compat,
+no migration banner, no two-launch update, no `--bare` flag.
 
 ## Windows first-class
 
-- `claude.cmd` (npm shim) resolved via `exec.LookPath("claude")` — works on Windows
+- Pi's npm `.cmd` shim is launched through `cmd.exe` by `harness.Spawn`
 - Spawn uses `cmd.Run()` (not `syscall.Exec`) — ConPTY compatible
-- TUI welcome exits before spawning claude (never concurrent)
+- TUI welcome exits before spawning Pi (never concurrent)
 - Verify Win11 on tower:230 (`qm sendkey` + `screendump`) at milestone boundaries
 
 ## Release

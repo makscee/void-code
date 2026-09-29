@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -119,116 +118,6 @@ func TestResolveLangNormalisation(t *testing.T) {
 	}
 }
 
-func TestReadWriteConfigFile(t *testing.T) {
-	// Point HOME to a temp dir so real ~/.void-code/config is never touched.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome) // Windows compat
-
-	// Write some values.
-	if err := config.WriteConfigFile(map[string]string{"lang": "ru", "foo": "bar"}); err != nil {
-		t.Fatalf("WriteConfigFile: %v", err)
-	}
-
-	// Verify the file landed in the expected place.
-	expectedPath := filepath.Join(tmpHome, ".void-code", "config")
-	if _, err := os.Stat(expectedPath); err != nil {
-		t.Fatalf("config file not created at %s: %v", expectedPath, err)
-	}
-
-	// Read them back.
-	kv, err := config.ReadConfigFile()
-	if err != nil {
-		t.Fatalf("ReadConfigFile: %v", err)
-	}
-	if kv["lang"] != "ru" {
-		t.Errorf("lang: want %q got %q", "ru", kv["lang"])
-	}
-	if kv["foo"] != "bar" {
-		t.Errorf("foo: want %q got %q", "bar", kv["foo"])
-	}
-
-	// Update only lang; foo should survive.
-	if err := config.WriteConfigFile(map[string]string{"lang": "en"}); err != nil {
-		t.Fatalf("WriteConfigFile update: %v", err)
-	}
-	kv2, err := config.ReadConfigFile()
-	if err != nil {
-		t.Fatalf("ReadConfigFile after update: %v", err)
-	}
-	if kv2["lang"] != "en" {
-		t.Errorf("lang after update: want %q got %q", "en", kv2["lang"])
-	}
-	if kv2["foo"] != "bar" {
-		t.Errorf("foo after update: want %q got %q", "bar", kv2["foo"])
-	}
-}
-
-func TestReadConfigFileMissing(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-
-	kv, err := config.ReadConfigFile()
-	if err != nil {
-		t.Fatalf("expected no error for missing file, got: %v", err)
-	}
-	if len(kv) != 0 {
-		t.Errorf("expected empty map, got %v", kv)
-	}
-}
-
-// --- UpdatePrefs round-trip ---
-
-func TestUpdatePrefsRoundTrip(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-
-	// Defaults: nothing set.
-	p := config.ReadUpdatePrefs()
-	if p.AutoUpdate {
-		t.Error("AutoUpdate should be false by default")
-	}
-	if p.LastPromptedVersion != "" {
-		t.Errorf("LastPromptedVersion should be empty by default, got %q", p.LastPromptedVersion)
-	}
-
-	// Write auto_update=true + last_prompted_version.
-	if err := config.WriteUpdatePrefs(config.UpdatePrefs{
-		AutoUpdate:          true,
-		LastPromptedVersion: "v0.1.3",
-	}); err != nil {
-		t.Fatalf("WriteUpdatePrefs: %v", err)
-	}
-
-	p2 := config.ReadUpdatePrefs()
-	if !p2.AutoUpdate {
-		t.Error("AutoUpdate should be true after write")
-	}
-	if p2.LastPromptedVersion != "v0.1.3" {
-		t.Errorf("LastPromptedVersion: want v0.1.3 got %q", p2.LastPromptedVersion)
-	}
-}
-
-func TestUpdatePrefsAutoUpdateFalse(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-
-	// Write true then false.
-	_ = config.WriteUpdatePrefs(config.UpdatePrefs{AutoUpdate: true, LastPromptedVersion: "v0.1.3"})
-	_ = config.WriteUpdatePrefs(config.UpdatePrefs{AutoUpdate: false, LastPromptedVersion: "v0.1.3"})
-
-	p := config.ReadUpdatePrefs()
-	if p.AutoUpdate {
-		t.Error("AutoUpdate should be false after writing false")
-	}
-	if p.LastPromptedVersion != "v0.1.3" {
-		t.Errorf("LastPromptedVersion survived: want v0.1.3 got %q", p.LastPromptedVersion)
-	}
-}
-
 func TestUpdateCacheFilePath(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -243,72 +132,6 @@ func TestUpdateCacheFilePath(t *testing.T) {
 	}
 }
 
-// ─── VCD-62: statusline prior-command store + skip sentinel ──────────────────
-
-func TestStatusLinePriorPath(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-
-	p, err := config.StatusLinePriorPath()
-	if err != nil {
-		t.Fatalf("StatusLinePriorPath: %v", err)
-	}
-	if filepath.Base(p) != "statusline-prior.json" {
-		t.Errorf("unexpected basename: %q", filepath.Base(p))
-	}
-	// Must be under ~/.void-code/
-	dir := filepath.Dir(p)
-	if filepath.Base(dir) != ".void-code" {
-		t.Errorf("not under .void-code: %q", dir)
-	}
-}
-
-func TestStatusLineSkipSentinel(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-
-	// Initially not skipped.
-	if config.IsStatusLineSkipped() {
-		t.Fatal("should not be skipped initially")
-	}
-
-	// Mark skipped.
-	if err := config.MarkStatusLineSkipped(); err != nil {
-		t.Fatalf("MarkStatusLineSkipped: %v", err)
-	}
-	if !config.IsStatusLineSkipped() {
-		t.Fatal("should be skipped after Mark")
-	}
-
-	// Clear.
-	if err := config.ClearStatusLineSkipped(); err != nil {
-		t.Fatalf("ClearStatusLineSkipped: %v", err)
-	}
-	if config.IsStatusLineSkipped() {
-		t.Fatal("should not be skipped after Clear")
-	}
-}
-
-// The access check ("who am I, and am I let in" — today GET /v1/vc/me, and the
-// access-request queue served next to it) and sign-in are the same host on paper
-// and two different services in production: the check and the queue are honoured
-// by Relay and 404'd behind the sign-in host, while the device-authorization
-// routes and the provider list exist only behind the sign-in host. One switch
-// cannot serve both, so the check gets its own — and it defaults to RELAY, not to
-// the sign-in host, because Relay is where the route actually lives. Pointing the
-// default at auth is the production bug this fixes: POST auth/v1/vc/access-requests
-// returns 404, POST relay/... returns 201.
-//
-// The name states the role, not the route. Neither the protocol code nor the
-// server-side mechanism is stable enough to name.
-//
-// "Follows relay" is asserted against the SAME relay base URL the rest of the
-// binary builds — RelayScheme://RelayHost, exactly as cmd/vc/pi_bootstrap.go
-// forms RelayURL — never against a literal "relay.makscee.ru". A test that
-// hard-coded the production host would pass an implementation that also hard-coded
-// it, and so would miss the whole point of the tuning knob below.
 func relayBaseURL(cfg config.Config) string {
 	return cfg.RelayScheme + "://" + cfg.RelayHost
 }

@@ -1,5 +1,7 @@
 # VC console simplification deletion map
 
+**Status (2026-09-29, team-void-m/void-works#63):** the packages and files under "Delete now" are gone, except what a live path still uses: `internal/harness/direct` keeps `PlainEnv`, `internal/harness/relay` keeps `FetchCA`, `internal/provider` keeps the route kinds `buildPiSpawnEnv` switches on, and `cmd/vc/pi_settings.go` still manages Pi's settings file.
+
 ## Delete now
 
 | Surface | Files/tests |

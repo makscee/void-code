@@ -26,32 +26,6 @@ var parent = []string{
 	"ANTHROPIC_API_KEY=",
 }
 
-func TestNamedKeyEnv_DirectToAnthropic(t *testing.T) {
-	env := NamedKeyEnv(parent, "sk-ant-oat01-USERKEY")
-	m := envMap(env)
-
-	if m["PATH"] != "/usr/bin" {
-		t.Errorf("PATH not preserved: %q", m["PATH"])
-	}
-	if _, ok := m["HTTPS_PROXY"]; ok {
-		t.Error("HTTPS_PROXY should be stripped (no relay proxy on direct path)")
-	}
-	if _, ok := m["NODE_EXTRA_CA_CERTS"]; ok {
-		t.Error("NODE_EXTRA_CA_CERTS should be stripped")
-	}
-	if _, ok := m["ANTHROPIC_BASE_URL"]; ok {
-		t.Error("ANTHROPIC_BASE_URL must be absent so CC talks to api.anthropic.com directly")
-	}
-	// Bearer is carried by ANTHROPIC_AUTH_TOKEN (not CLAUDE_CODE_OAUTH_TOKEN),
-	// so the machine's stored account can't override the user's selected key.
-	if _, ok := m["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
-		t.Error("CLAUDE_CODE_OAUTH_TOKEN must be stripped, never re-emitted")
-	}
-	if m["ANTHROPIC_AUTH_TOKEN"] != "sk-ant-oat01-USERKEY" {
-		t.Errorf("ANTHROPIC_AUTH_TOKEN = %q, want the user key", m["ANTHROPIC_AUTH_TOKEN"])
-	}
-}
-
 func TestPlainEnv_NoInjection(t *testing.T) {
 	env := PlainEnv(parent)
 	m := envMap(env)

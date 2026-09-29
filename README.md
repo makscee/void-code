@@ -1,6 +1,6 @@
 # void-code
 
-`vc` opens the Pi console using one void-code subscription. Pi's native interface owns model selection; VC has no provider, harness, or model selector.
+`vc` opens the Pi console using one void-code subscription. Pi is the only harness today, and Pi's native interface owns model selection.
 
 ## Install
 
