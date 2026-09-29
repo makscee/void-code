@@ -1148,7 +1148,9 @@ remove_old_relay_ca() {
       # Over ssh, or with no one at the screen, macOS cannot ask for the password
       # and refuses; the same command works from Terminal on the Mac itself.
       printf 'vc: could not remove the old void-relay CA. To remove it yourself, run in Terminal on this Mac:\n' >&2
-      printf '    security delete-certificate -c %s -t %s\n' "$OLD_RELAY_CA_NAME" "$_kc" >&2
+      for _h in $(old_relay_ca_hashes "$_kc"); do
+        printf '    security delete-certificate -Z %s -t %s\n' "$_h" "$_kc" >&2
+      done
     else
       printf '==> removed the old void-relay CA\n' >&2
     fi
@@ -1165,15 +1167,23 @@ remove_old_relay_ca() {
   fi
   printf '==> removing the old void-relay CA from the system trust store: vc no longer needs it.\n' >&2
   [ -n "$_sudo" ] && printf '    sudo may ask for your password once.\n' >&2
+  # With the anchor gone a later run finds nothing to do, so a failed refresh
+  # is reported now: the CA would otherwise stay in the bundle unannounced.
+  _refresh_failed=""
   if [ -f "$OLD_RELAY_CA_DEB" ] && $_sudo rm -f "$OLD_RELAY_CA_DEB"; then
-    $_sudo update-ca-certificates --fresh >/dev/null 2>&1 || true
+    $_sudo update-ca-certificates --fresh >/dev/null 2>&1 ||
+      _refresh_failed="sudo update-ca-certificates --fresh"
   fi
   if [ -f "$OLD_RELAY_CA_RHEL" ] && $_sudo rm -f "$OLD_RELAY_CA_RHEL"; then
-    $_sudo update-ca-trust extract >/dev/null 2>&1 || true
+    $_sudo update-ca-trust extract >/dev/null 2>&1 ||
+      _refresh_failed="${_refresh_failed:+$_refresh_failed && }sudo update-ca-trust extract"
   fi
   if old_relay_ca_present; then
     printf 'vc: could not remove the old void-relay CA. To remove it yourself, run:\n' >&2
     print_old_relay_ca_manual
+  elif [ -n "$_refresh_failed" ]; then
+    printf 'vc: removed the old void-relay CA file, but refreshing the trust store failed. To finish, run:\n' >&2
+    printf '    %s\n' "$_refresh_failed" >&2
   else
     printf '==> removed the old void-relay CA\n' >&2
   fi
@@ -1310,9 +1320,6 @@ if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then
   append_path_to_rc "$RC_FILE" "$BIN_DIR"
 fi
 
-# 2b. Take the relay CA older installers trusted out of the OS trust store.
-remove_old_relay_ca
-
 # 3. node/npm + selected agent bootstrap — NON-FATAL. On failure, vc is already
 # installed and on PATH; the post-install steps print exactly what's left.
 printf '==> bootstrapping node / selected agents\n' >&2
@@ -1323,6 +1330,10 @@ if ensure_node; then
 else
   printf 'vc: node bootstrap incomplete — vc itself is installed; finish node + selected agents per the steps below.\n' >&2
 fi
+
+# 4. Take the relay CA older installers trusted out of the OS trust store. Last
+# of the steps, so a Ctrl-C at its password prompt cuts nothing else short.
+remove_old_relay_ca
 
 # ── post-install UX ───────────────────────────────────────────────────────────
 if [ "${VC_SKIP_DOWNLOAD:-0}" != "1" ]; then

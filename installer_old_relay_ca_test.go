@@ -143,7 +143,7 @@ func TestShellInstallerRemovesOldRelayCAFromKeychain(t *testing.T) {
 			t.Errorf("vc is not installed after a refused CA removal: %v", err)
 		}
 		requireBefore(t, r.combined, "<<PASSWORD PROMPT>>", "could not remove the old void-relay CA")
-		manual := "security delete-certificate -c void-relay-local-ca -t " + kc
+		manual := "security delete-certificate -Z " + oldRelayCASHA1 + " -t " + kc
 		if !strings.Contains(r.combined, manual) {
 			t.Errorf("the run does not print the manual command %q:\n%s", manual, r.combined)
 		}
@@ -159,21 +159,29 @@ func TestShellInstallerRemovesOldRelayCAFromLinuxAnchors(t *testing.T) {
 		t.Skip("runs the shell installer with command fixtures")
 	}
 
+	if os.Geteuid() == 0 {
+		t.Skip("as root install.sh needs no sudo, and these runs are about the sudo prompt")
+	}
+
 	for _, tc := range []struct {
 		name, anchor, refresh string
 	}{
 		{"debian", "usr/local/share/ca-certificates/void-relay-ca.crt", "update-ca-certificates --fresh"},
 		{"rhel", "etc/pki/ca-trust/source/anchors/void-relay-ca.pem", "update-ca-trust extract"},
 	} {
-		run := func(t *testing.T, sudoMode string) (mirrorResult, string) {
+		run := func(t *testing.T, sudoMode string, refreshFails ...bool) (mirrorResult, string) {
 			var anchor string
+			refresher := fakeLoggerScript
+			if len(refreshFails) > 0 && refreshFails[0] {
+				refresher = fakeRefuserScript
+			}
 			r := runMirrorInstall(t, mirrorOpts{
 				primary: "ok",
 				uname:   "Linux",
 				fakes: map[string]string{
 					"sudo":                   fakeSudoScript,
-					"update-ca-certificates": fakeLoggerScript,
-					"update-ca-trust":        fakeLoggerScript,
+					"update-ca-certificates": refresher,
+					"update-ca-trust":        refresher,
 				},
 				env: []string{"FAKE_SUDO=" + sudoMode},
 				prepare: func(_, sysRoot string) {
@@ -207,6 +215,18 @@ func TestShellInstallerRemovesOldRelayCAFromLinuxAnchors(t *testing.T) {
 			requireBefore(t, r.combined, "removing the old void-relay CA from the system trust store", "<<SUDO PROMPT>>")
 			requireBefore(t, r.combined, "sudo may ask for your password", "<<SUDO PROMPT>>")
 			requireBefore(t, r.combined, "<<SUDO PROMPT>>", "removed the old void-relay CA")
+		})
+
+		t.Run(tc.name+": a failed refresh is not reported as a removal", func(t *testing.T) {
+			r, _ := run(t, "ok", true)
+
+			if strings.Contains(r.combined, "==> removed the old void-relay CA") {
+				t.Errorf("the run claims a removal while the trust store was never refreshed:\n%s", r.combined)
+			}
+			want := "refreshing the trust store failed. To finish, run:\n    sudo " + tc.refresh
+			if !strings.Contains(r.combined, want) {
+				t.Errorf("the run does not say how to finish (%q):\n%s", want, r.combined)
+			}
 		})
 
 		t.Run(tc.name+": refused sudo leaves the install whole and says how to finish", func(t *testing.T) {
