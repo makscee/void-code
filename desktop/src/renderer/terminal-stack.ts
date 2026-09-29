@@ -20,10 +20,47 @@ if (probe === 'palette-collapse') {
 }
 export const TERMINAL_THEME: Readonly<ITheme> = Object.freeze(palette);
 
+const productFontFamily = '"JetBrains Mono", monospace';
+const degradedFontFamily = 'monospace';
+let selectedFontFamily = probe === 'missing-font' ? 'Arial, sans-serif' : productFontFamily;
+let fontReadiness: Promise<{ status: 'loaded' | 'degraded' }> | undefined;
+
+function degradeFonts(reason: string): { status: 'degraded' } {
+  if (probe !== 'missing-font') selectedFontFamily = degradedFontFamily;
+  console.warn(`Terminal font unavailable (${reason}); using system monospace.`);
+  return { status: 'degraded' };
+}
+
+export function prepareTerminalFonts(): Promise<{ status: 'loaded' | 'degraded' }> {
+  if (fontReadiness) return fontReadiness;
+  fontReadiness = (async () => {
+    const fonts = document.fonts;
+    if (!fonts || typeof fonts[Symbol.iterator] !== 'function') return degradeFonts('font API missing');
+    const faces = [...fonts].filter((face) => face.family.replace(/["']/g, '') === 'JetBrains Mono' && face.style === 'normal' && (face.weight === '400' || face.weight === '700'));
+    if (!faces.some((face) => face.weight === '400') || !faces.some((face) => face.weight === '700')) return degradeFonts('required faces missing');
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const loads = Promise.all(faces.map((face) => face.status === 'loaded' ? Promise.resolve(face) : face.load()));
+    try {
+      await Promise.race([
+        loads,
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 5000); }),
+      ]);
+      return { status: 'loaded' as const };
+    } catch (error) {
+      void loads.catch(() => undefined);
+      return degradeFonts(error instanceof Error && error.message === 'timeout' ? 'load timed out' : 'face load failed');
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  })();
+  return fontReadiness;
+}
+
 export const TERMINAL_OPTIONS = Object.freeze({
   cursorBlink: true, cursorStyle: 'block' as const, drawBoldTextInBrightColors: true,
-  fontFamily: probe === 'missing-font' ? 'Arial, sans-serif' : '"JetBrains Mono", monospace', fontSize: 14, fontWeight: '400' as const,
-  fontWeightBold: '700' as const, letterSpacing: 0, lineHeight: 1.15,
+  fontFamily: probe === 'missing-font' ? 'Arial, sans-serif' : productFontFamily, fontSize: 14, fontWeight: '400' as const,
+  fontWeightBold: '700' as const, letterSpacing: navigator.platform === 'Win32' ? 1 : 0, lineHeight: 1.15,
   minimumContrastRatio: 1, scrollback: 10_000, theme: TERMINAL_THEME,
 });
 
@@ -35,7 +72,7 @@ export type ProductTerminal = {
 };
 
 export function createProductTerminal(linkHandler?: ILinkHandler): ProductTerminal {
-  const terminal = new Terminal({ ...TERMINAL_OPTIONS, ...(linkHandler ? { linkHandler } : {}) });
+  const terminal = new Terminal({ ...TERMINAL_OPTIONS, fontFamily: selectedFontFamily, ...(linkHandler ? { linkHandler } : {}) });
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   return { terminal, fit, renderer: 'dom', disposeRenderer: () => undefined };
