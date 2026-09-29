@@ -45,9 +45,12 @@ func RunWithOptions(state AuthState, cb Callbacks, opts ...tea.ProgramOption) (R
 // balance, rendered the way AuthState.Balance is. The screen never waits on
 // the network, so an answer that arrives a round trip after the first frame
 // comes as this message. An empty field leaves what the screen shows.
+// SignedOut means the check rejected the token: the screen turns into the
+// logged-out one, which offers login.
 type AccountMsg struct {
-	Identity string
-	Balance  string
+	Identity  string
+	Balance   string
+	SignedOut bool
 }
 
 // RunWithUpdates runs the screen like RunWithOptions and also runs updates in
@@ -79,6 +82,9 @@ func RunWithUpdates(state AuthState, cb Callbacks, updates tea.Cmd, opts ...tea.
 // unverified one (void-board#373: the screen kept «identity temporarily
 // unavailable» after vc login), and a balance replaces the old one.
 func (a AccountMsg) apply(state AuthState) AuthState {
+	if a.SignedOut {
+		return AuthState{UpdateNudge: state.UpdateNudge}
+	}
 	if a.Identity != "" {
 		state.Identity, state.IdentityUnverified = a.Identity, false
 	}
@@ -144,7 +150,11 @@ func (m model) MoveCursor(d int) model {
 func (m model) Activate() RunResult { return m.items[m.cursor].result }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if account, isAccount := msg.(AccountMsg); isAccount {
+		wasLoggedIn := m.LoggedIn
 		m.AuthState = account.apply(m.AuthState)
+		if m.LoggedIn != wasLoggedIn {
+			m.items, m.cursor = menuItemsFor(m.AuthState), 0
+		}
 		return m, nil
 	}
 	key, ok := msg.(tea.KeyMsg)

@@ -520,7 +520,7 @@ func buildPiSpawnEnv(p provider.Provider, parent []string) []string {
 //
 // Rules:
 //   - token absent → error (not logged in)
-//   - token present, auth server returns 401 → error (token rejected)
+//   - token present, auth server returns 401 → error matching auth.ErrNotLoggedIn (token rejected)
 //   - token present, access refused (402) → auth.ErrAccessNotGranted, unwrapped
 //   - token present, server reachable → returns (me, true, nil)
 //   - token present, network/server error → error — admission cannot be authoritative
@@ -536,7 +536,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return me, true, nil
 	}
 	if errors.Is(err, auth.ErrNotLoggedIn) {
-		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+		return auth.MeResult{}, false, errTokenRejected{}
 	}
 	// A refusal is not a failed check. Neither neighbour fits it: the credential
 	// worked, so sending the human back to sign-in cannot help, and the check was
@@ -548,6 +548,16 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
 }
+
+// errTokenRejected is authGate's answer to a 401: the token no longer signs
+// anyone in, so the person is logged out. It keeps its own wording and still
+// matches auth.ErrNotLoggedIn, which is what callers branch on to offer login.
+type errTokenRejected struct{}
+
+func (errTokenRejected) Error() string {
+	return "Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate."
+}
+func (errTokenRejected) Unwrap() error { return auth.ErrNotLoggedIn }
 
 // fetchMeForAdmission is the live /v1/vc/me call behind authGate. A network
 // error, a timeout or a gateway status (502, 503, 504) is a check that never
