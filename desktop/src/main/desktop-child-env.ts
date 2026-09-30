@@ -59,6 +59,12 @@ export function desktopChildEnv(platform: DesktopPlatform, parent: NodeJS.Proces
     env.TMP = shortTemporary;
     const homeDrive = value(parent, 'HOMEDRIVE', platform); const homePath = value(parent, 'HOMEPATH', platform);
     if (homeDrive && homePath) { env.HOMEDRIVE = homeDrive; env.HOMEPATH = homePath; }
+    // Codex runs its hooks through the person's shell, and that shell resolves the bare `cmd` in the
+    // hook command only through PATHEXT: without it every hook exits 1 (found on WIN11-VCLAB, where
+    // delta debugging against the full environment left PATHEXT and nothing else). Passed through
+    // as the person has it, never invented.
+    const pathExt = value(parent, 'PATHEXT', platform);
+    if (pathExt) env.PATHEXT = pathExt;
     env.PATH = `${path.win32.dirname(privateNode)};${path.win32.join(systemRoot, 'System32')}`;
   }
   // `vc desktop-session` runs its own access check before Pi ever starts, and this environment is
