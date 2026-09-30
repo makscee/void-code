@@ -86,3 +86,59 @@ describe('fixtureChildEnv', () => {
     expect(bare.PATH, 'the fallback root and the PATH built from it disagree').toContain(bare.SystemRoot);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Codex chats on Windows (WIN11-VCLAB, app 0.2.66-18, 30.09): every hook "exited with code 1"
+// inside the installed app, while the same `vc desktop-session` over ssh worked. Codex runs a hook
+// through the person's shell, and the Windows hook command is `cmd /c "%VC_HOOK_EXE%" codex-hook`.
+// A shell resolves the bare `cmd` to cmd.exe only through PATHEXT; the environment built here had
+// none. Delta-debugging codex exec between this environment and the full one (17 runs over 36
+// candidate variables) found PATHEXT and nothing else.
+//
+// Passed through, never invented. The person's PATHEXT is what their own shell resolves with; a
+// default typed here would be a second copy of a Windows setting that can drift from the machine it
+// runs on. A parent without PATHEXT is not a Windows session anyone has been observed to launch
+// from, and inventing one would hide that rather than fix it.
+// ---------------------------------------------------------------------------
+describe('PATHEXT on Windows', () => {
+  const windowsParent = { ...poison, USERPROFILE: 'C:\\Users\\real', SystemRoot: 'D:\\Windows', TEMP: 'T:\\temp', TMP: 'T:\\tmp' };
+  const PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL';
+
+  it('passes the parent PATHEXT through unchanged', () => {
+    const env = desktopChildEnv('win32', { ...windowsParent, PATHEXT }, 'C:\\app\\node.exe');
+    expect(env.PATHEXT).toBe(PATHEXT);
+  });
+
+  it('finds PATHEXT however Windows spelled it, and writes it as PATHEXT', () => {
+    for (const spelling of ['PathExt', 'pathext', 'PATHEXT']) {
+      const env = desktopChildEnv('win32', { ...windowsParent, [spelling]: '.EXE;.CMD' }, 'C:\\app\\node.exe');
+      expect(env.PATHEXT, `parent spelled it ${spelling}`).toBe('.EXE;.CMD');
+      expect(Object.keys(env).filter((key) => key.toLowerCase() === 'pathext'), `parent spelled it ${spelling}`).toEqual(['PATHEXT']);
+    }
+  });
+
+  it('adds exactly PATHEXT to the Windows allowlist and nothing else', () => {
+    expect(desktopChildEnv('win32', { ...windowsParent, PathExt: PATHEXT, homedrive: 'C:', homepath: '\\Users\\real' }, 'C:\\app\\node.exe')).toEqual({
+      USERPROFILE: 'C:\\Users\\real', SystemRoot: 'D:\\Windows', TEMP: 'T:\\temp', TMP: 'T:\\tmp', HOMEDRIVE: 'C:', HOMEPATH: '\\Users\\real',
+      PATHEXT, PATH: 'C:\\app;D:\\Windows\\System32', TERM: 'xterm-256color', COLORTERM: 'truecolor',
+      VC_ACCESS_CHECK_HOST: 'https://relay.makscee.ru',
+    });
+  });
+
+  it('invents no PATHEXT when the parent has none, or only whitespace', () => {
+    for (const parent of [windowsParent, { ...windowsParent, PATHEXT: '   ' }]) {
+      const env = desktopChildEnv('win32', parent, 'C:\\app\\node.exe');
+      expect(Object.keys(env).some((key) => key.toLowerCase() === 'pathext')).toBe(false);
+    }
+  });
+
+  it('does not carry PATHEXT on macOS', () => {
+    const env = desktopChildEnv('darwin', { ...poison, HOME: '/Users/real', TMPDIR: '/private/tmp/real', PATHEXT }, '/app/private/node');
+    expect(Object.keys(env).some((key) => key.toLowerCase() === 'pathext')).toBe(false);
+  });
+
+  it('does not carry PATHEXT into the fixture, which runs no shell', () => {
+    const env = fixtureChildEnv('win32', { SystemRoot: 'D:\\Windows', PATHEXT });
+    expect(Object.keys(env).some((key) => key.toLowerCase() === 'pathext')).toBe(false);
+  });
+});
