@@ -115,7 +115,7 @@ func TestPinnedCodexTrustsTheManagedHooks(t *testing.T) {
 			t.Errorf("%s hook key = %q, want %q", h.EventName, h.Key, want)
 		}
 		if h.CurrentHash != specHookHashes[snake] {
-			t.Errorf("Codex %s hashes the %s hook as %s, the pinned constant is %s — recompute the constants", Version, h.EventName, h.CurrentHash, specHookHashes[snake])
+			t.Errorf("Codex %s hashes the %s hook as %s, the pinned constant for %s is %s — recompute the constants", Version, h.EventName, h.CurrentHash, runtime.GOOS, specHookHashes[snake])
 		}
 		if h.TrustStatus != "trusted" {
 			t.Errorf("%s hook trustStatus = %q, want \"trusted\" — Codex will silently not run it", h.EventName, h.TrustStatus)

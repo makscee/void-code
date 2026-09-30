@@ -18,13 +18,38 @@ import (
 //
 // The trusted_hash is Codex's sha256 of the normalised hook entry. It does not
 // depend on the path, but it changes with ANY change to the entry (a timeout,
-// a statusMessage, a matcher). The values below are the spec's, measured with
-// `codex app-server` → `hooks/list` for 0.158.0; the smoke test in
-// pinned_codex_smoke_test.go asks a real Codex for them.
-var specHookHashes = map[string]string{
+// a statusMessage, a matcher) — and with the operating system. Codex hashes
+// the command it would actually run: on Windows `commandWindows` (falling back
+// to `command`), elsewhere `command`, and then normalises the entry without
+// commandWindows (codex-rs/hooks/src/engine/discovery.rs:513,
+// `if cfg!(windows) { command_windows.unwrap_or(command) }`). One triple for
+// every OS left all three hooks "modified" on WIN11-VCLAB (30.09): Codex
+// stopped the chat at "Hooks need review — 3 hooks are new or changed".
+//
+// Values measured with `codex app-server` → `hooks/list` for 0.158.0: the
+// Unix triple on macOS 29.09 (Linux takes the same non-Windows branch), the
+// Windows triple on WIN11-VCLAB 30.09. The smoke test in
+// pinned_codex_smoke_test.go asks a real Codex on the machine it runs on.
+var unixHookHashes = map[string]string{
 	"session_start":      "sha256:d2aed9f24bfba2e8a3b3e910fd4a13f935bc0912c2c11eece03fa95197dab30e",
 	"user_prompt_submit": "sha256:f3d178d8750d3a7181bf107bd17c4b6e8a431fba956d7b256e876cd5918d0d3a",
 	"stop":               "sha256:458c3eff774889f6a55f22bdff7e82b22f56ee82e88ea07c312e50beb6840846",
+}
+
+var windowsHookHashes = map[string]string{
+	"session_start":      "sha256:e642bd4fbf5b39dbef68ee1e756eb3ee6e63d2fc6a02729d6b29ef6e99bd30fb",
+	"user_prompt_submit": "sha256:5dade9e02f725eb5a2a3e6444c541424b4459c997b567725a871a4ccb58d863a",
+	"stop":               "sha256:6d3d6f399d5b6f3d07877da6e5d2dfd3169b60c68501735cd581ef72fe386232",
+}
+
+// specHookHashes is the triple Codex computes on the OS running the test.
+var specHookHashes = expectedHookHashes(runtime.GOOS)
+
+func expectedHookHashes(goos string) map[string]string {
+	if goos == "windows" {
+		return windowsHookHashes
+	}
+	return unixHookHashes
 }
 
 // hookEvents maps the config.toml event name to its snake_case key suffix.
@@ -402,6 +427,75 @@ func TestWriteConfigKeysHookTrustByTheResolvedHome(t *testing.T) {
 	assertHookTrust(t, text, tables, filepath.Join(resolved, "config.toml"))
 	if strings.Contains(text, filepath.Join(link, "config.toml")+":") {
 		t.Errorf("hooks.state is keyed by the symlink spelling %s; Codex would leave the hooks untrusted", link)
+	}
+}
+
+// ─── trust hashes per operating system ──────────────────────────────────────
+
+// HookTrustedHashes(goos) is the seam: which triple a given OS needs, checked
+// for every OS from the one machine running this, so the Windows branch is
+// executed by a macOS or Linux run too.
+func TestHookTrustedHashesArePerOperatingSystem(t *testing.T) {
+	for _, goos := range []string{"windows", "darwin", "linux", "freebsd"} {
+		got := HookTrustedHashes(goos)
+		want := expectedHookHashes(goos)
+		if len(got) != len(want) {
+			t.Errorf("HookTrustedHashes(%q) has %d entries %v, want exactly %d (session_start, user_prompt_submit, stop)", goos, len(got), got, len(want))
+		}
+		for key, hash := range want {
+			if got[key] != hash {
+				t.Errorf("HookTrustedHashes(%q)[%q] = %q, want %q", goos, key, got[key], hash)
+			}
+		}
+	}
+}
+
+// The two triples really differ; a seam returning the Unix triple for every
+// OS is the bug from WIN11-VCLAB.
+func TestHookTrustedHashesDifferForWindows(t *testing.T) {
+	win, unix := HookTrustedHashes("windows"), HookTrustedHashes("linux")
+	for _, ev := range hookEvents {
+		if win[ev.snake] == unix[ev.snake] {
+			t.Errorf("%s: Windows and Unix trust the same hash %q; Codex hashes commandWindows on Windows", ev.snake, win[ev.snake])
+		}
+	}
+}
+
+// The seam hands out a copy: a caller writing into the map must not change
+// what the next config trusts.
+func TestHookTrustedHashesCannotBeChangedByACaller(t *testing.T) {
+	first := HookTrustedHashes(runtime.GOOS)
+	for key := range first {
+		first[key] = "sha256:tampered"
+	}
+	for key, hash := range HookTrustedHashes(runtime.GOOS) {
+		if hash == "sha256:tampered" {
+			t.Fatalf("HookTrustedHashes returned its own map: %s stays tampered", key)
+		}
+	}
+}
+
+// What is written is the triple for the OS vc runs on — the config is read by
+// a Codex on this same machine.
+func TestWriteConfigTrustsTheHashesOfThisOperatingSystem(t *testing.T) {
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	text, tables := writeAndRead(t, func(h string) error { return WriteConfigFor(h, "https://relay.test:443", "") }, codexHome)
+	want := HookTrustedHashes(runtime.GOOS)
+	for _, tb := range tablesUnder(tables, "hooks", "state") {
+		key := tb.path[len(tb.path)-1]
+		snake := ""
+		for _, ev := range hookEvents {
+			if strings.HasSuffix(key, ":"+ev.snake+":0:0") {
+				snake = ev.snake
+			}
+		}
+		if snake == "" {
+			t.Errorf("unexpected trust key %q", key)
+			continue
+		}
+		if tb.kv["trusted_hash"] != want[snake] {
+			t.Errorf("[hooks.state.%q] trusted_hash = %q, want %q for %s\n%s", key, tb.kv["trusted_hash"], want[snake], runtime.GOOS, text)
+		}
 	}
 }
 
