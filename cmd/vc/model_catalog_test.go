@@ -20,6 +20,8 @@ func liveCatalogRows() []map[string]any {
 		{"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol", "default": false, "retired_to": "gpt-7-test"},
 		{"id": "gpt-7-test", "label": "GPT-7 Test", "default": true, "retired_to": nil},
 		{"id": "gpt-6-luna", "label": "GPT-6 Luna", "default": false, "retired_to": nil},
+		// Retired to an id the catalog no longer offers: the default takes its place.
+		{"id": "gpt-5.5-gone", "label": "GPT-5.5", "default": false, "retired_to": "gpt-5.5-missing"},
 	}
 }
 
@@ -112,6 +114,7 @@ func TestEnsurePiDefaultModelMovesRetiredModelToCatalogReplacement(t *testing.T)
 		{`{"defaultProvider":"void-codex","defaultModel":"gpt-6.1-sol","theme":"nord"}`, "gpt-7-test"},
 		{`{"defaultProvider":"void-codex","defaultModel":"gpt-6-luna","theme":"nord"}`, "gpt-6-luna"},
 		{`{"defaultProvider":"void-codex","defaultModel":"some-own-model","theme":"nord"}`, "some-own-model"},
+		{`{"defaultProvider":"void-codex","defaultModel":"gpt-5.5-gone","theme":"nord"}`, "gpt-7-test"},
 		{`{"defaultProvider":"void-codex","theme":"nord"}`, "gpt-7-test"},
 		{`{"defaultProvider":"void-deepseek","defaultModel":"deepseek-chat","theme":"nord"}`, "gpt-7-test"},
 	} {

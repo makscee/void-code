@@ -34,9 +34,13 @@ func builtinPiModelCatalog() piModelCatalog {
 		models = append(models, piModel{ID: id})
 	}
 	return piModelCatalog{
-		Models:    models,
-		Default:   piDefaultModel,
-		RetiredTo: map[string]string{"gpt-6-sol": piDefaultModel},
+		Models:  models,
+		Default: piDefaultModel,
+		RetiredTo: map[string]string{
+			"gpt-6-sol":    piDefaultModel,
+			"gpt-5.6-sol":  piDefaultModel,
+			"gpt-5.6-luna": "gpt-6-luna",
+		},
 	}
 }
 
@@ -96,17 +100,21 @@ func (c piModelCatalog) live(id string) bool {
 	return false
 }
 
-// replacement follows id's retirement chain to a live model. ok is false when
-// id is not retired, or the chain ends nowhere live.
+// replacement follows id's retirement chain to a live model. When the chain
+// ends nowhere live, the default takes its place, since the relay refuses a
+// retired id either way. ok is false when id is not retired.
 func (c piModelCatalog) replacement(id string) (string, bool) {
 	to, retired := c.RetiredTo[id]
+	if !retired {
+		return "", false
+	}
 	for step := 0; retired && step < 8; step++ {
 		if c.live(to) {
 			return to, true
 		}
 		to, retired = c.RetiredTo[to]
 	}
-	return "", false
+	return c.Default, c.Default != ""
 }
 
 func (c piModelCatalog) ids() []string {
