@@ -22,6 +22,7 @@ var managedWebSearchForkDigests = map[string]string{
 	"0.13.0-void.3": "0a7dc700382d4a86e59b57aebcc1fa87c3e3608487e30437cd28e7bf4ff23082", // GPT-6 model list from #75 (void-board#138)
 	"0.13.0-void.4": "5a4749df349b12052b563040992826411b33ba5442722a99b6f5f61d2d141aa9", // GPT-6.1 Sol added (void-works#79)
 	"0.13.0-void.5": "d542cfa8a1d7ffe54f2eb8cae8c68446c858e342f86f38a5ae1af5d97112b0f0", // GPT-5.6 Terra back, GPT-6 Sol out (latest of each family)
+	"0.13.0-void.6": "bf3048fa22c8cdec963a0c3970dcfead19b5db0b5ad3cb0cfd8abf894be1db67", // void-codex models from the catalog in the registry (void-works#84)
 }
 
 func TestManagedWebSearchForkContentMatchesVersion(t *testing.T) {

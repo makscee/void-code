@@ -188,16 +188,18 @@ func TestPiDefaultPairIsWiredIntoTheExtensionThatMustAcceptIt(t *testing.T) {
 		}
 	})
 
-	// The seed writes a model the extension will be asked to serve. If that
-	// model is not in the codex provider's allowed set, the extension filters
-	// it out and Pi opens on a model that does not exist — with every test
-	// green. Asserting on the identifier rather than the literal is deliberate:
-	// combined with the CODEX_MODEL_ID assertion above it pins the value, and
-	// it keeps working if the set is ever reordered.
-	t.Run("extension allows the seeded model", func(t *testing.T) {
-		const marker = "const allowed = new Set([CODEX_MODEL_ID"
+	// The seed writes a model the extension will be asked to serve. The
+	// extension must register every model vc's bootstrap hands it (the relay's
+	// catalog, void-works#81), not filter them through a list of its own: a
+	// filter would drop a catalog model and Pi would open on a model that does
+	// not exist, with every test green.
+	t.Run("extension registers every bootstrap model", func(t *testing.T) {
+		if strings.Contains(piVoidCodexExtensionSource, "const allowed = new Set(") {
+			t.Fatalf("Pi extension source filters bootstrap models through its own allowed set; the catalog decides the picker")
+		}
+		const marker = "const ids = provider.models.filter("
 		if !strings.Contains(piVoidCodexExtensionSource, marker) {
-			t.Fatalf("Pi extension source missing %q — the codex allowed-set no longer admits the seeded model", marker)
+			t.Fatalf("Pi extension source missing %q — it no longer builds the picker from the bootstrap models", marker)
 		}
 	})
 
