@@ -3,6 +3,7 @@ package harness_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -23,24 +24,54 @@ func TestTerminateGraceDefaultsToFiveSeconds(t *testing.T) {
 	}
 }
 
-func waitForFile(t *testing.T, path string) {
+// waitForFile waits for the child's ready marker. If Spawn returns first, the
+// child was refused or died before it got that far; that is reported with
+// Spawn's own error, never as "not ready".
+func waitForFile(t *testing.T, path string, done <-chan error) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
 		if _, err := os.Stat(path); err == nil {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		select {
+		case err := <-done:
+			t.Fatalf("Spawn returned before the child became ready: %v", err)
+		case <-deadline:
+			t.Fatalf("child never became ready (%s missing)", path)
+		case <-tick.C:
+		}
 	}
-	t.Fatalf("child never became ready (%s missing)", path)
+}
+
+// shellPath is a POSIX shell Spawn accepts: harness.Spawn refuses symlinks, and
+// on Ubuntu /bin/sh is one (to dash), so the real file is passed.
+func shellPath(t *testing.T) string {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		sh = "/bin/sh"
+	}
+	resolved, err := filepath.EvalSymlinks(sh)
+	if err != nil {
+		t.Skipf("no usable sh: %v", err)
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
 }
 
 func spawnShell(t *testing.T, ctx context.Context, script string, extraEnv ...string) <-chan error {
 	t.Helper()
-	sh := "/bin/sh"
-	if _, err := os.Stat(sh); err != nil {
-		t.Skip("no /bin/sh")
-	}
+	return spawnShellWith(t, ctx, shellPath(t), script, extraEnv...)
+}
+
+func spawnShellWith(t *testing.T, ctx context.Context, sh, script string, extraEnv ...string) <-chan error {
+	t.Helper()
 	done := make(chan error, 1)
 	env := append(os.Environ(), extraEnv...)
 	go func() { done <- harness.Spawn(ctx, sh, []string{"-c", script}, env) }()
@@ -58,7 +89,7 @@ func TestCancelSendsSIGTERMFirst(t *testing.T) {
 	done := spawnShell(t, ctx,
 		`trap 'echo term > "$MARK"; exit 0' TERM; : > "$READY"; while :; do sleep 0.02; done`,
 		"READY="+ready, "MARK="+mark)
-	waitForFile(t, ready)
+	waitForFile(t, ready, done)
 
 	cancel()
 	select {
@@ -90,7 +121,7 @@ func TestCancelKillsAChildThatIgnoresSIGTERMAfterTheGrace(t *testing.T) {
 	done := spawnShell(t, ctx,
 		`trap '' TERM; : > "$READY"; while :; do sleep 0.02; done`,
 		"READY="+ready)
-	waitForFile(t, ready)
+	waitForFile(t, ready, done)
 
 	start := time.Now()
 	cancel()
