@@ -71,10 +71,10 @@ export function embeddedSource(): string {
 }
 
 // The model the embedded source registers void-codex with by default, read from the source rather
-// than written here. The extension drops every granted model it does not allow and skips
-// registration when none is left, so a hardcoded id silently unregisters the provider the moment
-// the source retires it: main's #75 swapped gpt-5.6-terra for gpt-6-sol, and on void-code#76's
-// merge ref every suite driving void-codex through this fixture failed with "did not register".
+// than written here. It once dropped every granted model outside its own allowed set, so a
+// hardcoded id here unregistered the provider the moment the source retired it (void-code#76).
+// The picker now comes from the relay's catalog (void-works#81); reading the id keeps the
+// fixture in step with the source's fallback all the same.
 export function defaultCodexModel(source: string = embeddedSource()): string {
   const match = /^const CODEX_MODEL_ID = "([^"]+)";$/m.exec(source);
   expect(match, 'the embedded source no longer declares CODEX_MODEL_ID').not.toBeNull();
