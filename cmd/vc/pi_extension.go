@@ -20,10 +20,18 @@ import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 const CODEX_PROVIDER_ID = "void-codex";
 const CODEX_MODEL_ID = "gpt-6.1-sol";
 
+interface BootstrapModel {
+	id: string;
+	label?: string;
+	default?: boolean;
+}
 interface BootstrapProvider {
 	kind: "codex";
 	relayProviderId: string;
 	models: string[];
+	// The catalog's labels, same order as models (default first). vc builds both from Keys'
+	// catalog (void-works#81), so the picker needs no extension change for a new model.
+	modelInfo?: BootstrapModel[];
 }
 interface Bootstrap {
 	version: number;
@@ -70,8 +78,9 @@ export default function (pi: ExtensionAPI, options?: ClipboardExtensionOptions) 
 	for (const provider of bootstrap.providers) {
 		if (provider.kind === "codex") {
 			hasCodexGrant = true;
-			const allowed = new Set([CODEX_MODEL_ID, "gpt-5.6-terra", "gpt-6-luna", "gpt-6-astra"]);
-			const models = provider.models.filter((id) => allowed.has(id)).map((id) => codexModel(id, codexName(id)));
+			const labels = new Map((provider.modelInfo ?? []).map((m) => [m.id, m.label ?? ""]));
+			const ids = provider.models.filter((id, index) => typeof id === "string" && id.trim() !== "" && provider.models.indexOf(id) === index);
+			const models = ids.map((id) => codexModel(id, codexName(id, labels.get(id))));
 			if (models.length === 0) continue;
 			registerVoidCodex(pi, bootstrap, models, provider.relayProviderId);
 			managedSearchAvailable = true;
@@ -662,7 +671,9 @@ function loadBootstrap(): Bootstrap | undefined {
 	}
 }
 
-function codexName(id: string): string {
+function codexName(id: string, label?: string): string {
+	if (label && label.trim() !== "") return label.trim() + " via Void relay";
+	// Fallback labels for a vc bootstrap without the catalog's.
 	if (id === "gpt-6.1-sol") return "GPT-6.1 Sol via Void relay";
 	if (id === "gpt-5.6-terra") return "GPT-5.6 Terra via Void relay";
 	if (id === "gpt-6-luna") return "GPT-6 Luna via Void relay";

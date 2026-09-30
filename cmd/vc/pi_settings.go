@@ -31,34 +31,45 @@ func piSettingsPath() string {
 // The pair vc seeds into Pi's settings so a fresh install opens on the relay's
 // own provider and model instead of whichever one Pi happens to register first.
 // Both values must stay in step with the extension in pi_extension.go
-// (CODEX_PROVIDER_ID / CODEX_MODEL_ID).
+// (CODEX_PROVIDER_ID / CODEX_MODEL_ID). The model is only the fallback: the
+// catalog's default wins when the server sends one.
 const (
 	piDefaultProvider = "void-codex"
 	piDefaultModel    = "gpt-6.1-sol"
 )
 
 // ensurePiDefaultModel seeds defaultModel (and defaultProvider alongside it,
-// when the user has not picked one) into Pi's settings.json. A legacy managed
-// DeepSeek selection is a retired choice: its provider and model move to
-// the OpenAI default together inside this single atomic settings writer.
-// A saved void-codex/gpt-6-sol default moves to gpt-6.1-sol the same way, so
-// existing users land on the new default; gpt-6-sol has left the picker.
+// when the user has not picked one) into Pi's settings.json from the model
+// catalog (void-works#81). A legacy managed DeepSeek selection is a retired
+// choice: its provider and model move to the catalog default together inside
+// this single atomic settings writer. A saved void-codex model the catalog has
+// retired moves to its replacement the same way, since the relay refuses it.
 //
 // Other existing model/provider choices are user-owned and leave the file
 // untouched. Neither does vc invent a pair no provider can serve: a user who
 // chose some other provider and no model gets nothing. Only vc's own provider,
 // or a file that names no provider at all, gets the model seeded.
 func ensurePiDefaultModel() error {
+	return ensurePiDefaultModelFrom(currentPiModelCatalog())
+}
+
+func ensurePiDefaultModelFrom(catalog piModelCatalog) error {
+	defaultModel := catalog.Default
+	if strings.TrimSpace(defaultModel) == "" {
+		defaultModel = piDefaultModel
+	}
 	return updatePiSettings(func(settings map[string]any) bool {
 		if provider, _ := settings["defaultProvider"].(string); provider == "void-deepseek" {
 			settings["defaultProvider"] = piDefaultProvider
-			settings["defaultModel"] = piDefaultModel
+			settings["defaultModel"] = defaultModel
 			return true
 		}
 		if provider, _ := settings["defaultProvider"].(string); provider == piDefaultProvider {
-			if model, _ := settings["defaultModel"].(string); model == "gpt-6-sol" {
-				settings["defaultModel"] = piDefaultModel
-				return true
+			if model, _ := settings["defaultModel"].(string); model != "" {
+				if to, ok := catalog.replacement(model); ok {
+					settings["defaultModel"] = to
+					return true
+				}
 			}
 		}
 		if isNonEmptyJSONString(settings["defaultModel"]) {
@@ -69,7 +80,7 @@ func ensurePiDefaultModel() error {
 		if chosen && strings.TrimSpace(provider) != piDefaultProvider {
 			return false
 		}
-		settings["defaultModel"] = piDefaultModel
+		settings["defaultModel"] = defaultModel
 		if !chosen {
 			settings["defaultProvider"] = piDefaultProvider
 		}

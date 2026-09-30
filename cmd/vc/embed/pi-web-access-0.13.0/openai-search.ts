@@ -117,11 +117,23 @@ function extractAccountId(token: string): string | undefined {
 	return typeof id === "string" && id.trim().length > 0 ? id.trim() : undefined;
 }
 
+// void-codex models come from what vc registered in Pi, which is the relay's model catalog in
+// picker order (default first). The fixed list above is the fallback for a registry without them.
+function candidateModelIds(ctx: ExtensionContext, provider: string, fallback: readonly string[]): readonly string[] {
+	if (provider !== "void-codex") return fallback;
+	try {
+		const registered = ctx.modelRegistry.getAll().filter((model) => model.provider === provider).map((model) => model.id);
+		return registered.length > 0 ? registered : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
 export async function resolveOpenAIAuth(ctx?: ExtensionContext): Promise<OpenAIAuth | undefined> {
 	if (ctx) {
 		const { getModel } = await import("@earendil-works/pi-ai/compat");
 		for (const candidate of AUTH_MODEL_CANDIDATES) {
-			for (const modelId of candidate.models) {
+			for (const modelId of candidateModelIds(ctx, candidate.provider, candidate.models)) {
 				const model = candidate.provider === "void-codex"
 					? ctx.modelRegistry.find(candidate.provider, modelId)
 					: getModel(candidate.provider, modelId);

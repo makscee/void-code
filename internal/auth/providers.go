@@ -13,6 +13,19 @@ type ProviderInfo struct {
 	ID   string // stable provider id, sent verbatim as the x-void-provider header
 	Name string // human display label for the menu row
 	Type string // safe provider type from auth, used for compatibility classification
+	// Models is the provider's model catalog from Keys (void-works#81): what
+	// the relay offers, its labels, the default, and where retired ids moved.
+	// Empty when the server predates the catalog.
+	Models []ProviderModel
+}
+
+// ProviderModel is one catalog row. RetiredTo is set when the id is retired;
+// the relay then refuses it and names RetiredTo as the replacement.
+type ProviderModel struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Default   bool   `json:"default"`
+	RetiredTo string `json:"retired_to"`
 }
 
 // FetchProviders calls GET <authHost>/v1/vc/providers with the bearer token.
@@ -44,9 +57,10 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 
 	var r struct {
 		Providers []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Type string `json:"type"`
+			ID     string          `json:"id"`
+			Name   string          `json:"name"`
+			Type   string          `json:"type"`
+			Models []ProviderModel `json:"models"`
 		} `json:"providers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
@@ -54,7 +68,7 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 	}
 	out := make([]ProviderInfo, 0, len(r.Providers))
 	for _, p := range r.Providers {
-		out = append(out, ProviderInfo{ID: p.ID, Name: p.Name, Type: p.Type})
+		out = append(out, ProviderInfo{ID: p.ID, Name: p.Name, Type: p.Type, Models: p.Models})
 	}
 	return out, nil
 }
