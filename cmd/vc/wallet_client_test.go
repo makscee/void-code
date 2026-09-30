@@ -483,6 +483,20 @@ func assertTerminalLaunch(t *testing.T, tc walletGateCase) {
 	exitProcess = func(code int) { exitCode = code }
 	t.Cleanup(func() { spawnHarness, exitProcess = savedSpawn, savedExit })
 
+	// Fast start (spec 2026-09-30 with Артём's clarification): the first launch
+	// for a token has no saved /me, so admission runs first and the notice comes
+	// from its live answer; the second launch shows the notice of the /me the
+	// first one saved. Both must be tc.notice — the saved /me keeps every
+	// wallet and limit field the notice is computed from.
+	stopFirst := captureProcessStderr(t)
+	firstErr := runSpawn(nil, nil)
+	_ = stopFirst()
+	if !spawned || firstErr != nil {
+		t.Fatalf("first launch: spawned=%v err=%v", spawned, firstErr)
+	}
+	assertLaunchNoticeEnv(t, piEnv, tc.notice)
+	spawned, piEnv = false, nil
+
 	stopStderr := captureProcessStderr(t)
 	err := runSpawn(nil, nil)
 	stderr := plainText(stopStderr())
@@ -535,6 +549,15 @@ func assertDesktopSessionLaunch(t *testing.T, tc walletGateCase) {
 			return nil
 		},
 	}
+	// Fast start (spec 2026-09-30 with Артём's clarification): the first launch
+	// takes the notice from the live /me, the second from the /me the first
+	// saved. Both must be tc.notice.
+	if _, firstErr := execDesktopSessionArgs(t, deps, "--node", node, "--pi-entry", pi); firstErr != nil || !ran {
+		t.Fatalf("first desktop session: ran=%v err=%v", ran, firstErr)
+	}
+	assertLaunchNoticeEnv(t, plan.env, tc.notice)
+	ran, plan = false, desktopSessionPlan{}
+
 	cmd := newDesktopSessionCommand(deps)
 	var errOut bytes.Buffer
 	cmd.SetIn(bytes.NewReader(nil))

@@ -51,6 +51,10 @@ type childRun struct {
 	ctxDoneAtRun  bool
 	cancelled     bool
 	cancelledSeen time.Duration
+	// Requests auth had received when this child was spawned (fast start,
+	// 2026-09-30: what a start waited for and what it did not).
+	meHitsAtSpawn   int
+	provHitsAtSpawn int
 }
 
 // childScript is what one fake child does; it may write a request and block.
@@ -71,6 +75,10 @@ type switchLaunch struct {
 	// grantsByHit, when set, is what /v1/vc/providers answers on its n-th call
 	// (the last entry repeats); unset means codexGrants every time.
 	grantsByHit [][]map[string]string
+	// meHandler, when set, answers /v1/vc/me instead of meJSON (a /me that
+	// holds its answer, refuses, or changes between launches). Hits are
+	// counted either way.
+	meHandler http.HandlerFunc
 }
 
 func (l *switchLaunch) event(e string) {
@@ -103,7 +111,12 @@ func prepareSwitchLaunch(t *testing.T, meJSON string, scripts ...childScript) *s
 		case "/v1/vc/me":
 			l.mu.Lock()
 			l.meHits++
+			handler := l.meHandler
 			l.mu.Unlock()
+			if handler != nil {
+				handler(w, r)
+				return
+			}
 			_, _ = w.Write([]byte(meJSON))
 		case "/v1/vc/providers":
 			l.mu.Lock()
@@ -161,6 +174,7 @@ func prepareSwitchLaunch(t *testing.T, meJSON string, scripts ...childScript) *s
 			}
 		}
 		l.mu.Lock()
+		run.meHitsAtSpawn, run.provHitsAtSpawn = l.meHits, l.provHits
 		index := len(l.runs)
 		l.runs = append(l.runs, run)
 		var script childScript
@@ -473,7 +487,11 @@ func TestRequestForTheCurrentRuntimeOrGarbageDoesNotSwitch(t *testing.T) {
 }
 
 // Admission and the wallet notice belong to the vc process, not to each
-// runtime; the ChatGPT grant is a live question for every Codex start.
+// runtime. Changed for the fast start (spec 2026-09-30): the ChatGPT grant is
+// no longer a live question on every Codex start — a fresh cache holding it
+// answers (fast_start_providers_cache_test.go pins that), and a background
+// refresh may follow each start, so only the first Codex start, with no cache
+// yet, must have asked auth before it was spawned.
 func TestAdmissionOncePerVCAndGrantPerCodexStart(t *testing.T) {
 	l := prepareSwitchLaunch(t, meBody(wallet("2", tariffT1, "true", "1")),
 		piAsks(t, "codex\n", 0),
@@ -486,15 +504,15 @@ func TestAdmissionOncePerVCAndGrantPerCodexStart(t *testing.T) {
 	if _, err := runSupervised(t); err != nil {
 		t.Fatalf("runSpawn: %v", err)
 	}
-	runs, events, meHits, provHits := l.snapshot()
+	runs, events, meHits, _ := l.snapshot()
 	if !equalStrings(kinds(runs), []string{"pi", "codex", "pi", "codex"}) {
 		t.Fatalf("children = %v, want [pi codex pi codex]", kinds(runs))
 	}
 	if meHits != 1 {
 		t.Errorf("admission (/v1/vc/me) asked %d times over four runtimes, want 1", meHits)
 	}
-	if provHits != 2 {
-		t.Errorf("ChatGPT grant asked %d times over two Codex starts, want 2", provHits)
+	if runs[1].provHitsAtSpawn != 1 {
+		t.Errorf("the first Codex start, with no providers cache yet, asked auth %d times before it was spawned, want 1", runs[1].provHitsAtSpawn)
 	}
 	if l.ensure.calls != 2 {
 		t.Errorf("ensureCodexRuntime called %d times over two Codex starts, want 2", l.ensure.calls)
@@ -847,12 +865,15 @@ func TestFallbackChildCanSwitchAgain(t *testing.T) {
 	if _, err := runSupervisedBounded(t); err != nil {
 		t.Fatalf("runSpawn: %v", err)
 	}
-	runs, _, _, provHits := l.snapshot()
+	runs, _, _, _ := l.snapshot()
 	if !equalStrings(kinds(runs), []string{"pi", "pi", "codex"}) {
 		t.Fatalf("children = %v, want [pi pi codex]", kinds(runs))
 	}
-	if provHits != 2 {
-		t.Errorf("grant asked %d times, want 2 (once per Codex start)", provHits)
+	// Counted at the spawn since the fast start (spec 2026-09-30): a background
+	// refresh may follow it. The first attempt's answer, cached without the
+	// grant, must not be used — the second attempt asks auth again.
+	if runs[2].provHitsAtSpawn != 2 {
+		t.Errorf("grant asked %d times before Codex started, want 2 (once per Codex attempt; a cache without the grant is not an answer)", runs[2].provHitsAtSpawn)
 	}
 	if got, _ := configKey(t, "runtime"); got != "codex" {
 		t.Errorf("saved runtime = %q after the second switch succeeded, want codex", got)
