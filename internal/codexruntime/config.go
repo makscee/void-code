@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -47,22 +48,53 @@ const (
 	HookCommandWindows = `"%VC_HOOK_EXE%" codex-hook`
 )
 
-// hookEvent is one managed hook: its config.toml event name, the snake_case
-// suffix Codex keys its trust by, and Codex's sha256 of the hook entry.
+// hookEvent is one managed hook: its config.toml event name and the
+// snake_case suffix Codex keys its trust by.
 type hookEvent struct {
-	name, snake, trustedHash string
+	name, snake string
 }
 
-// managedHooks are the hooks the managed config carries, in file order. The
-// hashes are Codex's own (codex app-server → hooks/list) for the pinned
-// Version; they do not depend on the path but change with ANY edit to the
-// entry, and a wrong one leaves the hook "untrusted", which Codex skips
-// without a word. Recompute them on every bump of the pin;
-// TestPinnedCodexTrustsTheManagedHooks fails with the new values if you forget.
+// managedHooks are the hooks the managed config carries, in file order.
 var managedHooks = []hookEvent{
-	{"SessionStart", "session_start", "sha256:d2aed9f24bfba2e8a3b3e910fd4a13f935bc0912c2c11eece03fa95197dab30e"},
-	{"UserPromptSubmit", "user_prompt_submit", "sha256:f3d178d8750d3a7181bf107bd17c4b6e8a431fba956d7b256e876cd5918d0d3a"},
-	{"Stop", "stop", "sha256:458c3eff774889f6a55f22bdff7e82b22f56ee82e88ea07c312e50beb6840846"},
+	{"SessionStart", "session_start"},
+	{"UserPromptSubmit", "user_prompt_submit"},
+	{"Stop", "stop"},
+}
+
+// pinnedUnixHookHashes and pinnedWindowsHookHashes are Codex's own sha256 of each managed
+// hook entry (codex app-server → hooks/list) for the pinned Version. Codex
+// hashes the command it would run on its own platform — commandWindows on
+// Windows, command elsewhere (discovery.rs:513) — so the two triples differ;
+// the Windows one was measured on WIN11-VCLAB. They do not depend on the path
+// but change with ANY edit to the entry, and a wrong one leaves the hook
+// "untrusted", which Codex skips without a word. Recompute both on every bump
+// of the pin; TestPinnedCodexTrustsTheManagedHooks fails with the new values
+// for the platform it runs on.
+var (
+	pinnedUnixHookHashes = map[string]string{
+		"session_start":      "sha256:d2aed9f24bfba2e8a3b3e910fd4a13f935bc0912c2c11eece03fa95197dab30e",
+		"user_prompt_submit": "sha256:f3d178d8750d3a7181bf107bd17c4b6e8a431fba956d7b256e876cd5918d0d3a",
+		"stop":               "sha256:458c3eff774889f6a55f22bdff7e82b22f56ee82e88ea07c312e50beb6840846",
+	}
+	pinnedWindowsHookHashes = map[string]string{
+		"session_start":      "sha256:e642bd4fbf5b39dbef68ee1e756eb3ee6e63d2fc6a02729d6b29ef6e99bd30fb",
+		"user_prompt_submit": "sha256:5dade9e02f725eb5a2a3e6444c541424b4459c997b567725a871a4ccb58d863a",
+		"stop":               "sha256:6d3d6f399d5b6f3d07877da6e5d2dfd3169b60c68501735cd581ef72fe386232",
+	}
+)
+
+// HookTrustedHashes returns the trusted_hash of each managed hook, keyed by
+// its snake_case event, for Codex running on goos. The map is a fresh copy.
+func HookTrustedHashes(goos string) map[string]string {
+	source := pinnedUnixHookHashes
+	if goos == "windows" {
+		source = pinnedWindowsHookHashes
+	}
+	out := make(map[string]string, len(source))
+	for k, v := range source {
+		out[k] = v
+	}
+	return out
 }
 
 // WriteConfig replaces codexHome/config.toml with the managed configuration
@@ -91,7 +123,7 @@ func WriteConfigFor(codexHome, relayURL, trustedFolder string) error {
 	baseURL := strings.TrimRight(relayURL, "/") + "/codex"
 	var b strings.Builder
 	fmt.Fprintf(&b, configTemplate, Model, tomlString(baseURL))
-	writeHooks(&b, filepath.Join(resolvedHome, "config.toml"))
+	writeHooks(&b, filepath.Join(resolvedHome, "config.toml"), HookTrustedHashes(runtime.GOOS))
 	if trustedFolder != "" {
 		fmt.Fprintf(&b, "\n[projects.%s]\ntrust_level = \"trusted\"\n", tomlString(trustedFolder))
 	}
@@ -118,14 +150,14 @@ func WriteConfigFor(codexHome, relayURL, trustedFolder string) error {
 // writeHooks appends the managed hooks and their trust entries. Each entry is
 // exactly type + command + commandWindows: a matcher, timeout or
 // statusMessage would change Codex's hash and silently untrust the hook.
-func writeHooks(b *strings.Builder, configPath string) {
+func writeHooks(b *strings.Builder, configPath string, hashes map[string]string) {
 	for _, h := range managedHooks {
 		fmt.Fprintf(b, "\n[[hooks.%s]]\n[[hooks.%s.hooks]]\ntype = \"command\"\ncommand = %s\ncommandWindows = %s\n",
 			h.name, h.name, tomlString(HookCommand), tomlString(HookCommandWindows))
 	}
 	for _, h := range managedHooks {
 		fmt.Fprintf(b, "\n[hooks.state.%s]\ntrusted_hash = %s\n",
-			tomlString(configPath+":"+h.snake+":0:0"), tomlString(h.trustedHash))
+			tomlString(configPath+":"+h.snake+":0:0"), tomlString(hashes[h.snake]))
 	}
 }
 
