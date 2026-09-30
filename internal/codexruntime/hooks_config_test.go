@@ -28,7 +28,7 @@ import (
 //
 // Values measured with `codex app-server` → `hooks/list` for 0.158.0: the
 // Unix triple on macOS 29.09 (Linux takes the same non-Windows branch), the
-// Windows triple on WIN11-VCLAB 30.09. The smoke test in
+// Windows triple on WIN11-VCLAB 30.09 for the `cmd /c` command below. The smoke test in
 // pinned_codex_smoke_test.go asks a real Codex on the machine it runs on.
 var unixHookHashes = map[string]string{
 	"session_start":      "sha256:d2aed9f24bfba2e8a3b3e910fd4a13f935bc0912c2c11eece03fa95197dab30e",
@@ -36,10 +36,13 @@ var unixHookHashes = map[string]string{
 	"stop":               "sha256:458c3eff774889f6a55f22bdff7e82b22f56ee82e88ea07c312e50beb6840846",
 }
 
+// These hash the entry whose commandWindows is `cmd /c "%VC_HOOK_EXE%" codex-hook`
+// (see wantHookCommandWindows). The earlier triple e642bd4f…/5dade9e0…/6d3d6f39…
+// belonged to the bare `"%VC_HOOK_EXE%" codex-hook`, which Windows cannot run.
 var windowsHookHashes = map[string]string{
-	"session_start":      "sha256:e642bd4fbf5b39dbef68ee1e756eb3ee6e63d2fc6a02729d6b29ef6e99bd30fb",
-	"user_prompt_submit": "sha256:5dade9e02f725eb5a2a3e6444c541424b4459c997b567725a871a4ccb58d863a",
-	"stop":               "sha256:6d3d6f399d5b6f3d07877da6e5d2dfd3169b60c68501735cd581ef72fe386232",
+	"session_start":      "sha256:dd7994ddbeafdc6806167f89e639af9445e84400bfb7fcc6e46ce0f285a80e9f",
+	"user_prompt_submit": "sha256:32b1103902f574bc8baacdf15fea42c19d4132e05f69df0b9e6f9ce63ece98a8",
+	"stop":               "sha256:93b1d1c6815b89634df0f49d37b9ebc1c08cdf9a5d76214669a687a2923de88a",
 }
 
 // specHookHashes is the triple Codex computes on the OS running the test.
@@ -59,9 +62,17 @@ var hookEvents = []struct{ name, snake string }{
 	{"Stop", "stop"},
 }
 
+// Codex runs a hook through the person's own shell (core/src/session/mod.rs:5178,
+// build_hooks_config takes environment.shell). On Windows that is usually
+// PowerShell, where `"%VC_HOOK_EXE%" codex-hook` is a syntax error: %VAR% is
+// cmd.exe syntax and a quoted string followed by an argument does not parse as
+// a call. On WIN11-VCLAB 30.09 every hook "exited with code 1". Handing the
+// line to cmd explicitly works whatever the shell is: with it, SessionStart,
+// UserPromptSubmit and Stop completed and status.json/session.json were written.
+// On Unix the command runs in sh/bash/zsh, which all read "$VC_HOOK_EXE".
 const (
 	wantHookCommand        = `"$VC_HOOK_EXE" codex-hook`
-	wantHookCommandWindows = `"%VC_HOOK_EXE%" codex-hook`
+	wantHookCommandWindows = `cmd /c "%VC_HOOK_EXE%" codex-hook`
 )
 
 // ─── a TOML reader just big enough for the managed file ─────────────────────
