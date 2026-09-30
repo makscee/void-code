@@ -41,11 +41,14 @@ env_http_headers = { "x-void-provider" = "VC_CODEX_PROVIDER" }
 `
 
 // HookCommand and HookCommandWindows are what every managed hook runs. Codex
-// runs hooks through the shell, so the executable comes from VC_HOOK_EXE in
-// Codex's environment rather than from a path baked into the file.
+// runs hooks through the person's shell, so the executable comes from
+// VC_HOOK_EXE in Codex's environment rather than from a path baked into the
+// file. On Windows that shell is PowerShell, which neither expands %VAR% nor
+// runs a quoted string as a command, so the Windows command goes through
+// `cmd /c` explicitly.
 const (
 	HookCommand        = `"$VC_HOOK_EXE" codex-hook`
-	HookCommandWindows = `"%VC_HOOK_EXE%" codex-hook`
+	HookCommandWindows = `cmd /c "%VC_HOOK_EXE%" codex-hook`
 )
 
 // hookEvent is one managed hook: its config.toml event name and the
@@ -65,7 +68,7 @@ var managedHooks = []hookEvent{
 // hook entry (codex app-server → hooks/list) for the pinned Version. Codex
 // hashes the command it would run on its own platform — commandWindows on
 // Windows, command elsewhere (discovery.rs:513) — so the two triples differ;
-// the Windows one was measured on WIN11-VCLAB. They do not depend on the path
+// the Windows one was measured on WIN11-VCLAB 30.09 for the `cmd /c` command. They do not depend on the path
 // but change with ANY edit to the entry, and a wrong one leaves the hook
 // "untrusted", which Codex skips without a word. Recompute both on every bump
 // of the pin; TestPinnedCodexTrustsTheManagedHooks fails with the new values
@@ -77,9 +80,9 @@ var (
 		"stop":               "sha256:458c3eff774889f6a55f22bdff7e82b22f56ee82e88ea07c312e50beb6840846",
 	}
 	pinnedWindowsHookHashes = map[string]string{
-		"session_start":      "sha256:e642bd4fbf5b39dbef68ee1e756eb3ee6e63d2fc6a02729d6b29ef6e99bd30fb",
-		"user_prompt_submit": "sha256:5dade9e02f725eb5a2a3e6444c541424b4459c997b567725a871a4ccb58d863a",
-		"stop":               "sha256:6d3d6f399d5b6f3d07877da6e5d2dfd3169b60c68501735cd581ef72fe386232",
+		"session_start":      "sha256:dd7994ddbeafdc6806167f89e639af9445e84400bfb7fcc6e46ce0f285a80e9f",
+		"user_prompt_submit": "sha256:32b1103902f574bc8baacdf15fea42c19d4132e05f69df0b9e6f9ce63ece98a8",
+		"stop":               "sha256:93b1d1c6815b89634df0f49d37b9ebc1c08cdf9a5d76214669a687a2923de88a",
 	}
 )
 
