@@ -114,11 +114,38 @@ func writeAtomicCache(path string, payload []byte) bool {
 	if err := tmp.Close(); err != nil {
 		return false
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameCacheWithRetry(tmpPath, path); err != nil {
 		return false
 	}
 	ok = true
 	return true
+}
+
+// cacheRename is the rename writeAtomicCache puts a finished temp file in
+// place with. A var for tests.
+var cacheRename = os.Rename
+
+// cacheRenameRetryDelay is the pause between rename attempts. A var for tests.
+var cacheRenameRetryDelay = 50 * time.Millisecond
+
+// cacheRenameAttempts caps the attempts of one rename, the first included.
+const cacheRenameAttempts = 10
+
+// renameCacheWithRetry renames tmpPath over path, trying again a few times: on
+// Windows the rename fails with a sharing violation while anyone holds path
+// open (another vc reading the same cache), and that is over in moments. The
+// last attempt's error is returned when every attempt failed.
+func renameCacheWithRetry(tmpPath, path string) error {
+	var err error
+	for attempt := 1; attempt <= cacheRenameAttempts; attempt++ {
+		if err = cacheRename(tmpPath, path); err == nil {
+			return nil
+		}
+		if attempt < cacheRenameAttempts && cacheRenameRetryDelay > 0 {
+			time.Sleep(cacheRenameRetryDelay)
+		}
+	}
+	return err
 }
 
 func writeAuthCache[T any](kind, authHost, token string, value T, now time.Time) {
