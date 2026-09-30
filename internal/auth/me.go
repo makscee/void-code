@@ -107,7 +107,7 @@ func FetchMe(authHost, token string, httpClient *http.Client) (MeResult, error) 
 	if err != nil {
 		return MeResult{}, fmt.Errorf("GET vc/me: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return MeResult{}, ErrNotLoggedIn

@@ -27,6 +27,12 @@ type desktopSessionPlan struct {
 	// command's error stream, and a line written to os.Stderr here would land in
 	// a process nobody is watching.
 	warnings []string
+	// admission is the access check still running beside the start (a token
+	// with a saved /me); nil when it passed before the preparation.
+	admission *pendingAdmission
+	// refresh, when set, runs once in the background after the runtime is
+	// started (the providers cache a Codex chat was served from).
+	refresh func(context.Context)
 }
 type desktopSessionDeps struct {
 	loadToken       func() (string, error)
@@ -77,13 +83,81 @@ func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 		for _, warning := range plan.warnings {
 			fmt.Fprintln(cmd.ErrOrStderr(), warning)
 		}
-		return deps.run(cmd.Context(), plan, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return runDesktopPlan(cmd.Context(), plan, deps.run, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}}
 	cmd.Flags().StringVar(&runtimeName, "runtime", "pi", "the chat's runtime: pi or codex")
 	cmd.Flags().StringVar(&nodePath, "node", "", "absolute path to the package-owned Node executable (pi)")
 	cmd.Flags().StringVar(&piEntry, "pi-entry", "", "absolute path to the package-owned Pi CLI entrypoint (pi)")
 	cmd.Flags().StringVar(&codexSession, "codex-session", "", "Codex session id to resume (codex)")
 	return cmd
+}
+
+// runDesktopPlan runs the prepared runtime. When the access check still runs
+// beside it, a refusal stops the runtime (its context is cancelled) and comes
+// out as the command's error, today's text; the command never returns before
+// the check has answered, even when the runtime ended first. A background
+// refresh the preparation asked for runs while the runtime does and is over
+// before this returns.
+func runDesktopPlan(parent context.Context, plan desktopSessionPlan, run func(context.Context, desktopSessionPlan, io.Reader, io.Writer, io.Writer) error, stdin io.Reader, stdout, stderr io.Writer) error {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	if plan.admission == nil {
+		stopRefresh := runAfterSpawn(plan.refresh)
+		defer stopRefresh()
+		return run(ctx, plan, stdin, stdout, stderr)
+	}
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, plan, stdin, stdout, stderr) }()
+	stopRefresh := runAfterSpawn(plan.refresh)
+	defer stopRefresh()
+	select {
+	case runErr := <-done:
+		if refusal := plan.admission.wait(); refusal != nil {
+			return fmt.Errorf("desktop-session: %w", desktopRefusal(refusal))
+		}
+		return runErr
+	case <-plan.admission.answered():
+		if refusal := plan.admission.refusal(); refusal != nil {
+			cancel()
+			<-done
+			return fmt.Errorf("desktop-session: %w", desktopRefusal(refusal))
+		}
+		return <-done
+	}
+}
+
+// desktopRefusal is the access check's refusal as desktop-session has always
+// said it.
+func desktopRefusal(err error) error {
+	return fmt.Errorf("authentication unavailable: %w", err)
+}
+
+// desktopAdmission is the access check of a desktop chat. A token with a saved
+// /me (let in before) is checked beside the preparation: the saved /me is what
+// the launch notice is computed from, and the returned admission is still
+// running. Any other token is checked here, before anything is prepared, and
+// the notice comes from the live answer.
+func desktopAdmission(deps desktopSessionDeps, token string, cfg config.Config, client *http.Client) (auth.MeResult, bool, *pendingAdmission, error) {
+	if saved, ok := readSavedMe(token); ok {
+		return saved, true, startAdmission(deps.authGate, token, cfg.AccessCheckHost, client), nil
+	}
+	me, reached, err := admit(deps.authGate, token, cfg.AccessCheckHost, client)
+	if err != nil {
+		return auth.MeResult{}, false, nil, desktopRefusal(err)
+	}
+	return me, reached, nil, nil
+}
+
+// desktopPrepFailed is a preparation that failed while the access check ran
+// beside it: the check's refusal, when there is one, is the real reason.
+func desktopPrepFailed(admission *pendingAdmission, err error) (desktopSessionPlan, error) {
+	if refusal := admission.wait(); refusal != nil {
+		return desktopSessionPlan{}, desktopRefusal(refusal)
+	}
+	return desktopSessionPlan{}, err
 }
 
 var desktopSessionCmd = newDesktopSessionCommand(defaultDesktopSessionDeps())
@@ -107,9 +181,9 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	// The access check, not sign-in: this asks who the token belongs to and
 	// whether they are let in, and in production that answer comes from a
 	// different service than the one serving the device-authorization routes.
-	me, reached, err := deps.authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
+	me, reached, admission, err := desktopAdmission(deps, token, cfg, newLaunchHTTPClient())
 	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
+		return desktopSessionPlan{}, err
 	}
 	// The wallet never refuses the session — a refused desktop-session exits,
 	// and the app then shows "Chat stopped… check your network" instead of
@@ -123,13 +197,13 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	var warnings []string
 	extensionPath, err := deps.reconcilePi()
 	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("managed Pi transport unavailable: %w", err)
+		return desktopPrepFailed(admission, fmt.Errorf("managed Pi transport unavailable: %w", err))
 	}
 	if extensionPath == "" {
-		return desktopSessionPlan{}, fmt.Errorf("managed Pi transport is disabled")
+		return desktopPrepFailed(admission, fmt.Errorf("managed Pi transport is disabled"))
 	}
 	if _, err := deps.reconcileSearch(true); err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("managed Pi web search unavailable: %w", err)
+		return desktopPrepFailed(admission, fmt.Errorf("managed Pi web search unavailable: %w", err))
 	}
 	if deps.reconcileUI != nil {
 		uiPath, uiErr := deps.reconcileUI()
@@ -144,26 +218,28 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	// The same seed runSpawn does, in the same place and on the same terms —
 	// the desktop app never goes through runSpawn, so without this line the
 	// default model reaches only the people who open a terminal. It sits behind
-	// the access check on purpose: a token that was refused must not leave a
-	// mark in anyone's Pi settings. Unlike everything else here, its failure is
+	// the access check on purpose: a token that was never let in must not leave
+	// a mark in anyone's Pi settings (a token with a saved /me was let in
+	// before, and its check runs beside this). Unlike everything else here, its failure is
 	// a warning: an unreadable settings.json is not worth the user's session.
 	if err := ensurePiDefaultModel(); err != nil {
 		warnings = append(warnings, fmt.Sprintf("vc: warning: Pi default model was not seeded: %v", err))
 	}
 	caPath, err := deps.resolveCA(cfg)
 	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("relay CA unavailable: %w", err)
+		return desktopPrepFailed(admission, fmt.Errorf("relay CA unavailable: %w", err))
 	}
 	env := buildPiSpawnEnv(provider.Provider{Kind: provider.Relay}, os.Environ(), cfg.RelayScheme, cfg.RelayHost, token, caPath)
 	env = setDesktopEnv(env, "PI_SKIP_VERSION_CHECK", "1")
 	env = setDesktopEnv(env, "VC_DESKTOP_SESSION", "1")
 	env = withLaunchNotice(env, notice)
-	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env, warnings: warnings}, nil
+	return desktopSessionPlan{nodePath: nodePath, args: append([]string{piEntry}, buildPiArgs(piArgs, extensionPath)...), env: env, warnings: warnings, admission: admission}, nil
 }
 
 // prepareDesktopCodexSession readies a desktop chat on Codex: the same
-// admission as the CLI and in the same order — token, access check, the
-// ChatGPT grant, and only then the install — then Codex in the chat's folder
+// admission as the CLI and in the same order — token, access check (beside the
+// start for a token with a saved /me), the ChatGPT grant (from a fresh
+// providers cache when it holds it), and only then the install — then Codex in the chat's folder
 // (the process cwd, which the managed config trusts) with the desktop's status
 // channel and the hook executable in its environment. codexArgs must be empty:
 // the lifecycle is --codex-session, anything else would be someone else's
@@ -180,9 +256,10 @@ func prepareDesktopCodexSession(codexSession string, codexArgs []string, deps de
 		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable; run `vc login`")
 	}
 	cfg := deps.resolveConfig()
-	me, reached, err := deps.authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
+	client := newLaunchHTTPClient()
+	me, reached, admission, err := desktopAdmission(deps, token, cfg, client)
 	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("authentication unavailable: %w", err)
+		return desktopSessionPlan{}, err
 	}
 	var warnings []string
 	if reached {
@@ -194,15 +271,15 @@ func prepareDesktopCodexSession(codexSession string, codexArgs []string, deps de
 	}
 	folder, err := os.Getwd()
 	if err != nil {
-		return desktopSessionPlan{}, fmt.Errorf("chat folder unavailable: %w", err)
+		return desktopPrepFailed(admission, fmt.Errorf("chat folder unavailable: %w", err))
 	}
 	// Codex sees its cwd resolved (getcwd), so the trust names that spelling.
 	if resolved, resolveErr := filepath.EvalSymlinks(folder); resolveErr == nil {
 		folder = resolved
 	}
-	prepared, err := prepareCodex(cfg, token, folder, os.Stderr)
+	prepared, err := prepareCodex(cfg, token, folder, os.Stderr, client)
 	if err != nil {
-		return desktopSessionPlan{}, err
+		return desktopPrepFailed(admission, err)
 	}
 	env := prepared.env
 	// buildCodexSpawnEnv drops every VC_* variable; the chat's status channel
@@ -217,7 +294,7 @@ func prepareDesktopCodexSession(codexSession string, codexArgs []string, deps de
 	if codexSession != "" {
 		args = append(args, "resume", codexSession)
 	}
-	return desktopSessionPlan{nodePath: prepared.exe, args: args, env: env, warnings: warnings}, nil
+	return desktopSessionPlan{nodePath: prepared.exe, args: args, env: env, warnings: warnings, admission: admission, refresh: prepared.refresh}, nil
 }
 
 var desktopPiArgs = map[string]bool{"--continue": false, "-c": false, "--resume": false, "-r": false, "--session": true, "--session-id": true, "--fork": true, "--no-session": false, "--name": true, "-n": true}

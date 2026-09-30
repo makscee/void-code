@@ -8,7 +8,6 @@ import (
 	"time"
 
 	term "github.com/charmbracelet/x/term"
-	"github.com/makscee/void-code/internal/config"
 	"github.com/makscee/void-code/internal/runtimechoice"
 )
 
@@ -47,14 +46,19 @@ const terminalResetSequence = "\x1b[?1049l" + // leave the alternate screen
 
 // superviseRuntimes runs the chosen runtime and, whenever a child asks for the
 // other one through the request file, starts that one in the same terminal.
-// Admission and the wallet notice happened once, before; the notice goes to
-// the first child only. Without a request vc returns the child's own result.
+// Admission and the wallet notice belong to the vc process, not to a runtime;
+// the notice goes to the first child only. Without a request vc returns the
+// child's own result.
+//
+// When the access check still runs beside the start (lc.admission), its
+// refusal stops the running child and no further one is started; the caller
+// turns that into vc's refusal.
 //
 // A switch whose target cannot be prepared (no ChatGPT grant, a failed
 // install) does not end vc: the reason is printed, the saved choice goes back
 // and the previous runtime starts again as an ordinary supervised child. When
 // that fallback cannot be prepared either, vc ends with its error.
-func superviseRuntimes(cfg config.Config, token, notice string, current runtimechoice.Runtime) error {
+func superviseRuntimes(lc launchContext, notice string, current runtimechoice.Runtime) error {
 	dir, err := os.MkdirTemp("", "vc-runtime-switch-")
 	if err != nil {
 		return fmt.Errorf("prepare runtime switch: %w", err)
@@ -63,7 +67,10 @@ func superviseRuntimes(cfg config.Config, token, notice string, current runtimec
 	switchFile := filepath.Join(dir, "switch")
 	var fallback runtimechoice.Runtime
 	for {
-		child, err := prepareRuntimeChild(current, cfg, token, notice)
+		if refusal := lc.admission.refusal(); refusal != nil {
+			return refusal
+		}
+		child, err := prepareRuntimeChild(current, lc, notice)
 		if err != nil {
 			if fallback == "" {
 				return err
@@ -74,7 +81,7 @@ func superviseRuntimes(cfg config.Config, token, notice string, current runtimec
 		}
 		notice, fallback = "", ""
 		child.env = append(child.env, runtimeSwitchFileEnv+"="+switchFile)
-		next, runErr := runSupervisedChild(child, current, switchFile)
+		next, runErr := runSupervisedChild(child, current, switchFile, lc.admission)
 		if next == "" {
 			return runErr
 		}
@@ -97,33 +104,48 @@ func fallBack(failed, previous runtimechoice.Runtime, reason error) {
 // runSupervisedChild runs one child and returns the runtime it asked for, or
 // "" with the child's own result when it asked for nothing. Pi closes itself
 // after its request; Codex never exits on its own, so vc stops it by
-// cancelling its context. The terminal is put back after every child.
-func runSupervisedChild(child runtimeChild, current runtimechoice.Runtime, switchFile string) (runtimechoice.Runtime, error) {
+// cancelling its context. A refusal of the access check still running beside
+// the start (admission) stops the child the same way and is returned instead
+// of the child's result. The terminal is put back after every child.
+func runSupervisedChild(child runtimeChild, current runtimechoice.Runtime, switchFile string, admission *pendingAdmission) (runtimechoice.Runtime, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	restore := captureTerminal()
 	done := make(chan error, 1)
 	go func() { done <- spawnHarness(ctx, child.exe, child.args, child.env) }()
+	stopRefresh := runAfterSpawn(child.refresh)
+	defer stopRefresh()
 	ticker := time.NewTicker(runtimeSwitchPollInterval)
 	defer ticker.Stop()
+	answered := admission.answered()
 	var requested runtimechoice.Runtime
+	var refused error
 	stopped := false
 	for {
 		select {
 		case runErr := <-done:
-			if requested == "" {
+			if requested == "" && refused == nil {
 				requested = pendingSwitch(switchFile, current)
 			}
 			if stopped {
 				resetTerminalModes()
 			}
 			restore()
+			if refused != nil {
+				return "", refused
+			}
 			if requested != "" {
 				return requested, nil
 			}
 			return "", runErr
+		case <-answered:
+			answered = nil
+			if refused = admission.refusal(); refused != nil {
+				stopped = true
+				cancel()
+			}
 		case <-ticker.C:
-			if requested != "" {
+			if requested != "" || refused != nil {
 				continue
 			}
 			requested = pendingSwitch(switchFile, current)

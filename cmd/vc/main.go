@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -371,30 +372,70 @@ func runWelcomeCommandTransition(state welcome.AuthState, cb welcome.Callbacks, 
 func runSpawn(_ *cobra.Command, args []string) error {
 	cfg := config.OSResolve()
 	token, _, _ := auth.Load()
+	client := newLaunchHTTPClient()
 
 	// Admission is always live: cached identity and wallet are only display hints,
 	// never permission to start a paid session. The question is the access check
 	// — who the token belongs to and whether they are let in — so it goes to the
 	// access-check host, the same one the desktop session gate asks.
-	me, reached, err := authGate(token, cfg.AccessCheckHost, &http.Client{Timeout: authProbeTimeout})
-	if err != nil {
-		currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeRejected, sourceRejected)
-		currentLaunchDiagnostics.flush()
-		fmt.Fprintln(os.Stderr, err)
-		exitProcess(1)
-		return err
-	}
+	//
+	// When is the only thing the saved /me decides (fast start, spec
+	// 2026-09-30). A token let in before starts its runtime beside the check,
+	// and a refusal stops it. A token without one — the first launch after
+	// login, or after a refusal — is checked before anything is prepared, so a
+	// refused token leaves no trace.
+	var admission *pendingAdmission
 	// The wallet never stops the launch; what it has to say goes to Pi, which
 	// shows it once the session is up (see walletLaunchNotice).
 	notice := ""
-	if reached {
-		notice = launchNotice(me, time.Now())
+	if saved, ok := readSavedMe(token); ok {
+		admission = startAdmission(authGate, token, cfg.AccessCheckHost, client)
+		notice = launchNotice(saved, time.Now())
+	} else {
+		me, reached, err := admit(authGate, token, cfg.AccessCheckHost, client)
+		if err != nil {
+			return refuseLaunch(err)
+		}
+		if reached {
+			notice = launchNotice(me, time.Now())
+		}
 	}
 	chosen, err := resolveLaunchRuntime()
 	if err != nil {
+		if refusal := admission.wait(); refusal != nil {
+			return refuseLaunch(refusal)
+		}
 		return err
 	}
-	return superviseRuntimes(cfg, token, notice, chosen)
+	runErr := superviseRuntimes(launchContext{cfg: cfg, token: token, client: client, admission: admission}, notice, chosen)
+	// vc does not end before the check has answered, even when the runtime
+	// ended first: a refusal decides how vc exits.
+	if refusal := admission.wait(); refusal != nil {
+		return refuseLaunch(refusal)
+	}
+	return runErr
+}
+
+// refuseLaunch ends vc on the access check's refusal as it always has: the
+// check's own text on stderr and exit status 1.
+func refuseLaunch(err error) error {
+	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeRejected, sourceRejected)
+	currentLaunchDiagnostics.flush()
+	fmt.Fprintln(os.Stderr, err)
+	exitProcess(1)
+	return err
+}
+
+// launchContext is what every runtime of one vc process starts with.
+type launchContext struct {
+	cfg   config.Config
+	token string
+	// client is the launch's one client to auth (keep-alive shared by /me and
+	// /providers).
+	client *http.Client
+	// admission is the access check still running beside the start; nil once
+	// it passed before the start.
+	admission *pendingAdmission
 }
 
 // runtimeChild is one prepared runtime process: what to run, with what.
@@ -402,15 +443,18 @@ type runtimeChild struct {
 	exe  string
 	args []string
 	env  []string
+	// refresh, when set, runs once in the background after the child is
+	// spawned (the grants cache a Codex start was served from).
+	refresh func(context.Context)
 }
 
-// prepareRuntimeChild readies rt after admission: Pi as it has always been
-// launched, Codex through its grant, install and managed config.
-func prepareRuntimeChild(rt runtimechoice.Runtime, cfg config.Config, token, notice string) (runtimeChild, error) {
+// prepareRuntimeChild readies rt: Pi as it has always been launched, Codex
+// through its grant, install and managed config.
+func prepareRuntimeChild(rt runtimechoice.Runtime, lc launchContext, notice string) (runtimeChild, error) {
 	if rt == runtimechoice.Codex {
-		return prepareCodexChild(cfg, token, notice)
+		return prepareCodexChild(lc, notice)
 	}
-	return preparePiChild(cfg, token, notice)
+	return preparePiChild(lc.cfg, lc.token, notice)
 }
 
 // preparePiChild resolves Pi's launch. The wallet notice rides in Pi's
@@ -635,7 +679,7 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 		return me, true, nil
 	}
 	if errors.Is(err, auth.ErrNotLoggedIn) {
-		return auth.MeResult{}, false, fmt.Errorf("Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate.")
+		return auth.MeResult{}, false, sessionRejectedError{}
 	}
 	// A refusal is not a failed check. Neither neighbour fits it: the credential
 	// worked, so sending the human back to sign-in cannot help, and the check was
@@ -647,6 +691,17 @@ func authGate(token, authHost string, httpClient *http.Client) (auth.MeResult, b
 	}
 	return auth.MeResult{}, false, fmt.Errorf("Session verification unavailable; try again: %w", err)
 }
+
+// sessionRejectedError is authGate's 401: its text is the one people have
+// always read, and it is auth.ErrNotLoggedIn underneath so callers (the saved
+// /me) can tell a rejected token from an unavailable check without parsing it.
+type sessionRejectedError struct{}
+
+func (sessionRejectedError) Error() string {
+	return "Session token rejected by auth server (likely expired or revoked).\nRun `vc login` to re-authenticate."
+}
+
+func (sessionRejectedError) Unwrap() error { return auth.ErrNotLoggedIn }
 
 // fetchMeForAdmission is the live /v1/vc/me call behind authGate. A network
 // error, a timeout or a gateway status (502, 503, 504) is a check that never

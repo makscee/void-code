@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -20,10 +22,16 @@ type ProviderInfo struct {
 // degrades to {"providers":[]} on void-keys failure, so an empty list is normal
 // and never an error.
 func FetchProviders(authHost, token string, httpClient *http.Client) ([]ProviderInfo, error) {
+	return FetchProvidersContext(context.Background(), authHost, token, httpClient)
+}
+
+// FetchProvidersContext is FetchProviders bound to ctx: cancelling it abandons
+// the request (a background refresh that the command no longer waits for).
+func FetchProvidersContext(ctx context.Context, authHost, token string, httpClient *http.Client) ([]ProviderInfo, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	req, err := http.NewRequest(http.MethodGet, authHost+"/v1/vc/providers", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authHost+"/v1/vc/providers", nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
@@ -33,7 +41,7 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 	if err != nil {
 		return nil, fmt.Errorf("GET vc/providers: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrNotLoggedIn
@@ -57,4 +65,13 @@ func FetchProviders(authHost, token string, httpClient *http.Client) ([]Provider
 		out = append(out, ProviderInfo{ID: p.ID, Name: p.Name, Type: p.Type})
 	}
 	return out, nil
+}
+
+// drainAndClose reads what is left of a small JSON body before closing it, so
+// the connection goes back to the pool and the next request of the same
+// launch (/v1/vc/me, /v1/vc/providers) reuses it instead of a new TCP and TLS
+// handshake.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 64<<10))
+	_ = body.Close()
 }

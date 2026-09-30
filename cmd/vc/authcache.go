@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -254,7 +255,12 @@ func cachedFetchMe(authHost, token string, httpClient *http.Client) (auth.MeResu
 // Provider grants can change immediately after login, so even a fresh empty
 // cache entry is not authoritative.
 func fetchProvidersLive(authHost, token string, httpClient *http.Client) ([]auth.ProviderInfo, error) {
-	providers, err := auth.FetchProviders(authHost, token, httpClient)
+	return fetchProvidersLiveContext(context.Background(), authHost, token, httpClient)
+}
+
+// fetchProvidersLiveContext is fetchProvidersLive bound to ctx.
+func fetchProvidersLiveContext(ctx context.Context, authHost, token string, httpClient *http.Client) ([]auth.ProviderInfo, error) {
+	providers, err := auth.FetchProvidersContext(ctx, authHost, token, httpClient)
 	if err != nil {
 		if errors.Is(err, auth.ErrNotLoggedIn) {
 			clearAuthCache("providers", authHost, token)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/makscee/void-code/internal/codexruntime"
 	"github.com/makscee/void-code/internal/config"
@@ -45,11 +47,11 @@ var ensureCodexRuntime = func(w io.Writer) (string, error) {
 // ("path must be shorter than SUN_LEN").
 const codexNoDaemon = "--no-daemon"
 
-// prepareCodexChild readies Codex after admission. The grant is checked
-// before the install, so nobody downloads Codex only to be refused; it is a
-// live question on every Codex start.
-func prepareCodexChild(cfg config.Config, token, notice string) (runtimeChild, error) {
-	prepared, err := prepareCodex(cfg, token, "", os.Stderr)
+// prepareCodexChild readies Codex. The grant is checked before the install,
+// so nobody downloads Codex only to be refused; it comes from the providers
+// cache when that is fresh and holds it, and from auth otherwise.
+func prepareCodexChild(lc launchContext, notice string) (runtimeChild, error) {
+	prepared, err := prepareCodex(lc.cfg, lc.token, "", os.Stderr, lc.client)
 	if err != nil {
 		return runtimeChild{}, err
 	}
@@ -60,7 +62,7 @@ func prepareCodexChild(cfg config.Config, token, notice string) (runtimeChild, e
 	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return runtimeChild{exe: prepared.exe, args: []string{codexNoDaemon}, env: prepared.env}, nil
+	return runtimeChild{exe: prepared.exe, args: []string{codexNoDaemon}, env: prepared.env, refresh: prepared.refresh}, nil
 }
 
 // preparedCodex is an installed, configured Codex and the environment to run
@@ -68,17 +70,20 @@ func prepareCodexChild(cfg config.Config, token, notice string) (runtimeChild, e
 type preparedCodex struct {
 	exe string
 	env []string
+	// refresh, when set, is the background refresh of the providers cache the
+	// grant was taken from, to run once Codex is spawned.
+	refresh func(context.Context)
 }
 
 // prepareCodex is the part of a Codex launch the CLI and the desktop share,
-// after admission and in this order: the grant, the install, the managed
-// config (trusting trustedFolder when it is set), the environment. Install
-// progress goes to progress.
-func prepareCodex(cfg config.Config, token, trustedFolder string, progress io.Writer) (preparedCodex, error) {
+// in this order: the grant, the install, the managed config (trusting
+// trustedFolder when it is set), the environment. Install progress goes to
+// progress; auth is asked through client.
+func prepareCodex(cfg config.Config, token, trustedFolder string, progress io.Writer, client *http.Client) (preparedCodex, error) {
 	if cfg.CAOverride != "" {
 		return preparedCodex{}, fmt.Errorf("Codex пока работает только с публичным релеем, а задан VC_RELAY_CA=%s. Уберите VC_RELAY_CA или переключитесь на Pi: vc runtime pi", cfg.CAOverride)
 	}
-	providerID, err := codexProviderID(cfg, token)
+	providerID, refresh, err := codexProviderID(cfg, token, client)
 	if err != nil {
 		return preparedCodex{}, err
 	}
@@ -95,7 +100,7 @@ func prepareCodex(cfg config.Config, token, trustedFolder string, progress io.Wr
 		return preparedCodex{}, err
 	}
 	env := buildCodexSpawnEnv(os.Environ(), codexHome, token, providerID, selfDir(), selfExecutablePath())
-	return preparedCodex{exe: codexPath, env: env}, nil
+	return preparedCodex{exe: codexPath, env: env, refresh: refresh}, nil
 }
 
 // selfDir is the folder of the running vc, or "" when it cannot be told.
@@ -117,19 +122,24 @@ func selfExecutablePath() string {
 	return exe
 }
 
-// codexProviderID asks auth for the live grants and returns the first
-// ChatGPT (openai-codex-oauth) one, in the order auth lists them.
-func codexProviderID(cfg config.Config, token string) (string, error) {
-	infos, err := fetchProvidersLive(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
-	if err != nil {
-		return "", fmt.Errorf("не удалось получить доступы подписки: %w", err)
-	}
-	for _, info := range infos {
-		if strings.EqualFold(strings.TrimSpace(info.Type), codexGrantType) {
-			return info.ID, nil
+// codexProviderID returns the first ChatGPT (openai-codex-oauth) grant, in
+// the order auth lists them. A fresh providers cache holding one answers
+// without the network, and then refresh is the background refresh to run once
+// Codex is spawned; otherwise auth is asked live and its answer cached.
+func codexProviderID(cfg config.Config, token string, client *http.Client) (string, func(context.Context), error) {
+	if infos, ok := readFreshProviders(token, time.Now(), codexGrantType); ok {
+		if id, found := grantOfType(infos, codexGrantType); found {
+			return id, providersRefresher(cfg.AuthHost, token, client), nil
 		}
 	}
-	return "", errors.New("Codex работает только с доступом к ChatGPT. Переключитесь на Pi: vc runtime pi")
+	infos, err := fetchAndCacheProviders(context.Background(), cfg.AuthHost, token, client)
+	if err != nil {
+		return "", nil, fmt.Errorf("не удалось получить доступы подписки: %w", err)
+	}
+	if id, found := grantOfType(infos, codexGrantType); found {
+		return id, nil, nil
+	}
+	return "", nil, errors.New("Codex работает только с доступом к ChatGPT. Переключитесь на Pi: vc runtime pi")
 }
 
 // buildCodexSpawnEnv is the parent environment without anything that could

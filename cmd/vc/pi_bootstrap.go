@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
+	"time"
 
 	"github.com/makscee/void-code/internal/auth"
 	"github.com/makscee/void-code/internal/config"
@@ -41,9 +42,14 @@ func currentPiBootstrap() (piBootstrap, error) {
 		return piBootstrap{}, fmt.Errorf("Pi bootstrap requires `vc login`")
 	}
 	cfg := config.OSResolve()
-	infos, err := fetchProvidersLive(cfg.AuthHost, token, &http.Client{Timeout: authProbeTimeout})
-	if err != nil {
-		return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
+	// The same providers cache a Codex start reads, on the same terms: fresh
+	// and holding the ChatGPT grant, or auth is asked and the answer kept.
+	infos, ok := readFreshProviders(token, time.Now(), codexGrantType)
+	if !ok {
+		infos, err = fetchAndCacheProviders(context.Background(), cfg.AuthHost, token, newLaunchHTTPClient())
+		if err != nil {
+			return piBootstrap{}, fmt.Errorf("refresh subscription grants: %w", err)
+		}
 	}
 	out := piBootstrap{
 		Version:   1,
@@ -52,7 +58,7 @@ func currentPiBootstrap() (piBootstrap, error) {
 		Providers: make([]piBootstrapProvider, 0),
 	}
 	for _, info := range infos {
-		if strings.EqualFold(strings.TrimSpace(info.Type), "openai-codex-oauth") {
+		if strings.EqualFold(strings.TrimSpace(info.Type), codexGrantType) {
 			out.Providers = append(out.Providers, piBootstrapProvider{Kind: "codex", RelayProviderID: info.ID, Models: append([]string(nil), piVoidCodexModels...)})
 		}
 	}
