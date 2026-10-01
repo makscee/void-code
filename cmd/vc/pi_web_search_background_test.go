@@ -667,3 +667,97 @@ func TestDesktopSessionWebSearchInstallFailureLeavesPiAlone(t *testing.T) {
 		t.Fatalf("install calls in one launch = %d, want 1", calls)
 	}
 }
+
+// seedStaleWebSearchRegistration writes settings.json that already registers
+// the managed web-search path while the directory itself is absent — deleted
+// by the user, by a cleanup, or left so by an older vc.
+func seedStaleWebSearchRegistration(t *testing.T, agentDir string) {
+	t.Helper()
+	path := managedWebSearchPackagePath()
+	if fileExists(path) {
+		t.Fatalf("fixture: %s must not exist", path)
+	}
+	body, err := json.Marshal(map[string]any{"packages": []string{path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePiSettings(t, agentDir, string(body), 0600)
+	if !webSearchRegistered(t, agentDir) {
+		t.Fatal("fixture: settings.json does not register the managed path")
+	}
+}
+
+// TestRunSpawnWebSearchUnregistersMissingPackageWhileInstalling: settings.json
+// still names the managed package but its directory is gone. Pi must not start
+// pointed at a package that is not there while npm runs in the background; once
+// the install has completed and Pi has exited, the package is registered again.
+func TestRunSpawnWebSearchUnregistersMissingPackageWhileInstalling(t *testing.T) {
+	agentDir := webSearchCLILaunch(t)
+	seedStaleWebSearchRegistration(t, agentDir)
+	probe := newWebSearchInstallProbe()
+	useWebSearchInstallProbe(t, probe)
+	setWebSearchInstallGrace(t, time.Minute)
+
+	child := newPiChild()
+	var registeredAtSpawn bool
+	var atSpawn webSearchPublishedState
+	child.observe = func() {
+		atSpawn = publishedWebSearchState()
+		registeredAtSpawn = webSearchRegistered(t, agentDir)
+	}
+	child.useAsCLISpawn(t)
+	done := launchInBackground(t, func() error { return runSpawn(nil, nil) }, child, probe)
+
+	await(t, child.spawned, 5*time.Second, "Pi was not spawned while the web-search install was still blocked")
+	if atSpawn.exists {
+		t.Fatalf("fixture: managed path existed at spawn although the install was blocked: %+v", atSpawn)
+	}
+	if registeredAtSpawn {
+		t.Fatal("Pi started with settings.json pointing at a web-search package directory that does not exist")
+	}
+	await(t, probe.started, 5*time.Second, "the web-search install never started while Pi was running")
+
+	close(probe.release)
+	child.quit()
+	if err := await(t, done, 5*time.Second, "vc did not return after the install finished and Pi exited"); err != nil {
+		t.Fatalf("runSpawn: %v", err)
+	}
+	if state := publishedWebSearchState(); !state.current {
+		t.Fatalf("after the background install, managed web search = %+v, want installed and current", state)
+	}
+	if !webSearchRegistered(t, agentDir) {
+		t.Fatal("after the install completed and Pi exited, the managed package is not registered in settings.json")
+	}
+}
+
+// TestDesktopSessionWebSearchUnregistersMissingPackageWhileInstalling: the same
+// on the desktop's Pi path.
+func TestDesktopSessionWebSearchUnregistersMissingPackageWhileInstalling(t *testing.T) {
+	agentDir := piSettingsSandbox(t)
+	t.Setenv("VC_PI_MANAGED_WEB_SEARCH", "")
+	seedStaleWebSearchRegistration(t, agentDir)
+	probe := newWebSearchInstallProbe()
+	useWebSearchInstallProbe(t, probe)
+	setWebSearchInstallGrace(t, time.Minute)
+
+	child := newPiChild()
+	var registeredAtSpawn bool
+	child.observe = func() { registeredAtSpawn = webSearchRegistered(t, agentDir) }
+	execute, _ := desktopWebSearchCommand(t, child)
+	done := launchInBackground(t, execute, child, probe)
+
+	await(t, child.spawned, 5*time.Second, "desktop Pi was not started while the web-search install was still blocked")
+	if registeredAtSpawn {
+		t.Fatal("desktop Pi started with settings.json pointing at a web-search package directory that does not exist")
+	}
+	await(t, probe.started, 5*time.Second, "the web-search install never started while desktop Pi was running")
+
+	close(probe.release)
+	child.quit()
+	if err := await(t, done, 5*time.Second, "desktop-session did not return after the install finished and Pi exited"); err != nil {
+		t.Fatalf("desktop-session: %v", err)
+	}
+	if !webSearchRegistered(t, agentDir) {
+		t.Fatal("after the install completed and desktop Pi exited, the managed package is not registered in settings.json")
+	}
+}
