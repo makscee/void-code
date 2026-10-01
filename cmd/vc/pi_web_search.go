@@ -1,19 +1,26 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 )
 
 type managedWebSearchState string
 
 const (
-	managedWebSearchReady          managedWebSearchState = "installed"
-	managedWebSearchUnavailable    managedWebSearchState = "unavailable"
-	managedWebSearchBroken         managedWebSearchState = "broken"
+	managedWebSearchReady       managedWebSearchState = "installed"
+	managedWebSearchUnavailable managedWebSearchState = "unavailable"
+	managedWebSearchBroken      managedWebSearchState = "broken"
+	// managedWebSearchPending: eligible and owned, but not installed or not
+	// current; a session installs it in the background (see
+	// startManagedWebSearchInstall).
+	managedWebSearchPending        managedWebSearchState = "pending"
 	managedWebSearchPackageName                          = "@void-code/pi-web-access"
 	managedWebSearchMarker                               = "VC-10 managed void-codex seam v1"
 	managedWebSearchPackageVersion                       = "0.13.0-void.6"
@@ -21,13 +28,58 @@ const (
 
 var renameManagedWebSearchPath = os.Rename
 
+// managedWebSearchInstallGrace is how long vc waits, after Pi exits, for a
+// web-search install still in flight before it cancels it. Long enough for a
+// slow npm (58–74 s were measured on Windows) to finish so the next launch has
+// web search; bounded so a hung npm never holds the terminal for long.
+var managedWebSearchInstallGrace = 2 * time.Minute
+
 func managedWebSearchPackagePath() string {
 	// Keep the original managed slot so upgrades replace it in place instead of
 	// registering two copies of the same Pi extension.
 	return filepath.Join(piAgentDir(), "void-code", "pi-web-access-0.13.0-void.1")
 }
 
+// reconcileManagedWebSearch brings the managed web-search package to the state
+// the session asks for, installing it in the foreground when needed.
 func reconcileManagedWebSearch(eligible bool) (managedWebSearchState, error) {
+	state, err := checkManagedWebSearch(eligible)
+	if err != nil || state != managedWebSearchPending {
+		return state, err
+	}
+	path := managedWebSearchPackagePath()
+	if err := installManagedWebSearchPackage(context.Background(), path); err != nil {
+		return managedWebSearchBroken, err
+	}
+	if err := reconcileManagedPackageSetting(path, true); err != nil {
+		return managedWebSearchBroken, err
+	}
+	return managedWebSearchReady, nil
+}
+
+// prepareSessionWebSearch is what a Pi launch does about web search before Pi
+// starts: everything reconcileManagedWebSearch does except the install, which
+// the session runs alongside Pi (managedWebSearchPending). While it is pending,
+// settings.json never points Pi at a package that is not there; an older,
+// owned copy that is there stays as it is until a complete one replaces it.
+func prepareSessionWebSearch(eligible bool) (managedWebSearchState, error) {
+	state, err := checkManagedWebSearch(eligible)
+	if err != nil || state != managedWebSearchPending {
+		return state, err
+	}
+	path := managedWebSearchPackagePath()
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		if err := reconcileManagedPackageSetting(path, false); err != nil {
+			return managedWebSearchBroken, err
+		}
+	}
+	return managedWebSearchPending, nil
+}
+
+// checkManagedWebSearch handles opt-out, ineligibility and ownership, and
+// registers a current package. It reports managedWebSearchPending, without
+// touching anything, when the package needs installing.
+func checkManagedWebSearch(eligible bool) (managedWebSearchState, error) {
 	if piAgentDir() == "" {
 		return managedWebSearchBroken, fmt.Errorf("cannot resolve Pi configuration directory")
 	}
@@ -57,14 +109,79 @@ func reconcileManagedWebSearch(eligible bool) (managedWebSearchState, error) {
 		return managedWebSearchBroken, fmt.Errorf("managed web-search path %s is not owned by void-code", path)
 	}
 	if !current {
-		if err := installManagedWebSearchPackage(path); err != nil {
-			return managedWebSearchBroken, err
-		}
+		return managedWebSearchPending, nil
 	}
 	if err := reconcileManagedPackageSetting(path, true); err != nil {
 		return managedWebSearchBroken, err
 	}
 	return managedWebSearchReady, nil
+}
+
+// installManagedWebSearch is a session's background install: the package is
+// staged and swapped in whole. Registering it in settings.json is left to
+// registerManagedWebSearch, which runs after Pi has exited, so vc never writes
+// Pi's settings while Pi owns them.
+func installManagedWebSearch(ctx context.Context) error {
+	return installManagedWebSearchPackage(ctx, managedWebSearchPackagePath())
+}
+
+func registerManagedWebSearch() error {
+	return reconcileManagedPackageSetting(managedWebSearchPackagePath(), true)
+}
+
+// backgroundWebSearchInstall is a web-search install running alongside Pi.
+// Its result is held, not printed: the terminal belongs to Pi until Pi exits.
+type backgroundWebSearchInstall struct {
+	cancel   context.CancelFunc
+	done     chan struct{}
+	err      error
+	register func() error
+	once     sync.Once
+	result   error
+}
+
+func startManagedWebSearchInstall(install func(context.Context) error, register func() error) *backgroundWebSearchInstall {
+	ctx, cancel := context.WithCancel(context.Background())
+	b := &backgroundWebSearchInstall{cancel: cancel, done: make(chan struct{}), register: register}
+	go func() {
+		defer close(b.done)
+		b.err = install(ctx)
+	}()
+	return b
+}
+
+// finish is called once Pi has exited. It waits for the install at most grace,
+// then cancels it and waits for it to unwind, so nothing is left publishing
+// into the package directory after vc returns. A successful install is then
+// registered for the next launch. Safe on nil and safe to call twice.
+func (b *backgroundWebSearchInstall) finish(grace time.Duration) error {
+	if b == nil {
+		return nil
+	}
+	b.once.Do(func() { b.result = b.wait(grace) })
+	return b.result
+}
+
+func (b *backgroundWebSearchInstall) wait(grace time.Duration) error {
+	defer b.cancel()
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-b.done:
+	case <-timer.C:
+		b.cancel()
+		<-b.done
+		if b.err != nil {
+			return fmt.Errorf("install did not finish within %s of Pi exiting and was stopped (the next launch retries it): %w", grace, b.err)
+		}
+	}
+	if b.err != nil {
+		return b.err
+	}
+	if b.register == nil {
+		return nil
+	}
+	return b.register()
 }
 
 func inspectManagedWebSearchPackage(path string) (current, foreign bool, err error) {
@@ -93,7 +210,7 @@ func inspectManagedWebSearchPackage(path string) (current, foreign bool, err err
 	return pkg.Version == managedWebSearchPackageVersion && depErr == nil, false, nil
 }
 
-func installManagedWebSearchPackage(path string) error {
+func installManagedWebSearchPackage(ctx context.Context, path string) error {
 	parent := filepath.Dir(path)
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return fmt.Errorf("create managed package parent: %w", err)
@@ -125,7 +242,11 @@ func installManagedWebSearchPackage(path string) error {
 	if err != nil {
 		return fmt.Errorf("copy managed web-search fork: %w", err)
 	}
-	if err := installManagedWebSearchDependencies(stage); err != nil {
+	if err := installManagedWebSearchDependencies(ctx, stage); err != nil {
+		return err
+	}
+	// A cancelled install publishes nothing, even if npm got to the end.
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if _, foreign, err := inspectManagedWebSearchPackage(path); err != nil {

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,7 +13,10 @@ import (
 // This seam exists only in explicitly tagged test binaries. It copies a
 // preinstalled fixture into the staged package; normal vc builds do not
 // compile this file and always execute the production npm ci implementation.
-var installManagedWebSearchDependencies = func(dir string) error {
+var installManagedWebSearchDependencies = func(ctx context.Context, dir string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	fixture := os.Getenv("VC_TEST_MANAGED_WEB_NODE_MODULES")
 	if fixture == "" {
 		return fmt.Errorf("test managed web fixture is not configured")
