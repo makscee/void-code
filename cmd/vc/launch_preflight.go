@@ -89,9 +89,9 @@ func (p *launchPreflight) updateIfReady() (string, bool) {
 
 // accountIfReady is what this launch's own /v1/vc/me reported, for the
 // welcome screen, once that answer is in (ready=false before): the verified
-// identity (the email, else the user id) and the wallet rendered. Both are ""
-// when there was no answer to take them from: a refusal or a failed check
-// vouches for no one and no wallet. The balance is "" too when the answer
+// identity (the email, else the user id) and the wallet rendered. A refusal or
+// a failed check vouches for no one and no wallet: that is AccountMsg{Failed:
+// true}, so the screen stops saying it is checking (void-works#90). The balance is "" too when the answer
 // carried no wallet. A rejected token (auth.ErrNotLoggedIn) signs the screen
 // out, so the person is offered login instead of a launch that cannot pass.
 func (p *launchPreflight) accountIfReady() (account welcome.AccountMsg, ready bool) {
@@ -103,14 +103,15 @@ func (p *launchPreflight) accountIfReady() (account welcome.AccountMsg, ready bo
 			return welcome.AccountMsg{SignedOut: true}, true
 		}
 		if p.authResult.err != nil || !p.authResult.reached {
-			return welcome.AccountMsg{}, true
+			return welcome.AccountMsg{Failed: true}, true
 		}
 		me := p.authResult.me
 		identity := me.Email
 		if identity == "" {
 			identity = me.UserID
 		}
-		return welcome.AccountMsg{Identity: identity, Balance: formatAccount(me, p.deps.now())}, true
+		// An answer naming no one vouches for no one either.
+		return welcome.AccountMsg{Identity: identity, Balance: formatAccount(me, p.deps.now()), Failed: identity == ""}, true
 	default:
 		return welcome.AccountMsg{}, false
 	}

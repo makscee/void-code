@@ -15,7 +15,11 @@ type AuthState struct {
 	LoggedIn           bool
 	Identity           string
 	IdentityUnverified bool
-	UpdateNudge        string
+	// IdentityCheckFailed: the launch's /v1/vc/me finished without vouching
+	// for anyone (void-works#90). Until then an unverified screen is still
+	// checking, not failed.
+	IdentityCheckFailed bool
+	UpdateNudge         string
 	// Balance is the wallet as the caller renders it for a person
 	// ("2 000 ₽ · T1 · до 4 окт · лимит использован на 37%, сброс через 3 дня"); empty when there is none to show.
 	Balance string
@@ -41,11 +45,14 @@ type Callbacks struct{}
 // the network, so an answer that arrives a round trip after the first frame
 // comes as this message. An empty field leaves what the screen shows.
 // SignedOut means the check rejected the token: the screen turns into the
-// logged-out one, which offers login.
+// logged-out one, which offers login. Failed means the check finished without
+// vouching for anyone while the token was not rejected (void-works#90): the
+// screen stops saying it is checking and says the check failed.
 type AccountMsg struct {
 	Identity  string
 	Balance   string
 	SignedOut bool
+	Failed    bool
 }
 
 // RunWithUpdates runs the screen and also runs updates in the background from
@@ -81,7 +88,9 @@ func (a AccountMsg) apply(state AuthState) AuthState {
 		return AuthState{UpdateNudge: state.UpdateNudge}
 	}
 	if a.Identity != "" {
-		state.Identity, state.IdentityUnverified = a.Identity, false
+		state.Identity, state.IdentityUnverified, state.IdentityCheckFailed = a.Identity, false, false
+	} else if a.Failed {
+		state.IdentityCheckFailed = true
 	}
 	if a.Balance != "" {
 		state.Balance = a.Balance
@@ -180,12 +189,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-func identityDisplay(identity string, unverified bool) string {
+func identityDisplay(identity string, unverified, checkFailed bool) string {
 	if !unverified {
 		return identity
 	}
 	if identity == "" {
-		return "не удалось проверить аккаунт"
+		if checkFailed {
+			return "не удалось проверить аккаунт"
+		}
+		return "проверяю аккаунт…"
 	}
 	return identity + " (последний известный; сейчас не проверен)"
 }
@@ -203,7 +215,7 @@ func (m model) View() string {
 		return sb.String()
 	}
 	if m.LoggedIn {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified)+" · "+balanceDisplay(m.Balance))) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified, m.IdentityCheckFailed)+" · "+balanceDisplay(m.Balance))) + "\n")
 	} else {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.WarnStyle.Render("Вход не выполнен")) + "\n")
 	}
@@ -229,7 +241,7 @@ func plainBanner(state AuthState) string {
 	sb.WriteString("\nvoid-code " + version.Version + " — консоль подписки — makscee.ru\n\n")
 	if state.LoggedIn {
 		if state.IdentityUnverified {
-			sb.WriteString("  Аккаунт: " + identityDisplay(state.Identity, true) + "\n")
+			sb.WriteString("  Аккаунт: " + identityDisplay(state.Identity, true, state.IdentityCheckFailed) + "\n")
 		} else {
 			sb.WriteString("  Вы вошли как " + state.Identity + "\n")
 		}

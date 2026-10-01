@@ -253,8 +253,10 @@ func runWelcomeScreen(state welcome.AuthState, cb welcome.Callbacks) (welcome.Ru
 // screen is already up: then the returned command waits for it and hands the
 // identity and the wallet to the running screen (the identity too since
 // void-board#373: the screen starts unverified and kept «identity temporarily
-// unavailable» once the answer was in). An answer already in goes straight onto the
-// state (a return to the menu, a slow terminal).
+// unavailable» once the answer was in). A check that finishes without vouching
+// comes as AccountMsg{Failed: true}, so the screen moves from «проверяю
+// аккаунт…» to the failure text (void-works#90). An answer already in goes
+// straight onto the state (a return to the menu, a slow terminal).
 func welcomeBalance(state welcome.AuthState, p *launchPreflight) (welcome.AuthState, tea.Cmd) {
 	if p == nil || !state.LoggedIn {
 		return state, nil
@@ -264,10 +266,8 @@ func welcomeBalance(state welcome.AuthState, p *launchPreflight) (welcome.AuthSt
 	}
 	return state, func() tea.Msg {
 		<-p.authDone
-		if arrived, _ := p.accountIfReady(); arrived != (welcome.AccountMsg{}) {
-			return arrived
-		}
-		return nil
+		arrived, _ := p.accountIfReady()
+		return arrived
 	}
 }
 
