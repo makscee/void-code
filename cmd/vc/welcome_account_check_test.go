@@ -154,3 +154,64 @@ func TestWelcomeBalanceLateSuccessShowsTheAccount(t *testing.T) {
 		}
 	}
 }
+
+// /v1/vc/me answered 200, with a wallet but with neither an email nor a user
+// id: the check is over and named no one. accountIfReady says it failed (and
+// still hands over the balance); otherwise the screen, which says «checking»
+// until an identity or a failure arrives, would say «проверяю аккаунт…» for
+// as long as it is up.
+func TestWelcomeAnswerWithoutIdentityIsAFailedCheck(t *testing.T) {
+	const balance = "T1 · осталось ~9 дней"
+	// auth.FetchMe refuses such a body on the wire ("missing identity"), but
+	// the preflight takes whatever its auth dependency returns: a real answer
+	// with its wallet, with the identity blanked.
+	me := fetchMeFrom(t, meBody(wallet("18", tariffT1, "true", "9")))
+	me.Email, me.UserID = "", ""
+	answered := launchAuthResult{me: me, reached: true}
+
+	account, ready := preflightWith(answered, true).accountIfReady()
+	if !ready {
+		t.Fatal("accountIfReady: the check is over and it says not ready")
+	}
+	if !account.Failed || account.Identity != "" || account.SignedOut {
+		t.Errorf("accountIfReady = %#v, want Failed with no identity and not signed out", account)
+	}
+	if !strings.Contains(account.Balance, balance) {
+		t.Errorf("accountIfReady balance = %q, want the wallet %q from the answer", account.Balance, balance)
+	}
+
+	assertFailedWithBalance := func(t *testing.T, view string) {
+		t.Helper()
+		if !strings.Contains(view, welcomeCheckFailed) {
+			t.Errorf("the answer named no one and the screen does not say %q:\n%s", welcomeCheckFailed, view)
+		}
+		if strings.Contains(view, welcomeChecking) {
+			t.Errorf("the check is over and the screen still says %q:\n%s", welcomeChecking, view)
+		}
+		if !strings.Contains(view, balance) {
+			t.Errorf("the answer carried a wallet and the screen does not show %q:\n%s", balance, view)
+		}
+	}
+
+	t.Run("already in", func(t *testing.T) {
+		state, late := welcomeBalance(signedInLocalState(), preflightWith(answered, true))
+		if late != nil {
+			t.Error("the check is over and welcomeBalance still hands the screen a command to wait for it")
+		}
+		assertFailedWithBalance(t, welcomeView(state))
+	})
+
+	t.Run("arrives while the screen is up", func(t *testing.T) {
+		p := preflightWith(answered, false)
+		state, late := welcomeBalance(signedInLocalState(), p)
+		if late == nil {
+			t.Fatal("the check is running and welcomeBalance hands the screen no command to wait for it")
+		}
+		close(p.authDone)
+		msg := late()
+		if msg == nil {
+			t.Fatal("the answer named no one and welcomeBalance's command handed the screen nothing: it would keep saying it is checking")
+		}
+		assertFailedWithBalance(t, welcomeView(state, msg))
+	})
+}
