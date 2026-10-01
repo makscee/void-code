@@ -90,8 +90,10 @@ func (p *launchPreflight) updateIfReady() (string, bool) {
 // accountIfReady is what this launch's own /v1/vc/me reported, for the
 // welcome screen, once that answer is in (ready=false before): the verified
 // identity (the email, else the user id) and the wallet rendered. A refusal or
-// a failed check vouches for no one and no wallet: that is AccountMsg{Failed:
-// true}, so the screen stops saying it is checking (void-works#90). The balance is "" too when the answer
+// a failed check vouches for no one and no wallet: a failed check is
+// AccountMsg{Failed: true}, so the screen stops saying it is checking; a
+// refusal (auth.ErrAccessNotGranted) ran and answered, and is
+// AccountMsg{Refused: true} — «доступ не выдан» (void-works#90). The balance is "" too when the answer
 // carried no wallet. A rejected token (auth.ErrNotLoggedIn) signs the screen
 // out, so the person is offered login instead of a launch that cannot pass.
 func (p *launchPreflight) accountIfReady() (account welcome.AccountMsg, ready bool) {
@@ -101,6 +103,9 @@ func (p *launchPreflight) accountIfReady() (account welcome.AccountMsg, ready bo
 		defer p.mu.RUnlock()
 		if errors.Is(p.authResult.err, auth.ErrNotLoggedIn) {
 			return welcome.AccountMsg{SignedOut: true}, true
+		}
+		if errors.Is(p.authResult.err, auth.ErrAccessNotGranted) {
+			return welcome.AccountMsg{Refused: true}, true
 		}
 		if p.authResult.err != nil || !p.authResult.reached {
 			return welcome.AccountMsg{Failed: true}, true

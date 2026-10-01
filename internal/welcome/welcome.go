@@ -19,7 +19,10 @@ type AuthState struct {
 	// for anyone (void-works#90). Until then an unverified screen is still
 	// checking, not failed.
 	IdentityCheckFailed bool
-	UpdateNudge         string
+	// AccessRefused: the check ran and answered that this valid token has no
+	// access (a 402). Not a failed check: retrying changes nothing.
+	AccessRefused bool
+	UpdateNudge   string
 	// Balance is the wallet as the caller renders it for a person
 	// ("2 000 ₽ · T1 · до 4 окт · лимит использован на 37%, сброс через 3 дня"); empty when there is none to show.
 	Balance string
@@ -53,6 +56,10 @@ type AccountMsg struct {
 	Balance   string
 	SignedOut bool
 	Failed    bool
+	// Refused means the check ran and refused access to a valid token: the
+	// screen stays signed in and says «доступ не выдан», not that the check
+	// failed (void-works#90).
+	Refused bool
 }
 
 // RunWithUpdates runs the screen and also runs updates in the background from
@@ -87,10 +94,14 @@ func (a AccountMsg) apply(state AuthState) AuthState {
 	if a.SignedOut {
 		return AuthState{UpdateNudge: state.UpdateNudge}
 	}
-	if a.Identity != "" {
-		state.Identity, state.IdentityUnverified, state.IdentityCheckFailed = a.Identity, false, false
-	} else if a.Failed {
-		state.IdentityCheckFailed = true
+	switch {
+	case a.Identity != "":
+		state.Identity, state.IdentityUnverified = a.Identity, false
+		state.IdentityCheckFailed, state.AccessRefused = false, false
+	case a.Refused:
+		state.IdentityCheckFailed, state.AccessRefused = false, true
+	case a.Failed:
+		state.IdentityCheckFailed, state.AccessRefused = true, false
 	}
 	if a.Balance != "" {
 		state.Balance = a.Balance
@@ -189,17 +200,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-func identityDisplay(identity string, unverified, checkFailed bool) string {
-	if !unverified {
-		return identity
+func identityDisplay(state AuthState) string {
+	if !state.IdentityUnverified {
+		return state.Identity
 	}
-	if identity == "" {
-		if checkFailed {
+	if state.Identity == "" {
+		switch {
+		case state.AccessRefused:
+			return "доступ не выдан"
+		case state.IdentityCheckFailed:
 			return "не удалось проверить аккаунт"
 		}
 		return "проверяю аккаунт…"
 	}
-	return identity + " (последний известный; сейчас не проверен)"
+	return state.Identity + " (последний известный; сейчас не проверен)"
 }
 func (m model) View() string {
 	if m.quitting {
@@ -215,7 +229,7 @@ func (m model) View() string {
 		return sb.String()
 	}
 	if m.LoggedIn {
-		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.Identity, m.IdentityUnverified, m.IdentityCheckFailed)+" · "+balanceDisplay(m.Balance))) + "\n")
+		sb.WriteString(clackui.RailLine("◇", "  "+clackui.InfoTextStyle.Render(identityDisplay(m.AuthState)+" · "+balanceDisplay(m.Balance))) + "\n")
 	} else {
 		sb.WriteString(clackui.RailLine("◇", "  "+clackui.WarnStyle.Render("Вход не выполнен")) + "\n")
 	}
@@ -241,7 +255,7 @@ func plainBanner(state AuthState) string {
 	sb.WriteString("\nvoid-code " + version.Version + " — консоль подписки — makscee.ru\n\n")
 	if state.LoggedIn {
 		if state.IdentityUnverified {
-			sb.WriteString("  Аккаунт: " + identityDisplay(state.Identity, true, state.IdentityCheckFailed) + "\n")
+			sb.WriteString("  Аккаунт: " + identityDisplay(state) + "\n")
 		} else {
 			sb.WriteString("  Вы вошли как " + state.Identity + "\n")
 		}
