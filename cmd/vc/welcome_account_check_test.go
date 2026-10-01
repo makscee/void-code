@@ -3,7 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +36,8 @@ var failedChecks = []struct {
 }{
 	{"unavailable", launchAuthResult{err: fmt.Errorf("Session verification unavailable; try again: %w", errors.New("dial tcp: connection refused"))}},
 	{"not reached", launchAuthResult{}},
-	{"access refused", launchAuthResult{err: auth.ErrAccessNotGranted}},
+	// A refusal (auth.ErrAccessNotGranted) is not here: the check ran and
+	// answered — see TestWelcomeRefusalSaysAccessNotGranted.
 }
 
 func preflightWith(result launchAuthResult, done bool) *launchPreflight {
@@ -213,5 +217,131 @@ func TestWelcomeAnswerWithoutIdentityIsAFailedCheck(t *testing.T) {
 			t.Fatal("the answer named no one and welcomeBalance's command handed the screen nothing: it would keep saying it is checking")
 		}
 		assertFailedWithBalance(t, welcomeView(state, msg))
+	})
+}
+
+// Panel on void-works#90 [conf 92]: /v1/vc/me answered 402 — the token is
+// valid, access is refused (auth.ErrAccessNotGranted). authGate says so
+// itself: "A refusal is not a failed check … it ran and answered, so repeating
+// it changes nothing." The screen said «не удалось проверить аккаунт», as for
+// a network failure, which tells the person to retry something that will
+// never pass. Artem, 01.10: it says «доступ не выдан». The refusal reaches the
+// screen as AccountMsg{Refused: true}: no identity, no wallet (a refusal
+// vouches for neither), not signed out, not failed.
+const welcomeAccessRefused = "доступ не выдан"
+
+func assertRefusedScreen(t *testing.T, view string) {
+	t.Helper()
+	if !strings.Contains(view, welcomeAccessRefused) {
+		t.Errorf("access was refused and the screen does not say %q:\n%s", welcomeAccessRefused, view)
+	}
+	for _, wrong := range []string{welcomeCheckFailed, welcomeChecking} {
+		if strings.Contains(view, wrong) {
+			t.Errorf("access was refused and the screen says %q:\n%s", wrong, view)
+		}
+	}
+}
+
+func TestWelcomeRefusalSaysAccessNotGranted(t *testing.T) {
+	refused := launchAuthResult{err: auth.ErrAccessNotGranted}
+	want := welcome.AccountMsg{Refused: true}
+
+	account, ready := preflightWith(refused, true).accountIfReady()
+	if !ready {
+		t.Fatal("accountIfReady: the check is over and it says not ready")
+	}
+	if account != want {
+		t.Errorf("accountIfReady = %#v, want %#v", account, want)
+	}
+
+	t.Run("already in", func(t *testing.T) {
+		state, late := welcomeBalance(signedInLocalState(), preflightWith(refused, true))
+		if late != nil {
+			t.Error("the check is over and welcomeBalance still hands the screen a command to wait for it")
+		}
+		assertRefusedScreen(t, welcomeView(state))
+	})
+
+	t.Run("arrives while the screen is up", func(t *testing.T) {
+		p := preflightWith(refused, false)
+		state, late := welcomeBalance(signedInLocalState(), p)
+		if late == nil {
+			t.Fatal("the check is running and welcomeBalance hands the screen no command to wait for it")
+		}
+		if view := welcomeView(state); !strings.Contains(view, welcomeChecking) {
+			t.Errorf("first frame with the check in flight does not say %q:\n%s", welcomeChecking, view)
+		}
+		close(p.authDone)
+		msg := late()
+		if msg != want {
+			t.Errorf("late message = %#v, want %#v", msg, want)
+		}
+		assertRefusedScreen(t, welcomeView(state, msg))
+	})
+}
+
+// The same refusal on the wire, through the production preflight and welcome
+// program: relay's 402 for a valid token without access.
+func TestWelcomeScreenSaysAccessNotGrantedOn402(t *testing.T) {
+	refusal := func(gate <-chan struct{}) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if gate != nil {
+				select {
+				case <-gate:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(`{"error":"budget_exceeded"}`))
+		}
+	}
+
+	t.Run("already in", func(t *testing.T) {
+		srv := httptest.NewServer(refusal(nil))
+		t.Cleanup(srv.Close)
+		state, _, _ := welcomeLaunch(t, srv.URL)
+		if r := awaitPreflightAuth(t, currentLaunchPreflight); !errors.Is(r.err, auth.ErrAccessNotGranted) {
+			t.Fatalf("the 402 fixture did not come back as ErrAccessNotGranted: %v", r.err)
+		}
+		s := showWelcome(t, state)
+		screen, ok := s.waitFor(welcomeAccessRefused, 2*time.Second)
+		if !ok {
+			t.Fatalf("access was refused before the first frame and the screen does not say %q:\n%s", welcomeAccessRefused, screen)
+		}
+		for _, wrong := range []string{welcomeCheckFailed, welcomeChecking} {
+			if strings.Contains(screen, wrong) {
+				t.Errorf("access was refused before the first frame and the screen says %q:\n%s", wrong, screen)
+			}
+		}
+	})
+
+	t.Run("arrives while the screen is up", func(t *testing.T) {
+		gate := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(gate) }) }
+		srv := httptest.NewServer(refusal(gate))
+		t.Cleanup(srv.Close)
+		t.Cleanup(release)
+		state, _, _ := welcomeLaunch(t, srv.URL)
+		s := showWelcome(t, state)
+		if screen, drawn := s.waitFor(welcomeChecking, time.Second); !drawn {
+			t.Fatalf("before /v1/vc/me answers the screen should say %q:\n%s", welcomeChecking, screen)
+		}
+		release()
+		if r := awaitPreflightAuth(t, currentLaunchPreflight); !errors.Is(r.err, auth.ErrAccessNotGranted) {
+			t.Fatalf("the 402 fixture did not come back as ErrAccessNotGranted: %v", r.err)
+		}
+		screen, ok := s.waitFor(welcomeAccessRefused, 3*time.Second)
+		if !ok {
+			t.Fatalf("access was refused while the screen was up and the screen never said %q:\n%s", welcomeAccessRefused, screen)
+		}
+		if strings.Contains(screen, welcomeCheckFailed) {
+			t.Errorf("access was refused and the screen said %q at some point:\n%s", welcomeCheckFailed, screen)
+		}
+		if after := screen[strings.LastIndex(screen, welcomeAccessRefused):]; strings.Contains(after, welcomeChecking) {
+			t.Errorf("the check is over and the screen still says %q:\n%s", welcomeChecking, after)
+		}
 	})
 }

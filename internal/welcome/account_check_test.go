@@ -108,3 +108,32 @@ func TestWelcomeSignedOutScreenSaysNothingAboutTheCheck(t *testing.T) {
 		}
 	}
 }
+
+// Panel on void-works#90: a refusal (the token is valid, access is not
+// granted) is not a failed check. AccountMsg{Refused: true} puts «доступ не
+// выдан» on the screen, in place of both «проверяю аккаунт…» and «не удалось
+// проверить аккаунт» — on the running screen, on a state the answer was
+// already laid over, and on the plain banner.
+func TestWelcomeSaysAccessNotGrantedAfterARefusal(t *testing.T) {
+	const accessRefused = "доступ не выдан"
+	refused := welcome.AccountMsg{Refused: true}
+	state := welcome.WithAccount(checkInFlight(), refused)
+	for where, screen := range map[string]string{
+		"running screen": viewAfter(t, checkInFlight(), refused),
+		"menu":           viewAfter(t, state),
+		"plain banner":   welcome.PlainBannerForTest(state),
+	} {
+		if !strings.Contains(screen, accessRefused) {
+			t.Errorf("welcome %s: access was refused and it does not say %q:\n%s", where, accessRefused, screen)
+		}
+		for _, wrong := range []string{accountChecking, accountFailed} {
+			if strings.Contains(screen, wrong) {
+				t.Errorf("welcome %s: access was refused and it says %q:\n%s", where, wrong, screen)
+			}
+		}
+	}
+	// Still signed in: the menu offers the launch, not login.
+	if m := welcome.NewMenuModelForTest(state); m.ItemCount() == 0 || m.ItemLabel(0) != "Запустить" {
+		t.Errorf("a refusal signed the screen out; state = %+v", state)
+	}
+}
