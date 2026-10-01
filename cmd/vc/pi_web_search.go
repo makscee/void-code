@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,10 +30,22 @@ const (
 var renameManagedWebSearchPath = os.Rename
 
 // managedWebSearchInstallGrace is how long vc waits, after Pi exits, for a
-// web-search install still in flight before it cancels it. Long enough for a
-// slow npm (58–74 s were measured on Windows) to finish so the next launch has
-// web search; bounded so a hung npm never holds the terminal for long.
-var managedWebSearchInstallGrace = 2 * time.Minute
+// web-search install still in flight before it cancels it. A product decision
+// (Artem, void-works#89): long enough for a typical npm ci to land after a
+// short session, short enough that quitting Pi does not feel like vc hung. An
+// install cut short is retried by the next launch.
+var managedWebSearchInstallGrace = 15 * time.Second
+
+// staleWebSearchStagingAge is how old a .pi-web-access-stage-* or
+// .pi-web-access-backup-* sibling must be before an install sweeps it. No real
+// install takes that long, so a second vc installing at the same moment never
+// loses its live stage.
+var staleWebSearchStagingAge = 30 * time.Minute
+
+const (
+	webSearchStagePrefix  = ".pi-web-access-stage-"
+	webSearchBackupPrefix = ".pi-web-access-backup-"
+)
 
 func managedWebSearchPackagePath() string {
 	// Keep the original managed slot so upgrades replace it in place instead of
@@ -210,16 +223,23 @@ func inspectManagedWebSearchPackage(path string) (current, foreign bool, err err
 	return pkg.Version == managedWebSearchPackageVersion && depErr == nil, false, nil
 }
 
-func installManagedWebSearchPackage(ctx context.Context, path string) error {
+func installManagedWebSearchPackage(ctx context.Context, path string) (installErr error) {
 	parent := filepath.Dir(path)
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return fmt.Errorf("create managed package parent: %w", err)
 	}
-	stage, err := os.MkdirTemp(parent, ".pi-web-access-stage-*")
+	sweepStaleWebSearchStaging(parent)
+	stage, err := os.MkdirTemp(parent, webSearchStagePrefix+"*")
 	if err != nil {
 		return fmt.Errorf("stage managed web-search package: %w", err)
 	}
-	defer os.RemoveAll(stage)
+	// A published stage has been renamed away and this is a no-op. A stage
+	// that cannot be removed is reported, not swallowed.
+	defer func() {
+		if removeErr := os.RemoveAll(stage); removeErr != nil {
+			installErr = &webSearchStageLeftover{install: installErr, stage: stage, removeErr: removeErr}
+		}
+	}()
 	root := "embed/pi-web-access-0.13.0"
 	err = fs.WalkDir(piWebAccessFork, root, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -256,7 +276,7 @@ func installManagedWebSearchPackage(ctx context.Context, path string) error {
 	}
 	backup := ""
 	if _, err := os.Stat(path); err == nil {
-		backupDir, err := os.MkdirTemp(parent, ".pi-web-access-backup-*")
+		backupDir, err := os.MkdirTemp(parent, webSearchBackupPrefix+"*")
 		if err != nil {
 			return fmt.Errorf("prepare managed web-search rollback: %w", err)
 		}
@@ -280,6 +300,51 @@ func installManagedWebSearchPackage(ctx context.Context, path string) error {
 		_ = os.RemoveAll(backup)
 	}
 	return nil
+}
+
+// webSearchStageLeftover is an install whose staging directory could not be
+// removed. Its message is the install's own; the leftover is said separately
+// (see finishWebSearch) so it gets its own warning line.
+type webSearchStageLeftover struct {
+	install   error
+	stage     string
+	removeErr error
+}
+
+func (e *webSearchStageLeftover) Error() string {
+	if e.install == nil {
+		return e.leftover()
+	}
+	return e.install.Error()
+}
+
+func (e *webSearchStageLeftover) Unwrap() error { return e.install }
+
+func (e *webSearchStageLeftover) leftover() string {
+	return fmt.Sprintf("staging directory %s could not be removed: %v", e.stage, e.removeErr)
+}
+
+// sweepStaleWebSearchStaging removes stage and backup siblings that a crashed
+// or killed earlier run left behind, once they are older than
+// staleWebSearchStagingAge. Nothing else in parent is touched. Best effort: a
+// sibling that cannot be removed now is tried again by the next install.
+func sweepStaleWebSearchStaging(parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleWebSearchStagingAge)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, webSearchStagePrefix) && !strings.HasPrefix(name, webSearchBackupPrefix) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(parent, name))
+	}
 }
 
 func removeManagedWebSearchPackage(path string) error {

@@ -173,8 +173,16 @@ type sessionPlan struct {
 // exited (bounded by managedWebSearchInstallGrace) and says on stderr — now
 // that Pi no longer owns it — if it failed.
 func finishWebSearch(install *backgroundWebSearchInstall, stderr io.Writer) {
-	if err := install.finish(managedWebSearchInstallGrace); err != nil {
+	err := install.finish(managedWebSearchInstallGrace)
+	if err == nil {
+		return
+	}
+	var leftover *webSearchStageLeftover
+	if !errors.As(err, &leftover) || leftover.install != nil {
 		fmt.Fprintf(stderr, "vc: warning: managed Pi web search was not installed: %v\n", err)
+	}
+	if leftover != nil {
+		fmt.Fprintf(stderr, "vc: warning: managed Pi web search %s\n", leftover.leftover())
 	}
 }
 
