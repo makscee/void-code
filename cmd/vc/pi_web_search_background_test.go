@@ -47,7 +47,7 @@ import (
 //	    grace after Pi's exit runs out. (Today it takes no context.)
 //	managedWebSearchInstallGrace time.Duration
 //	    how long vc waits after Pi exits for an install in flight before it
-//	    cancels it. Default: positive and at most two minutes.
+//	    cancels it. Default: exactly 15 s (Artem, #89).
 //	spawnHarness                       the CLI's Pi spawn (existing)
 //	desktopSessionDeps.run             the desktop's Pi run (existing)
 //
@@ -405,9 +405,12 @@ func TestRunSpawnCancelsWebSearchInstallAfterGrace(t *testing.T) {
 	assertNoStagingLeft(t)
 }
 
-func TestManagedWebSearchInstallGraceDefaultIsBounded(t *testing.T) {
-	if managedWebSearchInstallGrace <= 0 || managedWebSearchInstallGrace > 2*time.Minute {
-		t.Fatalf("managedWebSearchInstallGrace = %v, want positive and at most 2m", managedWebSearchInstallGrace)
+// The grace is a product decision, not a tuning knob: Artem set 15 s for #89.
+// Long enough for a typical npm ci to land after a short session, short enough
+// that quitting Pi does not feel like vc hung.
+func TestManagedWebSearchInstallGraceDefaultIs15s(t *testing.T) {
+	if managedWebSearchInstallGrace != 15*time.Second {
+		t.Fatalf("managedWebSearchInstallGrace = %v, want exactly 15s", managedWebSearchInstallGrace)
 	}
 }
 
