@@ -27,6 +27,8 @@ type desktopSessionPlan struct {
 	// command's error stream, and a line written to os.Stderr here would land in
 	// a process nobody is watching.
 	warnings []string
+	// webSearch is the web-search install running alongside Pi, or nil.
+	webSearch *backgroundWebSearchInstall
 }
 type desktopSessionDeps struct {
 	loadToken       func() (string, error)
@@ -46,7 +48,7 @@ func defaultDesktopSessionDeps() desktopSessionDeps {
 		resolveConfig:   config.OSResolve,
 		authGate:        authGate,
 		reconcilePi:     reconcileManagedPiExtension,
-		reconcileSearch: reconcileManagedWebSearch,
+		reconcileSearch: prepareSessionWebSearch,
 		reconcileUI:     reconcileManagedPiUIExtension,
 		seedUIDefaults:  ensurePiDesktopUIDefaults,
 		now:             time.Now,
@@ -63,7 +65,9 @@ func newDesktopSessionCommand(deps desktopSessionDeps) *cobra.Command {
 		for _, warning := range plan.warnings {
 			fmt.Fprintln(cmd.ErrOrStderr(), warning)
 		}
-		return deps.run(cmd.Context(), plan, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		runErr := deps.run(cmd.Context(), plan, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		finishWebSearch(plan.webSearch, cmd.ErrOrStderr())
+		return runErr
 	}}
 	cmd.Flags().StringVar(&nodePath, "node", "", "absolute path to the package-owned Node executable")
 	cmd.Flags().StringVar(&piEntry, "pi-entry", "", "absolute path to the package-owned Pi CLI entrypoint")
@@ -109,7 +113,7 @@ func prepareDesktopSession(nodePath, piEntry string, piArgs []string, deps deskt
 	if err != nil {
 		return desktopSessionPlan{}, err
 	}
-	return desktopSessionPlan{nodePath: plan.path, args: plan.args, env: plan.env, warnings: plan.warnings}, nil
+	return desktopSessionPlan{nodePath: plan.path, args: plan.args, env: plan.env, warnings: plan.warnings, webSearch: plan.webSearch}, nil
 }
 
 // core is the shared session core's dependencies, taken from the desktop's.

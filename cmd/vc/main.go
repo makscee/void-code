@@ -319,7 +319,9 @@ func runSpawn(_ *cobra.Command, args []string) error {
 	}
 	currentLaunchDiagnostics.record(phaseSpawnHandoff, outcomeComplete, sourceLocal)
 	currentLaunchDiagnostics.flush()
-	return spawnHarness(context.Background(), plan.path, plan.args, plan.env)
+	spawnErr := spawnHarness(context.Background(), plan.path, plan.args, plan.env)
+	finishWebSearch(plan.webSearch, os.Stderr)
+	return spawnErr
 }
 
 // resolveCLIPiRuntime finds the Pi the CLI starts. A bundled runtime starts its

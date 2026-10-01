@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -20,7 +22,7 @@ import (
 //  1. access check: a live admission, never a cached one
 //  2. runtime: which Node/Pi to start, resolved only after admission
 //  3. transport: the managed Pi extension that carries the relay
-//  4. web search
+//  4. web search (an install it needs runs alongside Pi, see sessionPlan.webSearch)
 //  5. compact UI (when the surface asks for it)
 //  6. the default model seed
 //  7. the child environment, with the wallet notice
@@ -78,11 +80,12 @@ func prepareSession(req sessionRequest, deps sessionDeps) (sessionPlan, error) {
 			return plan, fmt.Errorf("cannot write Pi relay extension: %w", err)
 		}
 	}
-	if _, err := deps.reconcileSearch(true); err != nil {
+	searchState, searchErr := deps.reconcileSearch(true)
+	if searchErr != nil {
 		if req.requireManaged {
-			return plan, fmt.Errorf("managed Pi web search unavailable: %w", err)
+			return plan, fmt.Errorf("managed Pi web search unavailable: %w", searchErr)
 		}
-		warn("managed Pi web search was not reconciled: %v", err)
+		warn("managed Pi web search was not reconciled: %v", searchErr)
 	}
 	if req.compactUI && deps.reconcileUI != nil {
 		uiPath, uiErr := deps.reconcileUI()
@@ -119,6 +122,12 @@ func prepareSession(req sessionRequest, deps sessionDeps) (sessionPlan, error) {
 		args = append([]string{rt.entry}, args...)
 	}
 	plan.path, plan.args, plan.env = rt.path, args, env
+	// Last, so nothing after it can fail the launch and orphan it: the install
+	// starts now and Pi does not wait for it. npm took over a minute on Windows
+	// and Pi without web search is still Pi.
+	if searchErr == nil && searchState == managedWebSearchPending && deps.installSearch != nil {
+		plan.webSearch = startManagedWebSearchInstall(deps.installSearch, deps.registerSearch)
+	}
 	return plan, nil
 }
 
@@ -155,15 +164,39 @@ type sessionPlan struct {
 	args     []string
 	env      []string
 	warnings []string
+	// webSearch is the web-search install running alongside Pi, or nil. The
+	// surface calls finishWebSearch once Pi has exited.
+	webSearch *backgroundWebSearchInstall
+}
+
+// finishWebSearch waits for the session's web-search install after Pi has
+// exited (bounded by managedWebSearchInstallGrace) and says on stderr — now
+// that Pi no longer owns it — if it failed.
+func finishWebSearch(install *backgroundWebSearchInstall, stderr io.Writer) {
+	err := install.finish(managedWebSearchInstallGrace)
+	if err == nil {
+		return
+	}
+	var leftover *webSearchStageLeftover
+	if !errors.As(err, &leftover) || leftover.install != nil {
+		fmt.Fprintf(stderr, "vc: warning: managed Pi web search was not installed: %v\n", err)
+	}
+	if leftover != nil {
+		fmt.Fprintf(stderr, "vc: warning: managed Pi web search %s\n", leftover.leftover())
+	}
 }
 
 type sessionDeps struct {
-	loadToken        func() (string, error)
-	resolveConfig    func() config.Config
-	authGate         func(string, string, *http.Client) (auth.MeResult, bool, error)
-	reconcilePi      func() (string, error)
-	writeEmbeddedPi  func() (string, error)
-	reconcileSearch  func(bool) (managedWebSearchState, error)
+	loadToken       func() (string, error)
+	resolveConfig   func() config.Config
+	authGate        func(string, string, *http.Client) (auth.MeResult, bool, error)
+	reconcilePi     func() (string, error)
+	writeEmbeddedPi func() (string, error)
+	reconcileSearch func(bool) (managedWebSearchState, error)
+	// installSearch runs when reconcileSearch reports managedWebSearchPending,
+	// alongside Pi; registerSearch runs after Pi exits if it succeeded.
+	installSearch    func(context.Context) error
+	registerSearch   func() error
 	reconcileUI      func() (string, error)
 	seedUIDefaults   func() error
 	seedDefaultModel func() error
@@ -177,7 +210,9 @@ func defaultSessionDeps() sessionDeps {
 		authGate:         authGate,
 		reconcilePi:      reconcileManagedPiExtension,
 		writeEmbeddedPi:  ensurePiVoidCodexExtension,
-		reconcileSearch:  reconcileManagedWebSearch,
+		reconcileSearch:  prepareSessionWebSearch,
+		installSearch:    installManagedWebSearch,
+		registerSearch:   registerManagedWebSearch,
 		reconcileUI:      reconcileManagedPiUIExtension,
 		seedUIDefaults:   ensurePiDesktopUIDefaults,
 		seedDefaultModel: ensurePiDefaultModel,
