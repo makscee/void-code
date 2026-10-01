@@ -254,13 +254,20 @@ func TestWelcomeShowsNoMoneyWhenTheLaunchFetchedNoWallet(t *testing.T) {
 func TestWelcomeShowsTheEmailTheLaunchVerified(t *testing.T) {
 	const email = "person@example.test"
 	const unverified = "не удалось проверить аккаунт"
+	const checking = "проверяю аккаунт…"
 
 	t.Run("arrives while the screen is up", func(t *testing.T) {
 		host, release := slowMeServer(t, meBody(wallet("18", tariffT1, "true", "9")))
 		state, _, _ := welcomeLaunch(t, host)
 		s := showWelcome(t, state)
-		if screen, drawn := s.waitFor(unverified, time.Second); !drawn {
-			t.Fatalf("before /v1/vc/me answers the screen should say the account is not verified yet:\n%s", screen)
+		// void-works#90: while the check runs the screen says it is checking,
+		// not that the check failed.
+		screen, drawn := s.waitFor(checking, time.Second)
+		if !drawn {
+			t.Fatalf("before /v1/vc/me answers the screen should say %q:\n%s", checking, screen)
+		}
+		if strings.Contains(screen, unverified) {
+			t.Fatalf("the screen says %q while /v1/vc/me is still in flight:\n%s", unverified, screen)
 		}
 		release()
 		screen, ok := s.waitFor(email, 3*time.Second)
@@ -268,9 +275,53 @@ func TestWelcomeShowsTheEmailTheLaunchVerified(t *testing.T) {
 			t.Fatalf("/v1/vc/me answered with %s while the screen was up, and the screen never showed it:\n%s", email, screen)
 		}
 		// The renderer redraws only the lines that change: the identity line
-		// is redrawn with the email, and nothing after it says unverified.
-		if after := screen[strings.LastIndex(screen, email):]; strings.Contains(after, unverified) {
-			t.Errorf("the screen still says %q after the account was verified:\n%s", unverified, after)
+		// is redrawn with the email, and nothing after it says checking or
+		// unverified.
+		after := screen[strings.LastIndex(screen, email):]
+		for _, stale := range []string{checking, unverified} {
+			if strings.Contains(after, stale) {
+				t.Errorf("the screen still says %q after the account was verified:\n%s", stale, after)
+			}
+		}
+		if strings.Contains(screen, unverified) {
+			t.Errorf("the screen said %q at some point though the check succeeded:\n%s", unverified, screen)
+		}
+	})
+
+	// void-works#90: the check gives up while the screen is up (the network is
+	// off, the service is down). The screen said «checking» and now says the
+	// check failed.
+	t.Run("fails while the screen is up", func(t *testing.T) {
+		gate := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(gate) }) }
+		down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		t.Cleanup(down.Close)
+		t.Cleanup(release)
+		state, _, _ := welcomeLaunch(t, down.URL)
+		s := showWelcome(t, state)
+		screen, drawn := s.waitFor(checking, time.Second)
+		if !drawn {
+			t.Fatalf("before the check finishes the screen should say %q:\n%s", checking, screen)
+		}
+		if strings.Contains(screen, unverified) {
+			t.Fatalf("the screen says %q before the check finished:\n%s", unverified, screen)
+		}
+		release()
+		awaitPreflightAuth(t, currentLaunchPreflight)
+		screen, ok := s.waitFor(unverified, 3*time.Second)
+		if !ok {
+			t.Fatalf("the check failed while the screen was up, and the screen never said %q:\n%s", unverified, screen)
+		}
+		if after := screen[strings.LastIndex(screen, unverified):]; strings.Contains(after, checking) {
+			t.Errorf("the check is over and the screen still says %q:\n%s", checking, after)
 		}
 	})
 
@@ -297,8 +348,12 @@ func TestWelcomeShowsTheEmailTheLaunchVerified(t *testing.T) {
 		state, _, _ := welcomeLaunch(t, refusal.URL)
 		awaitPreflightAuth(t, currentLaunchPreflight)
 		s := showWelcome(t, state)
-		if screen, drawn := s.waitFor(unverified, 2*time.Second); !drawn {
+		screen, drawn := s.waitFor(unverified, 2*time.Second)
+		if !drawn {
 			t.Fatalf("with no answer the screen must stay unverified:\n%s", screen)
+		}
+		if strings.Contains(screen, checking) {
+			t.Errorf("the check was over before the first frame, and the screen says %q:\n%s", checking, screen)
 		}
 	})
 }
