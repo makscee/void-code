@@ -103,6 +103,27 @@ func useFakeNpm(t *testing.T, waitDelay time.Duration) string {
 	return markers
 }
 
+// assertNpmGrandchildDead fails when the process the fake npm left in the
+// background is still alive shortly after vc returned.
+func assertNpmGrandchildDead(t *testing.T, markers string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(markers, "grandchild.pid"))
+	if err != nil {
+		t.Fatalf("fake npm recorded no grandchild: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("grandchild pid %q: %v", data, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !processGone(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("npm's grandchild (pid %d) still runs after vc cancelled the install and returned: only npm was killed, not its process group", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func waitForFile(path string, within time.Duration) bool {
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
@@ -215,6 +236,10 @@ func TestRunSpawnCancelsRealNpmWebSearchInstall(t *testing.T) {
 	if !npmStarted {
 		t.Fatal("the production installer never started the fake npm on PATH")
 	}
+	// Before useFakeNpm's cleanup kill, which is only a safety net: the
+	// grandchild must already be dead because vc killed npm's whole group, not
+	// just npm — WaitDelay alone lets vc return and leaves it running.
+	assertNpmGrandchildDead(t, markers)
 	args, err := os.ReadFile(filepath.Join(markers, "args"))
 	if err != nil {
 		t.Fatal(err)
