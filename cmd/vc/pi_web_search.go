@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -41,6 +42,14 @@ var managedWebSearchInstallGrace = 15 * time.Second
 // install takes that long, so a second vc installing at the same moment never
 // loses its live stage.
 var staleWebSearchStagingAge = 30 * time.Minute
+
+// managedWebSearchInstallTimeout bounds a background install from its start,
+// independent of Pi: npm stuck in retries, or a laptop asleep mid-session, is
+// stopped (tree killed, stage removed) even while Pi still runs. It must stay
+// under staleWebSearchStagingAge: the sweep judges a stage by its mtime, which
+// freezes once npm has created node_modules, so a longer-lived install could
+// be swept from under itself by a concurrent vc.
+var managedWebSearchInstallTimeout = 10 * time.Minute
 
 const (
 	webSearchStagePrefix  = ".pi-web-access-stage-"
@@ -153,12 +162,20 @@ type backgroundWebSearchInstall struct {
 	result   error
 }
 
+// startManagedWebSearchInstall runs install alongside Pi under its own
+// deadline, managedWebSearchInstallTimeout from now, which fires whether or
+// not Pi is still running.
 func startManagedWebSearchInstall(install func(context.Context) error, register func() error) *backgroundWebSearchInstall {
-	ctx, cancel := context.WithCancel(context.Background())
+	timeout := managedWebSearchInstallTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	b := &backgroundWebSearchInstall{cancel: cancel, done: make(chan struct{}), register: register}
 	go func() {
 		defer close(b.done)
-		b.err = install(ctx)
+		err := install(ctx)
+		if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("install did not finish within %s and was stopped (the next launch retries it): %w", timeout, err)
+		}
+		b.err = err
 	}()
 	return b
 }
