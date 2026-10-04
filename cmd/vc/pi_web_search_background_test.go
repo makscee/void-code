@@ -764,3 +764,54 @@ func TestDesktopSessionWebSearchUnregistersMissingPackageWhileInstalling(t *test
 		t.Fatal("after the install completed and desktop Pi exited, the managed package is not registered in settings.json")
 	}
 }
+
+// TestRunSpawnWebSearchRegistrationFailureSaysInstalled: the install landed,
+// but registering it in settings.json after Pi exited failed (here: Pi or the
+// user left "packages" as something other than an array). The warning must
+// say what happened — installed, not registered — and must not claim the
+// install failed, which would send the user after npm and the network.
+//
+// Exact wording pinned:
+//
+//	vc: warning: managed Pi web search was installed but could not be registered: <err>
+func TestRunSpawnWebSearchRegistrationFailureSaysInstalled(t *testing.T) {
+	agentDir := webSearchCLILaunch(t)
+	stderr := stderrToFile(t)
+	probe := newWebSearchInstallProbe()
+	close(probe.release)
+	useWebSearchInstallProbe(t, probe)
+	setWebSearchInstallGrace(t, time.Minute)
+
+	saved := spawnHarness
+	t.Cleanup(func() { spawnHarness = saved })
+	spawnHarness = func(context.Context, string, []string, []string) error {
+		// While Pi runs, settings.json changes under vc into something the
+		// registration cannot extend.
+		writePiSettings(t, agentDir, `{"packages":"not-an-array"}`, 0600)
+		return nil
+	}
+
+	if err := runSpawn(nil, nil); err != nil {
+		t.Fatalf("a registration failure must not fail the launch: %v", err)
+	}
+	if state := publishedWebSearchState(); !state.current {
+		t.Fatalf("fixture: the install itself should have landed, managed web search = %+v", state)
+	}
+	out := readText(t, stderr)
+	const want = "vc: warning: managed Pi web search was installed but could not be registered: "
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, want) {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("stderr = %q, want a line starting %q", out, want)
+	}
+	if !strings.Contains(line, "not an array") {
+		t.Errorf("warning %q does not carry the registration error", line)
+	}
+	if strings.Contains(out, "was not installed") {
+		t.Errorf("stderr claims the install failed although it landed: %q", out)
+	}
+}
