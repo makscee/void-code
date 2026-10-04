@@ -194,8 +194,19 @@ func (b *backgroundWebSearchInstall) wait(grace time.Duration) error {
 	if b.register == nil {
 		return nil
 	}
-	return b.register()
+	if err := b.register(); err != nil {
+		return &webSearchRegistrationError{err: err}
+	}
+	return nil
 }
+
+// webSearchRegistrationError is an install that landed but could not be
+// registered in settings.json. It is told apart from a failed install so the
+// warning does not send the user after npm and the network.
+type webSearchRegistrationError struct{ err error }
+
+func (e *webSearchRegistrationError) Error() string { return e.err.Error() }
+func (e *webSearchRegistrationError) Unwrap() error { return e.err }
 
 func inspectManagedWebSearchPackage(path string) (current, foreign bool, err error) {
 	data, err := os.ReadFile(filepath.Join(path, "package.json"))

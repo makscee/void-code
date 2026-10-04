@@ -177,6 +177,11 @@ func finishWebSearch(install *backgroundWebSearchInstall, stderr io.Writer) {
 	if err == nil {
 		return
 	}
+	var registration *webSearchRegistrationError
+	if errors.As(err, &registration) {
+		fmt.Fprintf(stderr, "vc: warning: managed Pi web search was installed but could not be registered: %v\n", registration.err)
+		return
+	}
 	var leftover *webSearchStageLeftover
 	if !errors.As(err, &leftover) || leftover.install != nil {
 		fmt.Fprintf(stderr, "vc: warning: managed Pi web search was not installed: %v\n", err)

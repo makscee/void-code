@@ -24,3 +24,6 @@ func configureNpmProcessTree(cmd *exec.Cmd) {
 		return nil
 	}
 }
+
+// hideConsoleWindow: there is no console window to hide outside Windows.
+func hideConsoleWindow(*exec.Cmd) {}
