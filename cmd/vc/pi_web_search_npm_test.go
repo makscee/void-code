@@ -447,3 +447,129 @@ func TestRunSpawnWebSearchReportsStageCleanupFailure(t *testing.T) {
 		t.Fatalf("stderr = %q, want a vc warning naming the stage %s that could not be removed", out, filepath.Base(stage))
 	}
 }
+
+// Fourth round on void-works#89: an upper bound on the install itself.
+//
+// The stale sweep judges a stage by its mtime, and that mtime freezes once npm
+// has created node_modules. An install that lived past staleWebSearchStagingAge
+// (laptop asleep mid-session, npm stuck in retries) would look stale to a
+// second vc and be swept from under itself. So no install may live that long:
+//
+//	managedWebSearchInstallTimeout time.Duration
+//	    a context deadline on the background install, counted from its start
+//	    and independent of Pi: it fires while Pi is still running. Default
+//	    exactly 10 min, well under staleWebSearchStagingAge.
+//
+// Pinned wording of the after-Pi warning when it fires:
+//
+//	vc: warning: managed Pi web search was not installed: … did not finish within <timeout> …
+//
+// and, since Pi had not exited, it does not blame Pi's exit ("of Pi exiting"
+// belongs to the grace).
+
+func setWebSearchInstallTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	saved := managedWebSearchInstallTimeout
+	managedWebSearchInstallTimeout = timeout
+	t.Cleanup(func() { managedWebSearchInstallTimeout = saved })
+}
+
+func TestManagedWebSearchInstallTimeoutDefault(t *testing.T) {
+	if managedWebSearchInstallTimeout != 10*time.Minute {
+		t.Fatalf("managedWebSearchInstallTimeout = %v, want exactly 10m", managedWebSearchInstallTimeout)
+	}
+	if managedWebSearchInstallTimeout >= staleWebSearchStagingAge {
+		t.Fatalf("managedWebSearchInstallTimeout %v is not under staleWebSearchStagingAge %v: a live install could be swept as stale", managedWebSearchInstallTimeout, staleWebSearchStagingAge)
+	}
+}
+
+// TestRunSpawnRealNpmWebSearchInstallTimesOutWhilePiRuns: a npm that hangs is
+// stopped by the install's own deadline while Pi is still up — its whole tree
+// dead and its stage gone before Pi exits — and vc then returns at once with a
+// warning that names the timeout.
+func TestRunSpawnRealNpmWebSearchInstallTimesOutWhilePiRuns(t *testing.T) {
+	webSearchCLILaunch(t)
+	stderr := stderrToFile(t)
+	markers := useFakeNpm(t, 300*time.Millisecond)
+	t.Setenv("FAKE_NPM_MODE", "hang")
+	// The grace (8s) outlasts Pi's 5s wait below on purpose: whatever ends the
+	// install while Pi runs is the install's own deadline, not Pi's exit. It is
+	// still short enough that a red run returns instead of leaking a launch
+	// into the tests after it.
+	setWebSearchInstallGrace(t, 8*time.Second)
+	setWebSearchInstallTimeout(t, 100*time.Millisecond)
+
+	saved := spawnHarness
+	t.Cleanup(func() { spawnHarness = saved })
+	var whilePi struct {
+		started, grandchildGone, stageGone bool
+		stage                              string
+	}
+	spawnHarness = func(context.Context, string, []string, []string) error {
+		if whilePi.started = waitForFile(filepath.Join(markers, "started"), 10*time.Second); !whilePi.started {
+			return nil
+		}
+		if cwd, err := os.ReadFile(filepath.Join(markers, "cwd")); err == nil {
+			whilePi.stage = strings.TrimSpace(string(cwd))
+		}
+		pidData, _ := os.ReadFile(filepath.Join(markers, "grandchild.pid"))
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		// Pi keeps running until the deadline has done its work, or 5 s.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			whilePi.grandchildGone = pid > 0 && processGone(pid)
+			whilePi.stageGone = whilePi.stage != "" && !fileExists(whilePi.stage)
+			if whilePi.grandchildGone && whilePi.stageGone {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- runSpawn(nil, nil) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("vc did not return 20s into a hung npm, past both the install timeout and the grace")
+	}
+	if err != nil {
+		t.Fatalf("runSpawn: %v", err)
+	}
+	if !whilePi.started {
+		t.Fatal("the production installer never started the fake npm on PATH")
+	}
+	if !whilePi.grandchildGone {
+		t.Error("npm's tree was still alive 5s into Pi's session: the install timeout did not fire while Pi ran")
+	}
+	if !whilePi.stageGone {
+		t.Errorf("the stage %s was still there 5s into Pi's session: a timed-out install did not clean up", whilePi.stage)
+	}
+	assertNpmGrandchildDead(t, markers)
+	if state := publishedWebSearchState(); state.exists {
+		t.Fatalf("a timed-out install left the managed path published: %+v", state)
+	}
+	if left := stagingSiblings(t); len(left) != 0 {
+		t.Fatalf("a timed-out install left %v next to the package", left)
+	}
+
+	out := readText(t, stderr)
+	const prefix = "vc: warning: managed Pi web search was not installed: "
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("stderr = %q, want a line starting %q", out, prefix)
+	}
+	if !strings.Contains(line, "did not finish within 100ms") {
+		t.Errorf("warning %q does not say the install timed out after 100ms", line)
+	}
+	if strings.Contains(line, "of Pi exiting") {
+		t.Errorf("warning %q blames Pi's exit, but the install's own deadline stopped it while Pi ran", line)
+	}
+}
