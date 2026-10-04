@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -43,6 +44,9 @@ import (
 
 const fakeNpmScript = `#!/bin/sh
 PATH=/usr/bin:/bin
+# warmup: useFakeNpm runs the script once so its first-exec cost is paid
+# before any timed section; it must leave no marker behind.
+[ "$FAKE_NPM_MODE" = warmup ] && exit 0
 printf '%s\n' "$*" > "$FAKE_NPM_MARKERS/args"
 pwd > "$FAKE_NPM_MARKERS/cwd"
 case "$FAKE_NPM_MODE" in
@@ -75,6 +79,15 @@ func useFakeNpm(t *testing.T, waitDelay time.Duration) string {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte(fakeNpmScript), 0700); err != nil {
 		t.Fatal(err)
+	}
+	// The first exec of a freshly written script is slow on macOS (Gatekeeper:
+	// 318 ms measured the first time, 3–4 ms after). Pay it here, outside any
+	// timed section, so a short install timeout measures npm, not the OS.
+	warmup := exec.Command(filepath.Join(bin, "npm"))
+	warmup.Dir = bin
+	warmup.Env = append(os.Environ(), "FAKE_NPM_MODE=warmup")
+	if out, err := warmup.CombinedOutput(); err != nil {
+		t.Fatalf("warm up fake npm: %v: %s", err, out)
 	}
 	markers := t.TempDir()
 	t.Setenv("FAKE_NPM_MARKERS", markers)
@@ -464,6 +477,8 @@ func TestRunSpawnWebSearchReportsStageCleanupFailure(t *testing.T) {
 //
 //	vc: warning: managed Pi web search was not installed: … did not finish within <timeout> …
 //
+// (The test uses a 1s timeout and expects "did not finish within 1s".)
+//
 // and, since Pi had not exited, it does not blame Pi's exit ("of Pi exiting"
 // belongs to the grace).
 
@@ -497,7 +512,9 @@ func TestRunSpawnRealNpmWebSearchInstallTimesOutWhilePiRuns(t *testing.T) {
 	// still short enough that a red run returns instead of leaking a launch
 	// into the tests after it.
 	setWebSearchInstallGrace(t, 8*time.Second)
-	setWebSearchInstallTimeout(t, 100*time.Millisecond)
+	// 1s, not less: the install must reach npm before the deadline for this to
+	// test a timed-out npm rather than one that never started.
+	setWebSearchInstallTimeout(t, time.Second)
 
 	saved := spawnHarness
 	t.Cleanup(func() { spawnHarness = saved })
@@ -566,8 +583,8 @@ func TestRunSpawnRealNpmWebSearchInstallTimesOutWhilePiRuns(t *testing.T) {
 	if line == "" {
 		t.Fatalf("stderr = %q, want a line starting %q", out, prefix)
 	}
-	if !strings.Contains(line, "did not finish within 100ms") {
-		t.Errorf("warning %q does not say the install timed out after 100ms", line)
+	if !strings.Contains(line, "did not finish within 1s") {
+		t.Errorf("warning %q does not say the install timed out after 1s", line)
 	}
 	if strings.Contains(line, "of Pi exiting") {
 		t.Errorf("warning %q blames Pi's exit, but the install's own deadline stopped it while Pi ran", line)
